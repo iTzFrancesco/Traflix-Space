@@ -1171,12 +1171,15 @@ impl PtyManager {
 - [x] Resize e riorganizzazione panes — ResizeObserver + fitAddon.fit() + invoke('resize_pty')
 - [x] Header pane con traffic lights e titolo — TerminalHeader.tsx (R/Y/G animati, troncamento, AgentBadge)
 
-### Fase 4: Agenti (Settimana 8-9) — 🟡 PARZIALE
+### Fase 4: Agenti (Settimana 8-9) — ✅ COMPLETATA
 - [x] Registry agenti (Aider, OpenCode, Claude Code) — src/lib/agents.ts + Rust registry.rs
-- [ ] Lancio agenti in terminali dedicati — launcher.rs stub
+- [x] Lancio agenti in terminali dedicati — launcher.rs scrive comando + API key nel PTY dopo la creazione
 - [x] Badge agente nel terminale — AgentBadge.tsx
-- [ ] Gestione API keys (tauri-plugin-store) — plugin installato, comandi stub
+- [x] Gestione API keys (settings/store + SettingsModal.tsx) — persistenza su file JSON locale, UI per inserire/visualizzare/rimuovere chiavi
 - [x] Comandi personalizzati — Custom agent in registry
+- [x] Auto-launch agente — TerminalPane.tsx chiama `invoke('launch_agent')` quando PTY è pronto
+- [x] Sidebar terminali attivi — Sidebar.tsx mostra terminali con badge agente
+- [x] WorkspaceView agent-aware — carica terminali con agenti dal workspace config
 
 ### Fase 5: Polish (Settimana 10) — ❌ DA AVVIARE
 - [ ] Animazioni e transizioni (Framer Motion)

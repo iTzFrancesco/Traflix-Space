@@ -65,4 +65,23 @@ impl AgentRegistry {
     pub fn get_agent(&self, id: &str) -> Option<&AgentDefinition> {
         self.agents.iter().find(|a| a.id == id)
     }
+
+    pub fn list(&self) -> Vec<serde_json::Value> {
+        self.agents
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "description": a.description,
+                    "command": a.command,
+                    "args": a.args,
+                    "icon": a.icon,
+                    "color": a.color,
+                    "requiresApiKey": a.requires_api_key,
+                    "apiKeyEnv": a.api_key_env,
+                })
+            })
+            .collect()
+    }
 }

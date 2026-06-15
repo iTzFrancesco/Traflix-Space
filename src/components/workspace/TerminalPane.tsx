@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { TerminalHeader } from "../terminal/TerminalHeader";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -44,11 +45,24 @@ export function TerminalPane({
   );
 
   const handleTerminalReady = useCallback(
-    (newPtyId: string) => {
+    async (newPtyId: string) => {
       setPtyId(newPtyId);
       useTerminalStore.getState().setTerminalPtyId(terminalId, newPtyId);
+
+      if (agentId) {
+        try {
+          await invoke("launch_agent", {
+            ptyId: newPtyId,
+            terminalId,
+            agentId,
+            shell,
+          });
+        } catch (err) {
+          console.error("Error launching agent:", err);
+        }
+      }
     },
-    [terminalId],
+    [terminalId, agentId],
   );
 
   const agentColor = undefined;

@@ -28,8 +28,8 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 |--------|----------|
 | Workspace | `create_workspace`, `get_workspaces`, `get_workspace`, `update_workspace`, `delete_workspace`, `select_folder` |
 | PTY | `create_pty`, `write_pty`, `resize_pty`, `kill_pty`, `get_terminal_info` |
-| Agent | `list_agents`, `launch_agent`, `kill_agent` — **stubs** (TODO) |
-| Settings | `get_settings`, `set_settings` — **stubs** (return defaults / no-op) |
+| Agent | `list_agents`, `launch_agent`, `kill_agent`, `get_agent_status` |
+| Settings | `get_settings`, `set_settings`, `get_api_keys`, `set_api_key`, `remove_api_key` |
 
 ## State management
 
@@ -52,4 +52,6 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 - `src/lib/agents.ts` — frontend agent definitions (Aider, OpenCode, Claude Code, Custom)
 - `src/lib/presets.ts` — 6 workspace presets
 - `src-tauri/src/pty/windows.rs` — ConPTY native bindings
-- `src-tauri/src/agent/launcher.rs` — agent launch stub (TODO)
+- `src-tauri/src/agent/launcher.rs` — agent launcher (writes command + API keys to PTY)
+- `src-tauri/src/settings/store.rs` — settings persistence (JSON file) + API key storage
+- `src/components/layout/SettingsModal.tsx` — API key management UI

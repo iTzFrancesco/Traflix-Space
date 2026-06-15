@@ -5,14 +5,22 @@ import {
   Monitor,
   Settings,
   ChevronRight,
+  Bot,
 } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
+import { SettingsModal } from "./SettingsModal";
+import { AGENTS } from "../../lib/agents";
 
 export function Sidebar() {
   const { workspaces, activeWorkspaceId, setActiveWorkspace } =
     useWorkspaceStore();
+  const terminalStore = useTerminalStore();
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const allTerminals = Array.from(terminalStore.terminals.values());
 
   return (
     <>
@@ -70,14 +78,44 @@ export function Sidebar() {
         </div>
 
         <div className="space-y-1">
-          <p className="px-3 py-4 text-xs text-neutral-text-muted text-center">
-            Nessun terminale attivo.
-          </p>
+          {allTerminals.length === 0 ? (
+            <p className="px-3 py-4 text-xs text-neutral-text-muted text-center">
+              Nessun terminale attivo.
+            </p>
+          ) : (
+            allTerminals.map((t) => {
+              const agent = t.agent ? AGENTS.find((a) => a.id === t.agent) : null;
+              return (
+                <div
+                  key={t.id}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs text-neutral-text-dim"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                  <span className="truncate flex-1">{t.title}</span>
+                  {agent && (
+                    <span
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[0.6rem] font-medium shrink-0"
+                      style={{
+                        backgroundColor: `${agent.color}18`,
+                        color: agent.color,
+                      }}
+                    >
+                      <Bot size={8} />
+                      {agent.name}
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
       <div className="mt-auto p-4 border-t" style={{ borderColor: "var(--neutral-border)" }}>
-        <button className="flex items-center gap-2 w-full px-3 py-2 text-sm text-neutral-text-muted rounded-lg hover:bg-white/[0.025] transition-colors">
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-neutral-text-muted rounded-lg hover:bg-white/[0.025] transition-colors"
+        >
           <Settings size={16} />
           Settings
         </button>
@@ -85,6 +123,7 @@ export function Sidebar() {
     </aside>
 
       <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );
 }

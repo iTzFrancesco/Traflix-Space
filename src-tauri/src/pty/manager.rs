@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 
 use super::windows::ConPty;
 
@@ -35,8 +36,10 @@ impl PtyManager {
         cwd: Option<&str>,
         app: AppHandle,
     ) -> Result<(), String> {
+        info!(%id, %shell, cols, rows, "Creazione PTY");
         let pty = ConPty::new(cols, rows, shell, cwd)?;
         let pid = pty.pid();
+        info!(%id, pid, "PTY creata con successo");
 
         let session = PtySession {
             id: id.clone(),
@@ -102,7 +105,10 @@ impl PtyManager {
         let mut ptys = self.ptys.lock().await;
         let session = ptys
             .get_mut(id)
-            .ok_or_else(|| "PTY not found".to_string())?;
+            .ok_or_else(|| {
+                warn!(%id, "Write fallita: PTY non trovata");
+                "PTY not found".to_string()
+            })?;
         session.pty.write(data)?;
         Ok(())
     }
@@ -111,10 +117,14 @@ impl PtyManager {
         let mut ptys = self.ptys.lock().await;
         let session = ptys
             .get_mut(id)
-            .ok_or_else(|| "PTY not found".to_string())?;
+            .ok_or_else(|| {
+                warn!(%id, "Resize fallito: PTY non trovata");
+                "PTY not found".to_string()
+            })?;
         session.pty.resize(cols, rows)?;
         session.cols = cols;
         session.rows = rows;
+        info!(%id, cols, rows, "PTY ridimensionata");
         Ok(())
     }
 
@@ -122,13 +132,17 @@ impl PtyManager {
         let mut ptys = self.ptys.lock().await;
         if let Some(mut session) = ptys.remove(id) {
             session.pty.kill()?;
+            info!(%id, "PTY terminata");
         }
         Ok(())
     }
 
     pub async fn get_info(&self, id: &str) -> Result<serde_json::Value, String> {
         let ptys = self.ptys.lock().await;
-        let session = ptys.get(id).ok_or_else(|| "PTY not found".to_string())?;
+        let session = ptys.get(id).ok_or_else(|| {
+            warn!(%id, "GetInfo fallito: PTY non trovata");
+            "PTY not found".to_string()
+        })?;
         Ok(json!({
             "id": session.id,
             "shell": session.shell,
@@ -140,10 +154,12 @@ impl PtyManager {
 
     pub async fn cleanup_all(&self) {
         let mut ptys = self.ptys.lock().await;
+        let count = ptys.len();
         for (_, session) in ptys.iter_mut() {
             let _ = session.pty.kill();
         }
         ptys.clear();
+        info!(count, "Cleanup PTY completato");
     }
 
     pub async fn list(&self) -> Vec<String> {
