@@ -363,7 +363,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                   return (
                     <div
                       key={agent.id}
-                      className="rounded-xl border transition-all duration-200"
+                      onClick={() => fillAllWith(agent.id)}
+                      className="rounded-xl border transition-all duration-200 cursor-pointer active:scale-[0.98]"
                       style={{
                         borderColor:
                           count > 0
@@ -403,34 +404,22 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center justify-center gap-1.5">
                           <button
-                            onClick={() => decrementAgent(agent.id)}
+                            onClick={(e) => { e.stopPropagation(); decrementAgent(agent.id); }}
                             disabled={count <= 0}
-                            className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Rimuovi ${agent.name}`}
                           >
-                            <Minus size={11} />
+                            <Minus size={12} />
                           </button>
                           <button
-                            onClick={() => fillAllWith(agent.id)}
-                            className="flex-1 text-[0.55rem] font-medium py-1 rounded-lg uppercase tracking-wider transition-all duration-200 active:scale-[0.97]"
-                            style={{
-                              backgroundColor: `${agent.color}10`,
-                              color: agent.color,
-                            }}
-                          >
-                            {assignedCount === count
-                              ? "Rimuovi tutti"
-                              : "Tutti"}
-                          </button>
-                          <button
-                            onClick={() => incrementAgent(agent.id)}
+                            onClick={(e) => { e.stopPropagation(); incrementAgent(agent.id); }}
                             disabled={assignedCount >= terminalCount}
-                            className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Aggiungi ${agent.name}`}
                           >
-                            <Plus size={11} />
+                            <Plus size={12} />
                           </button>
                         </div>
                       </div>

@@ -26,7 +26,11 @@ export function XTermWrapper({
 
   const handleResize = useCallback(() => {
     if (!fitAddonRef.current || !xtermRef.current) return;
-    fitAddonRef.current.fit();
+    try {
+      fitAddonRef.current.fit();
+    } catch {
+      return;
+    }
     const term = xtermRef.current;
     const ptyId = ptyIdRef.current;
     if (ptyId) {
@@ -41,17 +45,17 @@ export function XTermWrapper({
   useEffect(() => {
     if (!terminalRef.current) return;
 
+    const container = terminalRef.current;
+
     const term = new Terminal({
       theme: STOCK_THEME,
-      fontFamily: '"Cascadia Mono", "Cascadia Code", "Consolas", "Courier New", monospace',
+      fontFamily: '"Cascadia Mono", "Cascadia Code", "Consolas", "Lucida Console", monospace',
       fontSize: 14,
       lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 1,
       allowProposedApi: true,
-      cols: 80,
-      rows: 24,
       scrollback: 10000,
       smoothScrollDuration: 0,
       macOptionIsMeta: true,
@@ -61,78 +65,95 @@ export function XTermWrapper({
     const webglAddon = new WebglAddon();
     const fitAddon = new FitAddon();
 
-    term.loadAddon(webglAddon);
-    term.loadAddon(fitAddon);
-
     webglAddon.onContextLoss(() => {
       webglAddon.dispose();
     });
 
-    term.open(terminalRef.current);
-    fitAddon.fit();
+    term.loadAddon(fitAddon);
+    term.loadAddon(webglAddon);
+
+    term.open(container);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const cols = term.cols;
-    const rows = term.rows;
+    const fitTerminal = () => {
+      try {
+        fitAddon.fit();
+      } catch {
+        return;
+      }
+      const ptyId = ptyIdRef.current;
+      if (ptyId) {
+        invoke("resize_pty", {
+          id: ptyId,
+          cols: term.cols,
+          rows: term.rows,
+        }).catch(console.error);
+      }
+    };
 
-    invoke<string>("create_pty", { shell, cols, rows, cwd })
-      .then((ptyId) => {
-        ptyIdRef.current = ptyId;
-        onTerminalReady?.(ptyId);
+    requestAnimationFrame(() => {
+      fitTerminal();
 
-        const unlistenPromise = listen<PtyOutputPayload>("pty-output", (event) => {
-          if (event.payload.id === ptyId) {
-            if (event.payload.eof) {
-              term.write("\r\n[Process completed]\r\n");
-              return;
-            }
-            if (event.payload.data) {
-              try {
-                const binary = Uint8Array.from(atob(event.payload.data), (c) =>
-                  c.charCodeAt(0)
-                );
-                term.write(binary);
-              } catch {
-                term.write(event.payload.data);
+      const cols = term.cols;
+      const rows = term.rows;
+
+      invoke<string>("create_pty", { shell, cols, rows, cwd })
+        .then((ptyId) => {
+          ptyIdRef.current = ptyId;
+          onTerminalReady?.(ptyId);
+
+          const unlistenPromise = listen<PtyOutputPayload>("pty-output", (event) => {
+            if (event.payload.id === ptyId) {
+              if (event.payload.eof) {
+                term.write("\r\n[Process completed]\r\n");
+                return;
+              }
+              if (event.payload.data) {
+                try {
+                  const binary = Uint8Array.from(atob(event.payload.data), (c) =>
+                    c.charCodeAt(0)
+                  );
+                  term.write(binary);
+                } catch {
+                  term.write(event.payload.data);
+                }
               }
             }
-          }
+          });
+
+          const disposeData = term.onData((data) => {
+            invoke("write_pty", { id: ptyId, data }).catch(console.error);
+          });
+
+          const disposeTitle = term.onTitleChange((title) => {
+            onTitleChange?.(title);
+          });
+
+          const disposeBinary = term.onBinary((data) => {
+            invoke("write_pty", { id: ptyId, data }).catch(console.error);
+          });
+
+          const resizeObserver = new ResizeObserver(() => {
+            handleResize();
+          });
+
+          resizeObserver.observe(container);
+          resizeObserverRef.current = resizeObserver;
+
+          return () => {
+            unlistenPromise.then((unlisten) => unlisten());
+            disposeData.dispose();
+            disposeTitle.dispose();
+            disposeBinary.dispose();
+            resizeObserver.disconnect();
+          };
+        })
+        .catch((err) => {
+          term.write(`\r\nError: ${err}\r\n`);
         });
-
-        const disposeData = term.onData((data) => {
-          invoke("write_pty", { id: ptyId, data }).catch(console.error);
-        });
-
-        const disposeTitle = term.onTitleChange((title) => {
-          onTitleChange?.(title);
-        });
-
-        const disposeBinary = term.onBinary((data) => {
-          invoke("write_pty", { id: ptyId, data }).catch(console.error);
-        });
-
-        const resizeObserver = new ResizeObserver(() => {
-          handleResize();
-        });
-
-        if (terminalRef.current) {
-          resizeObserver.observe(terminalRef.current);
-        }
-        resizeObserverRef.current = resizeObserver;
-
-        return () => {
-          unlistenPromise.then((unlisten) => unlisten());
-          disposeData.dispose();
-          disposeTitle.dispose();
-          disposeBinary.dispose();
-          resizeObserver.disconnect();
-        };
-      })
-      .catch((err) => {
-        term.write(`\r\nError: ${err}\r\n`);
-      });
+    });
 
     return () => {
       invoke("kill_pty", { id: ptyIdRef.current }).catch(() => {});
@@ -146,8 +167,11 @@ export function XTermWrapper({
   return (
     <div
       ref={terminalRef}
-      className="w-full h-full min-h-0"
-      style={{ background: "#0c0c0c" }}
+      style={{
+        width: "100%",
+        height: "100%",
+        background: "#0c0c0c",
+      }}
     />
   );
 }

@@ -127,7 +127,7 @@ export function WorkspaceView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div className="flex items-center justify-between px-6 pt-4 pb-2 shrink-0">
         <h1 className="font-display font-bold text-lg text-neutral-text">
           {workspace.name}

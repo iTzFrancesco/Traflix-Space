@@ -14,7 +14,7 @@ function App() {
         <TitleBar />
         <div className="flex flex-1 overflow-hidden">
           <Sidebar />
-          <main className="flex-1 overflow-hidden">
+          <main style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
             <ErrorBoundary>
               <WorkspaceView />
             </ErrorBoundary>

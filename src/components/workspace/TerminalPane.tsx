@@ -72,20 +72,21 @@ export function TerminalPane({
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
       onClick={handleActivate}
-      className="flex flex-col overflow-hidden"
       style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
         borderRadius: "4px",
         border: `1px solid ${isActive ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)"}`,
+        overflow: "hidden",
       }}
     >
-      <div className="flex-1 min-h-0">
-        <XTermWrapper
-          shell={shell}
-          cwd={cwd}
-          onTitleChange={handleTitleChange}
-          onTerminalReady={handleTerminalReady}
-        />
-      </div>
+      <XTermWrapper
+        shell={shell}
+        cwd={cwd}
+        onTitleChange={handleTitleChange}
+        onTerminalReady={handleTerminalReady}
+      />
     </motion.div>
   );
 }

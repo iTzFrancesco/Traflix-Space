@@ -24,10 +24,14 @@ export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
 
   return (
     <div
-      className="grid flex-1 gap-px"
       style={{
+        display: "grid",
+        flex: 1,
+        gap: "1px",
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
         gridTemplateRows: `repeat(${rows}, 1fr)`,
+        minHeight: 0,
+        overflow: "hidden",
       }}
     >
       <AnimatePresence mode="popLayout">
