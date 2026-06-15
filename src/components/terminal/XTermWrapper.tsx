@@ -51,13 +51,16 @@ export function XTermWrapper({
     let ptyId: string | null = null;
     let disposed = false;
     let opened = false;
+    const unlistenPromises: Promise<() => void>[] = [];
 
     const setupTerminal = () => {
       if (disposed || opened) return;
       opened = true;
       fitObserver.disconnect();
 
+      console.log("[XTerm] setupTerminal: container dimensions:", container.getBoundingClientRect());
       fitAddon.fit();
+      console.log("[XTerm] after fit: cols=", term.cols, "rows=", term.rows);
 
       invoke<string>("create_pty", {
         shell,
@@ -71,28 +74,33 @@ export function XTermWrapper({
             return;
           }
           ptyId = id;
+          console.log("[XTerm] PTY created:", id);
           onTerminalReady?.(id);
 
-          listen<PtyOutputPayload>("pty-output", (event) => {
+          const unlisten = listen<PtyOutputPayload>("pty-output", (event) => {
             if (disposed || event.payload.id !== id) return;
             if (event.payload.eof) {
+              console.log("[XTerm] PTY EOF:", id);
               term.write("\r\n[Process completed]\r\n");
               return;
             }
             if (event.payload.data) {
+              console.log("[XTerm] PTY output:", id, "len:", event.payload.data.length);
               try {
                 const binary = Uint8Array.from(atob(event.payload.data), (c) =>
                   c.charCodeAt(0),
                 );
                 term.write(binary);
-              } catch {
+              } catch (e) {
+                console.log("[XTerm] base64 decode failed, writing raw:", e);
                 term.write(event.payload.data);
               }
             }
           });
 
           term.onData((data) => {
-            invoke("write_pty", { id, data }).catch(console.error);
+            console.log("[XTerm] term.onData:", JSON.stringify(data));
+            invoke("write_pty", { id, data }).catch((e) => console.error("[XTerm] write_pty error:", e));
           });
 
           term.onTitleChange((title) => onTitleChange?.(title));
@@ -100,8 +108,11 @@ export function XTermWrapper({
           term.onBinary((data) => {
             invoke("write_pty", { id, data }).catch(console.error);
           });
+
+          unlistenPromises.push(unlisten);
         })
         .catch((err) => {
+          console.error("[XTerm] create_pty error:", err);
           if (!disposed) term.write(`\r\nError: ${err}\r\n`);
         });
     };
@@ -123,6 +134,7 @@ export function XTermWrapper({
     return () => {
       disposed = true;
       fitObserver.disconnect();
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
       if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
       term.dispose();
     };

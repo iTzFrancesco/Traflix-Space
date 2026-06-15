@@ -2,9 +2,10 @@ use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::windows::ConPty;
 
@@ -61,24 +62,15 @@ impl PtyManager {
             loop {
                 let result = {
                     let mut ptys = ptys_clone.lock().await;
-                    let session = match ptys.get_mut(&id_clone) {
-                        Some(s) => s,
+                    match ptys.get_mut(&id_clone) {
+                        Some(s) => s.pty.read(&mut buf),
                         None => break,
-                    };
-                    session.pty.read_blocking(&mut buf)
+                    }
                 };
 
                 match result {
                     Ok(0) => {
-                        let _ = app.emit(
-                            "pty-output",
-                            json!({
-                                "id": id_clone,
-                                "data": "",
-                                "eof": true
-                            }),
-                        );
-                        break;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     Ok(n) => {
                         let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
@@ -90,10 +82,20 @@ impl PtyManager {
                                 "eof": false
                             }),
                         );
+                        continue;
                     }
                     Err(_) => break,
                 }
             }
+
+            let _ = app.emit(
+                "pty-output",
+                json!({
+                    "id": id_clone,
+                    "data": "",
+                    "eof": true
+                }),
+            );
 
             let mut ptys = ptys_clone.lock().await;
             ptys.remove(&id_clone);
