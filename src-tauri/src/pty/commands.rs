@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use super::PtyManager;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct TerminalInfo {
     pub id: String,
     pub cols: u16,

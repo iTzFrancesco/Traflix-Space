@@ -1,17 +1,19 @@
 use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Storage::FileSystem::{CreatePipe, ReadFile, WriteFile};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
-use windows::Win32::System::Pipes::PeekNamedPipe;
+use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, PROCESS_CREATION_FLAGS,
-    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
+    LPPROC_THREAD_ATTRIBUTE_LIST, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
 };
 
 pub struct ConPty {
@@ -35,11 +37,11 @@ impl ConPty {
             let mut output_read = HANDLE::default();
             let mut output_write = HANDLE::default();
 
-            if CreatePipe(&mut input_read, &mut input_write, ptr::null(), 0).is_err() {
+            if CreatePipe(&mut input_read, &mut input_write, Some(ptr::null()), 0).is_err() {
                 return Err("Failed to create input pipe".into());
             }
 
-            if CreatePipe(&mut output_read, &mut output_write, ptr::null(), 0).is_err() {
+            if CreatePipe(&mut output_read, &mut output_write, Some(ptr::null()), 0).is_err() {
                 let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 return Err("Failed to create output pipe".into());
@@ -50,18 +52,15 @@ impl ConPty {
                 Y: rows as i16,
             };
 
-            let mut hpc = HPCON::default();
-            let hr = CreatePseudoConsole(size, input_read, output_write, 0, &mut hpc as *mut HPCON);
-
-            if hr.is_err() {
+            let hpc = CreatePseudoConsole(size, input_read, output_write, 0).map_err(|_| {
                 let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 let _ = CloseHandle(output_read);
                 let _ = CloseHandle(output_write);
-                return Err("Failed to create pseudo console".into());
-            }
+                "Failed to create pseudo console".to_string()
+            })?;
 
-            let shell_wide: Vec<u16> = OsString::from(shell)
+            let mut shell_wide: Vec<u16> = OsString::from(shell)
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
@@ -70,12 +69,18 @@ impl ConPty {
             startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
 
             let mut attr_list_size = 0;
-            let _ = InitializeProcThreadAttributeList(None, 1, 0, &mut attr_list_size);
+            let _ = InitializeProcThreadAttributeList(
+                LPPROC_THREAD_ATTRIBUTE_LIST(ptr::null_mut()),
+                1,
+                0,
+                &mut attr_list_size,
+            );
 
             let mut attr_list_buffer = vec![0u8; attr_list_size as usize];
-            let attr_list_ptr = attr_list_buffer.as_mut_ptr() as *mut _;
+            let attr_list_ptr =
+                LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buffer.as_mut_ptr() as *mut _);
 
-            if InitializeProcThreadAttributeList(Some(attr_list_ptr), 1, 0, &mut attr_list_size)
+            if InitializeProcThreadAttributeList(attr_list_ptr, 1, 0, &mut attr_list_size)
                 .is_err()
             {
                 let _ = ClosePseudoConsole(hpc);
@@ -91,11 +96,11 @@ impl ConPty {
             if UpdateProcThreadAttribute(
                 startup_info.lpAttributeList,
                 0,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
                 Some(&hpc as *const HPCON as *const std::ffi::c_void),
                 std::mem::size_of::<HPCON>(),
-                ptr::null_mut(),
-                ptr::null_mut(),
+                None,
+                None,
             )
             .is_err()
             {
@@ -117,20 +122,21 @@ impl ConPty {
                     .collect::<Vec<u16>>()
             });
 
-            let cwd_ptr = cwd_wide
+            let cmdline = PWSTR(shell_wide.as_mut_ptr());
+            let cwd_param = cwd_wide
                 .as_ref()
-                .map(|v| v.as_ptr())
-                .unwrap_or(std::ptr::null());
+                .map(|v| PCWSTR(v.as_ptr()))
+                .unwrap_or(PCWSTR(ptr::null()));
 
             let created = CreateProcessW(
                 None,
-                &mut shell_wide.clone(),
+                cmdline,
                 None,
                 None,
                 false,
                 PROCESS_CREATION_FLAGS(EXTENDED_STARTUPINFO_PRESENT),
                 None,
-                cwd_ptr,
+                cwd_param,
                 &startup_info.StartupInfo,
                 &mut process_info,
             );
@@ -165,7 +171,7 @@ impl ConPty {
                 self.input_write,
                 Some(data),
                 Some(&mut bytes_written),
-                ptr::null_mut(),
+                None,
             );
             if result.is_err() {
                 return Err("Failed to write to PTY".into());
@@ -204,7 +210,7 @@ impl ConPty {
                 self.output_read,
                 Some(&mut buf[..to_read as usize]),
                 Some(&mut bytes_read),
-                ptr::null_mut(),
+                None,
             );
 
             if result.is_err() {
@@ -222,7 +228,7 @@ impl ConPty {
                 self.output_read,
                 Some(buf),
                 Some(&mut bytes_read),
-                ptr::null_mut(),
+                None,
             );
             if result.is_err() {
                 return Err("Failed to read from PTY".into());
