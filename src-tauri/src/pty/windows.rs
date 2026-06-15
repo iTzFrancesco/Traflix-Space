@@ -78,10 +78,6 @@ impl ConPty {
                 format!("Failed to create pseudo console: {}", e)
             })?;
 
-            // Una volta creata la console, chiudiamo i nostri handle "slave"
-            let _ = CloseHandle(input_read);
-            let _ = CloseHandle(output_write);
-
             let mut shell_wide: Vec<u16> = OsString::from(effective_shell)
                 .encode_wide()
                 .chain(std::iter::once(0))
@@ -169,6 +165,10 @@ impl ConPty {
                 &mut process_info,
             );
 
+            // Una volta creato il processo, chiudiamo gli handle slave nel genitore
+            let _ = CloseHandle(input_read);
+            let _ = CloseHandle(output_write);
+
             let _ = DeleteProcThreadAttributeList(startup_info.lpAttributeList);
 
             if created.is_err() {
@@ -182,14 +182,19 @@ impl ConPty {
 
             info!(pid = process_info.dwProcessId, "Processo creato con successo");
 
-            Ok(Self {
+            let conpty = Self {
                 inner: std::sync::Mutex::new(ConPtyInner {
                     hpc,
                     input_write,
                     output_read,
                     process_info,
                 }),
-            })
+            };
+
+            // Forza un resize iniziale per svegliare la console
+            let _ = conpty.resize(cols, rows);
+
+            Ok(conpty)
         }
     }
 
