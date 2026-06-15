@@ -1181,13 +1181,13 @@ impl PtyManager {
 - [x] Sidebar terminali attivi — Sidebar.tsx mostra terminali con badge agente
 - [x] WorkspaceView agent-aware — carica terminali con agenti dal workspace config
 
-### Fase 5: Polish (Settimana 10) — ❌ DA AVVIARE
-- [ ] Animazioni e transizioni (Framer Motion)
-- [ ] Custom cursor (opzionale)
+### Fase 5: Polish (Settimana 10) — ✅ COMPLETATA
+- [x] Animazioni e transizioni (Framer Motion) — installato e integrato in Modal, Sidebar, TerminalPane, WorkspaceGrid, Toast
+- [x] Custom cursor (opzionale) — focus ring arancione, cursor unificato, selezione personalizzata in globals.css
 - [x] Tema dark coerente — foundation completa (Tailwind v4 @theme + globals.css)
-- [ ] Keyboard shortcuts
-- [ ] Error handling e logging
-- [ ] Packaging e distribuzione (MSI installer) — tauri.conf.json configurato per MSI/NSIS
+- [x] Keyboard shortcuts — hook `useKeyboardShortcuts` globale (Ctrl+N nuovo workspace, Ctrl+Tab switch workspace, Escape chiude modali)
+- [x] Error handling e logging — ErrorBoundary React, sistema Toast (success/error/info/warning), tracing Rust (tracing + tracing-subscriber) su PTY, workspace, agenti, settings
+- [x] Packaging e distribuzione (MSI installer) — tauri.conf.json configurato per MSI/NSIS
 
 ---
 

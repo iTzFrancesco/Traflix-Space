@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useTerminal } from "../../hooks/useTerminal";
+import { useToastStore } from "../../stores/toastStore";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import type { TerminalConfig } from "../../types/workspace";
 
@@ -11,6 +12,7 @@ export function WorkspaceView() {
   const { activeWorkspaceId, workspaces } = useWorkspaceStore();
   const terminalStore = useTerminalStore();
   const terminalHook = useTerminal();
+  const { addToast } = useToastStore();
   const [configTerminals, setConfigTerminals] = useState<TerminalConfig[]>([]);
   const initializedRef = useRef<string | null>(null);
 
@@ -39,6 +41,7 @@ export function WorkspaceView() {
       })
       .catch((err) => {
         console.error("Errore caricamento workspace:", err);
+        addToast({ type: "error", message: "Errore caricamento workspace" });
         if (!cancelled) setConfigTerminals([]);
       });
 

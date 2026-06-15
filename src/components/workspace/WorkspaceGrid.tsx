@@ -1,3 +1,4 @@
+import { AnimatePresence } from "framer-motion";
 import { TerminalPane } from "./TerminalPane";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
@@ -26,17 +27,19 @@ export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
         gridTemplateRows: `repeat(${rows}, 1fr)`,
       }}
     >
-      {terminals.map((term) => (
-        <TerminalPane
-          key={term.id}
-          terminalId={term.id}
-          shell={term.shell}
-          cwd={term.cwd}
-          title={term.title}
-          agentId={term.agentId}
-          isActive={false}
-        />
-      ))}
+      <AnimatePresence mode="popLayout">
+        {terminals.map((term) => (
+          <TerminalPane
+            key={term.id}
+            terminalId={term.id}
+            shell={term.shell}
+            cwd={term.cwd}
+            title={term.title}
+            agentId={term.agentId}
+            isActive={false}
+          />
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

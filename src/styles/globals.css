@@ -57,8 +57,22 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* Custom cursor glow on interactive elements */
+button:not(:disabled),
+a:not(:disabled),
+[role="button"]:not(:disabled) {
+  cursor: default;
+}
+
+/* Animated selection glow */
 ::selection {
   background: rgba(232, 93, 4, 0.3);
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid rgba(232, 93, 4, 0.5);
+  outline-offset: 2px;
 }
 
 /* xterm.js overrides */

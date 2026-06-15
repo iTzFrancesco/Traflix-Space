@@ -1,9 +1,11 @@
 import { useState, useCallback } from "react";
+import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { TerminalHeader } from "../terminal/TerminalHeader";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useTerminal } from "../../hooks/useTerminal";
+import { useToastStore } from "../../stores/toastStore";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -25,6 +27,7 @@ export function TerminalPane({
   const [currentTitle, setCurrentTitle] = useState(title);
   const [, setPtyId] = useState<string | null>(null);
   const { kill, setActiveTerminal } = useTerminal();
+  const { addToast } = useToastStore();
 
   const handleClose = useCallback(() => {
     kill(terminalId);
@@ -59,6 +62,7 @@ export function TerminalPane({
           });
         } catch (err) {
           console.error("Error launching agent:", err);
+          addToast({ type: "error", message: `Errore lancio agente ${agentId}` });
         }
       }
     },
@@ -68,7 +72,12 @@ export function TerminalPane({
   const agentColor = undefined;
 
   return (
-    <div
+    <motion.div
+      layout
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ type: "spring", stiffness: 400, damping: 30 }}
       onClick={handleActivate}
       className="flex flex-col rounded-pane bg-neutral-surface border overflow-hidden"
       style={{
@@ -95,6 +104,6 @@ export function TerminalPane({
           onTerminalReady={handleTerminalReady}
         />
       </div>
-    </div>
+    </motion.div>
   );
 }
