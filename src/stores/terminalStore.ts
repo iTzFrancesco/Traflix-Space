@@ -22,7 +22,7 @@ interface TerminalStore {
   writeToTerminal: (id: string, data: string) => void;
 }
 
-export const useTerminalStore = create<TerminalStore>()((set, get) => ({
+export const useTerminalStore = create<TerminalStore>()((set, _get) => ({
   terminals: new Map(),
   activeTerminalId: null,
 

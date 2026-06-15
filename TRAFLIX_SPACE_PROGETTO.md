@@ -1149,11 +1149,17 @@ impl PtyManager {
 - [x] Custom title bar (decorations: false) — TitleBar.tsx con traffic lights
 - [x] Integrazione font (Syne, Poppins, JetBrains Mono) — Google Fonts CDN
 
-### Fase 2: Workspace Core (Settimana 3-4) — 🟡 PARZIALE
-- [ ] Wizard creazione workspace (4 step) — stub presente (NewSpaceWizard.tsx)
-- [ ] Dialog selezione cartella (tauri-plugin-dialog) — comando stub in Rust
-- [x] Preset workspace predefiniti — 6 preset in src/lib/presets.ts
-- [x] Persistenza workspace — Zustand persist (localStorage)
+### Fase 2: Workspace Core (Settimana 3-4) — ✅ COMPLETATA
+- [x] Wizard creazione workspace (4 step) — NewSpaceWizard.tsx completo: Step 1 (selezione cartella), Step 2 (preset), Step 3 (config terminali), Step 4 (conferma)
+- [x] Dialog selezione cartella (tauri-plugin-dialog) — comando `select_folder` in Rust con callback API `pick_folder` + oneshot channel
+- [x] Persistenza workspace globale — WorkspaceRegistry in Rust salva/carica da `app_data_dir/traflix-space/workspaces.json`
+- [x] Persistenza workspace locale — `create_workspace` crea `.traflix/workspace.json` nella cartella del progetto
+- [x] CRUD workspace backend — 6 comandi Tauri implementati (create, get, get_all, update, delete, select_folder) con serde rename_all = camelCase
+- [x] Modal UI riutilizzabile — Modal.tsx con overlay, close su Escape, scroll
+- [x] Wizard collegato a Sidebar — pulsante "+ Nuovo Spazio" in Sidebar.tsx apre il wizard
+- [x] Connessione frontend-backend — wizard chiama `invoke('create_workspace')` e aggiorna workspaceStore
+- [x] Preset workspace predefiniti — 6 preset in src/lib/presets.ts (Blank, Full-Stack, API Server, AI Swarm, DevOps, Data Science)
+- [x] Persistenza workspace (Zustand) — `traflix-workspaces` in localStorage
 - [x] Sidebar con lista workspace — Sidebar.tsx con workspaces e terminali
 - [x] Switch workspace — setActiveWorkspace() in workspaceStore
 

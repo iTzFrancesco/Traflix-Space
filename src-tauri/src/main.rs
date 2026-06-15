@@ -16,7 +16,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(pty::PtyManager::new());
-            app.manage(workspace::WorkspaceRegistry::new(app.app_handle().clone()));
+            app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -26,11 +26,11 @@ fn main() {
             workspace::commands::update_workspace,
             workspace::commands::delete_workspace,
             workspace::commands::select_folder,
-            terminal::commands::create_pty,
-            terminal::commands::write_pty,
-            terminal::commands::resize_pty,
-            terminal::commands::kill_pty,
-            terminal::commands::get_terminal_info,
+            pty::commands::create_pty,
+            pty::commands::write_pty,
+            pty::commands::resize_pty,
+            pty::commands::kill_pty,
+            pty::commands::get_terminal_info,
             agent::commands::list_agents,
             agent::commands::launch_agent,
             agent::commands::kill_agent,
