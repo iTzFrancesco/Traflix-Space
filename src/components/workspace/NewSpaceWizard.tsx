@@ -1,7 +1,6 @@
 import { useState, useMemo } from "react";
 import {
   FolderOpen,
-  Check,
   ChevronLeft,
   ChevronRight,
   Sparkles,
@@ -10,7 +9,6 @@ import {
   Bot,
   Terminal,
   LayoutGrid,
-  BrainCircuit,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -26,12 +24,7 @@ interface NewSpaceWizardProps {
   onClose: () => void;
 }
 
-const STEPS = [
-  { num: 1, label: "Cartella" },
-  { num: 2, label: "Conteggio" },
-  { num: 3, label: "Agenti" },
-  { num: 4, label: "Conferma" },
-];
+const STEPS = ["Cartella", "Conteggio", "Agenti", "Conferma"];
 
 const DISPLAY_AGENTS = AGENTS;
 
@@ -208,12 +201,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         return folderPath.length > 0;
       case 2:
         return terminalCount >= 1;
-      case 3:
-        return true;
-      case 4:
-        return true;
       default:
-        return false;
+        return true;
     }
   }
 
@@ -222,394 +211,314 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       open={open}
       onClose={handleClose}
       title="Nuovo Spazio di Lavoro"
-      width="max-w-3xl"
+      width="max-w-xl"
     >
-      <div className="space-y-7">
+      <div className="space-y-8">
         {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2">
-          {STEPS.map((s, i) => (
-            <div key={s.num} className="flex items-center gap-2">
+        <div className="text-center">
+          <p className="text-[0.55rem] font-medium text-neutral-text-muted uppercase tracking-[0.2em] mb-3">
+            {STEPS[step - 1]}
+          </p>
+          <div className="flex items-center justify-center gap-2">
+            {STEPS.map((_, i) => (
               <div
-                className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
-                  step > s.num
-                    ? "bg-primary text-white shadow-[0_0_12px_rgba(232,93,4,0.25)]"
-                    : step === s.num
-                      ? "bg-primary/15 text-primary ring-1 ring-primary/40 shadow-[0_0_8px_rgba(232,93,4,0.12)]"
-                      : "bg-white/[0.04] text-neutral-text-muted"
+                key={i}
+                className={`h-2 rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+                  step > i + 1
+                    ? "w-3 bg-primary shadow-[0_0_8px_rgba(232,93,4,0.2)]"
+                    : step === i + 1
+                      ? "w-3 bg-primary shadow-[0_0_8px_rgba(232,93,4,0.2)]"
+                      : "w-2 bg-white/[0.08]"
                 }`}
-              >
-                {step > s.num ? <Check size={13} /> : s.num}
-              </div>
-              <span
-                className={`text-[0.65rem] font-medium tracking-wide uppercase transition-colors ${
-                  step === s.num ? "text-neutral-text" : "text-neutral-text-muted"
-                }`}
-              >
-                {s.label}
-              </span>
-              {i < STEPS.length - 1 && (
-                <div
-                  className="w-8 h-px mx-1 transition-colors duration-500"
-                  style={{
-                    backgroundColor:
-                      step > s.num
-                        ? "var(--color-primary, #e85d04)"
-                        : "rgba(255,255,255,0.05)",
-                  }}
-                />
-              )}
-            </div>
-          ))}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Step 1 — Cartella */}
         {step === 1 && (
-          <div className="space-y-5">
-            <p className="text-sm text-neutral-text-dim">
-              Seleziona la cartella del progetto per iniziare.
-            </p>
-
-            {/* Current folder */}
-            <div
-              className="flex items-center gap-3 p-1 rounded-2xl"
-              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
-            >
-              <div className="flex items-center gap-3 px-4 py-3 rounded-[calc(1rem-0.25rem)] flex-1 bg-neutral-elevated">
-                <FolderOpen size={16} className="text-primary shrink-0" />
-                <span
-                  className={`text-sm font-mono truncate ${
-                    folderPath
-                      ? "text-neutral-text"
-                      : "text-neutral-text-muted"
-                  }`}
-                >
-                  {folderPath || "Nessuna cartella selezionata"}
-                </span>
-              </div>
-              <button
-                onClick={handleSelectFolder}
-                className="px-4 py-3 mr-0.5 text-sm font-medium text-primary bg-primary/10 border border-primary/20 rounded-xl hover:bg-primary/20 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
-              >
-                Sfoglia...
-              </button>
-            </div>
-
-            {folderPath && (
-              <p className="text-xs text-neutral-text-muted font-mono">
-                Nome progetto:{" "}
-                <span className="text-neutral-text-dim font-medium">
-                  {workspaceName}
-                </span>
+          <div className="p-1 rounded-2xl bg-white/[0.03]">
+            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
+              <p className="text-sm text-neutral-text-dim">
+                Seleziona la cartella del progetto.
               </p>
-            )}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.04]">
+                  <FolderOpen size={16} className="text-primary shrink-0" />
+                  <span
+                    className={`text-sm font-mono truncate ${
+                      folderPath
+                        ? "text-neutral-text"
+                        : "text-neutral-text-muted"
+                    }`}
+                  >
+                    {folderPath || "Nessuna cartella"}
+                  </span>
+                </div>
+                <button
+                  onClick={handleSelectFolder}
+                  className="px-5 py-3 text-sm font-medium text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
+                  style={{
+                    background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                  }}
+                >
+                  Sfoglia
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
         {/* Step 2 — Conteggio */}
         {step === 2 && (
-          <div className="space-y-6">
-            <p className="text-sm text-neutral-text-dim">
-              Quanti terminali vuoi aprire nel workspace?
-            </p>
+          <div className="p-1 rounded-2xl bg-white/[0.03]">
+            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-5">
+              <p className="text-sm text-neutral-text-dim">
+                Quanti terminali vuoi aprire?
+              </p>
 
-            {/* Quick counts */}
-            <div className="grid grid-cols-5 gap-3">
-              {QUICK_COUNTS.map((n) => {
-                const active = terminalCount === n;
-                return (
-                  <button
-                    key={n}
-                    onClick={() => setCount(n)}
-                    className={`relative py-4 rounded-2xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
-                      active
-                        ? "bg-primary/10 text-primary ring-1 ring-primary/40 shadow-[0_0_16px_rgba(232,93,4,0.08)]"
-                        : "bg-white/[0.03] text-neutral-text-muted hover:bg-white/[0.06] hover:text-neutral-text-dim border border-white/[0.04]"
-                    }`}
-                  >
-                    <span className="block text-xl font-bold font-display">
-                      {n}
-                    </span>
-                    <span className="text-[0.55rem] uppercase tracking-wider mt-1 block opacity-60">
-                      terminali
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Divider */}
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-white/[0.04]" />
+              <div className="grid grid-cols-5 gap-2">
+                {QUICK_COUNTS.map((n) => {
+                  const active = terminalCount === n;
+                  return (
+                    <button
+                      key={n}
+                      onClick={() => setCount(n)}
+                      className={`py-3 rounded-xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
+                        active
+                          ? "bg-primary text-white font-bold shadow-[0_0_16px_rgba(232,93,4,0.15)]"
+                          : "bg-white/[0.04] text-neutral-text-muted hover:bg-white/[0.08] hover:text-neutral-text-dim"
+                      }`}
+                    >
+                      <span className="block text-lg font-bold font-display">
+                        {n}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-              <div className="relative flex justify-center">
-                <span className="px-3 text-[0.6rem] uppercase tracking-widest text-neutral-text-muted bg-[#111113]">
-                  o personalizza
-                </span>
-              </div>
-            </div>
 
-            {/* +/- controls */}
-            <div className="flex items-center justify-between p-1 rounded-2xl bg-white/[0.03]">
-              <div className="flex items-center gap-4 px-5 py-3.5 rounded-[calc(1rem-0.25rem)] flex-1 bg-neutral-elevated">
-                <LayoutGrid size={16} className="text-primary shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-neutral-text">
-                    Terminali
-                  </p>
-                  <p className="text-[0.6rem] text-neutral-text-muted mt-0.5">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/[0.04]">
+                <div className="flex items-center gap-3">
+                  <LayoutGrid size={15} className="text-primary" />
+                  <span className="text-xs text-neutral-text-dim">
                     Layout: {layout.rows}&times;{layout.cols}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 px-4">
-                <button
-                  onClick={() => updateCount(-1)}
-                  disabled={terminalCount <= 1}
-                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
-                >
-                  <Minus size={14} />
-                </button>
-                <span className="font-display font-bold text-2xl text-primary min-w-[2.5ch] text-center tabular-nums">
-                  {terminalCount}
-                </span>
-                <button
-                  onClick={() => updateCount(1)}
-                  disabled={terminalCount >= 16}
-                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-            </div>
-
-            {/* Grid preview */}
-            <div className="flex items-center gap-2 justify-center">
-              {Array.from({ length: terminalCount }).map((_, i) => (
-                <div
-                  key={i}
-                  className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center transition-all duration-300"
-                  style={{
-                    animationDelay: `${i * 30}ms`,
-                  }}
-                >
-                  <span className="text-[0.5rem] font-mono text-primary/60">
-                    {i + 1}
                   </span>
                 </div>
-              ))}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => updateCount(-1)}
+                    disabled={terminalCount <= 1}
+                    className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                    aria-label="Diminuisci terminali"
+                  >
+                    <Minus size={13} />
+                  </button>
+                  <span className="font-display font-bold text-xl text-primary min-w-[2ch] text-center tabular-nums">
+                    {terminalCount}
+                  </span>
+                  <button
+                    onClick={() => updateCount(1)}
+                    disabled={terminalCount >= 16}
+                    className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                    aria-label="Aumenta terminali"
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
 
         {/* Step 3 — Agenti */}
         {step === 3 && (
-          <div className="space-y-5">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-neutral-text-dim">
-                Assegna agenti ai {terminalCount} terminali.
-              </p>
-              <span className="text-xs font-mono text-neutral-text-muted">
-                {assignedCount}/{terminalCount} assegnati
-              </span>
-            </div>
+          <div className="p-1 rounded-2xl bg-white/[0.03]">
+            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-neutral-text-dim">
+                  Assegna agenti ai terminali.
+                </p>
+                <span className="text-xs font-mono text-neutral-text-muted tabular-nums">
+                  {assignedCount}/{terminalCount}
+                </span>
+              </div>
 
-            {/* Progress bar */}
-            <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
-                style={{
-                  width: `${(assignedCount / terminalCount) * 100}%`,
-                  background:
-                    assignedCount === terminalCount
-                      ? "linear-gradient(90deg, #e85d04, #ff7b00)"
-                      : "linear-gradient(90deg, rgba(232,93,4,0.5), rgba(232,93,4,0.3))",
-                }}
-              />
-            </div>
+              <div className="h-1 rounded-full bg-white/[0.04] overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
+                  style={{
+                    width: `${(assignedCount / terminalCount) * 100}%`,
+                    background:
+                      assignedCount === terminalCount
+                        ? "linear-gradient(90deg, #e85d04, #ff7b00)"
+                        : "linear-gradient(90deg, rgba(232,93,4,0.5), rgba(232,93,4,0.3))",
+                  }}
+                />
+              </div>
 
-            {/* Agent cards */}
-            <div className="grid grid-cols-2 gap-3">
-              {DISPLAY_AGENTS.map((agent) => {
-                const count = agentCounts[agent.id] || 0;
-                return (
-                  <div
-                    key={agent.id}
-                    className="p-1 rounded-2xl transition-all duration-300"
-                    style={{
-                      backgroundColor: count > 0 ? `${agent.color}08` : "rgba(255,255,255,0.02)",
-                    }}
-                  >
-                    <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-4 border border-white/[0.04]">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className="w-9 h-9 rounded-xl flex items-center justify-center"
-                            style={{
-                              backgroundColor: `${agent.color}18`,
-                            }}
-                          >
-                            {agentIcons[agent.id] ? (
-                              <Bot size={16} style={{ color: agent.color }} />
-                            ) : (
-                              <Terminal size={16} style={{ color: agent.color }} />
-                            )}
-                          </div>
-                          <div>
-                            <p className="text-sm font-semibold text-neutral-text">
+              <div className="grid grid-cols-2 gap-2">
+                {DISPLAY_AGENTS.map((agent) => {
+                  const count = agentCounts[agent.id] || 0;
+                  return (
+                    <div
+                      key={agent.id}
+                      className="rounded-xl border transition-all duration-200"
+                      style={{
+                        borderColor:
+                          count > 0
+                            ? `${agent.color}30`
+                            : "rgba(255,255,255,0.04)",
+                        backgroundColor:
+                          count > 0 ? `${agent.color}06` : "transparent",
+                      }}
+                    >
+                      <div className="p-3.5 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className="w-8 h-8 rounded-lg flex items-center justify-center"
+                              style={{ backgroundColor: `${agent.color}15` }}
+                            >
+                              {agentIcons[agent.id] ? (
+                                <Bot size={14} style={{ color: agent.color }} />
+                              ) : (
+                                <Terminal size={14} style={{ color: agent.color }} />
+                              )}
+                            </div>
+                            <span className="text-sm font-semibold text-neutral-text">
                               {agent.name}
-                            </p>
-                            <p className="text-[0.6rem] text-neutral-text-muted mt-px">
-                              {agent.description}
-                            </p>
+                            </span>
                           </div>
-                        </div>
-                        <span
-                          className="text-lg font-bold font-display tabular-nums transition-all duration-300"
-                          style={{ color: count > 0 ? agent.color : "rgba(255,255,255,0.15)" }}
-                        >
-                          {count}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => decrementAgent(agent.id)}
-                          disabled={count <= 0}
-                          className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
-                        >
-                          <Minus size={12} />
-                        </button>
-
-                        <button
-                          onClick={() => fillAllWith(agent.id)}
-                          className="flex-1 text-[0.6rem] font-medium py-1.5 rounded-lg uppercase tracking-wider transition-all duration-200 active:scale-[0.97]"
-                          style={{
-                            backgroundColor: `${agent.color}12`,
-                            color: agent.color,
-                          }}
-                        >
-                          {assignedCount === count ? "Rimuovi tutti" : "Tutti"}
-                        </button>
-
-                        <button
-                          onClick={() => incrementAgent(agent.id)}
-                          disabled={
-                            assignedCount >= terminalCount
-                          }
-                          className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
-                        >
-                          <Plus size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {assignedCount < terminalCount && (
-              <p className="text-xs text-neutral-text-muted text-center">
-                {terminalCount - assignedCount} terminale{terminalCount - assignedCount !== 1 ? "i" : ""}{" "}
-                senza agente
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Step 4 — Conferma */}
-        {step === 4 && (
-          <div className="space-y-5">
-            <p className="text-sm text-neutral-text-dim">
-              Riepilogo del nuovo spazio di lavoro. Conferma per creare.
-            </p>
-
-            <div
-              className="p-1 rounded-2xl"
-              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
-            >
-              <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
-                <div className="flex items-center gap-3 pb-4 border-b border-white/[0.04]">
-                  <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                    <BrainCircuit size={20} className="text-primary" />
-                  </div>
-                  <div>
-                    <h3 className="font-display font-bold text-base text-neutral-text">
-                      {workspaceName}
-                    </h3>
-                    <p className="text-xs text-neutral-text-muted mt-0.5 font-mono">
-                      {folderPath}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
-                    <p className="text-2xl font-display font-bold text-primary">
-                      {layout.rows}&times;{layout.cols}
-                    </p>
-                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
-                      Layout
-                    </p>
-                  </div>
-                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
-                    <p className="text-2xl font-display font-bold text-primary">
-                      {terminalCount}
-                    </p>
-                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
-                      Terminali
-                    </p>
-                  </div>
-                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
-                    <p className="text-2xl font-display font-bold text-primary">
-                      {assignedCount}
-                    </p>
-                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
-                      Agenti
-                    </p>
-                  </div>
-                </div>
-
-                {assignedCount > 0 && (
-                  <div>
-                    <p className="text-[0.55rem] font-medium text-neutral-text-muted mb-2 uppercase tracking-widest">
-                      Agenti configurati
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {Object.entries(agentCounts).map(([aid, count]) => {
-                        if (count <= 0) return null;
-                        const agent = AGENTS.find((a) => a.id === aid);
-                        if (!agent) return null;
-                        return (
                           <span
-                            key={aid}
-                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[0.6rem] font-medium"
+                            className="text-base font-bold font-display tabular-nums"
                             style={{
-                              backgroundColor: `${agent.color}12`,
-                              color: agent.color,
-                              border: `1px solid ${agent.color}20`,
+                              color:
+                                count > 0
+                                  ? agent.color
+                                  : "rgba(255,255,255,0.15)",
                             }}
                           >
-                            <Bot size={10} />
-                            {agent.name}
-                            <span className="opacity-60 ml-0.5">&times;{count}</span>
+                            {count}
                           </span>
-                        );
-                      })}
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => decrementAgent(agent.id)}
+                            disabled={count <= 0}
+                            className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            aria-label={`Rimuovi ${agent.name}`}
+                          >
+                            <Minus size={11} />
+                          </button>
+                          <button
+                            onClick={() => fillAllWith(agent.id)}
+                            className="flex-1 text-[0.55rem] font-medium py-1 rounded-lg uppercase tracking-wider transition-all duration-200 active:scale-[0.97]"
+                            style={{
+                              backgroundColor: `${agent.color}10`,
+                              color: agent.color,
+                            }}
+                          >
+                            {assignedCount === count
+                              ? "Rimuovi tutti"
+                              : "Tutti"}
+                          </button>
+                          <button
+                            onClick={() => incrementAgent(agent.id)}
+                            disabled={assignedCount >= terminalCount}
+                            className="flex items-center justify-center w-7 h-7 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            aria-label={`Aggiungi ${agent.name}`}
+                          >
+                            <Plus size={11} />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })}
               </div>
             </div>
           </div>
         )}
 
+        {/* Step 4 — Conferma */}
+        {step === 4 && (
+          <div className="p-1 rounded-2xl bg-white/[0.03]">
+            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-5">
+              <p className="text-sm text-neutral-text-dim">
+                Conferma i dettagli del workspace.
+              </p>
+
+              <div className="text-center pb-4 border-b border-white/[0.04]">
+                <h3 className="font-display font-bold text-lg text-neutral-text">
+                  {workspaceName}
+                </h3>
+                <p className="text-xs text-neutral-text-muted mt-1 font-mono truncate">
+                  {folderPath}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
+                  <p className="text-2xl font-display font-bold text-primary">
+                    {layout.rows}&times;{layout.cols}
+                  </p>
+                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                    Layout
+                  </p>
+                </div>
+                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
+                  <p className="text-2xl font-display font-bold text-primary">
+                    {terminalCount}
+                  </p>
+                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                    Terminali
+                  </p>
+                </div>
+                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
+                  <p className="text-2xl font-display font-bold text-primary">
+                    {assignedCount}
+                  </p>
+                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                    Agenti
+                  </p>
+                </div>
+              </div>
+
+              {assignedCount > 0 && (
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {Object.entries(agentCounts).map(([aid, count]) => {
+                    if (count <= 0) return null;
+                    const agent = AGENTS.find((a) => a.id === aid);
+                    if (!agent) return null;
+                    return (
+                      <span
+                        key={aid}
+                        className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[0.55rem] font-medium"
+                        style={{
+                          backgroundColor: `${agent.color}10`,
+                          color: agent.color,
+                          border: `1px solid ${agent.color}20`,
+                        }}
+                      >
+                        {agent.name}
+                        <span className="opacity-60">&times;{count}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Navigation */}
-        <div className="flex items-center justify-between pt-4 border-t border-white/[0.04]">
+        <div className="flex items-center justify-between">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm text-neutral-text-muted rounded-xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
+            className="flex items-center gap-1 px-3 py-2 text-sm text-neutral-text-muted rounded-xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
           >
             <ChevronLeft size={15} />
             Indietro
@@ -619,7 +528,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={() => setStep((s) => s + 1)}
               disabled={!canProceed()}
-              className="group flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
               style={{
                 background: canProceed()
                   ? "linear-gradient(135deg, #e85d04, #ff7b00)"
@@ -627,28 +536,26 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               }}
             >
               Avanti
-              <div className="w-5 h-5 rounded-full bg-white/15 flex items-center justify-center group-hover:translate-x-0.5 transition-transform duration-200">
-                <ChevronRight size={12} />
-              </div>
+              <ChevronRight size={14} />
             </button>
           ) : (
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="group flex items-center gap-2.5 px-6 py-2.5 text-sm font-bold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
               }}
             >
               {creating ? (
                 <>
-                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   Creazione...
                 </>
               ) : (
                 <>
-                  <Sparkles size={15} />
-                  Crea Spazio
+                  <Sparkles size={14} />
+                  Crea
                 </>
               )}
             </button>
