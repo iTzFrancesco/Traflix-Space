@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo } from "react";
 import {
   FolderOpen,
   Check,
@@ -33,12 +33,14 @@ const STEPS = [
   { num: 4, label: "Conferma" },
 ];
 
-const DISPLAY_AGENTS = AGENTS.filter((a) => a.id !== "custom");
+const DISPLAY_AGENTS = AGENTS;
 
 const agentIcons: Record<string, typeof Bot> = {
-  aider: Bot,
   opencode: Terminal,
-  "claude-code": Bot,
+  gemini: Bot,
+  claude: Bot,
+  codex: Bot,
+  "anti-gravity": Bot,
 };
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
@@ -50,10 +52,6 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const [terminalCount, setTerminalCount] = useState(4);
   const [agentCounts, setAgentCounts] = useState<Record<string, number>>({});
   const [creating, setCreating] = useState(false);
-
-  const [cmdInput, setCmdInput] = useState("");
-  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const assignedCount = useMemo(
     () => Object.values(agentCounts).reduce((a, b) => a + b, 0),
@@ -67,10 +65,6 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     const parts = folderPath.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1] || "untitled";
   }, [folderPath]);
-
-  useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open, step]);
 
   function normalizeCounts(
     counts: Record<string, number>,
@@ -126,60 +120,12 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     setAgentCounts({ [id]: terminalCount });
   }
 
-  function resolvePath(base: string, target: string): string {
-    const t = target.replace(/\\/g, "/").trim();
-    if (t === "..") {
-      const b = base.replace(/\\/g, "/").replace(/\/$/, "");
-      const parts = b.split("/");
-      if (parts.length > 0 && parts[parts.length - 1].includes(":")) return b;
-      parts.pop();
-      return parts.join("/") || "/";
-    }
-    if (/^[A-Za-z]:\//.test(t) || t.startsWith("/")) {
-      return t;
-    }
-    const b = base.replace(/\\/g, "/").replace(/\/$/, "");
-    const baseParts = b.split("/");
-    for (const p of t.split("/")) {
-      if (p === "..") baseParts.pop();
-      else if (p !== "." && p !== "") baseParts.push(p);
-    }
-    return baseParts.join("/");
-  }
-
-  function handleTerminalCommand(input: string) {
-    const trimmed = input.trim();
-    if (!trimmed) return;
-    const parts = trimmed.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
-    if (cmd === "cd") {
-      const target = parts.slice(1).join(" ") || "";
-      if (!target) return;
-      const resolved = resolvePath(folderPath || "~", target);
-      setFolderPath(resolved);
-      setCmdHistory((h) => [...h, `$ ${trimmed}`]);
-    } else if (cmd === "pwd") {
-      setCmdHistory((h) => [...h, `$ ${trimmed}`, folderPath || "~"]);
-    } else if (cmd === "clear") {
-      setCmdHistory([]);
-      return;
-    } else {
-      setCmdHistory((h) => [
-        ...h,
-        `$ ${trimmed}`,
-        `Comando sconosciuto: ${cmd}. Usa: cd <percorso>`,
-      ]);
-    }
-  }
-
   function reset() {
     setStep(1);
     setFolderPath("");
     setTerminalCount(4);
     setAgentCounts({});
     setCreating(false);
-    setCmdInput("");
-    setCmdHistory([]);
   }
 
   function handleClose() {
@@ -320,7 +266,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         {step === 1 && (
           <div className="space-y-5">
             <p className="text-sm text-neutral-text-dim">
-              Seleziona la cartella del progetto o usa il terminale per navigare.
+              Seleziona la cartella del progetto per iniziare.
             </p>
 
             {/* Current folder */}
@@ -346,61 +292,6 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               >
                 Sfoglia...
               </button>
-            </div>
-
-            {/* Faux terminal */}
-            <div className="overflow-hidden rounded-2xl border border-white/[0.06] bg-black/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/[0.04] bg-black/30">
-                <div className="flex gap-1.5">
-                  <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
-                  <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
-                </div>
-                <span className="text-[0.6rem] font-mono text-neutral-text-muted ml-2 tracking-wider uppercase">
-                  terminale
-                </span>
-              </div>
-              <div className="p-4 font-mono text-sm leading-relaxed min-h-[140px]">
-                <div className="flex items-center gap-2 text-xs text-neutral-text-dim mb-2">
-                  <span className="text-green-400/80 font-bold">~</span>
-                  <span className="text-neutral-text-muted">
-                    {folderPath || "Nessuna cartella"}
-                  </span>
-                </div>
-                {cmdHistory.map((line, i) => (
-                  <div
-                    key={i}
-                    className={`text-xs leading-6 ${
-                      line.startsWith("$ ")
-                        ? "text-neutral-text-dim"
-                        : line.startsWith("✓")
-                          ? "text-green-400/80"
-                          : line.startsWith("Comando")
-                            ? "text-red-400/70"
-                            : "text-neutral-text-muted"
-                    }`}
-                  >
-                    {line}
-                  </div>
-                ))}
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-green-400 text-sm font-bold">$</span>
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={cmdInput}
-                    onChange={(e) => setCmdInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        handleTerminalCommand(cmdInput);
-                        setCmdInput("");
-                      }
-                    }}
-                    placeholder="cd /percorso/del/progetto"
-                    className="flex-1 bg-transparent text-sm text-neutral-text outline-none placeholder-neutral-text-muted/40"
-                  />
-                </div>
-              </div>
             </div>
 
             {folderPath && (
