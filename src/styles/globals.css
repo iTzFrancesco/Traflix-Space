@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #e85d04;
+  --color-primary-light: #ff7b00;
+  --color-neutral-bg: #0a0a0a;
+  --color-neutral-surface: #111113;
+  --color-neutral-elevated: #18181b;
+  --color-neutral-darkest: #050505;
+  --color-neutral-text: #f4f4f5;
+  --color-neutral-text-dim: #d4d4d8;
+  --color-neutral-text-muted: #71717a;
+  --color-neutral-border: rgba(255, 255, 255, 0.06);
+  --color-neutral-border-light: rgba(255, 255, 255, 0.03);
+
+  --font-display: "Syne", sans-serif;
+  --font-body: "Poppins", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --radius-pane: 12px;
+
+  --spacing-sidebar: 260px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+::selection {
+  background: rgba(232, 93, 4, 0.3);
+}
