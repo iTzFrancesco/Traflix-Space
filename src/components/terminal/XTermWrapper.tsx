@@ -58,9 +58,7 @@ export function XTermWrapper({
       opened = true;
       fitObserver.disconnect();
 
-      console.log("[XTerm] setupTerminal: container dimensions:", container.getBoundingClientRect());
       fitAddon.fit();
-      console.log("[XTerm] after fit: cols=", term.cols, "rows=", term.rows);
 
       invoke<string>("create_pty", {
         shell,
@@ -74,33 +72,28 @@ export function XTermWrapper({
             return;
           }
           ptyId = id;
-          console.log("[XTerm] PTY created:", id);
           onTerminalReady?.(id);
 
           const unlisten = listen<PtyOutputPayload>("pty-output", (event) => {
             if (disposed || event.payload.id !== id) return;
             if (event.payload.eof) {
-              console.log("[XTerm] PTY EOF:", id);
               term.write("\r\n[Process completed]\r\n");
               return;
             }
             if (event.payload.data) {
-              console.log("[XTerm] PTY output:", id, "len:", event.payload.data.length);
               try {
                 const binary = Uint8Array.from(atob(event.payload.data), (c) =>
                   c.charCodeAt(0),
                 );
                 term.write(binary);
-              } catch (e) {
-                console.log("[XTerm] base64 decode failed, writing raw:", e);
+              } catch {
                 term.write(event.payload.data);
               }
             }
           });
 
           term.onData((data) => {
-            console.log("[XTerm] term.onData:", JSON.stringify(data));
-            invoke("write_pty", { id, data }).catch((e) => console.error("[XTerm] write_pty error:", e));
+            invoke("write_pty", { id, data }).catch(console.error);
           });
 
           term.onTitleChange((title) => onTitleChange?.(title));
@@ -112,7 +105,6 @@ export function XTermWrapper({
           unlistenPromises.push(unlisten);
         })
         .catch((err) => {
-          console.error("[XTerm] create_pty error:", err);
           if (!disposed) term.write(`\r\nError: ${err}\r\n`);
         });
     };

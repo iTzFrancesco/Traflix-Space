@@ -13,7 +13,7 @@ pub struct TerminalInfo {
 }
 
 #[tauri::command]
-pub async fn create_pty(
+pub fn create_pty(
     app: AppHandle,
     manager: State<'_, PtyManager>,
     shell: String,
@@ -22,43 +22,41 @@ pub async fn create_pty(
     cwd: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    manager
-        .create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)
-        .await?;
+    manager.create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)?;
     Ok(id)
 }
 
 #[tauri::command]
-pub async fn write_pty(
+pub fn write_pty(
     manager: State<'_, PtyManager>,
     id: String,
     data: String,
 ) -> Result<(), String> {
     let bytes = data.into_bytes();
-    manager.write(&id, &bytes).await
+    manager.write(&id, &bytes)
 }
 
 #[tauri::command]
-pub async fn resize_pty(
+pub fn resize_pty(
     manager: State<'_, PtyManager>,
     id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    manager.resize(&id, cols, rows).await
+    manager.resize(&id, cols, rows)
 }
 
 #[tauri::command]
-pub async fn kill_pty(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
-    manager.kill(&id).await
+pub fn kill_pty(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
+    manager.kill(&id)
 }
 
 #[tauri::command]
-pub async fn get_terminal_info(
+pub fn get_terminal_info(
     manager: State<'_, PtyManager>,
     id: String,
 ) -> Result<TerminalInfo, String> {
-    let info = manager.get_info(&id).await?;
+    let info = manager.get_info(&id)?;
     let ti: TerminalInfo =
         serde_json::from_value(info).map_err(|e| format!("Errore deserializzazione: {}", e))?;
     Ok(ti)

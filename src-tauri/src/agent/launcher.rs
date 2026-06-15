@@ -67,7 +67,7 @@ impl AgentLauncher {
 
         let full_cmd = format!("{}{}\r\n", env_prefix, cmd);
         let cmd_bytes = full_cmd.into_bytes();
-        pty_manager.write(pty_id, &cmd_bytes).await?;
+        pty_manager.write(pty_id, &cmd_bytes)?;
 
         info!(%agent_id, %terminal_id, %pty_id, "Agente lanciato");
 
@@ -85,7 +85,7 @@ impl AgentLauncher {
     pub async fn kill(&self, terminal_id: &str, pty_manager: &PtyManager) {
         let mut agents = self.running_agents.lock().await;
         if let Some(info) = agents.remove(terminal_id) {
-            let _ = pty_manager.kill(&info.pty_id).await;
+            let _ = pty_manager.kill(&info.pty_id);
             info!(%terminal_id, "Agente terminato");
         }
     }

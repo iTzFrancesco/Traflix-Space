@@ -1,10 +1,8 @@
 use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::windows::ConPty;
@@ -29,7 +27,7 @@ impl PtyManager {
         }
     }
 
-    pub async fn create(
+    pub fn create(
         &self,
         id: String,
         shell: &str,
@@ -52,25 +50,25 @@ impl PtyManager {
             pty,
         };
 
-        self.ptys.lock().await.insert(id.clone(), session);
+        self.ptys.lock().unwrap().insert(id.clone(), session);
 
         let ptys_clone = self.ptys.clone();
         let id_clone = id.clone();
 
-        tauri::async_runtime::spawn(async move {
+        std::thread::spawn(move || {
             let mut buf = vec![0u8; 65536];
             loop {
                 let result = {
-                    let mut ptys = ptys_clone.lock().await;
+                    let mut ptys = ptys_clone.lock().unwrap();
                     match ptys.get_mut(&id_clone) {
-                        Some(s) => s.pty.read(&mut buf),
+                        Some(s) => s.pty.read_blocking(&mut buf),
                         None => break,
                     }
                 };
 
                 match result {
                     Ok(0) => {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        break;
                     }
                     Ok(n) => {
                         let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
@@ -82,7 +80,6 @@ impl PtyManager {
                                 "eof": false
                             }),
                         );
-                        continue;
                     }
                     Err(_) => break,
                 }
@@ -97,15 +94,15 @@ impl PtyManager {
                 }),
             );
 
-            let mut ptys = ptys_clone.lock().await;
+            let mut ptys = ptys_clone.lock().unwrap();
             ptys.remove(&id_clone);
         });
 
         Ok(())
     }
 
-    pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().await;
+    pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        let mut ptys = self.ptys.lock().unwrap();
         let session = ptys
             .get_mut(id)
             .ok_or_else(|| {
@@ -116,8 +113,8 @@ impl PtyManager {
         Ok(())
     }
 
-    pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().await;
+    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        let mut ptys = self.ptys.lock().unwrap();
         let session = ptys
             .get_mut(id)
             .ok_or_else(|| {
@@ -131,8 +128,8 @@ impl PtyManager {
         Ok(())
     }
 
-    pub async fn kill(&self, id: &str) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().await;
+    pub fn kill(&self, id: &str) -> Result<(), String> {
+        let mut ptys = self.ptys.lock().unwrap();
         if let Some(mut session) = ptys.remove(id) {
             session.pty.kill()?;
             info!(%id, "PTY terminata");
@@ -140,8 +137,8 @@ impl PtyManager {
         Ok(())
     }
 
-    pub async fn get_info(&self, id: &str) -> Result<serde_json::Value, String> {
-        let ptys = self.ptys.lock().await;
+    pub fn get_info(&self, id: &str) -> Result<serde_json::Value, String> {
+        let ptys = self.ptys.lock().unwrap();
         let session = ptys.get(id).ok_or_else(|| {
             warn!(%id, "GetInfo fallito: PTY non trovata");
             "PTY not found".to_string()
@@ -155,8 +152,8 @@ impl PtyManager {
         }))
     }
 
-    pub async fn cleanup_all(&self) {
-        let mut ptys = self.ptys.lock().await;
+    pub fn cleanup_all(&self) {
+        let mut ptys = self.ptys.lock().unwrap();
         let count = ptys.len();
         for (_, session) in ptys.iter_mut() {
             let _ = session.pty.kill();
@@ -165,8 +162,8 @@ impl PtyManager {
         info!(count, "Cleanup PTY completato");
     }
 
-    pub async fn list(&self) -> Vec<String> {
-        let ptys = self.ptys.lock().await;
+    pub fn list(&self) -> Vec<String> {
+        let ptys = self.ptys.lock().unwrap();
         ptys.keys().cloned().collect()
     }
 }

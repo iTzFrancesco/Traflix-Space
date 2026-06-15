@@ -61,9 +61,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let app = window.app_handle();
                 if let Some(pty_manager) = app.try_state::<pty::PtyManager>() {
-                    tauri::async_runtime::block_on(async {
-                        pty_manager.cleanup_all().await;
-                    });
+                    pty_manager.cleanup_all();
                 }
             }
         })
