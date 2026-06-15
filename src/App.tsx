@@ -12,9 +12,9 @@ function App() {
     <ErrorBoundary>
       <div className="flex flex-col h-screen bg-neutral-bg">
         <TitleBar />
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           <Sidebar />
-          <main style={{ flex: 1, overflow: "hidden", minHeight: 0 }}>
+          <main className="flex-1 min-h-0 overflow-hidden">
             <ErrorBoundary>
               <WorkspaceView />
             </ErrorBoundary>

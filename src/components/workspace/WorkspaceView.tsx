@@ -1,5 +1,5 @@
-import { useMemo, useCallback, useEffect, useRef, useState } from "react";
-import { Plus, TerminalSquare } from "lucide-react";
+import { useMemo, useEffect, useRef, useState } from "react";
+import { TerminalSquare } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -100,16 +100,6 @@ export function WorkspaceView() {
     }
   }, [activeWorkspaceId, configTerminals, hasStoreTerminals, terminalHook]);
 
-  const handleAddTerminal = useCallback(() => {
-    if (!activeWorkspaceId || !workspace) return;
-    terminalHook.create({
-      workspaceId: activeWorkspaceId,
-      shell: "powershell",
-      cwd: workspace.rootPath,
-      title: `Terminal ${workspaceTerminals.length + 1}`,
-    });
-  }, [activeWorkspaceId, workspace, terminalHook, workspaceTerminals.length]);
-
   if (!workspace) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-neutral-text-muted">
@@ -128,22 +118,31 @@ export function WorkspaceView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div className="flex items-center justify-between px-6 pt-4 pb-2 shrink-0">
-        <h1 className="font-display font-bold text-lg text-neutral-text">
+      <div style={{ padding: "12px 20px 8px", flexShrink: 0 }}>
+        <h1
+          style={{
+            fontFamily: "var(--font-display)",
+            fontWeight: 700,
+            fontSize: "16px",
+            color: "#f4f4f5",
+            letterSpacing: "-0.01em",
+          }}
+        >
           {workspace.name}
         </h1>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-neutral-text-muted font-mono">
-            {workspace.layout.rows}x{workspace.layout.cols}
-          </span>
-          <button
-            onClick={handleAddTerminal}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors"
-          >
-            <Plus size={14} />
-            Terminale
-          </button>
-        </div>
+        <p
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: "11px",
+            color: "#52525b",
+            marginTop: "2px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {workspace.rootPath}
+        </p>
       </div>
 
       <WorkspaceGrid

@@ -9,13 +9,17 @@ import {
   Bot,
   Terminal,
   LayoutGrid,
+  Save,
+  Trash2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { usePresetStore } from "../../stores/presetStore";
 import { useToastStore } from "../../stores/toastStore";
 import { AGENTS } from "../../lib/agents";
 import { computeLayout, QUICK_COUNTS } from "../../lib/presets";
 import { Modal } from "../ui/Modal";
+import type { Preset } from "../../stores/presetStore";
 import type { Workspace } from "../../stores/workspaceStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
@@ -38,6 +42,7 @@ const agentIcons: Record<string, typeof Bot> = {
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const { addWorkspace, setActiveWorkspace } = useWorkspaceStore();
+  const { addPreset, removePreset, presets } = usePresetStore();
   const { addToast } = useToastStore();
 
   const [step, setStep] = useState(1);
@@ -111,6 +116,26 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   function fillAllWith(id: string) {
     setAgentCounts({ [id]: terminalCount });
+  }
+
+  function loadPreset(preset: Preset) {
+    setFolderPath(preset.folderPath);
+    setTerminalCount(preset.terminalCount);
+    setAgentCounts(preset.agentCounts);
+    setStep(4);
+  }
+
+  function handleSavePreset() {
+    const name = workspaceName || "Senza nome";
+    addPreset({
+      id: crypto.randomUUID(),
+      name,
+      folderPath,
+      terminalCount,
+      agentCounts,
+      createdAt: new Date().toISOString(),
+    });
+    addToast({ type: "success", message: `Preset "${name}" salvato` });
   }
 
   function reset() {
@@ -237,35 +262,104 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 1 — Cartella */}
         {step === 1 && (
-          <div className="p-1.5 rounded-3xl bg-white/[0.03]">
-            <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-6">
-              <p className="text-base text-neutral-text-dim leading-relaxed">
-                Seleziona la cartella del progetto.
-              </p>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.04]">
-                  <FolderOpen size={22} className="text-primary shrink-0" />
-                  <span
-                    className={`text-base font-mono truncate ${
-                      folderPath
-                        ? "text-neutral-text"
-                        : "text-neutral-text-muted"
-                    }`}
+          <div className="space-y-7">
+            <div className="p-1.5 rounded-3xl bg-white/[0.03]">
+              <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-6">
+                <p className="text-base text-neutral-text-dim leading-relaxed">
+                  Seleziona la cartella del progetto.
+                </p>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.04]">
+                    <FolderOpen size={22} className="text-primary shrink-0" />
+                    <span
+                      className={`text-base font-mono truncate ${
+                        folderPath
+                          ? "text-neutral-text"
+                          : "text-neutral-text-muted"
+                      }`}
+                    >
+                      {folderPath || "Nessuna cartella"}
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleSelectFolder}
+                    className="px-7 py-4 text-base font-semibold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
+                    style={{
+                      background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                    }}
                   >
-                    {folderPath || "Nessuna cartella"}
-                  </span>
+                    Sfoglia
+                  </button>
                 </div>
-                <button
-                  onClick={handleSelectFolder}
-                  className="px-7 py-4 text-base font-semibold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
-                  style={{
-                    background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                  }}
-                >
-                  Sfoglia
-                </button>
               </div>
             </div>
+
+            {presets.length > 0 && (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-white/[0.04]" />
+                  </div>
+                  <div className="relative flex justify-center">
+                    <span className="px-4 text-[0.55rem] font-medium uppercase tracking-[0.2em] text-neutral-text-muted bg-[#111113]">
+                      Preset salvati
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {presets.map((preset) => {
+                    const agentTotal = Object.values(preset.agentCounts).reduce(
+                      (a, b) => a + b,
+                      0,
+                    );
+                    return (
+                      <div
+                        key={preset.id}
+                        onClick={() => loadPreset(preset)}
+                        className="p-1 rounded-2xl bg-white/[0.03] cursor-pointer hover:bg-white/[0.06] transition-all duration-200 active:scale-[0.98] group"
+                      >
+                        <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5">
+                          <div className="flex items-start justify-between">
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-bold text-neutral-text truncate">
+                                {preset.name}
+                              </p>
+                              <p className="text-xs font-mono text-neutral-text-muted mt-1.5 truncate">
+                                {preset.folderPath}
+                              </p>
+                              <div className="flex items-center gap-2 mt-3 text-[0.6rem] text-neutral-text-muted">
+                                <span className="font-medium tabular-nums">
+                                  {preset.terminalCount} terminali
+                                </span>
+                                <span className="opacity-30">&middot;</span>
+                                <span className="font-medium tabular-nums">
+                                  {agentTotal} agenti
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removePreset(preset.id);
+                                addToast({
+                                  type: "info",
+                                  message: `Preset "${preset.name}" rimosso`,
+                                });
+                              }}
+                              className="w-7 h-7 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/[0.06] transition-all duration-200 shrink-0 ml-3"
+                              aria-label={`Elimina preset ${preset.name}`}
+                            >
+                              <Trash2 size={13} className="text-red-400/60" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -384,7 +478,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                               {agentIcons[agent.id] ? (
                                 <Bot size={20} style={{ color: agent.color }} />
                               ) : (
-                                <Terminal size={20} style={{ color: agent.color }} />
+                                <Terminal
+                                  size={20}
+                                  style={{ color: agent.color }}
+                                />
                               )}
                             </div>
                             <span className="text-base font-bold text-neutral-text">
@@ -406,7 +503,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
                         <div className="flex items-center justify-center gap-3">
                           <button
-                            onClick={(e) => { e.stopPropagation(); decrementAgent(agent.id); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              decrementAgent(agent.id);
+                            }}
                             disabled={count <= 0}
                             className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Rimuovi ${agent.name}`}
@@ -414,7 +514,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                             <Minus size={16} />
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); incrementAgent(agent.id); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              incrementAgent(agent.id);
+                            }}
                             disabled={assignedCount >= terminalCount}
                             className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Aggiungi ${agent.name}`}
@@ -498,6 +601,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                   })}
                 </div>
               )}
+
+              <button
+                onClick={handleSavePreset}
+                className="flex items-center justify-center gap-2 w-full py-3.5 text-sm font-medium text-neutral-text-dim rounded-2xl border border-white/[0.06] hover:bg-white/[0.03] hover:text-neutral-text transition-all duration-200 active:scale-[0.98]"
+              >
+                <Save size={16} />
+                Salva come preset
+              </button>
             </div>
           </div>
         )}

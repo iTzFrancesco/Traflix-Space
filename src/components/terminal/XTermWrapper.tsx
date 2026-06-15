@@ -22,16 +22,17 @@ export function XTermWrapper({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyIdRef = useRef<string | null>(null);
-  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
-  const handleResize = useCallback(() => {
-    if (!fitAddonRef.current || !xtermRef.current) return;
+  const doFit = useCallback(() => {
+    const fitAddon = fitAddonRef.current;
+    const term = xtermRef.current;
+    if (!fitAddon || !term) return;
     try {
-      fitAddonRef.current.fit();
+      fitAddon.fit();
     } catch {
       return;
     }
-    const term = xtermRef.current;
     const ptyId = ptyIdRef.current;
     if (ptyId) {
       invoke("resize_pty", {
@@ -62,45 +63,39 @@ export function XTermWrapper({
       drawBoldTextInBrightColors: true,
     });
 
-    const webglAddon = new WebglAddon();
     const fitAddon = new FitAddon();
-
-    webglAddon.onContextLoss(() => {
-      webglAddon.dispose();
-    });
-
     term.loadAddon(fitAddon);
-    term.loadAddon(webglAddon);
+
+    let webglAddon: WebglAddon | null = null;
+    try {
+      webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon?.dispose();
+        webglAddon = null;
+      });
+      term.loadAddon(webglAddon);
+    } catch {
+      // WebGL not available, use canvas fallback
+    }
 
     term.open(container);
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const fitTerminal = () => {
-      try {
-        fitAddon.fit();
-      } catch {
-        return;
-      }
-      const ptyId = ptyIdRef.current;
-      if (ptyId) {
-        invoke("resize_pty", {
-          id: ptyId,
-          cols: term.cols,
-          rows: term.rows,
-        }).catch(console.error);
-      }
-    };
+    let disposed = false;
 
-    requestAnimationFrame(() => {
-      fitTerminal();
+    const boot = () => {
+      if (disposed) return;
 
-      const cols = term.cols;
-      const rows = term.rows;
+      doFit();
 
-      invoke<string>("create_pty", { shell, cols, rows, cwd })
+      invoke<string>("create_pty", { shell, cols: term.cols, rows: term.rows, cwd })
         .then((ptyId) => {
+          if (disposed) {
+            invoke("kill_pty", { id: ptyId }).catch(() => {});
+            return;
+          }
+
           ptyIdRef.current = ptyId;
           onTerminalReady?.(ptyId);
 
@@ -136,13 +131,11 @@ export function XTermWrapper({
           });
 
           const resizeObserver = new ResizeObserver(() => {
-            handleResize();
+            doFit();
           });
-
           resizeObserver.observe(container);
-          resizeObserverRef.current = resizeObserver;
 
-          return () => {
+          cleanupRef.current = () => {
             unlistenPromise.then((unlisten) => unlisten());
             disposeData.dispose();
             disposeTitle.dispose();
@@ -151,15 +144,28 @@ export function XTermWrapper({
           };
         })
         .catch((err) => {
-          term.write(`\r\nError: ${err}\r\n`);
+          if (!disposed) {
+            term.write(`\r\nError: ${err}\r\n`);
+          }
         });
+    };
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        boot();
+      });
     });
 
     return () => {
+      disposed = true;
+      cleanupRef.current?.();
+      cleanupRef.current = null;
       invoke("kill_pty", { id: ptyIdRef.current }).catch(() => {});
       fitAddon.dispose();
-      webglAddon.dispose();
+      webglAddon?.dispose();
       term.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
       ptyIdRef.current = null;
     };
   }, []);
@@ -171,6 +177,8 @@ export function XTermWrapper({
         width: "100%",
         height: "100%",
         background: "#0c0c0c",
+        position: "absolute",
+        inset: 0,
       }}
     />
   );
