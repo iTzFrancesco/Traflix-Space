@@ -1,7 +1,7 @@
 # Traflix Space — Rifinizione & Nuove Feature
 
 > Ultimo aggiornamento: 2026-06-15
-> Stato attuale: v0.1.0 — Feature core complete, manca polish e feature advanced
+> Stato attuale: v0.1.1 — Feature core complete, manca polish e feature advanced
 
 ---
 
@@ -40,10 +40,13 @@
 ## Priorità 2 — UX Refinement
 
 ### 2.1 Sidebar Interattiva
+- [x] **Redesign sidebar** — split in Workspaces + Terminals, rimosso Settings
+- [x] **Colored workspace icons** — bordo laterale colorato + icona quadrata per workspace
+- [x] **Conteggio terminali attivi** — badge numero accanto al nome workspace
+- [x] **Terminali interattivi** — click per navigare al workspace, rename inline
 - [ ] **Collapse/Expand sidebar** — riduci a icone ( già in uiStore, da connettere alla UI )
 - [ ] **Ricerca workspace** — barra di ricerca nella sidebar (gia in uiStore, da connettere )
 - [ ] **Drag & drop reorder** — riordinare workspace con drag
-- [ ] **Conteggio terminali attivi** — badge numero accanto al nome workspace
 
 ### 2.2 Context Menu (Right-click)
 - [ ] Menu contestuale sui workspace (rinomina, elimina, duplica)
@@ -141,6 +144,14 @@
 ---
 
 ## Changelog
+
+### v0.1.1 (2026-06-15) — Sidebar Redesign
+- Redesign sidebar: split in Workspaces + Terminali
+- Rimosso Settings dalla sidebar
+- Bordi laterali colorati + icone quadrate per workspace
+- Badge conteggio terminali per workspace
+- Terminali interattivi: rename inline, click per navigare al workspace
+- Stile pulito e minimal ispirato a BridgeMind
 
 ### v0.1.0 (2026-06-15) — Current
 - Setup iniziale Tauri 2 + React 19 + Vite 6
