@@ -1,53 +1,65 @@
-use tauri::AppHandle;
+use serde::Serialize;
+use tauri::{AppHandle, State};
+
+use super::PtyManager;
+
+#[derive(Serialize)]
+pub struct TerminalInfo {
+    pub id: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub pid: u32,
+    pub shell: String,
+}
 
 #[tauri::command]
 pub async fn create_pty(
-    _app: AppHandle,
+    app: AppHandle,
+    manager: State<'_, PtyManager>,
     shell: String,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    // TODO: Implement ConPTY for Windows
+    manager
+        .create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)
+        .await?;
     Ok(id)
 }
 
 #[tauri::command]
 pub async fn write_pty(
-    _app: AppHandle,
+    manager: State<'_, PtyManager>,
     id: String,
     data: String,
 ) -> Result<(), String> {
-    // TODO: Write to PTY input
-    Ok(())
+    let bytes = data.into_bytes();
+    manager.write(&id, &bytes).await
 }
 
 #[tauri::command]
 pub async fn resize_pty(
-    _app: AppHandle,
+    manager: State<'_, PtyManager>,
     id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    // TODO: Resize PTY
-    Ok(())
+    manager.resize(&id, cols, rows).await
 }
 
 #[tauri::command]
-pub async fn kill_pty(
-    _app: AppHandle,
-    id: String,
-) -> Result<(), String> {
-    // TODO: Kill PTY process
-    Ok(())
+pub async fn kill_pty(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
+    manager.kill(&id).await
 }
 
 #[tauri::command]
 pub async fn get_terminal_info(
-    _app: AppHandle,
+    manager: State<'_, PtyManager>,
     id: String,
-) -> Result<serde_json::Value, String> {
-    // TODO: Return terminal info
-    Ok(serde_json::json!({ "id": id }))
+) -> Result<TerminalInfo, String> {
+    let info = manager.get_info(&id).await?;
+    let ti: TerminalInfo =
+        serde_json::from_value(info).map_err(|e| format!("Errore deserializzazione: {}", e))?;
+    Ok(ti)
 }

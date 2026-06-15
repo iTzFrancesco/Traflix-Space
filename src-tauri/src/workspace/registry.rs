@@ -66,8 +66,8 @@ impl WorkspaceRegistry {
         }
         let data = std::fs::read_to_string(&self.registry_path)
             .map_err(|e| format!("Errore lettura registry: {}", e))?;
-        let list: Vec<WorkspaceConfig> = serde_json::from_str(&data)
-            .map_err(|e| format!("Errore parsing registry: {}", e))?;
+        let list: Vec<WorkspaceConfig> =
+            serde_json::from_str(&data).map_err(|e| format!("Errore parsing registry: {}", e))?;
         let mut map = self.workspaces.lock().await;
         map.clear();
         for ws in list {

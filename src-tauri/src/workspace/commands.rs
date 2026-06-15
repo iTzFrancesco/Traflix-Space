@@ -33,22 +33,20 @@ pub async fn create_workspace(
 }
 
 #[tauri::command]
-pub async fn get_workspaces(
-    app: AppHandle,
-) -> Result<Vec<WorkspaceConfig>, String> {
+pub async fn get_workspaces(app: AppHandle) -> Result<Vec<WorkspaceConfig>, String> {
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
     Ok(registry.get_all().await)
 }
 
 #[tauri::command]
-pub async fn get_workspace(
-    app: AppHandle,
-    id: String,
-) -> Result<WorkspaceConfig, String> {
+pub async fn get_workspace(app: AppHandle, id: String) -> Result<WorkspaceConfig, String> {
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
-    registry.get(&id).await.ok_or_else(|| "Workspace non trovato".into())
+    registry
+        .get(&id)
+        .await
+        .ok_or_else(|| "Workspace non trovato".into())
 }
 
 #[tauri::command]
@@ -74,10 +72,7 @@ pub async fn update_workspace(
 }
 
 #[tauri::command]
-pub async fn delete_workspace(
-    app: AppHandle,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     let registry = app.state::<WorkspaceRegistry>();
     registry.remove(&id).await;
     registry.save().await?;
@@ -85,9 +80,7 @@ pub async fn delete_workspace(
 }
 
 #[tauri::command]
-pub async fn select_folder(
-    app: AppHandle,
-) -> Result<String, String> {
+pub async fn select_folder(app: AppHandle) -> Result<String, String> {
     let (tx, rx) = oneshot::channel();
 
     app.dialog()

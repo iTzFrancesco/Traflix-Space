@@ -6,11 +6,14 @@ export interface TerminalState {
   process: string;
   agent: string | null;
   isActive: boolean;
+  shell: string;
+  cwd: string;
 }
 
 export interface TerminalInfo {
   id: string;
   cols: number;
   rows: number;
-  pid: number | null;
+  pid: number;
+  shell: string;
 }

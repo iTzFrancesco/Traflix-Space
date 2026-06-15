@@ -1,9 +1,7 @@
 use tauri::AppHandle;
 
 #[tauri::command]
-pub async fn list_agents(
-    _app: AppHandle,
-) -> Result<serde_json::Value, String> {
+pub async fn list_agents(_app: AppHandle) -> Result<serde_json::Value, String> {
     // TODO: Return list of available agents
     Ok(serde_json::json!([]))
 }
@@ -21,10 +19,7 @@ pub async fn launch_agent(
 }
 
 #[tauri::command]
-pub async fn kill_agent(
-    _app: AppHandle,
-    agent_id: String,
-) -> Result<(), String> {
+pub async fn kill_agent(_app: AppHandle, agent_id: String) -> Result<(), String> {
     // TODO: Kill agent process
     Ok(())
 }

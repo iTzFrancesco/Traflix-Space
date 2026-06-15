@@ -1,14 +1,85 @@
+import { useState, useCallback } from "react";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { TerminalHeader } from "../terminal/TerminalHeader";
+import { useTerminalStore } from "../../stores/terminalStore";
+import { useTerminal } from "../../hooks/useTerminal";
 
-export function TerminalPane() {
+interface TerminalPaneProps {
+  terminalId: string;
+  shell: string;
+  cwd: string;
+  title: string;
+  agentId?: string | null;
+  isActive: boolean;
+}
+
+export function TerminalPane({
+  terminalId,
+  shell,
+  cwd,
+  title,
+  agentId,
+  isActive,
+}: TerminalPaneProps) {
+  const [currentTitle, setCurrentTitle] = useState(title);
+  const [, setPtyId] = useState<string | null>(null);
+  const { kill, setActiveTerminal } = useTerminal();
+
+  const handleClose = useCallback(() => {
+    kill(terminalId);
+  }, [terminalId, kill]);
+
+  const handleActivate = useCallback(() => {
+    setActiveTerminal(terminalId);
+  }, [terminalId, setActiveTerminal]);
+
+  const handleTitleChange = useCallback(
+    (newTitle: string) => {
+      if (newTitle) {
+        setCurrentTitle(newTitle);
+        useTerminalStore.getState().updateTerminalTitle(terminalId, newTitle);
+      }
+    },
+    [terminalId],
+  );
+
+  const handleTerminalReady = useCallback(
+    (newPtyId: string) => {
+      setPtyId(newPtyId);
+      useTerminalStore.getState().setTerminalPtyId(terminalId, newPtyId);
+    },
+    [terminalId],
+  );
+
+  const agentColor = undefined;
+
   return (
-    <div className="flex flex-col rounded-pane bg-neutral-surface border overflow-hidden"
-      style={{ borderColor: "var(--color-neutral-border)" }}
+    <div
+      onClick={handleActivate}
+      className="flex flex-col rounded-pane bg-neutral-surface border overflow-hidden"
+      style={{
+        borderColor: isActive
+          ? "rgba(232,93,4,0.3)"
+          : "var(--color-neutral-border)",
+        boxShadow: isActive
+          ? "0 0 20px rgba(232,93,4,0.05)"
+          : undefined,
+      }}
     >
-      <TerminalHeader />
+      <TerminalHeader
+        title={currentTitle}
+        agentId={agentId}
+        agentColor={agentColor}
+        isActive={isActive}
+        onClose={handleClose}
+      />
       <div className="flex-1 min-h-0">
-        <XTermWrapper />
+        <XTermWrapper
+          shell={shell}
+          cwd={cwd}
+          onTitleChange={handleTitleChange}
+          onTerminalReady={handleTerminalReady}
+        />
       </div>
     </div>
   );

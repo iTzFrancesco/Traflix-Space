@@ -1163,13 +1163,13 @@ impl PtyManager {
 - [x] Sidebar con lista workspace — Sidebar.tsx con workspaces e terminali
 - [x] Switch workspace — setActiveWorkspace() in workspaceStore
 
-### Fase 3: Terminali (Settimana 5-7) — 🟡 PARZIALE
-- [ ] Integrazione xterm.js con WebGL addon — dipendenze installate, wrapper stub
-- [ ] Implementazione PTY Windows (ConPTY) — struttura moduli pronta (pty/mod, manager, windows, commands)
-- [ ] Comunicazione frontend <-> backend per I/O terminale — comandi Tauri stub pronti
+### Fase 3: Terminali (Settimana 5-7) — ✅ COMPLETATA
+- [x] Integrazione xterm.js con WebGL addon — XTermWrapper.tsx: xterm.js + WebGL + FitAddon + tema Traflix + IPC Tauri (invoke/eventi)
+- [x] Implementazione PTY Windows (ConPTY) — pty/windows.rs: CreatePseudoConsole + pipes + CreateProcessW con PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
+- [x] Comunicazione frontend <-> backend per I/O terminale — pty/commands.rs: 5 comandi Tauri (create/write/resize/kill/get_info) + eventi `pty-output` con base64
 - [x] Grid layout dinamico (1-16 panes) — WorkspaceGrid.tsx
-- [ ] Resize e riorganizzazione panes
-- [x] Header pane con traffic lights e titolo — TerminalHeader.tsx
+- [x] Resize e riorganizzazione panes — ResizeObserver + fitAddon.fit() + invoke('resize_pty')
+- [x] Header pane con traffic lights e titolo — TerminalHeader.tsx (R/Y/G animati, troncamento, AgentBadge)
 
 ### Fase 4: Agenti (Settimana 8-9) — 🟡 PARZIALE
 - [x] Registry agenti (Aider, OpenCode, Claude Code) — src/lib/agents.ts + Rust registry.rs
