@@ -48,13 +48,14 @@ export function XTermWrapper({
       /* WebGL not available */
     }
 
-    term.open(container);
-
     let ptyId: string | null = null;
     let disposed = false;
+    let opened = false;
 
-    const fitAndCreatePty = () => {
-      if (disposed) return;
+    const setupTerminal = () => {
+      if (disposed || opened) return;
+      opened = true;
+      fitObserver.disconnect();
 
       fitAddon.fit();
 
@@ -105,16 +106,23 @@ export function XTermWrapper({
         });
     };
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (!disposed) fitAddon.fit();
+    const fitObserver = new ResizeObserver((entries) => {
+      if (disposed) return;
+      const entry = entries[0];
+      if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+        if (!opened) {
+          term.open(container);
+          setupTerminal();
+        } else {
+          fitAddon.fit();
+        }
+      }
     });
-    resizeObserver.observe(container);
-
-    setTimeout(fitAndCreatePty, 50);
+    fitObserver.observe(container);
 
     return () => {
       disposed = true;
-      resizeObserver.disconnect();
+      fitObserver.disconnect();
       if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
       term.dispose();
     };
