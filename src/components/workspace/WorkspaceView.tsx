@@ -6,7 +6,7 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { useTerminal } from "../../hooks/useTerminal";
 import { useToastStore } from "../../stores/toastStore";
 import { WorkspaceGrid } from "./WorkspaceGrid";
-import type { TerminalConfig } from "../../types/workspace";
+import type { TerminalConfig } from "../../stores/terminalStore";
 
 export function WorkspaceView() {
   const { activeWorkspaceId, workspaces } = useWorkspaceStore();

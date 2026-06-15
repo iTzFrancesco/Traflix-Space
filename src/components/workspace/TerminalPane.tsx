@@ -6,6 +6,7 @@ import { TerminalHeader } from "../terminal/TerminalHeader";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useTerminal } from "../../hooks/useTerminal";
 import { useToastStore } from "../../stores/toastStore";
+import { AGENTS } from "../../lib/agents";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -69,7 +70,9 @@ export function TerminalPane({
     [terminalId, agentId],
   );
 
-  const agentColor = undefined;
+  const agentColor = agentId
+    ? AGENTS.find((a) => a.id === agentId)?.color
+    : undefined;
 
   return (
     <motion.div

@@ -2,7 +2,9 @@ import { Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function TitleBar() {
-  const appWindow = getCurrentWindow();
+  const appWindow = typeof window !== "undefined" && "__TAURI__" in window
+    ? getCurrentWindow()
+    : null;
 
   return (
     <div
@@ -19,19 +21,19 @@ export function TitleBar() {
 
       <div className="flex gap-1">
         <button
-          onClick={() => appWindow.minimize()}
+          onClick={() => appWindow?.minimize()}
           className="flex items-center justify-center w-8 h-8 rounded hover:bg-white/5 transition-colors"
         >
           <Minus size={14} className="text-neutral-text-muted" />
         </button>
         <button
-          onClick={() => appWindow.toggleMaximize()}
+          onClick={() => appWindow?.toggleMaximize()}
           className="flex items-center justify-center w-8 h-8 rounded hover:bg-white/5 transition-colors"
         >
           <Square size={12} className="text-neutral-text-muted" />
         </button>
         <button
-          onClick={() => appWindow.close()}
+          onClick={() => appWindow?.close()}
           className="flex items-center justify-center w-8 h-8 rounded hover:bg-red-500/20 transition-colors"
         >
           <X size={14} className="text-neutral-text-muted hover:text-red-400" />

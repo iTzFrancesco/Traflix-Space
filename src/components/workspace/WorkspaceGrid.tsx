@@ -1,5 +1,6 @@
 import { AnimatePresence } from "framer-motion";
 import { TerminalPane } from "./TerminalPane";
+import { useTerminalStore } from "../../stores/terminalStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface WorkspaceGridProps {
@@ -9,6 +10,8 @@ interface WorkspaceGridProps {
 }
 
 export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
+  const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
+
   if (terminals.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -36,7 +39,7 @@ export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
             cwd={term.cwd}
             title={term.title}
             agentId={term.agentId}
-            isActive={false}
+            isActive={term.id === activeTerminalId}
           />
         ))}
       </AnimatePresence>

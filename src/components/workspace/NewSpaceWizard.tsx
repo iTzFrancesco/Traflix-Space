@@ -19,11 +19,12 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useToastStore } from "../../stores/toastStore";
 import { PRESETS } from "../../lib/presets";
 import { AGENTS } from "../../lib/agents";
 import { Modal } from "../ui/Modal";
 import type { Workspace } from "../../stores/workspaceStore";
-import type { TerminalConfig } from "../../types/workspace";
+import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface NewSpaceWizardProps {
   open: boolean;
@@ -48,6 +49,7 @@ const presetIcons: Record<string, typeof Sparkles> = {
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const { addWorkspace, setActiveWorkspace } = useWorkspaceStore();
+  const { addToast } = useToastStore();
 
   const [step, setStep] = useState(1);
   const [folderPath, setFolderPath] = useState("");
@@ -202,6 +204,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       handleClose();
     } catch (err) {
       console.error("Errore creazione workspace:", err);
+      addToast({ type: "error", message: "Errore nella creazione del workspace" });
     } finally {
       setCreating(false);
     }
