@@ -74,6 +74,7 @@ export function TerminalPane({
       }}
     >
       <XTermWrapper
+        terminalId={terminalId}
         shell={shell}
         cwd={cwd}
         onTitleChange={handleTitleChange}

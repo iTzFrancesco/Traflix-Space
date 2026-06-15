@@ -26,7 +26,7 @@ interface TerminalStore {
   terminals: Map<string, TerminalState>;
   activeTerminalId: string | null;
 
-  createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "outputBuffer" | "isActive">) => string;
+  createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "outputBuffer" | "isActive"> & { id?: string }) => string;
   killTerminal: (id: string) => void;
   setActiveTerminal: (id: string) => void;
   updateTerminalTitle: (id: string, title: string) => void;
@@ -40,16 +40,20 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   activeTerminalId: null,
 
   createTerminal: (config) => {
-    const id = crypto.randomUUID();
-    set((state) => ({
-      terminals: new Map(state.terminals).set(id, {
-        ...config,
-        id,
-        ptyId: null,
-        isActive: false,
-        outputBuffer: [],
-      }),
-    }));
+    const id = config.id || crypto.randomUUID();
+    set((state) => {
+      const newConfig = { ...config };
+      delete newConfig.id;
+      return {
+        terminals: new Map(state.terminals).set(id, {
+          ...newConfig,
+          id,
+          ptyId: null,
+          isActive: false,
+          outputBuffer: [],
+        }),
+      };
+    });
     return id;
   },
 

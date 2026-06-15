@@ -71,6 +71,7 @@ impl PtyManager {
                                 break;
                             }
                             Ok(n) => {
+                                info!(%id_clone, bytes = n, "Letto chunk da PTY");
                                 let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                                 let _ = app.emit(
                                     "pty-output",
@@ -103,8 +104,17 @@ impl PtyManager {
                     }),
                 );
 
-                ptys.lock().unwrap().remove(&id_clone);
-                info!(%id_clone, "Read thread exiting, session removed");
+                let mut ptys_lock = ptys.lock().unwrap();
+                if let Some(session) = ptys_lock.get(&id_clone) {
+                    if Arc::ptr_eq(&session.pty, &pty) {
+                        ptys_lock.remove(&id_clone);
+                        info!(%id_clone, "Read thread exiting, session removed");
+                    } else {
+                        info!(%id_clone, "Read thread exiting, session already replaced");
+                    }
+                } else {
+                    info!(%id_clone, "Read thread exiting, session already removed");
+                }
             })
             .ok();
 
@@ -144,7 +154,7 @@ impl PtyManager {
         };
 
         if let Some(session) = session {
-            session.pty.terminate_process();
+            let _ = session.pty.kill();
             drop(session);
             info!(%id, "PTY terminata");
         }
@@ -170,7 +180,7 @@ impl PtyManager {
         let mut ptys = self.ptys.lock().unwrap();
         let count = ptys.len();
         for (_, session) in ptys.iter() {
-            session.pty.terminate_process();
+            let _ = session.pty.kill();
         }
         ptys.clear();
         info!(count, "Cleanup PTY completato");

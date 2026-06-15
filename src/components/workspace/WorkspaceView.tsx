@@ -91,6 +91,7 @@ export function WorkspaceView() {
 
     for (const ct of configTerminals) {
       terminalHook.create({
+        id: ct.id,
         workspaceId: activeWorkspaceId,
         shell: ct.shell,
         cwd: ct.cwd,

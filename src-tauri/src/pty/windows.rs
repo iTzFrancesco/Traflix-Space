@@ -19,6 +19,10 @@ use windows::Win32::System::Threading::{
 };
 
 pub struct ConPty {
+    inner: std::sync::Mutex<ConPtyInner>,
+}
+
+struct ConPtyInner {
     hpc: HPCON,
     input_write: HANDLE,
     output_read: HANDLE,
@@ -30,12 +34,12 @@ unsafe impl Sync for ConPty {}
 
 impl ConPty {
     pub fn new(cols: u16, rows: u16, shell: &str, cwd: Option<&str>) -> Result<Self, String> {
-        let effective_shell = match shell.to_lowercase().as_str() {
-            "bash" | "bash.exe" => {
-                info!("Shell 'bash' su Windows, fallback a powershell.exe");
-                "powershell.exe"
-            }
-            other => other,
+        let shell_lower = shell.to_lowercase();
+        let effective_shell = if shell_lower == "bash" || shell_lower == "bash.exe" {
+            info!("Shell 'bash' su Windows, fallback a powershell.exe");
+            "powershell.exe"
+        } else {
+            shell
         };
         unsafe {
             let mut input_read = HANDLE::default();
@@ -160,19 +164,25 @@ impl ConPty {
             }
 
             Ok(Self {
-                hpc,
-                input_write,
-                output_read,
-                process_info,
+                inner: std::sync::Mutex::new(ConPtyInner {
+                    hpc,
+                    input_write,
+                    output_read,
+                    process_info,
+                }),
             })
         }
     }
 
     pub fn write(&self, data: &[u8]) -> Result<usize, String> {
+        let handle = self.inner.lock().unwrap().input_write;
+        if handle.is_invalid() {
+            return Err("PTY is closed".into());
+        }
         unsafe {
             let mut bytes_written = 0u32;
             let result = WriteFile(
-                self.input_write,
+                handle,
                 Some(data),
                 Some(&mut bytes_written),
                 None,
@@ -185,10 +195,14 @@ impl ConPty {
     }
 
     pub fn read_blocking(&self, buf: &mut [u8]) -> Result<usize, String> {
+        let handle = self.inner.lock().unwrap().output_read;
+        if handle.is_invalid() {
+            return Ok(0);
+        }
         unsafe {
             let mut bytes_read = 0u32;
             let result = ReadFile(
-                self.output_read,
+                handle,
                 Some(buf),
                 Some(&mut bytes_read),
                 None,
@@ -201,12 +215,16 @@ impl ConPty {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        let hpc = self.inner.lock().unwrap().hpc;
+        if hpc.is_invalid() {
+            return Err("PTY is closed".into());
+        }
         let size = COORD {
             X: cols as i16,
             Y: rows as i16,
         };
         unsafe {
-            if ResizePseudoConsole(self.hpc, size).is_err() {
+            if ResizePseudoConsole(hpc, size).is_err() {
                 return Err("Failed to resize PTY".into());
             }
         }
@@ -214,6 +232,24 @@ impl ConPty {
     }
 
     pub fn terminate_process(&self) {
+        let inner = self.inner.lock().unwrap();
+        inner.terminate_process();
+    }
+
+    pub fn kill(&self) -> Result<(), String> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.terminate_process();
+        inner.close_handles();
+        Ok(())
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.inner.lock().unwrap().process_info.dwProcessId
+    }
+}
+
+impl ConPtyInner {
+    fn terminate_process(&self) {
         unsafe {
             if !self.process_info.hProcess.is_invalid() {
                 let _ = TerminateProcess(self.process_info.hProcess, 0);
@@ -221,38 +257,34 @@ impl ConPty {
         }
     }
 
-    pub fn kill(&mut self) -> Result<(), String> {
-        self.terminate_process();
-        self.close_handles();
-        Ok(())
-    }
-
     fn close_handles(&mut self) {
         unsafe {
             if !self.process_info.hProcess.is_invalid() {
                 let _ = CloseHandle(self.process_info.hProcess);
                 let _ = CloseHandle(self.process_info.hThread);
+                self.process_info.hProcess = HANDLE::default();
+                self.process_info.hThread = HANDLE::default();
             }
             if !self.hpc.is_invalid() {
                 ClosePseudoConsole(self.hpc);
+                self.hpc = HPCON::default();
             }
             if !self.input_write.is_invalid() {
                 let _ = CloseHandle(self.input_write);
+                self.input_write = HANDLE::default();
             }
             if !self.output_read.is_invalid() {
                 let _ = CloseHandle(self.output_read);
+                self.output_read = HANDLE::default();
             }
         }
     }
-
-    pub fn pid(&self) -> u32 {
-        self.process_info.dwProcessId
-    }
 }
 
-impl Drop for ConPty {
+impl Drop for ConPtyInner {
     fn drop(&mut self) {
-        let _ = self.kill();
+        self.terminate_process();
+        self.close_handles();
     }
 }
 

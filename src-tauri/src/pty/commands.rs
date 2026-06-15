@@ -16,12 +16,13 @@ pub struct TerminalInfo {
 pub fn create_pty(
     app: AppHandle,
     manager: State<'_, PtyManager>,
+    id: Option<String>,
     shell: String,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
 ) -> Result<String, String> {
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     manager.inner().create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)?;
     Ok(id)
 }

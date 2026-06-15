@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import "xterm/css/xterm.css";
 
 interface XTermWrapperProps {
+  terminalId: string;
   shell: string;
   cwd: string;
   onTitleChange?: (title: string) => void;
@@ -14,6 +15,7 @@ interface XTermWrapperProps {
 }
 
 export function XTermWrapper({
+  terminalId,
   shell,
   cwd,
   onTitleChange,
@@ -51,62 +53,71 @@ export function XTermWrapper({
     let ptyId: string | null = null;
     let disposed = false;
     let opened = false;
-    const unlistenPromises: Promise<() => void>[] = [];
+    const cleanupFns: (() => void)[] = [];
 
-    const setupTerminal = () => {
+    const setupTerminal = async () => {
       if (disposed || opened) return;
       opened = true;
       fitObserver.disconnect();
 
       fitAddon.fit();
 
-      invoke<string>("create_pty", {
-        shell,
-        cols: term.cols,
-        rows: term.rows,
-        cwd,
-      })
-        .then((id) => {
-          if (disposed) {
-            invoke("kill_pty", { id }).catch(() => {});
+      try {
+        const unlisten = await listen<PtyOutputPayload>("pty-output", (event) => {
+          if (disposed || event.payload.id !== terminalId) return;
+          if (event.payload.eof) {
+            term.write("\r\n[Process completed]\r\n");
             return;
           }
-          ptyId = id;
-          onTerminalReady?.(id);
-
-          const unlisten = listen<PtyOutputPayload>("pty-output", (event) => {
-            if (disposed || event.payload.id !== id) return;
-            if (event.payload.eof) {
-              term.write("\r\n[Process completed]\r\n");
-              return;
+          if (event.payload.data) {
+            try {
+              const binary = Uint8Array.from(atob(event.payload.data), (c) =>
+                c.charCodeAt(0),
+              );
+              term.write(binary);
+            } catch {
+              term.write(event.payload.data);
             }
-            if (event.payload.data) {
-              try {
-                const binary = Uint8Array.from(atob(event.payload.data), (c) =>
-                  c.charCodeAt(0),
-                );
-                term.write(binary);
-              } catch {
-                term.write(event.payload.data);
-              }
-            }
-          });
-
-          term.onData((data) => {
-            invoke("write_pty", { id, data }).catch(console.error);
-          });
-
-          term.onTitleChange((title) => onTitleChange?.(title));
-
-          term.onBinary((data) => {
-            invoke("write_pty", { id, data }).catch(console.error);
-          });
-
-          unlistenPromises.push(unlisten);
-        })
-        .catch((err) => {
-          if (!disposed) term.write(`\r\nError: ${err}\r\n`);
+          }
         });
+
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        cleanupFns.push(unlisten);
+
+        const id = await invoke<string>("create_pty", {
+          id: terminalId,
+          shell,
+          cols: term.cols,
+          rows: term.rows,
+          cwd,
+        });
+
+        if (disposed) {
+          invoke("kill_pty", { id }).catch(() => {});
+          return;
+        }
+
+        ptyId = id;
+        onTerminalReady?.(id);
+
+        term.onData((data) => {
+          if (ptyId) invoke("write_pty", { id: ptyId, data }).catch(() => {});
+        });
+
+        term.onTitleChange((title) => onTitleChange?.(title));
+
+        term.onBinary((data) => {
+          if (ptyId) invoke("write_pty", { id: ptyId, data }).catch(() => {});
+        });
+      } catch (err) {
+        if (!disposed) {
+          console.error("[XTerm] Error during setup:", err);
+          term.write(`\r\nError: ${err}\r\n`);
+        }
+      }
     };
 
     const fitObserver = new ResizeObserver((entries) => {
@@ -126,8 +137,10 @@ export function XTermWrapper({
     return () => {
       disposed = true;
       fitObserver.disconnect();
-      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
-      if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
+      cleanupFns.forEach((fn) => fn());
+      if (ptyId) {
+        invoke("kill_pty", { id: ptyId }).catch(() => {});
+      }
       term.dispose();
     };
   }, []);

@@ -8,6 +8,7 @@ export function useTerminal() {
 
   const create = useCallback(
     (config: {
+      id?: string;
       workspaceId: string;
       shell?: string;
       cwd: string;
@@ -15,6 +16,7 @@ export function useTerminal() {
       agent?: string | null;
     }) => {
       const id = createTerminal({
+        id: config.id,
         workspaceId: config.workspaceId,
         shell: config.shell || "powershell",
         cwd: config.cwd,
