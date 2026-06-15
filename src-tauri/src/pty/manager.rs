@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,7 +81,7 @@ impl PtyManager {
                         break;
                     }
                     Ok(n) => {
-                        let data = base64::encode(&buf[..n]);
+                        let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                         let _ = app.emit(
                             "pty-output",
                             json!({

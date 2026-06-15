@@ -1,9 +1,10 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import "xterm/css/xterm.css";
 
 interface XTermWrapperProps {
   shell: string;
@@ -18,35 +19,11 @@ export function XTermWrapper({
   onTitleChange,
   onTerminalReady,
 }: XTermWrapperProps) {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const xtermRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const ptyIdRef = useRef<string | null>(null);
-  const cleanupRef = useRef<(() => void) | null>(null);
-
-  const doFit = useCallback(() => {
-    const fitAddon = fitAddonRef.current;
-    const term = xtermRef.current;
-    if (!fitAddon || !term) return;
-    try {
-      fitAddon.fit();
-    } catch {
-      return;
-    }
-    const ptyId = ptyIdRef.current;
-    if (ptyId) {
-      invoke("resize_pty", {
-        id: ptyId,
-        cols: term.cols,
-        rows: term.rows,
-      }).catch(console.error);
-    }
-  }, []);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
-
-    const container = terminalRef.current;
+    const container = containerRef.current;
+    if (!container) return;
 
     const term = new Terminal({
       theme: STOCK_THEME,
@@ -56,129 +33,100 @@ export function XTermWrapper({
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 1,
-      allowProposedApi: true,
       scrollback: 10000,
-      smoothScrollDuration: 0,
-      macOptionIsMeta: true,
-      drawBoldTextInBrightColors: true,
+      allowProposedApi: true,
     });
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    let webglAddon: WebglAddon | null = null;
     try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose();
-        webglAddon = null;
-      });
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => webglAddon.dispose());
       term.loadAddon(webglAddon);
     } catch {
-      // WebGL not available, use canvas fallback
+      /* WebGL not available */
     }
 
     term.open(container);
-    xtermRef.current = term;
-    fitAddonRef.current = fitAddon;
 
+    let ptyId: string | null = null;
     let disposed = false;
 
-    const boot = () => {
+    const fitAndCreatePty = () => {
       if (disposed) return;
 
-      doFit();
+      fitAddon.fit();
 
-      invoke<string>("create_pty", { shell, cols: term.cols, rows: term.rows, cwd })
-        .then((ptyId) => {
+      invoke<string>("create_pty", {
+        shell,
+        cols: term.cols,
+        rows: term.rows,
+        cwd,
+      })
+        .then((id) => {
           if (disposed) {
-            invoke("kill_pty", { id: ptyId }).catch(() => {});
+            invoke("kill_pty", { id }).catch(() => {});
             return;
           }
+          ptyId = id;
+          onTerminalReady?.(id);
 
-          ptyIdRef.current = ptyId;
-          onTerminalReady?.(ptyId);
-
-          const unlistenPromise = listen<PtyOutputPayload>("pty-output", (event) => {
-            if (event.payload.id === ptyId) {
-              if (event.payload.eof) {
-                term.write("\r\n[Process completed]\r\n");
-                return;
-              }
-              if (event.payload.data) {
-                try {
-                  const binary = Uint8Array.from(atob(event.payload.data), (c) =>
-                    c.charCodeAt(0)
-                  );
-                  term.write(binary);
-                } catch {
-                  term.write(event.payload.data);
-                }
+          listen<PtyOutputPayload>("pty-output", (event) => {
+            if (disposed || event.payload.id !== id) return;
+            if (event.payload.eof) {
+              term.write("\r\n[Process completed]\r\n");
+              return;
+            }
+            if (event.payload.data) {
+              try {
+                const binary = Uint8Array.from(atob(event.payload.data), (c) =>
+                  c.charCodeAt(0),
+                );
+                term.write(binary);
+              } catch {
+                term.write(event.payload.data);
               }
             }
           });
 
-          const disposeData = term.onData((data) => {
-            invoke("write_pty", { id: ptyId, data }).catch(console.error);
+          term.onData((data) => {
+            invoke("write_pty", { id, data }).catch(console.error);
           });
 
-          const disposeTitle = term.onTitleChange((title) => {
-            onTitleChange?.(title);
-          });
+          term.onTitleChange((title) => onTitleChange?.(title));
 
-          const disposeBinary = term.onBinary((data) => {
-            invoke("write_pty", { id: ptyId, data }).catch(console.error);
+          term.onBinary((data) => {
+            invoke("write_pty", { id, data }).catch(console.error);
           });
-
-          const resizeObserver = new ResizeObserver(() => {
-            doFit();
-          });
-          resizeObserver.observe(container);
-
-          cleanupRef.current = () => {
-            unlistenPromise.then((unlisten) => unlisten());
-            disposeData.dispose();
-            disposeTitle.dispose();
-            disposeBinary.dispose();
-            resizeObserver.disconnect();
-          };
         })
         .catch((err) => {
-          if (!disposed) {
-            term.write(`\r\nError: ${err}\r\n`);
-          }
+          if (!disposed) term.write(`\r\nError: ${err}\r\n`);
         });
     };
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        boot();
-      });
+    const resizeObserver = new ResizeObserver(() => {
+      if (!disposed) fitAddon.fit();
     });
+    resizeObserver.observe(container);
+
+    setTimeout(fitAndCreatePty, 50);
 
     return () => {
       disposed = true;
-      cleanupRef.current?.();
-      cleanupRef.current = null;
-      invoke("kill_pty", { id: ptyIdRef.current }).catch(() => {});
-      fitAddon.dispose();
-      webglAddon?.dispose();
+      resizeObserver.disconnect();
+      if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
       term.dispose();
-      xtermRef.current = null;
-      fitAddonRef.current = null;
-      ptyIdRef.current = null;
     };
   }, []);
 
   return (
     <div
-      ref={terminalRef}
+      ref={containerRef}
       style={{
-        width: "100%",
-        height: "100%",
-        background: "#0c0c0c",
         position: "absolute",
         inset: 0,
+        background: "#0c0c0c",
       }}
     />
   );

@@ -1,5 +1,4 @@
 import { useState, useCallback } from "react";
-import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -24,7 +23,6 @@ export function TerminalPane({
   isActive,
 }: TerminalPaneProps) {
   const [, setCurrentTitle] = useState(title);
-  const [, setPtyId] = useState<string | null>(null);
   const { setActiveTerminal } = useTerminal();
   const { addToast } = useToastStore();
 
@@ -43,14 +41,13 @@ export function TerminalPane({
   );
 
   const handleTerminalReady = useCallback(
-    async (newPtyId: string) => {
-      setPtyId(newPtyId);
-      useTerminalStore.getState().setTerminalPtyId(terminalId, newPtyId);
+    async (ptyId: string) => {
+      useTerminalStore.getState().setTerminalPtyId(terminalId, ptyId);
 
       if (agentId) {
         try {
           await invoke("launch_agent", {
-            ptyId: newPtyId,
+            ptyId,
             terminalId,
             agentId,
             shell,
@@ -65,12 +62,7 @@ export function TerminalPane({
   );
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.15 }}
+    <div
       onClick={handleActivate}
       style={{
         position: "relative",
@@ -87,6 +79,6 @@ export function TerminalPane({
         onTitleChange={handleTitleChange}
         onTerminalReady={handleTerminalReady}
       />
-    </motion.div>
+    </div>
   );
 }
