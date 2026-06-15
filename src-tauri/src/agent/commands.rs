@@ -27,7 +27,7 @@ pub async fn launch_agent(
     let api_keys = settings_manager.get_api_keys().await;
 
     launcher
-        .launch(&pty_id, &terminal_id, &agent_id, &shell, &api_keys, &pty_manager, &registry)
+        .launch(&pty_id, &terminal_id, &agent_id, &shell, &api_keys, pty_manager.inner(), &registry)
         .await
 }
 
@@ -38,7 +38,7 @@ pub async fn kill_agent(
 ) -> Result<(), String> {
     let launcher = app.state::<AgentLauncher>();
     let pty_manager = app.state::<PtyManager>();
-    launcher.kill(&terminal_id, &pty_manager).await;
+    launcher.kill(&terminal_id, pty_manager.inner()).await;
     Ok(())
 }
 

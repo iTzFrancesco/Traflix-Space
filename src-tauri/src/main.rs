@@ -3,7 +3,6 @@
 mod agent;
 mod pty;
 mod settings;
-mod terminal;
 mod workspace;
 
 use tauri::Manager;

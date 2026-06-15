@@ -2,17 +2,19 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use tracing::info;
+
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
-use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows::Win32::System::Pipes::CreatePipe;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
     LPPROC_THREAD_ATTRIBUTE_LIST, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
 };
 
@@ -21,15 +23,20 @@ pub struct ConPty {
     input_write: HANDLE,
     output_read: HANDLE,
     process_info: PROCESS_INFORMATION,
-    cols: u16,
-    rows: u16,
-    shell: String,
 }
 
 unsafe impl Send for ConPty {}
+unsafe impl Sync for ConPty {}
 
 impl ConPty {
     pub fn new(cols: u16, rows: u16, shell: &str, cwd: Option<&str>) -> Result<Self, String> {
+        let effective_shell = match shell.to_lowercase().as_str() {
+            "bash" | "bash.exe" => {
+                info!("Shell 'bash' su Windows, fallback a powershell.exe");
+                "powershell.exe"
+            }
+            other => other,
+        };
         unsafe {
             let mut input_read = HANDLE::default();
             let mut input_write = HANDLE::default();
@@ -60,7 +67,7 @@ impl ConPty {
                 "Failed to create pseudo console".to_string()
             })?;
 
-            let mut shell_wide: Vec<u16> = OsString::from(shell)
+            let mut shell_wide: Vec<u16> = OsString::from(effective_shell)
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
@@ -157,9 +164,6 @@ impl ConPty {
                 input_write,
                 output_read,
                 process_info,
-                cols,
-                rows,
-                shell: shell.to_string(),
             })
         }
     }
@@ -180,47 +184,6 @@ impl ConPty {
         }
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, String> {
-        unsafe {
-            let mut bytes_available = 0u32;
-            let mut total_bytes_available = 0u32;
-            let mut bytes_left = 0u32;
-
-            if PeekNamedPipe(
-                self.output_read,
-                None,
-                0,
-                Some(&mut bytes_available as *mut u32),
-                Some(&mut total_bytes_available as *mut u32),
-                Some(&mut bytes_left as *mut u32),
-            )
-            .is_err()
-            {
-                return Err("Failed to peek pipe".into());
-            }
-
-            if bytes_available == 0 {
-                return Ok(0);
-            }
-
-            let to_read = std::cmp::min(buf.len() as u32, total_bytes_available);
-
-            let mut bytes_read = 0u32;
-            let result = ReadFile(
-                self.output_read,
-                Some(&mut buf[..to_read as usize]),
-                Some(&mut bytes_read),
-                None,
-            );
-
-            if result.is_err() {
-                return Err("Failed to read from PTY".into());
-            }
-
-            Ok(bytes_read as usize)
-        }
-    }
-
     pub fn read_blocking(&self, buf: &mut [u8]) -> Result<usize, String> {
         unsafe {
             let mut bytes_read = 0u32;
@@ -237,7 +200,7 @@ impl ConPty {
         }
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
         let size = COORD {
             X: cols as i16,
             Y: rows as i16,
@@ -247,15 +210,26 @@ impl ConPty {
                 return Err("Failed to resize PTY".into());
             }
         }
-        self.cols = cols;
-        self.rows = rows;
         Ok(())
     }
 
-    pub fn kill(&mut self) -> Result<(), String> {
+    pub fn terminate_process(&self) {
         unsafe {
             if !self.process_info.hProcess.is_invalid() {
                 let _ = TerminateProcess(self.process_info.hProcess, 0);
+            }
+        }
+    }
+
+    pub fn kill(&mut self) -> Result<(), String> {
+        self.terminate_process();
+        self.close_handles();
+        Ok(())
+    }
+
+    fn close_handles(&mut self) {
+        unsafe {
+            if !self.process_info.hProcess.is_invalid() {
                 let _ = CloseHandle(self.process_info.hProcess);
                 let _ = CloseHandle(self.process_info.hThread);
             }
@@ -269,22 +243,6 @@ impl ConPty {
                 let _ = CloseHandle(self.output_read);
             }
         }
-        Ok(())
-    }
-
-    pub fn is_alive(&self) -> bool {
-        unsafe {
-            let status = WaitForSingleObject(self.process_info.hProcess, 0);
-            status != WAIT_OBJECT_0
-        }
-    }
-
-    pub fn cols(&self) -> u16 {
-        self.cols
-    }
-
-    pub fn rows(&self) -> u16 {
-        self.rows
     }
 
     pub fn pid(&self) -> u32 {

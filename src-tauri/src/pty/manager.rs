@@ -11,13 +11,13 @@ pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<String, PtySession>>>,
 }
 
-pub struct PtySession {
-    pub id: String,
-    pub shell: String,
-    pub cols: u16,
-    pub rows: u16,
-    pub pid: u32,
-    pub pty: ConPty,
+struct PtySession {
+    id: String,
+    shell: String,
+    cols: u16,
+    rows: u16,
+    pid: u32,
+    pty: Arc<ConPty>,
 }
 
 impl PtyManager {
@@ -36,10 +36,12 @@ impl PtyManager {
         cwd: Option<&str>,
         app: AppHandle,
     ) -> Result<(), String> {
-        info!(%id, %shell, cols, rows, "Creazione PTY");
-        let pty = ConPty::new(cols, rows, shell, cwd)?;
-        let pid = pty.pid();
+        info!(%id, %shell, cols, rows, ?cwd, "Creazione PTY");
+        let conpty = ConPty::new(cols, rows, shell, cwd)?;
+        let pid = conpty.pid();
         info!(%id, pid, "PTY creata con successo");
+
+        let pty = Arc::new(conpty);
 
         let session = PtySession {
             id: id.clone(),
@@ -47,64 +49,73 @@ impl PtyManager {
             cols,
             rows,
             pid,
-            pty,
+            pty: pty.clone(),
         };
 
         self.ptys.lock().unwrap().insert(id.clone(), session);
 
-        let ptys_clone = self.ptys.clone();
+        let ptys = self.ptys.clone();
         let id_clone = id.clone();
 
-        std::thread::spawn(move || {
-            let mut buf = vec![0u8; 65536];
-            loop {
-                let result = {
-                    let mut ptys = ptys_clone.lock().unwrap();
-                    match ptys.get_mut(&id_clone) {
-                        Some(s) => s.pty.read_blocking(&mut buf),
-                        None => break,
+        std::thread::Builder::new()
+            .name(format!("pty-read-{}", &id_clone))
+            .spawn(move || {
+                info!(%id_clone, "Read thread started");
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut buf = vec![0u8; 65536];
+                    loop {
+                        let result = pty.read_blocking(&mut buf);
+                        match result {
+                            Ok(0) => {
+                                info!(%id_clone, "ReadFile returned 0 bytes (EOF)");
+                                break;
+                            }
+                            Ok(n) => {
+                                let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                                let _ = app.emit(
+                                    "pty-output",
+                                    json!({
+                                        "id": id_clone,
+                                        "data": data,
+                                        "eof": false
+                                    }),
+                                );
+                            }
+                            Err(e) => {
+                                warn!(%id_clone, error = %e, "ReadFile error");
+                                break;
+                            }
+                        }
                     }
-                };
+                }));
 
-                match result {
-                    Ok(0) => {
-                        break;
-                    }
-                    Ok(n) => {
-                        let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                        let _ = app.emit(
-                            "pty-output",
-                            json!({
-                                "id": id_clone,
-                                "data": data,
-                                "eof": false
-                            }),
-                        );
-                    }
-                    Err(_) => break,
+                if let Err(e) = &result {
+                    warn!(%id_clone, panic = ?e, "Read thread panicked");
                 }
-            }
 
-            let _ = app.emit(
-                "pty-output",
-                json!({
-                    "id": id_clone,
-                    "data": "",
-                    "eof": true
-                }),
-            );
+                info!(%id_clone, "Read thread emitting EOF");
+                let _ = app.emit(
+                    "pty-output",
+                    json!({
+                        "id": id_clone,
+                        "data": "",
+                        "eof": true
+                    }),
+                );
 
-            let mut ptys = ptys_clone.lock().unwrap();
-            ptys.remove(&id_clone);
-        });
+                ptys.lock().unwrap().remove(&id_clone);
+                info!(%id_clone, "Read thread exiting, session removed");
+            })
+            .ok();
 
         Ok(())
     }
 
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().unwrap();
+        info!(%id, bytes = data.len(), "Write to PTY");
+        let ptys = self.ptys.lock().unwrap();
         let session = ptys
-            .get_mut(id)
+            .get(id)
             .ok_or_else(|| {
                 warn!(%id, "Write fallita: PTY non trovata");
                 "PTY not found".to_string()
@@ -114,24 +125,27 @@ impl PtyManager {
     }
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().unwrap();
+        let ptys = self.ptys.lock().unwrap();
         let session = ptys
-            .get_mut(id)
+            .get(id)
             .ok_or_else(|| {
                 warn!(%id, "Resize fallito: PTY non trovata");
                 "PTY not found".to_string()
             })?;
         session.pty.resize(cols, rows)?;
-        session.cols = cols;
-        session.rows = rows;
         info!(%id, cols, rows, "PTY ridimensionata");
         Ok(())
     }
 
     pub fn kill(&self, id: &str) -> Result<(), String> {
-        let mut ptys = self.ptys.lock().unwrap();
-        if let Some(mut session) = ptys.remove(id) {
-            session.pty.kill()?;
+        let session = {
+            let mut ptys = self.ptys.lock().unwrap();
+            ptys.remove(id)
+        };
+
+        if let Some(session) = session {
+            session.pty.terminate_process();
+            drop(session);
             info!(%id, "PTY terminata");
         }
         Ok(())
@@ -155,15 +169,10 @@ impl PtyManager {
     pub fn cleanup_all(&self) {
         let mut ptys = self.ptys.lock().unwrap();
         let count = ptys.len();
-        for (_, session) in ptys.iter_mut() {
-            let _ = session.pty.kill();
+        for (_, session) in ptys.iter() {
+            session.pty.terminate_process();
         }
         ptys.clear();
         info!(count, "Cleanup PTY completato");
-    }
-
-    pub fn list(&self) -> Vec<String> {
-        let ptys = self.ptys.lock().unwrap();
-        ptys.keys().cloned().collect()
     }
 }

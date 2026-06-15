@@ -171,7 +171,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         { length: terminalCount },
         (_, i) => ({
           id: crypto.randomUUID(),
-          shell: "bash",
+          shell: "powershell.exe",
           agentId: ids[i] || null,
           command: null,
           cwd: folderPath,

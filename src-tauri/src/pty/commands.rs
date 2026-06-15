@@ -22,7 +22,7 @@ pub fn create_pty(
     cwd: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    manager.create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)?;
+    manager.inner().create(id.clone(), &shell, cols, rows, cwd.as_deref(), app)?;
     Ok(id)
 }
 
@@ -33,7 +33,7 @@ pub fn write_pty(
     data: String,
 ) -> Result<(), String> {
     let bytes = data.into_bytes();
-    manager.write(&id, &bytes)
+    manager.inner().write(&id, &bytes)
 }
 
 #[tauri::command]
@@ -43,12 +43,12 @@ pub fn resize_pty(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    manager.resize(&id, cols, rows)
+    manager.inner().resize(&id, cols, rows)
 }
 
 #[tauri::command]
 pub fn kill_pty(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
-    manager.kill(&id)
+    manager.inner().kill(&id)
 }
 
 #[tauri::command]
@@ -56,7 +56,7 @@ pub fn get_terminal_info(
     manager: State<'_, PtyManager>,
     id: String,
 ) -> Result<TerminalInfo, String> {
-    let info = manager.get_info(&id)?;
+    let info = manager.inner().get_info(&id)?;
     let ti: TerminalInfo =
         serde_json::from_value(info).map_err(|e| format!("Errore deserializzazione: {}", e))?;
     Ok(ti)

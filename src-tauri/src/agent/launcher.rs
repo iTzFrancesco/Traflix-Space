@@ -101,9 +101,4 @@ impl AgentLauncher {
             .get(terminal_id)
             .map(|info| info.agent_id.clone())
     }
-
-    pub async fn cleanup_all(&self) {
-        self.running_agents.lock().await.clear();
-            info!("Cleanup agenti completato");
-    }
 }
