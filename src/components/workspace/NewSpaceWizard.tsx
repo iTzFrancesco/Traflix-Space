@@ -1,8 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   FolderOpen,
-  LayoutGrid,
-  SlidersHorizontal,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -11,17 +9,14 @@ import {
   Minus,
   Bot,
   Terminal,
-  Code,
-  Server,
-  Container,
-  Database,
+  LayoutGrid,
   BrainCircuit,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
-import { PRESETS } from "../../lib/presets";
 import { AGENTS } from "../../lib/agents";
+import { computeLayout, QUICK_COUNTS } from "../../lib/presets";
 import { Modal } from "../ui/Modal";
 import type { Workspace } from "../../stores/workspaceStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -33,18 +28,17 @@ interface NewSpaceWizardProps {
 
 const STEPS = [
   { num: 1, label: "Cartella" },
-  { num: 2, label: "Preset" },
-  { num: 3, label: "Terminali" },
+  { num: 2, label: "Conteggio" },
+  { num: 3, label: "Agenti" },
   { num: 4, label: "Conferma" },
 ];
 
-const presetIcons: Record<string, typeof Sparkles> = {
-  blank: Terminal,
-  fullstack: Code,
-  "api-server": Server,
-  "ai-swarm": Bot,
-  devops: Container,
-  "data-science": Database,
+const DISPLAY_AGENTS = AGENTS.filter((a) => a.id !== "custom");
+
+const agentIcons: Record<string, typeof Bot> = {
+  aider: Bot,
+  opencode: Terminal,
+  "claude-code": Bot,
 };
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
@@ -53,27 +47,20 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   const [step, setStep] = useState(1);
   const [folderPath, setFolderPath] = useState("");
-  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
-  const [isManual, setIsManual] = useState(false);
-  const [terminalCount, setTerminalCount] = useState(1);
-  const [agentIds, setAgentIds] = useState<(string | null)[]>([null]);
-  const [shells, setShells] = useState<string[]>(["bash"]);
+  const [terminalCount, setTerminalCount] = useState(4);
+  const [agentCounts, setAgentCounts] = useState<Record<string, number>>({});
   const [creating, setCreating] = useState(false);
 
-  const preset = selectedPresetId
-    ? PRESETS.find((p) => p.id === selectedPresetId) ?? null
-    : null;
+  const [cmdInput, setCmdInput] = useState("");
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const layout = useMemo(() => {
-    if (preset && !isManual) return preset.layout;
-    if (terminalCount === 1) return { rows: 1, cols: 1 };
-    if (terminalCount <= 2) return { rows: 1, cols: 2 };
-    if (terminalCount <= 4) return { rows: 2, cols: 2 };
-    if (terminalCount <= 6) return { rows: 2, cols: 3 };
-    if (terminalCount <= 9) return { rows: 3, cols: 3 };
-    if (terminalCount <= 12) return { rows: 3, cols: 4 };
-    return { rows: 4, cols: 4 };
-  }, [preset, isManual, terminalCount]);
+  const assignedCount = useMemo(
+    () => Object.values(agentCounts).reduce((a, b) => a + b, 0),
+    [agentCounts],
+  );
+
+  const layout = useMemo(() => computeLayout(terminalCount), [terminalCount]);
 
   const workspaceName = useMemo(() => {
     if (!folderPath) return "";
@@ -81,15 +68,118 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     return parts[parts.length - 1] || "untitled";
   }, [folderPath]);
 
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open, step]);
+
+  function normalizeCounts(
+    counts: Record<string, number>,
+    max: number,
+  ): Record<string, number> {
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    if (total <= max) return counts;
+    const keys = Object.keys(counts);
+    let remaining = max;
+    const next: Record<string, number> = {};
+    for (let i = 0; i < keys.length; i++) {
+      if (i === keys.length - 1) {
+        next[keys[i]] = remaining;
+      } else {
+        next[keys[i]] = Math.min(counts[keys[i]], remaining);
+        remaining -= next[keys[i]];
+      }
+    }
+    return next;
+  }
+
+  function updateCount(delta: number) {
+    setTerminalCount((prev) => {
+      const next = Math.max(1, Math.min(16, prev + delta));
+      setAgentCounts((c) => normalizeCounts(c, next));
+      return next;
+    });
+  }
+
+  function setCount(n: number) {
+    setTerminalCount(n);
+    setAgentCounts((c) => normalizeCounts(c, n));
+  }
+
+  function incrementAgent(id: string) {
+    setAgentCounts((prev) => {
+      const total = Object.values(prev).reduce((a, b) => a + b, 0);
+      if (total >= terminalCount) return prev;
+      return { ...prev, [id]: (prev[id] || 0) + 1 };
+    });
+  }
+
+  function decrementAgent(id: string) {
+    setAgentCounts((prev) => {
+      const current = prev[id] || 0;
+      if (current <= 0) return prev;
+      const next = { ...prev, [id]: current - 1 };
+      return next;
+    });
+  }
+
+  function fillAllWith(id: string) {
+    setAgentCounts({ [id]: terminalCount });
+  }
+
+  function resolvePath(base: string, target: string): string {
+    const t = target.replace(/\\/g, "/").trim();
+    if (t === "..") {
+      const b = base.replace(/\\/g, "/").replace(/\/$/, "");
+      const parts = b.split("/");
+      if (parts.length > 0 && parts[parts.length - 1].includes(":")) return b;
+      parts.pop();
+      return parts.join("/") || "/";
+    }
+    if (/^[A-Za-z]:\//.test(t) || t.startsWith("/")) {
+      return t;
+    }
+    const b = base.replace(/\\/g, "/").replace(/\/$/, "");
+    const baseParts = b.split("/");
+    for (const p of t.split("/")) {
+      if (p === "..") baseParts.pop();
+      else if (p !== "." && p !== "") baseParts.push(p);
+    }
+    return baseParts.join("/");
+  }
+
+  function handleTerminalCommand(input: string) {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    const parts = trimmed.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    if (cmd === "cd") {
+      const target = parts.slice(1).join(" ") || "";
+      if (!target) return;
+      const resolved = resolvePath(folderPath || "~", target);
+      setFolderPath(resolved);
+      setCmdHistory((h) => [...h, `$ ${trimmed}`]);
+    } else if (cmd === "pwd") {
+      setCmdHistory((h) => [...h, `$ ${trimmed}`, folderPath || "~"]);
+    } else if (cmd === "clear") {
+      setCmdHistory([]);
+      return;
+    } else {
+      setCmdHistory((h) => [
+        ...h,
+        `$ ${trimmed}`,
+        `Comando sconosciuto: ${cmd}. Usa: cd <percorso>`,
+      ]);
+    }
+  }
+
   function reset() {
     setStep(1);
     setFolderPath("");
-    setSelectedPresetId(null);
-    setIsManual(false);
-    setTerminalCount(1);
-    setAgentIds([null]);
-    setShells(["bash"]);
+    setTerminalCount(4);
+    setAgentCounts({});
     setCreating(false);
+    setCmdInput("");
+    setCmdHistory([]);
   }
 
   function handleClose() {
@@ -101,80 +191,33 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     try {
       const path = await invoke<string>("select_folder");
       setFolderPath(path);
-    } catch {
-      // User cancelled
-    }
-  }
-
-  function handleSelectPreset(id: string) {
-    setSelectedPresetId(id);
-    setIsManual(false);
-    const p = PRESETS.find((pr) => pr.id === id);
-    if (p) {
-      setTerminalCount(p.terminalCount);
-      setAgentIds(Array(p.terminalCount).fill(p.agentId));
-      setShells(Array(p.terminalCount).fill(p.shell));
-    }
-  }
-
-  function handleManualMode() {
-    setIsManual(true);
-    setSelectedPresetId(null);
-  }
-
-  function updateTerminalCount(delta: number) {
-    const next = Math.max(1, Math.min(16, terminalCount + delta));
-    setTerminalCount(next);
-    setAgentIds((prev) => {
-      const arr = [...prev];
-      while (arr.length < next) arr.push(null);
-      while (arr.length > next) arr.pop();
-      return arr;
-    });
-    setShells((prev) => {
-      const arr = [...prev];
-      while (arr.length < next) arr.push("bash");
-      while (arr.length > next) arr.pop();
-      return arr;
-    });
-  }
-
-  function updateAgent(index: number, agentId: string | null) {
-    setAgentIds((prev) => {
-      const arr = [...prev];
-      arr[index] = agentId || null;
-      return arr;
-    });
-  }
-
-  function updateShell(index: number, shell: string) {
-    setShells((prev) => {
-      const arr = [...prev];
-      arr[index] = shell;
-      return arr;
-    });
+    } catch {}
   }
 
   async function handleCreate() {
     setCreating(true);
     try {
+      const ids: (string | null)[] = [];
+      for (const [agentId, count] of Object.entries(agentCounts)) {
+        for (let i = 0; i < count; i++) ids.push(agentId);
+      }
+      while (ids.length < terminalCount) ids.push(null);
+
       const terminals: TerminalConfig[] = Array.from(
         { length: terminalCount },
         (_, i) => ({
           id: crypto.randomUUID(),
-          shell: shells[i] || "bash",
-          agentId: agentIds[i] || null,
+          shell: "bash",
+          agentId: ids[i] || null,
           command: null,
           cwd: folderPath,
-          title:
-            agentIds[i]
-              ? AGENTS.find((a) => a.id === agentIds[i])?.name ?? shells[i]
-              : shells[i],
+          title: ids[i]
+            ? AGENTS.find((a) => a.id === ids[i])?.name ?? "Terminale"
+            : "Terminale",
         }),
       );
 
       const now = new Date().toISOString();
-
       const config = {
         id: crypto.randomUUID(),
         name: workspaceName,
@@ -204,7 +247,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       handleClose();
     } catch (err) {
       console.error("Errore creazione workspace:", err);
-      addToast({ type: "error", message: "Errore nella creazione del workspace" });
+      addToast({
+        type: "error",
+        message: "Errore nella creazione del workspace",
+      });
     } finally {
       setCreating(false);
     }
@@ -212,367 +258,511 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   function canProceed(): boolean {
     switch (step) {
-      case 1: return folderPath.length > 0;
-      case 2: return isManual || !!preset;
-      case 3: return terminalCount >= 1;
-      case 4: return true;
-      default: return false;
+      case 1:
+        return folderPath.length > 0;
+      case 2:
+        return terminalCount >= 1;
+      case 3:
+        return true;
+      case 4:
+        return true;
+      default:
+        return false;
     }
   }
 
   return (
-    <Modal open={open} onClose={handleClose} title="Nuovo Spazio di Lavoro" width="max-w-3xl">
-      {/* Step indicator */}
-      <div className="flex items-center justify-center gap-2 mb-8">
-        {STEPS.map((s, i) => (
-          <div key={s.num} className="flex items-center gap-2">
-            <div
-              className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-colors ${
-                step > s.num
-                  ? "bg-primary text-white"
-                  : step === s.num
-                    ? "bg-primary/20 text-primary border border-primary/40"
-                    : "bg-neutral-elevated text-neutral-text-muted"
-              }`}
-            >
-              {step > s.num ? <Check size={14} /> : s.num}
-            </div>
-            <span
-              className={`text-xs font-medium ${
-                step === s.num ? "text-neutral-text" : "text-neutral-text-muted"
-              }`}
-            >
-              {s.label}
-            </span>
-            {i < STEPS.length - 1 && (
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title="Nuovo Spazio di Lavoro"
+      width="max-w-3xl"
+    >
+      <div className="space-y-7">
+        {/* Step indicator */}
+        <div className="flex items-center justify-center gap-2">
+          {STEPS.map((s, i) => (
+            <div key={s.num} className="flex items-center gap-2">
               <div
-                className="w-8 h-px mx-1"
-                style={{
-                  backgroundColor:
-                    step > s.num ? "var(--color-primary, #e85d04)" : "rgba(255,255,255,0.06)",
-                }}
-              />
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Step 1: Folder Selection */}
-      {step === 1 && (
-        <div className="space-y-5">
-          <p className="text-sm text-neutral-text-dim">
-            Seleziona la cartella del progetto per questo workspace.
-          </p>
-
-          <div className="flex items-center gap-3">
-            <div
-              className="flex-1 flex items-center gap-3 px-4 py-3 rounded-lg border bg-neutral-elevated"
-              style={{ borderColor: "rgba(255,255,255,0.06)" }}
-            >
-              <FolderOpen size={18} className="text-primary shrink-0" />
-              <span
-                className={`text-sm truncate ${
-                  folderPath ? "text-neutral-text" : "text-neutral-text-muted"
+                className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+                  step > s.num
+                    ? "bg-primary text-white shadow-[0_0_12px_rgba(232,93,4,0.25)]"
+                    : step === s.num
+                      ? "bg-primary/15 text-primary ring-1 ring-primary/40 shadow-[0_0_8px_rgba(232,93,4,0.12)]"
+                      : "bg-white/[0.04] text-neutral-text-muted"
                 }`}
               >
-                {folderPath || "Nessuna cartella selezionata"}
+                {step > s.num ? <Check size={13} /> : s.num}
+              </div>
+              <span
+                className={`text-[0.65rem] font-medium tracking-wide uppercase transition-colors ${
+                  step === s.num ? "text-neutral-text" : "text-neutral-text-muted"
+                }`}
+              >
+                {s.label}
               </span>
+              {i < STEPS.length - 1 && (
+                <div
+                  className="w-8 h-px mx-1 transition-colors duration-500"
+                  style={{
+                    backgroundColor:
+                      step > s.num
+                        ? "var(--color-primary, #e85d04)"
+                        : "rgba(255,255,255,0.05)",
+                  }}
+                />
+              )}
             </div>
-            <button
-              onClick={handleSelectFolder}
-              className="px-4 py-3 text-sm font-medium text-primary bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors whitespace-nowrap"
-            >
-              Sfoglia...
-            </button>
-          </div>
+          ))}
+        </div>
 
-          {folderPath && (
-            <p className="text-xs text-neutral-text-muted">
-              Nome progetto: <span className="text-neutral-text-dim font-medium">{workspaceName}</span>
+        {/* Step 1 — Cartella */}
+        {step === 1 && (
+          <div className="space-y-5">
+            <p className="text-sm text-neutral-text-dim">
+              Seleziona la cartella del progetto o usa il terminale per navigare.
             </p>
-          )}
-        </div>
-      )}
 
-      {/* Step 2: Preset Selection */}
-      {step === 2 && (
-        <div className="space-y-5">
-          <p className="text-sm text-neutral-text-dim">
-            Scegli un preset per configurare rapidamente il workspace, o configura manualmente.
-          </p>
-
-          <div className="grid grid-cols-3 gap-3">
-            {PRESETS.map((p) => {
-              const Icon = presetIcons[p.id] || Terminal;
-              const isSelected = selectedPresetId === p.id && !isManual;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => handleSelectPreset(p.id)}
-                  className={`flex flex-col items-start gap-3 p-4 rounded-xl border text-left transition-all ${
-                    isSelected
-                      ? "border-primary/50 bg-primary/5"
-                      : "border-transparent bg-neutral-elevated hover:bg-white/[0.03]"
+            {/* Current folder */}
+            <div
+              className="flex items-center gap-3 p-1 rounded-2xl"
+              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
+            >
+              <div className="flex items-center gap-3 px-4 py-3 rounded-[calc(1rem-0.25rem)] flex-1 bg-neutral-elevated">
+                <FolderOpen size={16} className="text-primary shrink-0" />
+                <span
+                  className={`text-sm font-mono truncate ${
+                    folderPath
+                      ? "text-neutral-text"
+                      : "text-neutral-text-muted"
                   }`}
-                  style={isSelected ? { boxShadow: "0 0 20px rgba(232,93,4,0.08)" } : undefined}
                 >
-                  <Icon size={24} className={isSelected ? "text-primary" : "text-neutral-text-muted"} />
-                  <div>
-                    <p className="text-sm font-medium text-neutral-text">{p.name}</p>
-                    <p className="text-xs text-neutral-text-muted mt-1">{p.description}</p>
-                    <div className="flex gap-3 mt-2">
-                      <span className="text-[0.65rem] text-neutral-text-muted">
-                        {p.terminalCount} term
-                      </span>
-                      <span className="text-[0.65rem] text-neutral-text-muted">
-                        {p.agentCount} agenti
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-              <div className="w-full border-t" style={{ borderColor: "rgba(255,255,255,0.06)" }} />
-            </div>
-            <div className="relative flex justify-center">
-              <span className="px-3 text-xs text-neutral-text-muted bg-[#111113]">
-                oppure
-              </span>
-            </div>
-          </div>
-
-          <button
-            onClick={handleManualMode}
-            className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl border text-left transition-all ${
-              isManual
-                ? "border-primary/50 bg-primary/5"
-                : "border-transparent bg-neutral-elevated hover:bg-white/[0.03]"
-            }`}
-          >
-            <SlidersHorizontal size={20} className={isManual ? "text-primary" : "text-neutral-text-muted"} />
-            <div>
-              <p className="text-sm font-medium text-neutral-text">Configurazione Manuale</p>
-              <p className="text-xs text-neutral-text-muted mt-0.5">
-                Scegli numero e tipo di terminali manualmente
-              </p>
-            </div>
-          </button>
-        </div>
-      )}
-
-      {/* Step 3: Terminal Configuration */}
-      {step === 3 && (
-        <div className="space-y-5">
-          <p className="text-sm text-neutral-text-dim">
-            Configura terminali e agenti per questo workspace.
-          </p>
-
-          {/* Terminal count slider */}
-          <div className="flex items-center justify-between p-4 rounded-xl bg-neutral-elevated border" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <div>
-              <p className="text-sm font-medium text-neutral-text">Terminali</p>
-              <p className="text-xs text-neutral-text-muted mt-0.5">Da 1 a 16</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => updateTerminalCount(-1)}
-                disabled={terminalCount <= 1}
-                className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 transition-colors disabled:opacity-30"
-              >
-                <Minus size={14} />
-              </button>
-              <span className="font-display font-bold text-xl text-primary min-w-[2ch] text-center tabular-nums">
-                {terminalCount}
-              </span>
-              <button
-                onClick={() => updateTerminalCount(1)}
-                disabled={terminalCount >= 16}
-                className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 transition-colors disabled:opacity-30"
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-          </div>
-
-          {/* Layout preview */}
-          <div className="flex items-center gap-3">
-            <LayoutGrid size={16} className="text-neutral-text-muted shrink-0" />
-            <span className="text-xs text-neutral-text-muted">
-              Layout: <strong className="text-neutral-text-dim">{layout.rows}x{layout.cols}</strong> grid
-            </span>
-          </div>
-
-          {/* Per-terminal config */}
-          <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
-            {Array.from({ length: terminalCount }).map((_, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 p-3 rounded-lg border bg-neutral-elevated"
-                style={{ borderColor: "rgba(255,255,255,0.06)" }}
-              >
-                <span className="text-xs font-mono text-neutral-text-muted min-w-[4ch]">
-                  #{i + 1}
+                  {folderPath || "Nessuna cartella selezionata"}
                 </span>
+              </div>
+              <button
+                onClick={handleSelectFolder}
+                className="px-4 py-3 mr-0.5 text-sm font-medium text-primary bg-primary/10 border border-primary/20 rounded-xl hover:bg-primary/20 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
+              >
+                Sfoglia...
+              </button>
+            </div>
 
-                <select
-                  value={shells[i] || "bash"}
-                  onChange={(e) => updateShell(i, e.target.value)}
-                  className="flex-1 px-3 py-1.5 text-xs rounded-md bg-neutral-bg border text-neutral-text-dim outline-none appearance-none cursor-pointer"
-                  style={{ borderColor: "rgba(255,255,255,0.06)" }}
-                >
-                  <option value="bash">bash</option>
-                  <option value="zsh">zsh</option>
-                  <option value="pwsh">pwsh</option>
-                  <option value="cmd">cmd</option>
-                </select>
-
-                <select
-                  value={agentIds[i] || ""}
-                  onChange={(e) => updateAgent(i, e.target.value || null)}
-                  className="flex-[2] px-3 py-1.5 text-xs rounded-md bg-neutral-bg border text-neutral-text-dim outline-none appearance-none cursor-pointer"
-                  style={{ borderColor: "rgba(255,255,255,0.06)" }}
-                >
-                  <option value="">Nessun agente</option>
-                  {AGENTS.filter((a) => a.id !== "custom").map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                  <option value="custom">Comando Personalizzato</option>
-                </select>
-
-                {agentIds[i] && (
-                  <span
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[0.65rem] font-medium"
-                    style={{
-                      backgroundColor: `${AGENTS.find((a) => a.id === agentIds[i])?.color}20` || "rgba(113,113,122,0.2)",
-                      color: AGENTS.find((a) => a.id === agentIds[i])?.color || "#71717a",
-                    }}
-                  >
-                    <Bot size={10} />
-                    {AGENTS.find((a) => a.id === agentIds[i])?.name || "Custom"}
+            {/* Faux terminal */}
+            <div className="overflow-hidden rounded-2xl border border-white/[0.06] bg-black/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/[0.04] bg-black/30">
+                <div className="flex gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
+                </div>
+                <span className="text-[0.6rem] font-mono text-neutral-text-muted ml-2 tracking-wider uppercase">
+                  terminale
+                </span>
+              </div>
+              <div className="p-4 font-mono text-sm leading-relaxed min-h-[140px]">
+                <div className="flex items-center gap-2 text-xs text-neutral-text-dim mb-2">
+                  <span className="text-green-400/80 font-bold">~</span>
+                  <span className="text-neutral-text-muted">
+                    {folderPath || "Nessuna cartella"}
                   </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Step 4: Confirm */}
-      {step === 4 && (
-        <div className="space-y-5">
-          <p className="text-sm text-neutral-text-dim">
-            Riepilogo del nuovo spazio di lavoro. Conferma per creare.
-          </p>
-
-          <div
-            className="rounded-xl border p-5 space-y-4"
-            style={{ backgroundColor: "#0a0a0a", borderColor: "rgba(255,255,255,0.06)" }}
-          >
-            <div className="flex items-center gap-3 pb-4 border-b" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                <BrainCircuit size={20} className="text-primary" />
-              </div>
-              <div>
-                <h3 className="font-display font-bold text-base text-neutral-text">
-                  {workspaceName}
-                </h3>
-                <p className="text-xs text-neutral-text-muted mt-0.5">{folderPath}</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-4">
-              <div className="text-center p-3 rounded-lg bg-neutral-elevated">
-                <p className="text-2xl font-display font-bold text-primary">{layout.rows}&times;{layout.cols}</p>
-                <p className="text-xs text-neutral-text-muted mt-1">Layout Grid</p>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-neutral-elevated">
-                <p className="text-2xl font-display font-bold text-primary">{terminalCount}</p>
-                <p className="text-xs text-neutral-text-muted mt-1">Terminali</p>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-neutral-elevated">
-                <p className="text-2xl font-display font-bold text-primary">
-                  {agentIds.filter(Boolean).length}
-                </p>
-                <p className="text-xs text-neutral-text-muted mt-1">Agenti</p>
-              </div>
-            </div>
-
-            {agentIds.filter(Boolean).length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-neutral-text-muted mb-2 uppercase tracking-wider">
-                  Agenti Configurati
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {agentIds.filter(Boolean).map((aid, i) => {
-                    const agent = AGENTS.find((a) => a.id === aid);
-                    if (!agent) return null;
-                    return (
-                      <span
-                        key={`${aid}-${i}`}
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium"
-                        style={{
-                          backgroundColor: `${agent.color}15`,
-                          color: agent.color,
-                          border: `1px solid ${agent.color}30`,
-                        }}
-                      >
-                        <Bot size={12} />
-                        {agent.name}
-                      </span>
-                    );
-                  })}
+                </div>
+                {cmdHistory.map((line, i) => (
+                  <div
+                    key={i}
+                    className={`text-xs leading-6 ${
+                      line.startsWith("$ ")
+                        ? "text-neutral-text-dim"
+                        : line.startsWith("✓")
+                          ? "text-green-400/80"
+                          : line.startsWith("Comando")
+                            ? "text-red-400/70"
+                            : "text-neutral-text-muted"
+                    }`}
+                  >
+                    {line}
+                  </div>
+                ))}
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-green-400 text-sm font-bold">$</span>
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={cmdInput}
+                    onChange={(e) => setCmdInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleTerminalCommand(cmdInput);
+                        setCmdInput("");
+                      }
+                    }}
+                    placeholder="cd /percorso/del/progetto"
+                    className="flex-1 bg-transparent text-sm text-neutral-text outline-none placeholder-neutral-text-muted/40"
+                  />
                 </div>
               </div>
+            </div>
+
+            {folderPath && (
+              <p className="text-xs text-neutral-text-muted font-mono">
+                Nome progetto:{" "}
+                <span className="text-neutral-text-dim font-medium">
+                  {workspaceName}
+                </span>
+              </p>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Navigation */}
-      <div className="flex items-center justify-between mt-8 pt-4 border-t" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-        <button
-          onClick={() => setStep((s) => Math.max(1, s - 1))}
-          disabled={step === 1}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-neutral-text-muted rounded-lg hover:bg-white/5 transition-colors disabled:opacity-30"
-        >
-          <ChevronLeft size={16} />
-          Indietro
-        </button>
-
-        {step < 4 ? (
-          <button
-            onClick={() => setStep((s) => s + 1)}
-            disabled={!canProceed()}
-            className="flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-primary rounded-lg hover:brightness-110 transition-all disabled:opacity-40"
-          >
-            Avanti
-            <ChevronRight size={16} />
-          </button>
-        ) : (
-          <button
-            onClick={handleCreate}
-            disabled={creating}
-            className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-primary rounded-lg hover:brightness-110 transition-all disabled:opacity-40"
-          >
-            {creating ? (
-              <>
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Creazione...
-              </>
-            ) : (
-              <>
-                <Sparkles size={16} />
-                Crea Spazio
-              </>
-            )}
-          </button>
         )}
+
+        {/* Step 2 — Conteggio */}
+        {step === 2 && (
+          <div className="space-y-6">
+            <p className="text-sm text-neutral-text-dim">
+              Quanti terminali vuoi aprire nel workspace?
+            </p>
+
+            {/* Quick counts */}
+            <div className="grid grid-cols-5 gap-3">
+              {QUICK_COUNTS.map((n) => {
+                const active = terminalCount === n;
+                return (
+                  <button
+                    key={n}
+                    onClick={() => setCount(n)}
+                    className={`relative py-4 rounded-2xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
+                      active
+                        ? "bg-primary/10 text-primary ring-1 ring-primary/40 shadow-[0_0_16px_rgba(232,93,4,0.08)]"
+                        : "bg-white/[0.03] text-neutral-text-muted hover:bg-white/[0.06] hover:text-neutral-text-dim border border-white/[0.04]"
+                    }`}
+                  >
+                    <span className="block text-xl font-bold font-display">
+                      {n}
+                    </span>
+                    <span className="text-[0.55rem] uppercase tracking-wider mt-1 block opacity-60">
+                      terminali
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Divider */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-white/[0.04]" />
+              </div>
+              <div className="relative flex justify-center">
+                <span className="px-3 text-[0.6rem] uppercase tracking-widest text-neutral-text-muted bg-[#111113]">
+                  o personalizza
+                </span>
+              </div>
+            </div>
+
+            {/* +/- controls */}
+            <div className="flex items-center justify-between p-1 rounded-2xl bg-white/[0.03]">
+              <div className="flex items-center gap-4 px-5 py-3.5 rounded-[calc(1rem-0.25rem)] flex-1 bg-neutral-elevated">
+                <LayoutGrid size={16} className="text-primary shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-neutral-text">
+                    Terminali
+                  </p>
+                  <p className="text-[0.6rem] text-neutral-text-muted mt-0.5">
+                    Layout: {layout.rows}&times;{layout.cols}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 px-4">
+                <button
+                  onClick={() => updateCount(-1)}
+                  disabled={terminalCount <= 1}
+                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                >
+                  <Minus size={14} />
+                </button>
+                <span className="font-display font-bold text-2xl text-primary min-w-[2.5ch] text-center tabular-nums">
+                  {terminalCount}
+                </span>
+                <button
+                  onClick={() => updateCount(1)}
+                  disabled={terminalCount >= 16}
+                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Grid preview */}
+            <div className="flex items-center gap-2 justify-center">
+              {Array.from({ length: terminalCount }).map((_, i) => (
+                <div
+                  key={i}
+                  className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center transition-all duration-300"
+                  style={{
+                    animationDelay: `${i * 30}ms`,
+                  }}
+                >
+                  <span className="text-[0.5rem] font-mono text-primary/60">
+                    {i + 1}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Step 3 — Agenti */}
+        {step === 3 && (
+          <div className="space-y-5">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-neutral-text-dim">
+                Assegna agenti ai {terminalCount} terminali.
+              </p>
+              <span className="text-xs font-mono text-neutral-text-muted">
+                {assignedCount}/{terminalCount} assegnati
+              </span>
+            </div>
+
+            {/* Progress bar */}
+            <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
+                style={{
+                  width: `${(assignedCount / terminalCount) * 100}%`,
+                  background:
+                    assignedCount === terminalCount
+                      ? "linear-gradient(90deg, #e85d04, #ff7b00)"
+                      : "linear-gradient(90deg, rgba(232,93,4,0.5), rgba(232,93,4,0.3))",
+                }}
+              />
+            </div>
+
+            {/* Agent cards */}
+            <div className="grid grid-cols-2 gap-3">
+              {DISPLAY_AGENTS.map((agent) => {
+                const count = agentCounts[agent.id] || 0;
+                return (
+                  <div
+                    key={agent.id}
+                    className="p-1 rounded-2xl transition-all duration-300"
+                    style={{
+                      backgroundColor: count > 0 ? `${agent.color}08` : "rgba(255,255,255,0.02)",
+                    }}
+                  >
+                    <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-4 border border-white/[0.04]">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className="w-9 h-9 rounded-xl flex items-center justify-center"
+                            style={{
+                              backgroundColor: `${agent.color}18`,
+                            }}
+                          >
+                            {agentIcons[agent.id] ? (
+                              <Bot size={16} style={{ color: agent.color }} />
+                            ) : (
+                              <Terminal size={16} style={{ color: agent.color }} />
+                            )}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-neutral-text">
+                              {agent.name}
+                            </p>
+                            <p className="text-[0.6rem] text-neutral-text-muted mt-px">
+                              {agent.description}
+                            </p>
+                          </div>
+                        </div>
+                        <span
+                          className="text-lg font-bold font-display tabular-nums transition-all duration-300"
+                          style={{ color: count > 0 ? agent.color : "rgba(255,255,255,0.15)" }}
+                        >
+                          {count}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => decrementAgent(agent.id)}
+                          disabled={count <= 0}
+                          className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                        >
+                          <Minus size={12} />
+                        </button>
+
+                        <button
+                          onClick={() => fillAllWith(agent.id)}
+                          className="flex-1 text-[0.6rem] font-medium py-1.5 rounded-lg uppercase tracking-wider transition-all duration-200 active:scale-[0.97]"
+                          style={{
+                            backgroundColor: `${agent.color}12`,
+                            color: agent.color,
+                          }}
+                        >
+                          {assignedCount === count ? "Rimuovi tutti" : "Tutti"}
+                        </button>
+
+                        <button
+                          onClick={() => incrementAgent(agent.id)}
+                          disabled={
+                            assignedCount >= terminalCount
+                          }
+                          className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {assignedCount < terminalCount && (
+              <p className="text-xs text-neutral-text-muted text-center">
+                {terminalCount - assignedCount} terminale{terminalCount - assignedCount !== 1 ? "i" : ""}{" "}
+                senza agente
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Step 4 — Conferma */}
+        {step === 4 && (
+          <div className="space-y-5">
+            <p className="text-sm text-neutral-text-dim">
+              Riepilogo del nuovo spazio di lavoro. Conferma per creare.
+            </p>
+
+            <div
+              className="p-1 rounded-2xl"
+              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
+            >
+              <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
+                <div className="flex items-center gap-3 pb-4 border-b border-white/[0.04]">
+                  <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <BrainCircuit size={20} className="text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-bold text-base text-neutral-text">
+                      {workspaceName}
+                    </h3>
+                    <p className="text-xs text-neutral-text-muted mt-0.5 font-mono">
+                      {folderPath}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
+                    <p className="text-2xl font-display font-bold text-primary">
+                      {layout.rows}&times;{layout.cols}
+                    </p>
+                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
+                      Layout
+                    </p>
+                  </div>
+                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
+                    <p className="text-2xl font-display font-bold text-primary">
+                      {terminalCount}
+                    </p>
+                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
+                      Terminali
+                    </p>
+                  </div>
+                  <div className="text-center p-3.5 rounded-xl bg-white/[0.03]">
+                    <p className="text-2xl font-display font-bold text-primary">
+                      {assignedCount}
+                    </p>
+                    <p className="text-[0.55rem] uppercase tracking-wider text-neutral-text-muted mt-1">
+                      Agenti
+                    </p>
+                  </div>
+                </div>
+
+                {assignedCount > 0 && (
+                  <div>
+                    <p className="text-[0.55rem] font-medium text-neutral-text-muted mb-2 uppercase tracking-widest">
+                      Agenti configurati
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(agentCounts).map(([aid, count]) => {
+                        if (count <= 0) return null;
+                        const agent = AGENTS.find((a) => a.id === aid);
+                        if (!agent) return null;
+                        return (
+                          <span
+                            key={aid}
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[0.6rem] font-medium"
+                            style={{
+                              backgroundColor: `${agent.color}12`,
+                              color: agent.color,
+                              border: `1px solid ${agent.color}20`,
+                            }}
+                          >
+                            <Bot size={10} />
+                            {agent.name}
+                            <span className="opacity-60 ml-0.5">&times;{count}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Navigation */}
+        <div className="flex items-center justify-between pt-4 border-t border-white/[0.04]">
+          <button
+            onClick={() => setStep((s) => Math.max(1, s - 1))}
+            disabled={step === 1}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm text-neutral-text-muted rounded-xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
+          >
+            <ChevronLeft size={15} />
+            Indietro
+          </button>
+
+          {step < 4 ? (
+            <button
+              onClick={() => setStep((s) => s + 1)}
+              disabled={!canProceed()}
+              className="group flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
+              style={{
+                background: canProceed()
+                  ? "linear-gradient(135deg, #e85d04, #ff7b00)"
+                  : "rgba(255,255,255,0.05)",
+              }}
+            >
+              Avanti
+              <div className="w-5 h-5 rounded-full bg-white/15 flex items-center justify-center group-hover:translate-x-0.5 transition-transform duration-200">
+                <ChevronRight size={12} />
+              </div>
+            </button>
+          ) : (
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="group flex items-center gap-2.5 px-6 py-2.5 text-sm font-bold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
+              style={{
+                background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+              }}
+            >
+              {creating ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Creazione...
+                </>
+              ) : (
+                <>
+                  <Sparkles size={15} />
+                  Crea Spazio
+                </>
+              )}
+            </button>
+          )}
+        </div>
       </div>
     </Modal>
   );

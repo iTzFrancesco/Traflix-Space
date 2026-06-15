@@ -42,19 +42,20 @@ export function XTermWrapper({
     if (!terminalRef.current) return;
 
     const term = new Terminal({
-      theme: TRAFLIX_THEME,
-      fontFamily: '"JetBrains Mono", "Cascadia Code", "Fira Code", monospace',
-      fontSize: 13,
-      lineHeight: 1.35,
+      theme: STOCK_THEME,
+      fontFamily: '"Cascadia Mono", "Cascadia Code", "Consolas", "Courier New", monospace',
+      fontSize: 14,
+      lineHeight: 1.2,
       cursorBlink: true,
-      cursorStyle: "block",
-      cursorWidth: 2,
+      cursorStyle: "bar",
+      cursorWidth: 1,
       allowProposedApi: true,
       cols: 80,
       rows: 24,
       scrollback: 10000,
       smoothScrollDuration: 0,
       macOptionIsMeta: true,
+      drawBoldTextInBrightColors: true,
     });
 
     const webglAddon = new WebglAddon();
@@ -84,7 +85,7 @@ export function XTermWrapper({
         const unlistenPromise = listen<PtyOutputPayload>("pty-output", (event) => {
           if (event.payload.id === ptyId) {
             if (event.payload.eof) {
-              term.write("\r\n\x1b[31m[Process completed]\x1b[0m\r\n");
+              term.write("\r\n[Process completed]\r\n");
               return;
             }
             if (event.payload.data) {
@@ -130,7 +131,7 @@ export function XTermWrapper({
         };
       })
       .catch((err) => {
-        term.write(`\r\n\x1b[31mError: ${err}\x1b[0m\r\n`);
+        term.write(`\r\nError: ${err}\r\n`);
       });
 
     return () => {
@@ -146,7 +147,7 @@ export function XTermWrapper({
     <div
       ref={terminalRef}
       className="w-full h-full min-h-0"
-      style={{ background: "#111113" }}
+      style={{ background: "#0c0c0c" }}
     />
   );
 }
@@ -157,27 +158,27 @@ interface PtyOutputPayload {
   eof: boolean;
 }
 
-const TRAFLIX_THEME = {
-  foreground: "#f4f4f5",
-  background: "#111113",
-  cursor: "#e85d04",
-  cursorAccent: "#0a0a0a",
-  selectionBackground: "rgba(232,93,4,0.3)",
-  selectionInactiveBackground: "rgba(232,93,4,0.15)",
-  black: "#18181b",
-  red: "#ef4444",
-  green: "#22c55e",
-  yellow: "#eab308",
-  blue: "#3b82f6",
-  magenta: "#a855f7",
-  cyan: "#06b6d4",
-  white: "#f4f4f5",
-  brightBlack: "#27272a",
-  brightRed: "#f87171",
-  brightGreen: "#4ade80",
-  brightYellow: "#facc15",
-  brightBlue: "#60a5fa",
-  brightMagenta: "#c084fc",
-  brightCyan: "#22d3ee",
-  brightWhite: "#fafafa",
+const STOCK_THEME = {
+  background: "#0c0c0c",
+  foreground: "#cccccc",
+  cursor: "#ffffff",
+  cursorAccent: "#0c0c0c",
+  selectionBackground: "rgba(255,255,255,0.3)",
+  selectionInactiveBackground: "rgba(255,255,255,0.15)",
+  black: "#0c0c0c",
+  red: "#cd3131",
+  green: "#0dbc79",
+  yellow: "#e5e510",
+  blue: "#2472c8",
+  magenta: "#bc3fbc",
+  cyan: "#11a8cd",
+  white: "#e5e5e5",
+  brightBlack: "#666666",
+  brightRed: "#f14c4c",
+  brightGreen: "#23d18b",
+  brightYellow: "#f5f543",
+  brightBlue: "#3b8eea",
+  brightMagenta: "#d670d6",
+  brightCyan: "#29b8db",
+  brightWhite: "#e5e5e5",
 };

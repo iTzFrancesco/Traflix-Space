@@ -24,7 +24,7 @@ export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
 
   return (
     <div
-      className="grid flex-1 gap-2 p-4"
+      className="grid flex-1 gap-px"
       style={{
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
         gridTemplateRows: `repeat(${rows}, 1fr)`,
