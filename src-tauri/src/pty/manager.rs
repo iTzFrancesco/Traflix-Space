@@ -64,15 +64,17 @@ impl PtyManager {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut buf = vec![0u8; 65536];
                     loop {
+                        info!(%id_clone, "Tentativo lettura da PTY (blocking)...");
                         let result = pty.read_blocking(&mut buf);
                         match result {
                             Ok(0) => {
-                                info!(%id_clone, "ReadFile returned 0 bytes (EOF)");
+                                info!(%id_clone, "ReadFile ha ritornato 0 byte (EOF)");
                                 break;
                             }
                             Ok(n) => {
-                                info!(%id_clone, bytes = n, "Letto chunk da PTY");
+                                info!(%id_clone, bytes = n, "Letto chunk da PTY, encoding base64...");
                                 let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                                info!(%id_clone, base64_len = data.len(), "Emitting pty-output event...");
                                 let _ = app.emit(
                                     "pty-output",
                                     json!({

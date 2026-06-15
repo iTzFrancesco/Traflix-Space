@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,6 +13,12 @@ interface XTermWrapperProps {
   onTerminalReady?: (ptyId: string) => void;
 }
 
+interface PtyOutputPayload {
+  id: string;
+  data: string;
+  eof: boolean;
+}
+
 export function XTermWrapper({
   terminalId,
   shell,
@@ -22,10 +27,13 @@ export function XTermWrapper({
   onTerminalReady,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    console.log(`[XTerm ${terminalId}] Initializing...`);
 
     const term = new Terminal({
       theme: STOCK_THEME,
@@ -38,6 +46,8 @@ export function XTermWrapper({
       scrollback: 10000,
       allowProposedApi: true,
     });
+    termRef.current = term;
+
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
@@ -51,57 +61,90 @@ export function XTermWrapper({
       opened = true;
       fitObserver.disconnect();
 
+      console.log(`[XTerm ${terminalId}] Opening terminal container...`);
       term.open(container);
+      term.write("\x1b[1;33mDEBUG: Terminal opened, waiting for PTY...\x1b[0m\r\n");
+      term.write("Connecting to PTY...\r\n");
 
+      // Temporaneamente disabilitiamo WebGL per debug
+      /*
       try {
         const webglAddon = new WebglAddon();
         webglAddon.onContextLoss(() => webglAddon.dispose());
         term.loadAddon(webglAddon);
-      } catch { /* fallback canvas */ }
+      } catch (e) {
+        console.warn(`[XTerm ${terminalId}] WebGL addon failed:`, e);
+      }
+      */
 
       fitAddon.fit();
 
+      const id = crypto.randomUUID();
+      console.log(`[XTerm ${terminalId}] Generated ptyId: ${id}`);
+
       try {
-        // 1. Prima crea il PTY e ottieni l'id
-        const id = await invoke<string>("create_pty", {
-          shell,
-          cols: term.cols,
-          rows: term.rows,
-          cwd,
-        });
-
-        if (disposed) { invoke("kill_pty", { id }).catch(() => {}); return; }
-
-        ptyId = id;
-        onTerminalReady?.(id);
-
-        // 2. Poi registra il listener con il ptyId reale
+        console.log(`[XTerm ${terminalId}] Subscribing to pty-output for ${id}`);
         const unlisten = await listen<PtyOutputPayload>("pty-output", (event) => {
-          if (disposed || event.payload.id !== id) return;  // usa id, non terminalId
+          if (disposed || event.payload.id !== id) return;
+          
           if (event.payload.eof) {
+            console.log(`[XTerm ${terminalId}] Received EOF`);
             term.write("\r\n[Process completed]\r\n");
             return;
           }
+
           if (event.payload.data) {
             try {
               const binary = Uint8Array.from(atob(event.payload.data), c => c.charCodeAt(0));
+              console.log(`[XTerm ${terminalId}] Received ${binary.length} bytes`);
               term.write(binary);
-            } catch { term.write(event.payload.data); }
+            } catch (err) {
+              console.error(`[XTerm ${terminalId}] Error decoding output:`, err);
+              term.write(event.payload.data);
+            }
           }
         });
 
-        if (disposed) { unlisten(); return; }
+        if (disposed) {
+          unlisten();
+          return;
+        }
         cleanupFns.push(unlisten);
 
-        term.onData((data) => {
-          invoke("write_pty", { id, data }).catch(() => {});
+        console.log(`[XTerm ${terminalId}] Invoking create_pty for ${id}`);
+        const finalId = await invoke<string>("create_pty", {
+          id,
+          shell,
+          cols: Math.max(term.cols, 1),
+          rows: Math.max(term.rows, 1),
+          cwd,
         });
+
+        console.log(`[XTerm ${terminalId}] PTY created successfully: ${finalId}`);
+
+        ptyId = finalId;
+        onTerminalReady?.(finalId);
+
+        term.onData((data) => {
+          if (ptyId && !disposed) {
+            invoke("write_pty", { id: ptyId, data }).catch(err => {
+              console.error(`[XTerm ${terminalId}] Write error:`, err);
+            });
+          }
+        });
+
         term.onTitleChange((title) => onTitleChange?.(title));
+        
         term.onBinary((data) => {
-          invoke("write_pty", { id, data }).catch(() => {});
+          if (ptyId && !disposed) {
+            invoke("write_pty", { id: ptyId, data }).catch(err => {
+              console.error(`[XTerm ${terminalId}] Write binary error:`, err);
+            });
+          }
         });
 
       } catch (err) {
+        console.error(`[XTerm ${terminalId}] Setup error:`, err);
         if (!disposed) term.write(`\r\nError: ${err}\r\n`);
       }
     };
@@ -110,20 +153,31 @@ export function XTermWrapper({
       if (disposed) return;
       const entry = entries[0];
       if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-        if (!opened) setupTerminal();
-        else fitAddon.fit();
+        if (!opened) {
+          setupTerminal();
+        } else {
+          fitAddon.fit();
+          if (ptyId && !disposed) {
+            invoke("resize_pty", { id: ptyId, cols: term.cols, rows: term.rows }).catch(() => {});
+          }
+        }
       }
     });
     fitObserver.observe(container);
 
     return () => {
+      console.log(`[XTerm ${terminalId}] Cleaning up...`);
       disposed = true;
       fitObserver.disconnect();
       cleanupFns.forEach(fn => fn());
-      if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
+      if (ptyId) {
+        console.log(`[XTerm ${terminalId}] Killing PTY ${ptyId}`);
+        invoke("kill_pty", { id: ptyId }).catch(() => {});
+      }
       term.dispose();
+      termRef.current = null;
     };
-  }, []);
+  }, [terminalId, shell, cwd, onTitleChange, onTerminalReady]);
 
   return (
     <div
@@ -135,12 +189,6 @@ export function XTermWrapper({
       }}
     />
   );
-}
-
-interface PtyOutputPayload {
-  id: string;
-  data: string;
-  eof: boolean;
 }
 
 const STOCK_THEME = {

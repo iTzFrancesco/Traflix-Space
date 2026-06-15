@@ -11,13 +11,23 @@ export function WorkspaceView() {
   const { addToast } = useToastStore();
   const [configTerminals, setConfigTerminals] = useState<TerminalConfig[]>([]);
   const loadedForRef = useRef<string | null>(null);
-
+  
+  // Stabilità: ricordiamo l'ultimo workspace valido per evitare flash di "nessun workspace"
+  // che causano l'unmount dei terminali
+  const lastValidWorkspace = useRef<any>(null);
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  
+  if (workspace) {
+    lastValidWorkspace.current = workspace;
+  }
+  
+  const displayWorkspace = workspace || lastValidWorkspace.current;
 
   useEffect(() => {
     if (!activeWorkspaceId) {
       setConfigTerminals([]);
       loadedForRef.current = null;
+      lastValidWorkspace.current = null;
       return;
     }
     
@@ -49,7 +59,7 @@ export function WorkspaceView() {
     };
   }, [activeWorkspaceId, addToast]);
 
-  if (!workspace) {
+  if (!displayWorkspace && !activeWorkspaceId) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-neutral-text-muted">
         <TerminalSquare size={64} strokeWidth={1} className="text-primary/30" />
@@ -65,6 +75,10 @@ export function WorkspaceView() {
     );
   }
 
+  // Se abbiamo un activeWorkspaceId ma displayWorkspace è ancora null, 
+  // carichiamo silenziosamente per evitare unmount
+  if (!displayWorkspace) return null;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div style={{ padding: "12px 20px 8px", flexShrink: 0 }}>
@@ -77,7 +91,7 @@ export function WorkspaceView() {
             letterSpacing: "-0.01em",
           }}
         >
-          {workspace.name}
+          {displayWorkspace.name}
         </h1>
         <p
           style={{
@@ -90,13 +104,13 @@ export function WorkspaceView() {
             whiteSpace: "nowrap",
           }}
         >
-          {workspace.rootPath}
+          {displayWorkspace.rootPath}
         </p>
       </div>
 
       <WorkspaceGrid
-        rows={workspace.layout.rows}
-        cols={workspace.layout.cols}
+        rows={displayWorkspace.layout.rows}
+        cols={displayWorkspace.layout.cols}
         terminals={configTerminals}
       />
     </div>

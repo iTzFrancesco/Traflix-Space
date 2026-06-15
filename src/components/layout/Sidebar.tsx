@@ -369,9 +369,16 @@ export function Sidebar() {
                       </div>
                     ) : (
                       /* Normal workspace item */
-                      <motion.button
+                      <motion.div
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setActiveWorkspace(ws.id)}
-                        className="flex items-center gap-2.5 w-full px-2.5 py-2.5 rounded-xl transition-all duration-200 group"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            setActiveWorkspace(ws.id);
+                          }
+                        }}
+                        className="flex items-center gap-2.5 w-full px-2.5 py-2.5 rounded-xl transition-all duration-200 group cursor-pointer"
                         style={{
                           backgroundColor: isActive
                             ? "rgba(255,255,255,0.06)"
@@ -475,7 +482,7 @@ export function Sidebar() {
                             <Trash2 size={12} />
                           </button>
                         </div>
-                      </motion.button>
+                      </motion.div>
                     )}
                   </motion.div>
                 );

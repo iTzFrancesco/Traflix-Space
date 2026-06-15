@@ -2,10 +2,11 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 
-use tracing::info;
+use tracing::{info, error};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
@@ -35,24 +36,30 @@ unsafe impl Sync for ConPty {}
 impl ConPty {
     pub fn new(cols: u16, rows: u16, shell: &str, cwd: Option<&str>) -> Result<Self, String> {
         let shell_lower = shell.to_lowercase();
-        let effective_shell = if shell_lower == "bash" || shell_lower == "bash.exe" {
-            info!("Shell 'bash' su Windows, fallback a powershell.exe");
-            "powershell.exe"
+        let effective_shell = if shell_lower == "powershell" || shell_lower == "powershell.exe" || shell_lower == "bash" || shell_lower == "bash.exe" {
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
         } else {
             shell
         };
+        
         unsafe {
             let mut input_read = HANDLE::default();
             let mut input_write = HANDLE::default();
-
             let mut output_read = HANDLE::default();
             let mut output_write = HANDLE::default();
 
-            if CreatePipe(&mut input_read, &mut input_write, Some(ptr::null()), 0).is_err() {
+            // Pipes per ConPTY devono essere ereditabili
+            let mut sa = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: ptr::null_mut(),
+                bInheritHandle: true.into(),
+            };
+
+            if CreatePipe(&mut input_read, &mut input_write, Some(&mut sa), 0).is_err() {
                 return Err("Failed to create input pipe".into());
             }
 
-            if CreatePipe(&mut output_read, &mut output_write, Some(ptr::null()), 0).is_err() {
+            if CreatePipe(&mut output_read, &mut output_write, Some(&mut sa), 0).is_err() {
                 let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 return Err("Failed to create output pipe".into());
@@ -63,13 +70,17 @@ impl ConPty {
                 Y: rows as i16,
             };
 
-            let hpc = CreatePseudoConsole(size, input_read, output_write, 0).map_err(|_| {
+            let hpc = CreatePseudoConsole(size, input_read, output_write, 0).map_err(|e| {
                 let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 let _ = CloseHandle(output_read);
                 let _ = CloseHandle(output_write);
-                "Failed to create pseudo console".to_string()
+                format!("Failed to create pseudo console: {}", e)
             })?;
+
+            // Una volta creata la console, chiudiamo i nostri handle "slave"
+            let _ = CloseHandle(input_read);
+            let _ = CloseHandle(output_write);
 
             let mut shell_wide: Vec<u16> = OsString::from(effective_shell)
                 .encode_wide()
@@ -95,10 +106,8 @@ impl ConPty {
                 .is_err()
             {
                 let _ = ClosePseudoConsole(hpc);
-                let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 let _ = CloseHandle(output_read);
-                let _ = CloseHandle(output_write);
                 return Err("Failed to init attribute list".into());
             }
 
@@ -117,10 +126,8 @@ impl ConPty {
             {
                 let _ = DeleteProcThreadAttributeList(startup_info.lpAttributeList);
                 let _ = ClosePseudoConsole(hpc);
-                let _ = CloseHandle(input_read);
                 let _ = CloseHandle(input_write);
                 let _ = CloseHandle(output_read);
-                let _ = CloseHandle(output_write);
                 return Err("Failed to update attribute".into());
             }
 
@@ -130,8 +137,8 @@ impl ConPty {
                 if !std::path::Path::new(c).exists() {
                     let _ = DeleteProcThreadAttributeList(startup_info.lpAttributeList);
                     let _ = ClosePseudoConsole(hpc);
-                    let _ = CloseHandle(input_read);
-                    let _ = CloseHandle(output_write);
+                    let _ = CloseHandle(input_write);
+                    let _ = CloseHandle(output_read);
                     return Err(format!("CWD non esiste: {}", c));
                 }
             }
@@ -154,7 +161,7 @@ impl ConPty {
                 cmdline,
                 None,
                 None,
-                false,
+                false, // Importante: FALSE per ConPTY
                 PROCESS_CREATION_FLAGS(EXTENDED_STARTUPINFO_PRESENT),
                 None,
                 cwd_param,
@@ -163,15 +170,17 @@ impl ConPty {
             );
 
             let _ = DeleteProcThreadAttributeList(startup_info.lpAttributeList);
-            let _ = CloseHandle(input_read);
-            let _ = CloseHandle(output_write);
 
             if created.is_err() {
+                let err_code = windows::Win32::Foundation::GetLastError();
+                error!(?err_code, "CreateProcessW fallito");
                 let _ = ClosePseudoConsole(hpc);
                 let _ = CloseHandle(input_write);
                 let _ = CloseHandle(output_read);
-                return Err(format!("Failed to create process '{}'", shell));
+                return Err(format!("Failed to create process '{}' (Error: {:?})", effective_shell, err_code));
             }
+
+            info!(pid = process_info.dwProcessId, "Processo creato con successo");
 
             Ok(Self {
                 inner: std::sync::Mutex::new(ConPtyInner {
@@ -218,7 +227,11 @@ impl ConPty {
                 None,
             );
             if result.is_err() {
-                return Err("Failed to read from PTY".into());
+                let err_code = windows::Win32::Foundation::GetLastError();
+                if err_code == windows::Win32::Foundation::WIN32_ERROR(109) { // ERROR_BROKEN_PIPE
+                    return Ok(0);
+                }
+                return Err(format!("Failed to read from PTY (Error: {:?})", err_code));
             }
             Ok(bytes_read as usize)
         }
