@@ -1,8 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { Plus, Pencil, Check, X } from "lucide-react";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useUIStore } from "../../stores/uiStore";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
 
 const WORKSPACE_COLORS = [
@@ -21,12 +30,14 @@ function getWorkspaceColor(index: number): string {
 }
 
 export function Sidebar() {
-  const { workspaces, activeWorkspaceId, setActiveWorkspace, updateWorkspace } =
+  const { workspaces, activeWorkspaceId, setActiveWorkspace, updateWorkspace, removeWorkspace } =
     useWorkspaceStore();
   const terminalStore = useTerminalStore();
+  const { isCollapsed, toggleSidebar } = useUIStore();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const allTerminals = Array.from(terminalStore.terminals.values());
@@ -56,6 +67,101 @@ export function Sidebar() {
     setRenameValue("");
   };
 
+  const handleDelete = (id: string) => {
+    removeWorkspace(id);
+    setConfirmDeleteId(null);
+  };
+
+  /* ─── Collapsed mode: compact dots ─── */
+  if (isCollapsed) {
+    return (
+      <>
+        <motion.aside
+          layout
+          className="flex flex-col items-center h-full select-none py-4 gap-3"
+          style={{
+            width: "52px",
+            backgroundColor: "var(--color-neutral-surface)",
+            borderRight: "1px solid var(--color-neutral-border)",
+          }}
+        >
+          {/* Expand button */}
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={toggleSidebar}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200"
+            style={{ color: "var(--color-neutral-text-muted)" }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.backgroundColor = "transparent")
+            }
+            title="Espandi sidebar"
+          >
+            <PanelLeftOpen size={15} />
+          </motion.button>
+
+          {/* New workspace dot */}
+          <motion.button
+            whileHover={{ scale: 1.15 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={() => setWizardOpen(true)}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200"
+            style={{
+              color: "var(--color-primary)",
+              backgroundColor: "rgba(232,93,4,0.1)",
+            }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(232,93,4,0.2)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(232,93,4,0.1)")
+            }
+            title="Nuovo Spazio"
+          >
+            <Plus size={14} />
+          </motion.button>
+
+          {/* Divider */}
+          <div
+            className="w-4 h-px"
+            style={{ backgroundColor: "var(--color-neutral-border)" }}
+          />
+
+          {/* Workspace dots */}
+          <div className="flex flex-col items-center gap-2 flex-1 overflow-y-auto">
+            {workspaces.map((ws, index) => {
+              const color = getWorkspaceColor(index);
+              const isActive = activeWorkspaceId === ws.id;
+
+              return (
+                <motion.button
+                  key={ws.id}
+                  whileHover={{ scale: 1.2 }}
+                  whileTap={{ scale: 0.85 }}
+                  onClick={() => setActiveWorkspace(ws.id)}
+                  className="relative w-3 h-3 rounded-full transition-all duration-200"
+                  style={{
+                    backgroundColor: color,
+                    boxShadow: isActive
+                      ? `0 0 0 2px var(--color-neutral-surface), 0 0 0 3.5px ${color}`
+                      : "none",
+                  }}
+                  title={ws.name}
+                />
+              );
+            })}
+          </div>
+        </motion.aside>
+
+        <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      </>
+    );
+  }
+
+  /* ─── Expanded mode: full sidebar ─── */
   return (
     <>
       <motion.aside
@@ -66,13 +172,30 @@ export function Sidebar() {
           borderRight: "1px solid var(--color-neutral-border)",
         }}
       >
-        {/* Top section - New workspace button */}
-        <div className="px-4 pt-5 pb-2">
+        {/* Top section - Collapse button + New workspace */}
+        <div className="flex items-center gap-1.5 px-4 pt-5 pb-2">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={toggleSidebar}
+            className="p-1.5 rounded-lg transition-colors duration-200 shrink-0"
+            style={{ color: "var(--color-neutral-text-muted)" }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.backgroundColor = "transparent")
+            }
+            title="Comprimi sidebar"
+          >
+            <PanelLeftClose size={15} />
+          </motion.button>
+
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex items-center justify-center gap-2 w-full px-4 py-2.5 text-[0.8125rem] font-medium rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-[0.8125rem] font-medium rounded-xl transition-all duration-200"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
               color: "var(--color-neutral-text-dim)",
@@ -117,6 +240,7 @@ export function Sidebar() {
                   (t) => t.workspaceId === ws.id,
                 ).length;
                 const isRenaming = renamingId === ws.id;
+                const isDeleting = confirmDeleteId === ws.id;
 
                 return (
                   <motion.div
@@ -191,6 +315,58 @@ export function Sidebar() {
                           <X size={13} />
                         </button>
                       </div>
+                    ) : isDeleting ? (
+                      /* Delete confirmation mode */
+                      <div
+                        className="flex items-center gap-2 px-2.5 py-2 rounded-xl"
+                        style={{
+                          backgroundColor: "rgba(239,68,68,0.08)",
+                          borderLeft: `2.5px solid #ef4444`,
+                        }}
+                      >
+                        <span
+                          className="flex-1 text-[0.75rem] truncate"
+                          style={{ color: "var(--color-neutral-text-dim)" }}
+                        >
+                          Eliminare "{ws.name}"?
+                        </span>
+                        <button
+                          onClick={() => handleDelete(ws.id)}
+                          className="px-2 py-0.5 rounded-md text-[0.6875rem] font-medium transition-colors"
+                          style={{
+                            backgroundColor: "rgba(239,68,68,0.2)",
+                            color: "#ef4444",
+                          }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(239,68,68,0.35)")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(239,68,68,0.2)")
+                          }
+                        >
+                          Sì
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-0.5 rounded-md text-[0.6875rem] font-medium transition-colors"
+                          style={{
+                            backgroundColor: "rgba(255,255,255,0.06)",
+                            color: "var(--color-neutral-text-muted)",
+                          }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(255,255,255,0.1)")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(255,255,255,0.06)")
+                          }
+                        >
+                          No
+                        </button>
+                      </div>
                     ) : (
                       /* Normal workspace item */
                       <motion.button
@@ -250,29 +426,55 @@ export function Sidebar() {
                           </span>
                         )}
 
-                        {/* Edit button - visible on hover */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startRename(ws.id, ws.name);
-                          }}
-                          className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-all duration-200"
-                          style={{ color: "var(--color-neutral-text-muted)" }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor =
-                              "rgba(255,255,255,0.08)";
-                            e.currentTarget.style.color =
-                              "var(--color-neutral-text)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = "transparent";
-                            e.currentTarget.style.color =
-                              "var(--color-neutral-text-muted)";
-                          }}
-                          title="Rinomina workspace"
-                        >
-                          <Pencil size={12} />
-                        </button>
+                        {/* Action buttons - visible on hover */}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                          {/* Rename button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startRename(ws.id, ws.name);
+                            }}
+                            className="p-1 rounded-md transition-colors"
+                            style={{ color: "var(--color-neutral-text-muted)" }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor =
+                                "rgba(255,255,255,0.08)";
+                              e.currentTarget.style.color =
+                                "var(--color-neutral-text)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = "transparent";
+                              e.currentTarget.style.color =
+                                "var(--color-neutral-text-muted)";
+                            }}
+                            title="Rinomina workspace"
+                          >
+                            <Pencil size={12} />
+                          </button>
+
+                          {/* Delete button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDeleteId(ws.id);
+                            }}
+                            className="p-1 rounded-md transition-colors"
+                            style={{ color: "var(--color-neutral-text-muted)" }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor =
+                                "rgba(239,68,68,0.12)";
+                              e.currentTarget.style.color = "#ef4444";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = "transparent";
+                              e.currentTarget.style.color =
+                                "var(--color-neutral-text-muted)";
+                            }}
+                            title="Elimina workspace"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </motion.button>
                     )}
                   </motion.div>

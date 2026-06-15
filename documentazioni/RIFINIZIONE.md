@@ -145,6 +145,13 @@
 
 ## Changelog
 
+### v0.1.3 (2026-06-15) — Sidebar: delete + collapse
+- Aggiunto pulsante elimina workspace con conferma inline
+- Aggiunto pulsante comprimi/espandi sidebar (PanelLeftClose/PanelLeftOpen)
+- Modalità collapsed: solo pallini colori cliccabili per switchare workspace
+- Pallino attivo con ring colorato attorno
+- Connesso uiStore.isCollapsed alla UI
+
 ### v0.1.2 (2026-06-15) — Sidebar Redesign v2
 - Rimosso completamente la sezione Terminali dalla sidebar
 - Aggiunta rinomina workspace inline (pencil icon su hover)
