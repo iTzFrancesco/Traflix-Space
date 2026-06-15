@@ -145,6 +145,14 @@
 
 ## Changelog
 
+### v0.1.2 (2026-06-15) — Sidebar Redesign v2
+- Rimosso completamente la sezione Terminali dalla sidebar
+- Aggiunta rinomina workspace inline (pencil icon su hover)
+- Migliorato spacing e respirabilità della sidebar
+- Stile premium con font Syne per header, Poppins per corpo
+- Animazioni fluide con spring physics (stiffness: 500, damping: 35)
+- Transizioni hover con cubic-bezier custom
+
 ### v0.1.1 (2026-06-15) — Sidebar Redesign
 - Redesign sidebar: split in Workspaces + Terminali
 - Rimosso Settings dalla sidebar

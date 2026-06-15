@@ -1,18 +1,9 @@
-import { useState } from "react";
-import {
-  Plus,
-  Terminal,
-  Bot,
-  Pencil,
-  Check,
-  X,
-  ArrowUpRight,
-} from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Plus, Pencil, Check, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
-import { AGENTS } from "../../lib/agents";
 
 const WORKSPACE_COLORS = [
   "#e85d04",
@@ -30,68 +21,94 @@ function getWorkspaceColor(index: number): string {
 }
 
 export function Sidebar() {
-  const { workspaces, activeWorkspaceId, setActiveWorkspace } =
+  const { workspaces, activeWorkspaceId, setActiveWorkspace, updateWorkspace } =
     useWorkspaceStore();
   const terminalStore = useTerminalStore();
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [renamingTerminalId, setRenamingTerminalId] = useState<string | null>(
-    null,
-  );
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const allTerminals = Array.from(terminalStore.terminals.values());
 
-  const startRename = (terminalId: string, currentTitle: string) => {
-    setRenamingTerminalId(terminalId);
-    setRenameValue(currentTitle);
+  useEffect(() => {
+    if (renamingId && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [renamingId]);
+
+  const startRename = (id: string, currentName: string) => {
+    setRenamingId(id);
+    setRenameValue(currentName);
   };
 
-  const confirmRename = (terminalId: string) => {
+  const confirmRename = (id: string) => {
     if (renameValue.trim()) {
-      terminalStore.updateTerminalTitle(terminalId, renameValue.trim());
+      updateWorkspace(id, { name: renameValue.trim() });
     }
-    setRenamingTerminalId(null);
+    setRenamingId(null);
     setRenameValue("");
   };
 
   const cancelRename = () => {
-    setRenamingTerminalId(null);
+    setRenamingId(null);
     setRenameValue("");
-  };
-
-  const navigateToWorkspace = (workspaceId: string) => {
-    setActiveWorkspace(workspaceId);
   };
 
   return (
     <>
       <motion.aside
         layout
-        className="flex flex-col w-sidebar h-full bg-neutral-bg border-r select-none"
-        style={{ borderColor: "var(--neutral-border)" }}
+        className="flex flex-col w-sidebar h-full select-none"
+        style={{
+          backgroundColor: "var(--color-neutral-surface)",
+          borderRight: "1px solid var(--color-neutral-border)",
+        }}
       >
-        {/* Create new workspace button */}
-        <div className="p-3 pb-0">
+        {/* Top section - New workspace button */}
+        <div className="px-4 pt-5 pb-2">
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex items-center gap-2 w-full px-3 py-2 text-xs font-medium text-neutral-text-dim bg-white/[0.04] rounded-lg hover:bg-white/[0.07] transition-colors"
+            className="flex items-center justify-center gap-2 w-full px-4 py-2.5 text-[0.8125rem] font-medium rounded-xl transition-all duration-200"
+            style={{
+              backgroundColor: "rgba(255,255,255,0.04)",
+              color: "var(--color-neutral-text-dim)",
+              border: "1px solid rgba(255,255,255,0.06)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.07)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.04)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+            }}
           >
-            <Plus size={14} className="text-neutral-text-muted" />
+            <Plus size={15} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
         </div>
 
         {/* Workspaces section */}
-        <div className="flex-1 overflow-y-auto px-2 pt-4 pb-2">
-          <div className="flex items-center gap-2 px-2 mb-2">
-            <span className="text-[0.65rem] font-body font-semibold uppercase tracking-widest text-neutral-text-muted">
+        <div className="flex-1 overflow-y-auto px-3 pt-4 pb-4">
+          {/* Section header */}
+          <div className="flex items-center gap-2 px-2 mb-3">
+            <span
+              className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em]"
+              style={{
+                fontFamily: "var(--font-display)",
+                color: "var(--color-neutral-text-muted)",
+              }}
+            >
               Workspaces
             </span>
           </div>
 
-          <div className="space-y-0.5">
+          {/* Workspace list */}
+          <div className="space-y-1">
             <AnimatePresence mode="popLayout">
               {workspaces.map((ws, index) => {
                 const color = getWorkspaceColor(index);
@@ -99,60 +116,166 @@ export function Sidebar() {
                 const terminalCount = allTerminals.filter(
                   (t) => t.workspaceId === ws.id,
                 ).length;
+                const isRenaming = renamingId === ws.id;
 
                 return (
-                  <motion.button
+                  <motion.div
                     key={ws.id}
                     layout
-                    initial={{ opacity: 0, x: -12 }}
+                    initial={{ opacity: 0, x: -8 }}
                     animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -12 }}
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                    onClick={() => setActiveWorkspace(ws.id)}
-                    className={`flex items-center gap-2.5 w-full px-2 py-2 rounded-lg transition-all group ${
-                      isActive
-                        ? "bg-white/[0.06]"
-                        : "hover:bg-white/[0.03]"
-                    }`}
-                    style={{
-                      borderLeft: `2.5px solid ${isActive ? color : "transparent"}`,
+                    exit={{ opacity: 0, x: -8 }}
+                    transition={{
+                      type: "spring",
+                      stiffness: 500,
+                      damping: 35,
                     }}
                   >
-                    {/* Colored square icon */}
-                    <div
-                      className="w-5 h-5 rounded flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: `${color}20` }}
-                    >
+                    {isRenaming ? (
+                      /* Inline rename mode */
                       <div
-                        className="w-2 h-2 rounded-sm"
-                        style={{ backgroundColor: color }}
-                      />
-                    </div>
-
-                    {/* Workspace name */}
-                    <span
-                      className={`truncate text-[0.8125rem] flex-1 text-left ${
-                        isActive
-                          ? "text-neutral-text font-medium"
-                          : "text-neutral-text-dim"
-                      }`}
-                    >
-                      {ws.name}
-                    </span>
-
-                    {/* Terminal count badge */}
-                    {terminalCount > 0 && (
-                      <span
-                        className="text-[0.625rem] font-mono font-medium px-1.5 py-0.5 rounded-md shrink-0"
+                        className="flex items-center gap-2 px-2.5 py-2 rounded-xl"
                         style={{
-                          backgroundColor: `${color}15`,
-                          color: color,
+                          backgroundColor: "rgba(255,255,255,0.06)",
+                          borderLeft: `2.5px solid ${color}`,
                         }}
                       >
-                        {terminalCount}
-                      </span>
+                        <div
+                          className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
+                          style={{ backgroundColor: `${color}18` }}
+                        >
+                          <div
+                            className="w-2.5 h-2.5 rounded"
+                            style={{ backgroundColor: color }}
+                          />
+                        </div>
+                        <input
+                          ref={inputRef}
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") confirmRename(ws.id);
+                            if (e.key === "Escape") cancelRename();
+                          }}
+                          onBlur={() => confirmRename(ws.id)}
+                          className="flex-1 bg-transparent text-[0.8125rem] font-medium outline-none border-b border-white/20 pb-0.5"
+                          style={{ color: "var(--color-neutral-text)" }}
+                        />
+                        <button
+                          onClick={() => confirmRename(ws.id)}
+                          className="p-1 rounded-md transition-colors"
+                          style={{ color: "#10b981" }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(16,185,129,0.15)")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor = "transparent")
+                          }
+                        >
+                          <Check size={13} />
+                        </button>
+                        <button
+                          onClick={cancelRename}
+                          className="p-1 rounded-md transition-colors"
+                          style={{ color: "var(--color-neutral-text-muted)" }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.backgroundColor =
+                              "rgba(255,255,255,0.06)")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.backgroundColor = "transparent")
+                          }
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ) : (
+                      /* Normal workspace item */
+                      <motion.button
+                        onClick={() => setActiveWorkspace(ws.id)}
+                        className="flex items-center gap-2.5 w-full px-2.5 py-2.5 rounded-xl transition-all duration-200 group"
+                        style={{
+                          backgroundColor: isActive
+                            ? "rgba(255,255,255,0.06)"
+                            : "transparent",
+                          borderLeft: `2.5px solid ${isActive ? color : "transparent"}`,
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isActive)
+                            e.currentTarget.style.backgroundColor =
+                              "rgba(255,255,255,0.03)";
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isActive)
+                            e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                      >
+                        {/* Colored square icon */}
+                        <div
+                          className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"
+                          style={{ backgroundColor: `${color}18` }}
+                        >
+                          <div
+                            className="w-2.5 h-2.5 rounded"
+                            style={{ backgroundColor: color }}
+                          />
+                        </div>
+
+                        {/* Workspace name */}
+                        <span
+                          className={`truncate text-[0.8125rem] flex-1 text-left ${
+                            isActive ? "font-medium" : ""
+                          }`}
+                          style={{
+                            color: isActive
+                              ? "var(--color-neutral-text)"
+                              : "var(--color-neutral-text-dim)",
+                          }}
+                        >
+                          {ws.name}
+                        </span>
+
+                        {/* Terminal count badge */}
+                        {terminalCount > 0 && (
+                          <span
+                            className="text-[0.625rem] font-mono font-medium px-1.5 py-0.5 rounded-md shrink-0 transition-opacity duration-200"
+                            style={{
+                              backgroundColor: `${color}15`,
+                              color: color,
+                            }}
+                          >
+                            {terminalCount}
+                          </span>
+                        )}
+
+                        {/* Edit button - visible on hover */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRename(ws.id, ws.name);
+                          }}
+                          className="p-1 rounded-md opacity-0 group-hover:opacity-100 transition-all duration-200"
+                          style={{ color: "var(--color-neutral-text-muted)" }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                              "rgba(255,255,255,0.08)";
+                            e.currentTarget.style.color =
+                              "var(--color-neutral-text)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = "transparent";
+                            e.currentTarget.style.color =
+                              "var(--color-neutral-text-muted)";
+                          }}
+                          title="Rinomina workspace"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </motion.button>
                     )}
-                  </motion.button>
+                  </motion.div>
                 );
               })}
             </AnimatePresence>
@@ -161,147 +284,12 @@ export function Sidebar() {
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="px-3 py-6 text-xs text-neutral-text-muted text-center"
+                className="px-3 py-8 text-[0.8125rem] text-center"
+                style={{ color: "var(--color-neutral-text-muted)" }}
               >
                 Nessun workspace.
               </motion.p>
             )}
-          </div>
-        </div>
-
-        {/* Terminals section */}
-        <div
-          className="border-t px-2 py-3"
-          style={{ borderColor: "var(--neutral-border)" }}
-        >
-          <div className="flex items-center gap-2 px-2 mb-2">
-            <Terminal size={11} className="text-neutral-text-muted" />
-            <span className="text-[0.65rem] font-body font-semibold uppercase tracking-widest text-neutral-text-muted">
-              Terminali
-            </span>
-          </div>
-
-          <div className="space-y-0.5 max-h-48 overflow-y-auto">
-            <AnimatePresence mode="popLayout">
-              {allTerminals.length === 0 ? (
-                <motion.p
-                  key="empty-terminals"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="px-3 py-4 text-[0.6875rem] text-neutral-text-muted text-center"
-                >
-                  Nessun terminale attivo.
-                </motion.p>
-              ) : (
-                allTerminals.map((t) => {
-                  const agent = t.agent
-                    ? AGENTS.find((a) => a.id === t.agent)
-                    : null;
-                  const isRenaming = renamingTerminalId === t.id;
-                  const wsColor =
-                    WORKSPACE_COLORS[
-                      workspaces.findIndex((w) => w.id === t.workspaceId) %
-                        WORKSPACE_COLORS.length
-                    ] || "#71717a";
-
-                  return (
-                    <motion.div
-                      key={t.id}
-                      layout
-                      initial={{ opacity: 0, y: -6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -6, height: 0 }}
-                      transition={{
-                        type: "spring",
-                        stiffness: 400,
-                        damping: 30,
-                      }}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/[0.03] group transition-colors"
-                    >
-                      {/* Active dot */}
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{ backgroundColor: wsColor }}
-                      />
-
-                      {isRenaming ? (
-                        /* Rename input */
-                        <div className="flex items-center gap-1 flex-1">
-                          <input
-                            type="text"
-                            value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") confirmRename(t.id);
-                              if (e.key === "Escape") cancelRename();
-                            }}
-                            autoFocus
-                            className="flex-1 bg-white/[0.06] text-neutral-text text-[0.75rem] px-1.5 py-0.5 rounded outline-none border border-white/10 focus:border-primary/40"
-                          />
-                          <button
-                            onClick={() => confirmRename(t.id)}
-                            className="p-0.5 text-green-400 hover:text-green-300"
-                          >
-                            <Check size={12} />
-                          </button>
-                          <button
-                            onClick={cancelRename}
-                            className="p-0.5 text-neutral-text-muted hover:text-neutral-text"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ) : (
-                        /* Terminal display */
-                        <>
-                          <span className="truncate flex-1 text-[0.75rem] text-neutral-text-dim">
-                            {t.title}
-                          </span>
-
-                          {agent && (
-                            <span
-                              className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[0.5625rem] font-medium shrink-0"
-                              style={{
-                                backgroundColor: `${agent.color}18`,
-                                color: agent.color,
-                              }}
-                            >
-                              <Bot size={7} />
-                              {agent.name}
-                            </span>
-                          )}
-
-                          {/* Action buttons on hover */}
-                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                startRename(t.id, t.title);
-                              }}
-                              className="p-0.5 text-neutral-text-muted hover:text-neutral-text"
-                              title="Rinomina"
-                            >
-                              <Pencil size={10} />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigateToWorkspace(t.workspaceId);
-                              }}
-                              className="p-0.5 text-neutral-text-muted hover:text-neutral-text"
-                              title="Vai al workspace"
-                            >
-                              <ArrowUpRight size={10} />
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </motion.div>
-                  );
-                })
-              )}
-            </AnimatePresence>
           </div>
         </div>
       </motion.aside>
