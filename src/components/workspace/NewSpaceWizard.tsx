@@ -211,24 +211,24 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       open={open}
       onClose={handleClose}
       title="Nuovo Spazio di Lavoro"
-      width="max-w-xl"
+      width="max-w-2xl"
     >
-      <div className="space-y-8">
+      <div className="space-y-10">
         {/* Step indicator */}
         <div className="text-center">
-          <p className="text-[0.55rem] font-medium text-neutral-text-muted uppercase tracking-[0.2em] mb-3">
+          <p className="text-xs font-medium text-neutral-text-muted uppercase tracking-[0.25em] mb-4">
             {STEPS[step - 1]}
           </p>
-          <div className="flex items-center justify-center gap-2">
+          <div className="flex items-center justify-center gap-3">
             {STEPS.map((_, i) => (
               <div
                 key={i}
-                className={`h-2 rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+                className={`h-2.5 rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
                   step > i + 1
-                    ? "w-3 bg-primary shadow-[0_0_8px_rgba(232,93,4,0.2)]"
+                    ? "w-5 bg-primary shadow-[0_0_12px_rgba(232,93,4,0.25)]"
                     : step === i + 1
-                      ? "w-3 bg-primary shadow-[0_0_8px_rgba(232,93,4,0.2)]"
-                      : "w-2 bg-white/[0.08]"
+                      ? "w-5 bg-primary shadow-[0_0_12px_rgba(232,93,4,0.25)]"
+                      : "w-2.5 bg-white/[0.08]"
                 }`}
               />
             ))}
@@ -237,16 +237,16 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 1 — Cartella */}
         {step === 1 && (
-          <div className="p-1 rounded-2xl bg-white/[0.03]">
-            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
-              <p className="text-sm text-neutral-text-dim">
+          <div className="p-1.5 rounded-3xl bg-white/[0.03]">
+            <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-6">
+              <p className="text-base text-neutral-text-dim leading-relaxed">
                 Seleziona la cartella del progetto.
               </p>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.04]">
-                  <FolderOpen size={16} className="text-primary shrink-0" />
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.04]">
+                  <FolderOpen size={22} className="text-primary shrink-0" />
                   <span
-                    className={`text-sm font-mono truncate ${
+                    className={`text-base font-mono truncate ${
                       folderPath
                         ? "text-neutral-text"
                         : "text-neutral-text-muted"
@@ -257,7 +257,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </div>
                 <button
                   onClick={handleSelectFolder}
-                  className="px-5 py-3 text-sm font-medium text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
+                  className="px-7 py-4 text-base font-semibold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
                   style={{
                     background: "linear-gradient(135deg, #e85d04, #ff7b00)",
                   }}
@@ -271,26 +271,26 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 2 — Conteggio */}
         {step === 2 && (
-          <div className="p-1 rounded-2xl bg-white/[0.03]">
-            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-5">
-              <p className="text-sm text-neutral-text-dim">
+          <div className="p-1.5 rounded-3xl bg-white/[0.03]">
+            <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-7">
+              <p className="text-base text-neutral-text-dim leading-relaxed">
                 Quanti terminali vuoi aprire?
               </p>
 
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-5 gap-3">
                 {QUICK_COUNTS.map((n) => {
                   const active = terminalCount === n;
                   return (
                     <button
                       key={n}
                       onClick={() => setCount(n)}
-                      className={`py-3 rounded-xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
+                      className={`py-5 rounded-2xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
                         active
-                          ? "bg-primary text-white font-bold shadow-[0_0_16px_rgba(232,93,4,0.15)]"
+                          ? "bg-primary text-white font-bold shadow-[0_0_24px_rgba(232,93,4,0.2)]"
                           : "bg-white/[0.04] text-neutral-text-muted hover:bg-white/[0.08] hover:text-neutral-text-dim"
                       }`}
                     >
-                      <span className="block text-lg font-bold font-display">
+                      <span className="block text-2xl font-bold font-display">
                         {n}
                       </span>
                     </button>
@@ -298,32 +298,32 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 })}
               </div>
 
-              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/[0.04]">
-                <div className="flex items-center gap-3">
-                  <LayoutGrid size={15} className="text-primary" />
-                  <span className="text-xs text-neutral-text-dim">
+              <div className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.03] border border-white/[0.04]">
+                <div className="flex items-center gap-4">
+                  <LayoutGrid size={20} className="text-primary" />
+                  <span className="text-sm text-neutral-text-dim">
                     Layout: {layout.rows}&times;{layout.cols}
                   </span>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-4">
                   <button
                     onClick={() => updateCount(-1)}
                     disabled={terminalCount <= 1}
-                    className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                    className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
                     aria-label="Diminuisci terminali"
                   >
-                    <Minus size={13} />
+                    <Minus size={16} />
                   </button>
-                  <span className="font-display font-bold text-xl text-primary min-w-[2ch] text-center tabular-nums">
+                  <span className="font-display font-bold text-3xl text-primary min-w-[2ch] text-center tabular-nums">
                     {terminalCount}
                   </span>
                   <button
                     onClick={() => updateCount(1)}
                     disabled={terminalCount >= 16}
-                    className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
+                    className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
                     aria-label="Aumenta terminali"
                   >
-                    <Plus size={13} />
+                    <Plus size={16} />
                   </button>
                 </div>
               </div>
@@ -333,18 +333,18 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 3 — Agenti */}
         {step === 3 && (
-          <div className="p-1 rounded-2xl bg-white/[0.03]">
-            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-4">
+          <div className="p-1.5 rounded-3xl bg-white/[0.03]">
+            <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-6">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-neutral-text-dim">
+                <p className="text-base text-neutral-text-dim leading-relaxed">
                   Assegna agenti ai terminali.
                 </p>
-                <span className="text-xs font-mono text-neutral-text-muted tabular-nums">
+                <span className="text-sm font-mono text-neutral-text-muted tabular-nums font-medium">
                   {assignedCount}/{terminalCount}
                 </span>
               </div>
 
-              <div className="h-1 rounded-full bg-white/[0.04] overflow-hidden">
+              <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
                   style={{
@@ -357,42 +357,42 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 {DISPLAY_AGENTS.map((agent) => {
                   const count = agentCounts[agent.id] || 0;
                   return (
                     <div
                       key={agent.id}
                       onClick={() => fillAllWith(agent.id)}
-                      className="rounded-xl border transition-all duration-200 cursor-pointer active:scale-[0.98]"
+                      className="rounded-2xl border-2 transition-all duration-200 cursor-pointer active:scale-[0.98]"
                       style={{
                         borderColor:
                           count > 0
-                            ? `${agent.color}30`
-                            : "rgba(255,255,255,0.04)",
+                            ? `${agent.color}40`
+                            : "rgba(255,255,255,0.06)",
                         backgroundColor:
-                          count > 0 ? `${agent.color}06` : "transparent",
+                          count > 0 ? `${agent.color}08` : "transparent",
                       }}
                     >
-                      <div className="p-3.5 space-y-3">
+                      <div className="p-5 space-y-4">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
+                          <div className="flex items-center gap-3">
                             <div
-                              className="w-8 h-8 rounded-lg flex items-center justify-center"
+                              className="w-11 h-11 rounded-xl flex items-center justify-center"
                               style={{ backgroundColor: `${agent.color}15` }}
                             >
                               {agentIcons[agent.id] ? (
-                                <Bot size={14} style={{ color: agent.color }} />
+                                <Bot size={20} style={{ color: agent.color }} />
                               ) : (
-                                <Terminal size={14} style={{ color: agent.color }} />
+                                <Terminal size={20} style={{ color: agent.color }} />
                               )}
                             </div>
-                            <span className="text-sm font-semibold text-neutral-text">
+                            <span className="text-base font-bold text-neutral-text">
                               {agent.name}
                             </span>
                           </div>
                           <span
-                            className="text-base font-bold font-display tabular-nums"
+                            className="text-2xl font-bold font-display tabular-nums"
                             style={{
                               color:
                                 count > 0
@@ -404,22 +404,22 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                           </span>
                         </div>
 
-                        <div className="flex items-center justify-center gap-1.5">
+                        <div className="flex items-center justify-center gap-3">
                           <button
                             onClick={(e) => { e.stopPropagation(); decrementAgent(agent.id); }}
                             disabled={count <= 0}
-                            className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Rimuovi ${agent.name}`}
                           >
-                            <Minus size={12} />
+                            <Minus size={16} />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); incrementAgent(agent.id); }}
                             disabled={assignedCount >= terminalCount}
-                            className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                            className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                             aria-label={`Aggiungi ${agent.name}`}
                           >
-                            <Plus size={12} />
+                            <Plus size={16} />
                           </button>
                         </div>
                       </div>
@@ -433,50 +433,50 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 4 — Conferma */}
         {step === 4 && (
-          <div className="p-1 rounded-2xl bg-white/[0.03]">
-            <div className="rounded-[calc(1rem-0.25rem)] bg-neutral-elevated p-5 space-y-5">
-              <p className="text-sm text-neutral-text-dim">
+          <div className="p-1.5 rounded-3xl bg-white/[0.03]">
+            <div className="rounded-[calc(1.5rem-0.375rem)] bg-neutral-elevated p-8 space-y-7">
+              <p className="text-base text-neutral-text-dim leading-relaxed">
                 Conferma i dettagli del workspace.
               </p>
 
-              <div className="text-center pb-4 border-b border-white/[0.04]">
-                <h3 className="font-display font-bold text-lg text-neutral-text">
+              <div className="text-center pb-5 border-b border-white/[0.04]">
+                <h3 className="font-display font-bold text-2xl text-neutral-text">
                   {workspaceName}
                 </h3>
-                <p className="text-xs text-neutral-text-muted mt-1 font-mono truncate">
+                <p className="text-sm text-neutral-text-muted mt-2 font-mono truncate">
                   {folderPath}
                 </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
-                  <p className="text-2xl font-display font-bold text-primary">
+              <div className="grid grid-cols-3 gap-4">
+                <div className="text-center p-6 rounded-2xl bg-white/[0.03]">
+                  <p className="text-3xl font-display font-bold text-primary">
                     {layout.rows}&times;{layout.cols}
                   </p>
-                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                  <p className="text-[0.6rem] uppercase tracking-widest text-neutral-text-muted mt-2">
                     Layout
                   </p>
                 </div>
-                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
-                  <p className="text-2xl font-display font-bold text-primary">
+                <div className="text-center p-6 rounded-2xl bg-white/[0.03]">
+                  <p className="text-3xl font-display font-bold text-primary">
                     {terminalCount}
                   </p>
-                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                  <p className="text-[0.6rem] uppercase tracking-widest text-neutral-text-muted mt-2">
                     Terminali
                   </p>
                 </div>
-                <div className="text-center p-4 rounded-xl bg-white/[0.03]">
-                  <p className="text-2xl font-display font-bold text-primary">
+                <div className="text-center p-6 rounded-2xl bg-white/[0.03]">
+                  <p className="text-3xl font-display font-bold text-primary">
                     {assignedCount}
                   </p>
-                  <p className="text-[0.5rem] uppercase tracking-widest text-neutral-text-muted mt-1.5">
+                  <p className="text-[0.6rem] uppercase tracking-widest text-neutral-text-muted mt-2">
                     Agenti
                   </p>
                 </div>
               </div>
 
               {assignedCount > 0 && (
-                <div className="flex flex-wrap gap-2 justify-center">
+                <div className="flex flex-wrap gap-3 justify-center">
                   {Object.entries(agentCounts).map(([aid, count]) => {
                     if (count <= 0) return null;
                     const agent = AGENTS.find((a) => a.id === aid);
@@ -484,7 +484,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                     return (
                       <span
                         key={aid}
-                        className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[0.55rem] font-medium"
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium"
                         style={{
                           backgroundColor: `${agent.color}10`,
                           color: agent.color,
@@ -503,13 +503,13 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         )}
 
         {/* Navigation */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between pt-2">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="flex items-center gap-1 px-3 py-2 text-sm text-neutral-text-muted rounded-xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
+            className="flex items-center gap-2 px-5 py-3 text-base text-neutral-text-muted rounded-2xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
           >
-            <ChevronLeft size={15} />
+            <ChevronLeft size={18} />
             Indietro
           </button>
 
@@ -517,7 +517,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={() => setStep((s) => s + 1)}
               disabled={!canProceed()}
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
+              className="flex items-center gap-2 px-7 py-3 text-base font-semibold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
               style={{
                 background: canProceed()
                   ? "linear-gradient(135deg, #e85d04, #ff7b00)"
@@ -525,25 +525,25 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               }}
             >
               Avanti
-              <ChevronRight size={14} />
+              <ChevronRight size={18} />
             </button>
           ) : (
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
+              className="flex items-center gap-2 px-7 py-3 text-base font-semibold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
               }}
             >
               {creating ? (
                 <>
-                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   Creazione...
                 </>
               ) : (
                 <>
-                  <Sparkles size={14} />
+                  <Sparkles size={18} />
                   Crea
                 </>
               )}
