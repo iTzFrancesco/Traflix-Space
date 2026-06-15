@@ -126,6 +126,16 @@ impl ConPty {
 
             let mut process_info = PROCESS_INFORMATION::default();
 
+            if let Some(c) = cwd {
+                if !std::path::Path::new(c).exists() {
+                    let _ = DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+                    let _ = ClosePseudoConsole(hpc);
+                    let _ = CloseHandle(input_read);
+                    let _ = CloseHandle(output_write);
+                    return Err(format!("CWD non esiste: {}", c));
+                }
+            }
+
             let cwd_wide = cwd.map(|c| {
                 OsString::from(c)
                     .encode_wide()

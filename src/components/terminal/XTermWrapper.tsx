@@ -38,17 +38,8 @@ export function XTermWrapper({
       scrollback: 10000,
       allowProposedApi: true,
     });
-
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => webglAddon.dispose());
-      term.loadAddon(webglAddon);
-    } catch {
-      /* WebGL not available */
-    }
 
     let ptyId: string | null = null;
     let disposed = false;
@@ -60,63 +51,58 @@ export function XTermWrapper({
       opened = true;
       fitObserver.disconnect();
 
+      term.open(container);
+
+      try {
+        const webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => webglAddon.dispose());
+        term.loadAddon(webglAddon);
+      } catch { /* fallback canvas */ }
+
       fitAddon.fit();
 
       try {
-        const unlisten = await listen<PtyOutputPayload>("pty-output", (event) => {
-          if (disposed || event.payload.id !== terminalId) return;
-          if (event.payload.eof) {
-            term.write("\r\n[Process completed]\r\n");
-            return;
-          }
-          if (event.payload.data) {
-            try {
-              const binary = Uint8Array.from(atob(event.payload.data), (c) =>
-                c.charCodeAt(0),
-              );
-              term.write(binary);
-            } catch {
-              term.write(event.payload.data);
-            }
-          }
-        });
-
-        if (disposed) {
-          unlisten();
-          return;
-        }
-        cleanupFns.push(unlisten);
-
+        // 1. Prima crea il PTY e ottieni l'id
         const id = await invoke<string>("create_pty", {
-          id: terminalId,
           shell,
           cols: term.cols,
           rows: term.rows,
           cwd,
         });
 
-        if (disposed) {
-          invoke("kill_pty", { id }).catch(() => {});
-          return;
-        }
+        if (disposed) { invoke("kill_pty", { id }).catch(() => {}); return; }
 
         ptyId = id;
         onTerminalReady?.(id);
 
+        // 2. Poi registra il listener con il ptyId reale
+        const unlisten = await listen<PtyOutputPayload>("pty-output", (event) => {
+          if (disposed || event.payload.id !== id) return;  // usa id, non terminalId
+          if (event.payload.eof) {
+            term.write("\r\n[Process completed]\r\n");
+            return;
+          }
+          if (event.payload.data) {
+            try {
+              const binary = Uint8Array.from(atob(event.payload.data), c => c.charCodeAt(0));
+              term.write(binary);
+            } catch { term.write(event.payload.data); }
+          }
+        });
+
+        if (disposed) { unlisten(); return; }
+        cleanupFns.push(unlisten);
+
         term.onData((data) => {
-          if (ptyId) invoke("write_pty", { id: ptyId, data }).catch(() => {});
+          invoke("write_pty", { id, data }).catch(() => {});
         });
-
         term.onTitleChange((title) => onTitleChange?.(title));
-
         term.onBinary((data) => {
-          if (ptyId) invoke("write_pty", { id: ptyId, data }).catch(() => {});
+          invoke("write_pty", { id, data }).catch(() => {});
         });
+
       } catch (err) {
-        if (!disposed) {
-          console.error("[XTerm] Error during setup:", err);
-          term.write(`\r\nError: ${err}\r\n`);
-        }
+        if (!disposed) term.write(`\r\nError: ${err}\r\n`);
       }
     };
 
@@ -124,12 +110,8 @@ export function XTermWrapper({
       if (disposed) return;
       const entry = entries[0];
       if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-        if (!opened) {
-          term.open(container);
-          setupTerminal();
-        } else {
-          fitAddon.fit();
-        }
+        if (!opened) setupTerminal();
+        else fitAddon.fit();
       }
     });
     fitObserver.observe(container);
@@ -137,10 +119,8 @@ export function XTermWrapper({
     return () => {
       disposed = true;
       fitObserver.disconnect();
-      cleanupFns.forEach((fn) => fn());
-      if (ptyId) {
-        invoke("kill_pty", { id: ptyId }).catch(() => {});
-      }
+      cleanupFns.forEach(fn => fn());
+      if (ptyId) invoke("kill_pty", { id: ptyId }).catch(() => {});
       term.dispose();
     };
   }, []);

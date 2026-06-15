@@ -1,29 +1,28 @@
-import { useMemo, useEffect, useRef, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { TerminalSquare } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
-import { useTerminalStore } from "../../stores/terminalStore";
-import { useTerminal } from "../../hooks/useTerminal";
 import { useToastStore } from "../../stores/toastStore";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 export function WorkspaceView() {
   const { activeWorkspaceId, workspaces } = useWorkspaceStore();
-  const terminalStore = useTerminalStore();
-  const terminalHook = useTerminal();
   const { addToast } = useToastStore();
   const [configTerminals, setConfigTerminals] = useState<TerminalConfig[]>([]);
-  const initializedRef = useRef<string | null>(null);
+  const loadedForRef = useRef<string | null>(null);
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
       setConfigTerminals([]);
-      initializedRef.current = null;
+      loadedForRef.current = null;
       return;
     }
+    
+    if (loadedForRef.current === activeWorkspaceId) return;
+    loadedForRef.current = activeWorkspaceId;
 
     let cancelled = false;
 
@@ -48,58 +47,7 @@ export function WorkspaceView() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceId]);
-
-  const workspaceTerminals = useMemo(
-    () =>
-      Array.from(terminalStore.terminals.values()).filter(
-        (t) => t.workspaceId === activeWorkspaceId,
-      ),
-    [terminalStore.terminals, activeWorkspaceId],
-  );
-
-  const hasStoreTerminals = workspaceTerminals.length > 0;
-
-  const displayTerminals = useMemo(() => {
-    if (hasStoreTerminals) {
-      return workspaceTerminals.map((t) => ({
-        id: t.id,
-        shell: t.shell,
-        agentId: t.agent,
-        command: null as string | null,
-        cwd: t.cwd,
-        title: t.title,
-      }));
-    }
-
-    return configTerminals.map((ct) => ({
-      id: ct.id,
-      shell: ct.shell,
-      agentId: ct.agentId || null,
-      command: ct.command || null,
-      cwd: ct.cwd,
-      title: ct.title,
-    }));
-  }, [hasStoreTerminals, workspaceTerminals, configTerminals]);
-
-  useEffect(() => {
-    if (!activeWorkspaceId || configTerminals.length === 0) return;
-    if (hasStoreTerminals) return;
-    if (initializedRef.current === activeWorkspaceId) return;
-
-    initializedRef.current = activeWorkspaceId;
-
-    for (const ct of configTerminals) {
-      terminalHook.create({
-        id: ct.id,
-        workspaceId: activeWorkspaceId,
-        shell: ct.shell,
-        cwd: ct.cwd,
-        title: ct.title,
-        agent: ct.agentId || null,
-      });
-    }
-  }, [activeWorkspaceId, configTerminals, hasStoreTerminals, terminalHook]);
+  }, [activeWorkspaceId, addToast]);
 
   if (!workspace) {
     return (
@@ -149,7 +97,7 @@ export function WorkspaceView() {
       <WorkspaceGrid
         rows={workspace.layout.rows}
         cols={workspace.layout.cols}
-        terminals={displayTerminals}
+        terminals={configTerminals}
       />
     </div>
   );

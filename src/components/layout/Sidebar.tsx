@@ -86,12 +86,12 @@ export function Sidebar() {
           }}
         >
           {/* Expand button */}
-          <motion.button
+          <motion.div
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
-            onClick={toggleSidebar}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200 cursor-pointer"
             style={{ color: "var(--color-neutral-text-muted)" }}
+            onClick={toggleSidebar}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
             }
@@ -101,18 +101,18 @@ export function Sidebar() {
             title="Espandi sidebar"
           >
             <PanelLeftOpen size={15} />
-          </motion.button>
+          </motion.div>
 
           {/* New workspace dot */}
-          <motion.button
+          <motion.div
             whileHover={{ scale: 1.15 }}
             whileTap={{ scale: 0.9 }}
-            onClick={() => setWizardOpen(true)}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200 cursor-pointer"
             style={{
               color: "var(--color-primary)",
               backgroundColor: "rgba(232,93,4,0.1)",
             }}
+            onClick={() => setWizardOpen(true)}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(232,93,4,0.2)")
             }
@@ -122,7 +122,7 @@ export function Sidebar() {
             title="Nuovo Spazio"
           >
             <Plus size={14} />
-          </motion.button>
+          </motion.div>
 
           {/* Divider */}
           <div
