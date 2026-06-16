@@ -2,6 +2,7 @@ import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
@@ -45,6 +46,8 @@ export const XTermWrapper = memo(function XTermWrapper({
   onTerminalReadyRef.current = onTerminalReady;
   const idxRef = useRef(spawnIdx++);
   const ptyRef = useRef<IPty | null>(null);
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -143,8 +146,41 @@ export const XTermWrapper = memo(function XTermWrapper({
 
       try {
         const image = await readImage();
-        if (image) {
-          currentPty.write(`\r\n\x1b[33m[Clipboard contains image — paste not supported in terminal]\x1b[0m\r\n`);
+        if (!image) return;
+
+        try {
+          const size = await image.size();
+          const rgba = await image.rgba();
+
+          const canvas = document.createElement("canvas");
+          canvas.width = size.width;
+          canvas.height = size.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+          const imageData = ctx.createImageData(size.width, size.height);
+          imageData.data.set(rgba);
+          ctx.putImageData(imageData, 0, 0);
+
+          const blob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob((b) => {
+              if (b) resolve(b);
+              else reject(new Error("Failed to encode image as PNG"));
+            }, "image/png");
+          });
+
+          const now = new Date();
+          const pad = (n: number) => String(n).padStart(2, "0");
+          const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+          const filename = `pasted_image_${ts}.png`;
+          const dest = `${cwdRef.current || "."}/${filename}`;
+
+          const buf = await blob.arrayBuffer();
+          await writeFile(dest, new Uint8Array(buf));
+
+          currentPty.write(`\r\n\x1b[32m[Image saved: ${dest}]\x1b[0m\r\n`);
+        } catch (err) {
+          currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
         }
       } catch {
         currentPty.write(`\r\n\x1b[33m[Clipboard contains non-text content]\x1b[0m\r\n`);
