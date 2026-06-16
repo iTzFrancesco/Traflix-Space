@@ -26,6 +26,11 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_pty::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = app.get_webview_window("main")
+                .expect("no main window")
+                .set_focus();
+        }))
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
