@@ -1,7 +1,7 @@
 # Traflix Space — Rifinizione & Nuove Feature
 
-> Ultimo aggiornamento: 2026-06-15
-> Stato attuale: v0.1.1 — Feature core complete, manca polish e feature advanced
+> Ultimo aggiornamento: 2026-06-16
+> Stato attuale: v0.1.4 — Performance optimizations, terminal lifecycle fixes
 
 ---
 
@@ -11,27 +11,26 @@
 |------|:---:|------|
 | Foundation (Tauri 2 + React 19 + Vite 6) | 100% | Stack moderno, zero errori build |
 | Workspace Core (Wizard 4 step + CRUD) | 95% | Funzionale, mancano refinement UX |
-| Terminali (xterm.js + ConPTY nativo) | 95% | Funzionale, mancano feature extra |
-| Agenti (Registry + Auto-launch) | 90% | 3 agenti + custom, manca gestione errori |
+| Terminali (xterm.js + tauri-plugin-pty) | 95% | Funzionale, batch init ottimizzato |
+| Agenti (Registry + Auto-launch) | 90% | 5 agenti (OpenCode, Claude, Gemini, Codex, Anti-Gravity), no API keys |
 | Polish (Animazioni + Dark Theme) | 75% | Base solida, manca dettagli |
-| **Complessivo** | **~92%** | |
+| Performance & Stability | 85% | React.memo, selectors, optimized stores |
+| **Complessivo** | **~93%** | |
 
 ---
 
 ## Priorità 1 — Bug Fix & Robustezza
 
 ### 1.1 Gestione errori PTY migliorata
-- [ ] Aggiungere `GetLastError()` nei messaggi di errore Win32 per debugging
+- [x] `invokeWithTimeout` per tutti i Tauri invoke — timeout configurabile per chiamate IPC
 - [ ] Toast automatico quando un terminale muore inaspettatamente
 - [ ] Riconnessione automatica PTY dopo crash (opzionale)
 
-### 1.2 API Key Security
-- [ ] Crittografia API keys con crate `keyring` o DPAPI Windows
-- [ ] Mascheramento chiavi in logs (mai loggare API keys)
-- [ ] Validazione formato API key prima del salvataggio
+### 1.2 ~~API Key Security~~ — Rimosso
+- API key system completamente rimosso (agenti non necessitano API keys)
 
 ### 1.3 Blocking I/O → Async
-- [ ] Spostare `std::fs` su `tokio::fs` nei comandi Tauri async
+- [x] `invokeWithTimeout` wrappa invoke con timeout (10-30s a seconda dell'operazione)
 - [ ] Workspace registry: `load()` e `save()` async
 - [ ] Settings store: `load_from_disk` e `save_to_disk` async
 
@@ -44,8 +43,8 @@
 - [x] **Colored workspace icons** — bordo laterale colorato + icona quadrata per workspace
 - [x] **Conteggio terminali attivi** — badge numero accanto al nome workspace
 - [x] **Terminali interattivi** — click per navigare al workspace, rename inline
-- [ ] **Collapse/Expand sidebar** — riduci a icone ( già in uiStore, da connettere alla UI )
-- [ ] **Ricerca workspace** — barra di ricerca nella sidebar (gia in uiStore, da connettere )
+- [x] **Collapse/Expand sidebar** — riduci a icone (connesso a uiStore)
+- [ ] **Ricerca workspace** — barra di ricerca nella sidebar (gia in uiStore, da connettere)
 - [ ] **Drag & drop reorder** — riordinare workspace con drag
 
 ### 2.2 Context Menu (Right-click)
@@ -54,6 +53,9 @@
 - [ ] Menu contestuale nella griglia (aggiungi terminale, layout)
 
 ### 2.3 Terminali — Miglioramenti
+- [x] **Batch init ottimizzato** — spawn graduale con timing per numero terminali (4/6/8)
+- [x] **Retry logic** — retry automatico su spawn failure (max 2 tentativi)
+- [x] **Clean agent exit** — kill agenti senza messaggi di errore nel terminale
 - [ ] **Split orizzontale/verticale** — dividere un terminale in due
 - [ ] **Tabs nei terminali** — multiplexing dentro un singolo pane
 - [ ] **Search nel terminale** — Ctrl+F per cercare nello scrollback
@@ -61,7 +63,8 @@
 - [ ] **Link detection** — click su URL per aprire nel browser
 
 ### 2.4 Workspace — Miglioramenti
-- [ ] **Rename workspace** — rinomare direttamente dalla sidebar
+- [x] **Nuovo Spazio button** — pulsante in empty state per creare workspace
+- [x] **Wizard state shared** — wizard condiviso via uiStore (apribile da sidebar + empty state)
 - [ ] **Import/Esporta workspace** — condividere configurazioni
 - [ ] **Workspace recenti** — sezione "ultimi aperti" in cima alla sidebar
 - [ ] **Icona workspace** — emoji o icona personalizzata per workspace
@@ -126,7 +129,7 @@
 - [ ] **Ombre e profondità** — elevation system per cards e modali
 - [ ] **Transizioni page** — animazioni di transizione tra workspace
 - [ ] **Loading states** — skeleton loaders per caricamento dati
-- [ ] **Empty states** — illustrazioni per stati vuoti (no workspace, no terminals)
+- [x] **Empty states** — pulsante "Nuovo Spazio" in workspace vuoto
 - [ ] **Micro-interactions** — hover effects, click feedback
 
 ### 5.2 Accessibility
@@ -136,14 +139,37 @@
 - [ ] **Font size** — resize font con Ctrl+Plus/Minus
 
 ### 5.3 Performance
+- [x] **React.memo** — TerminalPane e XTermWrapper memoizzati
+- [x] **Zustand selectors** — individual selectors in tutti i componenti
+- [x] **Inline styles estratti** — costanti module-level per memo compatibility
+- [x] **Partialize persist** — solo dati serializzati, non azioni
+- [x] **setActiveTerminal ottimizzato** — modifica solo 2 terminali, non tutti
+- [x] **Sidebar non si rirendera** su output terminale (getState())
+- [x] **outputBuffer rimosso** — nessuna state churn inutile
 - [ ] **Code splitting** — lazy loading per modali e componenti pesanti
 - [ ] **Virtual scrolling** — per liste lunghe (workspaces, history)
-- [ ] **Web Worker** — processare output PTY in worker separato
-- [ ] **Memory optimization** — limitare output buffer nei terminali
 
 ---
 
 ## Changelog
+
+### v0.1.4 (2026-06-16) — Performance & Stability
+- Rimosso `outputBuffer` e `writeToTerminal` dal terminalStore (dead code che causava churn catastrofico)
+- Aggiunto `React.memo` a TerminalPane e XTermWrapper
+- Estratti stili inline in costanti module-level (ACTIVE_STYLE, INACTIVE_STYLE, CONTAINER_STYLE)
+- Sidebar usa `getState()` invece di subscription intera al terminalStore
+- `setActiveTerminal` modifica solo 2 terminali, non clona l'intera Map
+- WorkspaceView usa selector mirati, non svuota piu configTerminals ad ogni switch
+- Aggiunto `partialize` a workspaceStore e presetStore
+- `useKeyboardShortcuts` usa refs + subscribe pattern (handler registrato una volta)
+- Modal usa `onCloseRef` pattern per evitare re-registrazione listener
+- TitleBar wrappa `getCurrentWindow()` in try-catch per evitare crash
+- Aggiunto `invokeWithTimeout` per tutti i Tauri invoke
+- Rimossacache `loaded` dal workspace registry Rust (sempre reload da disco)
+- Wizard state condiviso via uiStore (apribile da sidebar + empty state)
+- Empty state mostra pulsante "Nuovo Spazio"
+- Limite terminali: max 8 (era 16)
+- Layout grid: max 2x4 (era 4x4)
 
 ### v0.1.3 (2026-06-15) — Sidebar: delete + collapse
 - Aggiunto pulsante elimina workspace con conferma inline
@@ -171,8 +197,7 @@
 ### v0.1.0 (2026-06-15) — Current
 - Setup iniziale Tauri 2 + React 19 + Vite 6
 - Workspace CRUD con wizard 4 step
-- Terminali xterm.js con ConPTY nativo
-- 3 agenti AI (Aider, OpenCode, Claude Code) + Custom
-- API key management con persistenza
+- Terminali xterm.js con tauri-plugin-pty
+- 5 agenti AI (OpenCode, Claude, Gemini, Codex, Anti-Gravity) + Custom
 - Dark theme con design system Tailwind v4
 - Fix bug critici e rimozione dead code

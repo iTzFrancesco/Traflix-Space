@@ -16,8 +16,8 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 ## Architecture
 
 - **Frontend** (`src/`): React 19, Zustand 5 with `persist` (localStorage), xterm.js 5.3 (WebGL + Fit), Tailwind CSS v4 (CSS-first `@theme` in `globals.css` — **no** `tailwind.config.ts`)
-- **Backend** (`src-tauri/src/`): Rust, Tauri 2, `windows` crate (direct Win32/ConPTY — not `portable-pty`)
-- **IPC**: Tauri `invoke` commands + `pty-output` event (base64 terminal output)
+- **Backend** (`src-tauri/src/`): Rust, Tauri 2, `tauri-plugin-pty` v0.3.0 (based on `portable-pty`)
+- **IPC**: Tauri `invoke` commands + `tauri-pty` plugin (`spawn`, `onData`, `onExit`, `resize`, `kill`)
 - **Styling**: Tailwind v4 `@theme` tokens in `src/styles/globals.css` (orange primary `#e85d04`, dark surfaces). Fonts loaded from **Google Fonts CDN** in `index.html` (Syne, Poppins, JetBrains Mono); `public/fonts/` is empty.
 - **Window**: 1400×900, min 900×600, no decorations, dark theme, centered
 - **Bundle**: MSI + NSIS targets, `embedBootstrapper` webview
@@ -27,15 +27,25 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 | Module | Commands |
 |--------|----------|
 | Workspace | `create_workspace`, `get_workspaces`, `get_workspace`, `update_workspace`, `delete_workspace`, `select_folder` |
-| PTY | `create_pty`, `write_pty`, `resize_pty`, `kill_pty`, `get_terminal_info` |
-| Agent | `list_agents`, `launch_agent`, `kill_agent`, `get_agent_status` |
-| Settings | `get_settings`, `set_settings`, `get_api_keys`, `set_api_key`, `remove_api_key` |
+
+PTY is managed via `tauri-plugin-pty` — no custom IPC commands.
 
 ## State management
 
-- `workspaceStore` (Zustand + persist): workspace CRUD, grid layout
-- `terminalStore` (Zustand): terminal lifecycle, active terminal
-- `uiStore` (Zustand): sidebar state, modals, wizard step
+- `workspaceStore` (Zustand + persist): workspace CRUD, grid layout. Uses `partialize` to persist only `workspaces` + `activeWorkspaceId`.
+- `terminalStore` (Zustand): terminal lifecycle, active terminal. No `outputBuffer` — terminal output goes directly PTY → xterm.js via `tauri-pty`.
+- `uiStore` (Zustand): sidebar state, modals, wizard open state (`wizardOpen`/`setWizardOpen`)
+- `presetStore` (Zustand + persist): workspace presets. Uses `partialize` to persist only `presets`.
+
+## Performance patterns
+
+- **Zustand selectors**: Always use individual selectors (`useStore((s) => s.field)`) — never destructure entire stores
+- **`useTerminalStore.getState()`**: Use for imperative actions in callbacks (avoids subscription)
+- **`React.memo`**: `TerminalPane` and `XTermWrapper` are memoized to prevent cascading re-renders
+- **Inline styles**: Extracted as module-level constants (`ACTIVE_STYLE`, `INACTIVE_STYLE`, `CONTAINER_STYLE`) to avoid defeating memo
+- **`useKeyboardShortcuts`**: Uses refs + subscribe pattern — handler registered once, reads fresh state from refs
+- **`invokeWithTimeout`**: Wraps all Tauri `invoke` calls with configurable timeouts (see `src/lib/timeout.ts`)
+- **Batch terminal init**: `XTermWrapper` uses configurable batch timing per terminal count (4/6/8 terminals)
 
 ## Conventions & quirks
 
@@ -49,9 +59,11 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 ## Notable files
 
 - `TRAFLIX_SPACE_PROGETTO.md` — full project spec (Italian, 1232 lines)
-- `src/lib/agents.ts` — frontend agent definitions (Aider, OpenCode, Claude Code, Custom)
-- `src/lib/presets.ts` — 6 workspace presets
-- `src-tauri/src/pty/windows.rs` — ConPTY native bindings
-- `src-tauri/src/agent/launcher.rs` — agent launcher (writes command + API keys to PTY)
-- `src-tauri/src/settings/store.rs` — settings persistence (JSON file) + API key storage
-- `src/components/layout/SettingsModal.tsx` — API key management UI
+- `src/lib/agents.ts` — frontend agent definitions (OpenCode, Claude Code, Gemini, Codex, Anti-Gravity)
+- `src/lib/presets.ts` — workspace presets + `computeLayout` (max 2x4 grid)
+- `src/lib/timeout.ts` — `invokeWithTimeout` utility for Tauri IPC calls
+- `src-tauri/capabilities/default.json` — permissions including `"pty:default"`
+- `src/components/terminal/XTermWrapper.tsx` — terminal component with batch init, retry, React.memo
+- `src/components/workspace/TerminalPane.tsx` — terminal pane with memo, agent launch via `pty.write()`
+- `src/stores/terminalStore.ts` — terminal state (no outputBuffer, optimized setActiveTerminal)
+- `src/stores/workspaceStore.ts` — workspace state with partialize persist
