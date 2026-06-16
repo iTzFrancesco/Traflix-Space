@@ -123,22 +123,81 @@ export const XTermWrapper = memo(function XTermWrapper({
       setTimeout(() => spawnShell(), delay);
     };
 
-    const handleImagePaste = async (item: DataTransferItem, currentPty: IPty) => {
-      const blob = item.getAsFile();
-      if (!blob) return;
-      const ext = item.type.split("/")[1] || "png";
+    const saveImageFromBlob = async (blob: Blob, mimeType: string): Promise<string> => {
+      const ext = mimeType.split("/")[1] || "png";
       const now = new Date();
       const pad = (n: number) => String(n).padStart(2, "0");
       const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
       const filename = `pasted_${ts}.${ext}`;
       const dest = `${cwdRef.current || "."}/${filename}`;
-      try {
-        const buf = await blob.arrayBuffer();
-        await writeFile(dest, new Uint8Array(buf));
-        currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
-      } catch (err) {
-        currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
-      }
+      const buf = await blob.arrayBuffer();
+      await writeFile(dest, new Uint8Array(buf));
+      return filename;
+    };
+
+    const triggerNativePaste = () => {
+      if (disposed) return;
+      const textarea = document.createElement("textarea");
+      textarea.style.cssText =
+        "position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;";
+      container.appendChild(textarea);
+      textarea.focus();
+
+      const onPaste = (pe: ClipboardEvent) => {
+        pe.preventDefault();
+        pe.stopPropagation();
+        const currentPty = ptyRef.current;
+        if (!currentPty || disposed) {
+          cleanup();
+          return;
+        }
+        const text = pe.clipboardData?.getData("text/plain");
+        if (text) {
+          currentPty.write(text);
+          cleanup();
+          return;
+        }
+        const items = pe.clipboardData?.items;
+        if (items) {
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith("image/")) {
+              const blob = items[i].getAsFile();
+              if (blob) {
+                saveImageFromBlob(blob, items[i].type)
+                  .then((filename) => {
+                    if (!disposed) currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
+                  })
+                  .catch((err) => {
+                    if (!disposed) currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
+                  });
+              }
+              break;
+            }
+          }
+        }
+        cleanup();
+      };
+
+      const cleanup = () => {
+        textarea.removeEventListener("paste", onPaste);
+        if (container.contains(textarea)) container.removeChild(textarea);
+      };
+
+      textarea.addEventListener("paste", onPaste);
+      const ok = document.execCommand("paste");
+      if (!ok) cleanup();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const currentPty = ptyRef.current;
+      if (!currentPty || disposed) return;
+      const isPaste =
+        (e.ctrlKey && e.key.toLowerCase() === "v") ||
+        (e.shiftKey && e.key === "Insert");
+      if (!isPaste) return;
+      e.preventDefault();
+      e.stopPropagation();
+      triggerNativePaste();
     };
 
     const handlePaste = (e: ClipboardEvent) => {
@@ -157,13 +216,23 @@ export const XTermWrapper = memo(function XTermWrapper({
           if (items[i].type.startsWith("image/")) {
             e.preventDefault();
             e.stopPropagation();
-            handleImagePaste(items[i], currentPty);
+            const blob = items[i].getAsFile();
+            if (blob) {
+              saveImageFromBlob(blob, items[i].type)
+                .then((filename) => {
+                  currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
+                })
+                .catch((err) => {
+                  currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
+                });
+            }
             return;
           }
         }
       }
     };
 
+    container.addEventListener("keydown", handleKeyDown, true);
     container.addEventListener("paste", handlePaste, true);
 
     const fitObserver = new ResizeObserver((entries) => {
@@ -194,6 +263,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
+      container.removeEventListener("keydown", handleKeyDown, true);
       container.removeEventListener("paste", handlePaste, true);
       ptyRef.current = null;
       if (pid) {
