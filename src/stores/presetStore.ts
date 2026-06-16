@@ -33,6 +33,9 @@ export const usePresetStore = create<PresetStore>()(
     }),
     {
       name: "traflix-presets",
+      partialize: (state) => ({
+        presets: state.presets,
+      }),
     },
   ),
 );

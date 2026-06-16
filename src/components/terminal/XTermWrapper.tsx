@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { spawn, type IPty } from "tauri-pty";
@@ -25,7 +25,7 @@ let initQueue: Promise<void> = Promise.resolve();
 let batchCount = 0;
 let totalTerminals = 4;
 
-export function XTermWrapper({
+export const XTermWrapper = memo(function XTermWrapper({
   terminalId,
   shell,
   cwd,
@@ -156,14 +156,16 @@ export function XTermWrapper({
   return (
     <div
       ref={containerRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "#0c0c0c",
-      }}
+      style={CONTAINER_STYLE}
     />
   );
-}
+});
+
+const CONTAINER_STYLE = {
+  position: "absolute" as const,
+  inset: 0,
+  background: "#0c0c0c",
+};
 
 const STOCK_THEME = {
   background: "#0c0c0c",

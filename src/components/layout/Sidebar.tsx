@@ -37,12 +37,12 @@ export function Sidebar() {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
-  const terminalStore = useTerminalStore();
   const isCollapsed = useUIStore((s) => s.isCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const activeModal = useUIStore((s) => s.activeModal);
   const closeModal = useUIStore((s) => s.closeModal);
-  const [wizardOpen, setWizardOpen] = useState(false);
+  const wizardOpen = useUIStore((s) => s.wizardOpen);
+  const setWizardOpen = useUIStore((s) => s.setWizardOpen);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -89,9 +89,10 @@ export function Sidebar() {
       console.error("Errore eliminazione workspace backend:", err);
     }
     // Kill terminali della workspace eliminata
-    const terminalsToKill = terminalStore.getTerminalsByWorkspace(id);
+    const state = useTerminalStore.getState();
+    const terminalsToKill = state.getTerminalsByWorkspace(id);
     for (const t of terminalsToKill) {
-      terminalStore.killTerminal(t.id);
+      state.killTerminal(t.id);
     }
     removeWorkspace(id);
     setConfirmDeleteId(null);

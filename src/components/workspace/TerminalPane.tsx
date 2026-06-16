@@ -1,8 +1,7 @@
-import { useState, useCallback } from "react";
+import { memo, useCallback } from "react";
 import { type IPty } from "tauri-pty";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { useTerminalStore } from "../../stores/terminalStore";
-import { useTerminal } from "../../hooks/useTerminal";
 import { AGENTS } from "../../lib/agents";
 
 interface TerminalPaneProps {
@@ -15,17 +14,33 @@ interface TerminalPaneProps {
   totalTerminals?: number;
 }
 
-export function TerminalPane({
+const ACTIVE_STYLE = {
+  position: "relative" as const,
+  width: "100%",
+  height: "100%",
+  borderRadius: "4px",
+  border: "1px solid rgba(255,255,255,0.12)",
+  overflow: "hidden" as const,
+};
+
+const INACTIVE_STYLE = {
+  position: "relative" as const,
+  width: "100%",
+  height: "100%",
+  borderRadius: "4px",
+  border: "1px solid rgba(255,255,255,0.06)",
+  overflow: "hidden" as const,
+};
+
+export const TerminalPane = memo(function TerminalPane({
   terminalId,
   shell,
   cwd,
-  title,
   agentId,
   isActive,
   totalTerminals,
 }: TerminalPaneProps) {
-  const [, setCurrentTitle] = useState(title);
-  const { setActiveTerminal } = useTerminal();
+  const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
 
   const handleActivate = useCallback(() => {
     setActiveTerminal(terminalId);
@@ -34,7 +49,6 @@ export function TerminalPane({
   const handleTitleChange = useCallback(
     (newTitle: string) => {
       if (newTitle) {
-        setCurrentTitle(newTitle);
         useTerminalStore.getState().updateTerminalTitle(terminalId, newTitle);
       }
     },
@@ -52,16 +66,7 @@ export function TerminalPane({
   );
 
   return (
-    <div
-      style={{
-        position: "relative",
-        width: "100%",
-        height: "100%",
-        borderRadius: "4px",
-        border: `1px solid ${isActive ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)"}`,
-        overflow: "hidden",
-      }}
-    >
+    <div style={isActive ? ACTIVE_STYLE : INACTIVE_STYLE}>
       <XTermWrapper
         terminalId={terminalId}
         shell={shell}
@@ -73,4 +78,4 @@ export function TerminalPane({
       />
     </div>
   );
-}
+});

@@ -129,6 +129,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
     }),
     {
       name: "traflix-workspaces",
+      partialize: (state) => ({
+        workspaces: state.workspaces,
+        activeWorkspaceId: state.activeWorkspaceId,
+      }),
     },
   ),
 );
