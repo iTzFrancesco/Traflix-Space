@@ -184,7 +184,7 @@ export function TitleBar() {
       style={{ borderColor: "var(--neutral-border)" }}
     >
       <div className="flex items-center gap-3">
-        <img src="/icon.png" alt="Traflix" className="w-8 h-8 rounded" />
+        <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase">
           Traflix Space
         </span>
