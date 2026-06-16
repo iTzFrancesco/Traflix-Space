@@ -2,6 +2,7 @@ import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
 
@@ -39,6 +40,9 @@ export const XTermWrapper = memo(function XTermWrapper({
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
   const idxRef = useRef(spawnIdx++);
+  const ptyRef = useRef<IPty | null>(null);
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -76,6 +80,7 @@ export const XTermWrapper = memo(function XTermWrapper({
           cwd,
         });
         pid = pty.pid;
+        ptyRef.current = pty;
 
         pty.onData((data) => {
           if (!disposed) term.write(data);
@@ -118,6 +123,49 @@ export const XTermWrapper = memo(function XTermWrapper({
       setTimeout(() => spawnShell(), delay);
     };
 
+    const handleImagePaste = async (item: DataTransferItem, currentPty: IPty) => {
+      const blob = item.getAsFile();
+      if (!blob) return;
+      const ext = item.type.split("/")[1] || "png";
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const filename = `pasted_${ts}.${ext}`;
+      const dest = `${cwdRef.current || "."}/${filename}`;
+      try {
+        const buf = await blob.arrayBuffer();
+        await writeFile(dest, new Uint8Array(buf));
+        currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
+      } catch (err) {
+        currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
+      }
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const currentPty = ptyRef.current;
+      if (!currentPty || disposed) return;
+      const text = e.clipboardData?.getData("text/plain");
+      if (text) {
+        e.preventDefault();
+        e.stopPropagation();
+        currentPty.write(text);
+        return;
+      }
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.startsWith("image/")) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleImagePaste(items[i], currentPty);
+            return;
+          }
+        }
+      }
+    };
+
+    container.addEventListener("paste", handlePaste, true);
+
     const fitObserver = new ResizeObserver((entries) => {
       if (disposed) return;
       const entry = entries[0];
@@ -146,6 +194,8 @@ export const XTermWrapper = memo(function XTermWrapper({
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
+      container.removeEventListener("paste", handlePaste, true);
+      ptyRef.current = null;
       if (pid) {
         invoke("kill_process_tree", { pid }).catch(() => {});
       }

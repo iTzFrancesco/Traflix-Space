@@ -4,6 +4,11 @@ import "./styles/globals.css";
 
 // Disabilita il menu contestuale del webview (Aggiorna, Indietro, ecc.)
 // Inappropriato per un'app desktop Tauri con decorations: false
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+// Eccezione: permette il contextmenu nei terminali xterm.js (necessario per right-click paste)
+document.addEventListener("contextmenu", (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest(".xterm")) return;
+  e.preventDefault();
+});
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(<App />);

@@ -3,6 +3,7 @@ import { Minus, Square, X, Server } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore } from "../../stores/mcpStore";
+import { version as APP_VERSION } from "../../../package.json";
 
 const POPOVER_DELAY = 400;
 
@@ -187,6 +188,9 @@ export function TitleBar() {
         <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase">
           Traflix Space
+        </span>
+        <span className="text-[10px] font-mono text-neutral-text-muted/50 -ml-1">
+          v{APP_VERSION}
         </span>
       </div>
 
