@@ -64,7 +64,7 @@ PTY is managed via `tauri-plugin-pty` — no custom IPC commands.
 - `src/lib/presets.ts` — workspace presets + `computeLayout` (max 2x4 grid)
 - `src/lib/timeout.ts` — `invokeWithTimeout` utility for Tauri IPC calls
 - `src-tauri/capabilities/default.json` — permissions including `"pty:default"`, `"clipboard-manager:allow-read-text"`, `"clipboard-manager:allow-read-image"`
-- `src/components/terminal/XTermWrapper.tsx` — terminal component with batch init, retry, React.memo, clipboard paste via Tauri API, drag-and-drop handlers
+- `src/components/terminal/XTermWrapper.tsx` — terminal component with batch init, retry, React.memo, clipboard paste via Tauri API (text + image), drag-and-drop handlers
 - `src/main.tsx` — entry point, contextmenu filter, global drag/drop prevention for WebView2
 - `src/components/workspace/TerminalPane.tsx` — terminal pane with memo, agent launch via `pty.write()`
 - `src/stores/terminalStore.ts` — terminal state (no outputBuffer, optimized setActiveTerminal)
