@@ -38,3 +38,8 @@ export interface FrameSnapshot {
   cursorVisible: boolean;
   title: string;
 }
+
+export interface TerminalOutput {
+  terminalId: string;
+  data: number[];
+}

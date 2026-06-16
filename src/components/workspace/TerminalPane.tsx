@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { TerminalSnapshot } from "../terminal/TerminalSnapshot";
-import { frameReceiver } from "../terminal/FrameReceiver";
-import { agentLaunchQueue } from "../../lib/agentLauncher";
+import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
-import type { FrameDiff } from "../terminal/types";
+import { agentLaunchQueue } from "../../lib/agentLauncher";
+import type { TerminalOutput } from "../terminal/types";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -19,17 +20,21 @@ interface TerminalPaneProps {
 
 const ACTIVE_STYLE = {
   position: "relative" as const,
-  width: "100%",
-  height: "100%",
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  background: "#0c0c0c",
   borderRadius: "4px",
-  border: "1px solid rgba(255,255,255,0.12)",
+  border: "1px solid #e85d04",
   overflow: "hidden" as const,
 };
 
 const INACTIVE_STYLE = {
   position: "relative" as const,
-  width: "100%",
-  height: "100%",
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  background: "#0c0c0c",
   borderRadius: "4px",
   border: "1px solid rgba(255,255,255,0.06)",
   overflow: "hidden" as const,
@@ -54,40 +59,27 @@ export const TerminalPane = memo(function TerminalPane({
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const spawnedRef = useRef(false);
-  const handlerRegisteredRef = useRef(false);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
-  // Register frame receiver handler for this terminal
+  // Listen for raw terminal output and write to xterm.js when active
   useEffect(() => {
-    if (!handlerRegisteredRef.current) {
-      frameReceiver.register(terminalId, (diff: FrameDiff) => {
-        if (isActive && pool.term.current) {
-          const term = pool.term.current;
-          if (diff.clearScreen) {
-            term.clear();
-            return;
-          }
-          for (const update of diff.dirtyCells || []) {
-            const row = update.row;
-            const col = update.col;
-            const cell = update.cell;
-            const ch = cell.ch;
-            const fg = cell.fg;
-            const bg = cell.bg;
-            let styles = "";
-            if (cell.bold) styles += "\x1b[1m";
-            if (cell.italic) styles += "\x1b[3m";
-            if (cell.underline) styles += "\x1b[4m";
-            const fgCode = `\x1b[38;2;${fg.r};${fg.g};${fg.b}m`;
-            const bgCode = `\x1b[48;2;${bg.r};${bg.g};${bg.b}m`;
-            term.write(`\x1b[${row + 1};${col + 1}H${styles}${fgCode}${bgCode}${ch}\x1b[0m`);
-          }
-          if (diff.cursor) {
-            term.write(`\x1b[${diff.cursor.row + 1};${diff.cursor.col + 1}H`);
-          }
-        }
+    if (!isActive) return;
+    let cancelled = false;
+    (async () => {
+      const unlisten = await listen<TerminalOutput>("terminal-output", (event) => {
+        if (cancelled) return;
+        const { terminalId: tid, data } = event.payload;
+        if (tid !== terminalId) return;
+        const term = pool.term.current;
+        if (!term) return;
+        term.write(new Uint8Array(data));
       });
-      handlerRegisteredRef.current = true;
-    }
+      if (!cancelled) unlistenRef.current = unlisten;
+    })();
+    return () => {
+      cancelled = true;
+      unlistenRef.current?.();
+    };
   }, [terminalId, isActive, pool.term]);
 
   // Spawn and attach when active
@@ -113,17 +105,30 @@ export const TerminalPane = memo(function TerminalPane({
       pool.initXTerm();
       await pool.attachTo(containerRef.current!, terminalId);
     })();
-  }, [isActive, terminalId, shell, cwd, pool]);
+  }, [isActive, terminalId, shell, cwd, pool, agentId]);
 
-  // Fit terminal on resize
+  // Fit terminal on resize and forward PTY resize to backend
   useEffect(() => {
     if (!isActive) return;
     const handleResize = () => {
-      setTimeout(() => pool.fit(), 50);
+      setTimeout(async () => {
+        pool.fit();
+        const term = pool.term.current;
+        const fitAddon = pool.fitAddon.current;
+        if (term && fitAddon) {
+          const cols = term.cols;
+          const rows = term.rows;
+          try {
+            await invoke("terminal_resize", { terminalId, cols, rows });
+          } catch { }
+        }
+      }, 50);
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [isActive, pool]);
+  }, [isActive, pool, terminalId]);
+
+  useTerminalInput(terminalId, containerRef);
 
   const handleActivate = useCallback(() => {
     onActivate(terminalId);

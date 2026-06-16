@@ -4,6 +4,13 @@ use crate::terminal_engine::cell::Cell;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TerminalOutput {
+    pub terminal_id: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CursorPosition {
     pub row: u16,
     pub col: u16,

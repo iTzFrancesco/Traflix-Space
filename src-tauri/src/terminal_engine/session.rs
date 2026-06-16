@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tracing::{error, info, warn};
 use portable_pty::{CommandBuilder, PtySize};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
+use crate::terminal_engine::frame::TerminalOutput;
 
 pub struct TerminalSession {
     pub id: String,
@@ -13,7 +14,7 @@ pub struct TerminalSession {
     pub reader: Option<Arc<Mutex<Box<dyn std::io::Read + Send>>>>,
     pub writer: Option<Arc<Mutex<Box<dyn std::io::Write + Send>>>>,
     pub grid: GridBuffer,
-    pub parser: AnsiParser,
+    pub parser: Arc<Mutex<AnsiParser>>,
     pub active: bool,
     pub agent_id: Option<String>,
     pub exit_code: Option<i32>,
@@ -29,14 +30,14 @@ impl TerminalSession {
             reader: None,
             writer: None,
             grid: GridBuffer::new(cols, rows),
-            parser: AnsiParser::new(cols, rows),
+            parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
             exit_code: None,
         }
     }
 
-    pub async fn spawn(&mut self, _app: AppHandle) -> Result<(), String> {
+    pub async fn spawn(&mut self, app: AppHandle) -> Result<(), String> {
         if self.pty.is_some() {
             return Ok(());
         }
@@ -79,10 +80,13 @@ impl TerminalSession {
         self.writer = Some(Arc::new(Mutex::new(writer)));
 
         let reader_arc = self.reader.clone().unwrap();
+        let parser = self.parser.clone();
         let id = self.id.clone();
+        let _cols = self.grid.cols;
+        let _rows = self.grid.rows;
 
         tokio::task::spawn_blocking(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 65536];
             loop {
                 let n = {
                     let mut reader = match reader_arc.lock() {
@@ -103,7 +107,17 @@ impl TerminalSession {
                     }
                 };
 
-                info!(terminal_id = %id, bytes = n, "PTY data received");
+                let data = buf[..n].to_vec();
+
+                if let Ok(mut p) = parser.lock() {
+                    p.process(&data);
+                    drop(p);
+                }
+
+                let _ = app.emit("terminal-output", TerminalOutput {
+                    terminal_id: id.clone(),
+                    data,
+                });
             }
             info!(terminal_id = %id, "PTY reader task ended");
         });

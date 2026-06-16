@@ -16,6 +16,10 @@ impl AnsiParser {
         self.parser.process(data);
     }
 
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
     pub fn cursor_position(&self) -> CursorPosition {
         let (row, col) = self.parser.screen().cursor_position();
         CursorPosition {
