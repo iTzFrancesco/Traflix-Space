@@ -14,6 +14,7 @@ function McpPopover() {
   const checkStatus = useMcpStore((s) => s.checkStatus);
   const [logs, setLogs] = useState("");
   const [logError, setLogError] = useState<string | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   const loadLogs = async () => {
     try {
@@ -30,6 +31,12 @@ function McpPopover() {
     const interval = setInterval(loadLogs, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   const toggleServer = async () => {
     if (loading) return;
@@ -73,7 +80,7 @@ function McpPopover() {
         </button>
       </div>
 
-      <div className="p-3 max-h-56 overflow-y-auto">
+      <div ref={logRef} className="p-3 max-h-56 overflow-y-auto">
         {logError ? (
           <p className="text-xs text-red-400">{logError}</p>
         ) : logs ? (

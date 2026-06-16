@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
@@ -26,7 +27,7 @@ export function WorkspaceView() {
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
   const wizardOpen = useUIStore((s) => s.wizardOpen);
 
-  const MAX_OPEN_WORKSPACES = 2;
+  const MAX_OPEN_WORKSPACES = 16;
 
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
@@ -63,6 +64,23 @@ export function WorkspaceView() {
     )
       .then((fullConfig) => {
         if (cancelled) return;
+
+        // Registra i terminali nel terminalStore
+        const terminalStore = useTerminalStore.getState();
+        for (const tc of fullConfig.terminals || []) {
+          if (!terminalStore.terminals.has(tc.id)) {
+            terminalStore.createTerminal({
+              id: tc.id,
+              workspaceId: id,
+              shell: tc.shell,
+              cwd: tc.cwd,
+              title: tc.title,
+              process: tc.shell,
+              agent: tc.agentId || null,
+            });
+          }
+        }
+
         setLoadedMap((prev) => {
           const next = new Map(prev);
           next.set(id, {
@@ -83,6 +101,11 @@ export function WorkspaceView() {
               (k) => k !== currentActive && next.has(k),
             );
             if (toEvict) {
+              // Cleanup terminali prima di espellere
+              const terminals = next.get(toEvict)?.terminals || [];
+              for (const tc of terminals) {
+                terminalStore.killTerminal(tc.id);
+              }
               next.delete(toEvict);
               openOrderRef.current = openOrderRef.current.filter(
                 (k) => k !== toEvict,
@@ -120,11 +143,16 @@ export function WorkspaceView() {
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
     const allIds = new Set(workspaces.map((w) => w.id));
+    const terminalStore = useTerminalStore.getState();
     setLoadedMap((prev) => {
       let changed = false;
       const next = new Map(prev);
       for (const key of next.keys()) {
         if (!allIds.has(key)) {
+          const terminals = next.get(key)?.terminals || [];
+          for (const tc of terminals) {
+            terminalStore.killTerminal(tc.id);
+          }
           next.delete(key);
           changed = true;
         }
