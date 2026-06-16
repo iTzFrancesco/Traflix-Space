@@ -13,7 +13,11 @@ interface XTermWrapperProps {
   onFocus?: () => void;
 }
 
+const BATCH_SIZE = 4;
+const BATCH_DELAY = 150;
+
 let initQueue: Promise<void> = Promise.resolve();
+let batchCount = 0;
 
 export function XTermWrapper({
   terminalId,
@@ -31,7 +35,8 @@ export function XTermWrapper({
 
     const term = new Terminal({
       theme: STOCK_THEME,
-      fontFamily: '"Cascadia Mono", "Cascadia Code", "Consolas", "Lucida Console", monospace',
+      fontFamily:
+        '"Cascadia Mono", "Cascadia Code", "Consolas", "Lucida Console", monospace',
       fontSize: 14,
       lineHeight: 1.2,
       cursorBlink: true,
@@ -48,6 +53,41 @@ export function XTermWrapper({
     let opened = false;
     let disposed = false;
 
+    const spawnShell = () => {
+      if (disposed) return;
+      try {
+        pty = spawn("powershell.exe", [], {
+          cols: term.cols,
+          rows: term.rows,
+          cwd,
+        });
+
+        pty.onData((data) => {
+          if (!disposed) term.write(data);
+        });
+
+        pty.onExit(() => {
+          pty = null;
+        });
+
+        term.onData((data) => {
+          if (pty && !disposed) pty.write(data);
+        });
+
+        term.onResize((e) => {
+          if (pty && !disposed) pty.resize(e.cols, e.rows);
+        });
+
+        term.onTitleChange((title) => onTitleChange?.(title));
+        onTerminalReady?.(pty);
+      } catch (err) {
+        console.error(`[XTerm ${terminalId}] Spawn error:`, err);
+        if (!disposed) {
+          term.write(`\r\nError: ${err}\r\n`);
+        }
+      }
+    };
+
     const setupTerminal = () => {
       if (opened || disposed) return;
       opened = true;
@@ -57,53 +97,27 @@ export function XTermWrapper({
       term.focus();
       fitAddon.fit();
 
-      const shellCmd = shell.toLowerCase() === "bash" ? "bash.exe" : "powershell.exe";
+      const currentBatch = batchCount++;
+      const delay =
+        BATCH_DELAY + Math.floor(currentBatch / BATCH_SIZE) * BATCH_DELAY;
 
-      const doSpawn = () => {
-        if (disposed) return;
-        try {
-          pty = spawn(shellCmd, [], {
-            cols: term.cols,
-            rows: term.rows,
-            cwd,
-          });
-
-          pty.onData((data) => {
-            if (!disposed) term.write(data);
-          });
-
-          pty.onExit(({ exitCode }) => {
-            if (!disposed) term.write(`\r\n[Exit ${exitCode}]\r\n`);
-          });
-
-          term.onData((data) => {
-            if (pty && !disposed) pty.write(data);
-          });
-
-          term.onResize((e) => {
-            if (pty && !disposed) pty.resize(e.cols, e.rows);
-          });
-
-          term.onTitleChange((title) => onTitleChange?.(title));
-          onTerminalReady?.(pty);
-        } catch (err) {
-          console.error(`[XTerm ${terminalId}] Spawn error:`, err);
-          if (!disposed) {
-            term.write(`\r\nError: ${err}\r\n`);
-          }
-        }
-      };
-
-      initQueue = initQueue.then(() => new Promise<void>((resolve) => {
-        doSpawn();
-        setTimeout(resolve, 200);
-      }));
+      initQueue = initQueue.then(
+        () =>
+          new Promise<void>((resolve) => {
+            spawnShell();
+            setTimeout(resolve, delay);
+          }),
+      );
     };
 
     const fitObserver = new ResizeObserver((entries) => {
       if (disposed) return;
       const entry = entries[0];
-      if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+      if (
+        entry &&
+        entry.contentRect.width > 0 &&
+        entry.contentRect.height > 0
+      ) {
         if (!opened) {
           setupTerminal();
         } else {

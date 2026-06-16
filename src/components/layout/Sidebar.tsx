@@ -9,6 +9,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useUIStore } from "../../stores/uiStore";
@@ -33,14 +34,20 @@ export function Sidebar() {
   const { workspaces, activeWorkspaceId, setActiveWorkspace, updateWorkspace, removeWorkspace } =
     useWorkspaceStore();
   const terminalStore = useTerminalStore();
-  const { isCollapsed, toggleSidebar } = useUIStore();
+  const { isCollapsed, toggleSidebar, activeModal, closeModal } = useUIStore();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const allTerminals = Array.from(terminalStore.terminals.values());
+  // Apri il wizard quando il keyboard shortcut (Ctrl+N) imposta activeModal
+  useEffect(() => {
+    if (activeModal === "new-workspace") {
+      setWizardOpen(true);
+      closeModal();
+    }
+  }, [activeModal, closeModal]);
 
   useEffect(() => {
     if (renamingId && inputRef.current) {
@@ -67,7 +74,18 @@ export function Sidebar() {
     setRenameValue("");
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    // Kill terminali della workspace eliminata
+    const terminalsToKill = terminalStore.getTerminalsByWorkspace(id);
+    for (const t of terminalsToKill) {
+      terminalStore.killTerminal(t.id);
+    }
+    // Notifica il backend
+    try {
+      await invoke("delete_workspace", { id });
+    } catch (err) {
+      console.error("Errore eliminazione workspace backend:", err);
+    }
     removeWorkspace(id);
     setConfirmDeleteId(null);
   };
@@ -236,9 +254,7 @@ export function Sidebar() {
               {workspaces.map((ws, index) => {
                 const color = getWorkspaceColor(index);
                 const isActive = activeWorkspaceId === ws.id;
-                const terminalCount = allTerminals.filter(
-                  (t) => t.workspaceId === ws.id,
-                ).length;
+                const terminalCount = ws.terminalCount;
                 const isRenaming = renamingId === ws.id;
                 const isDeleting = confirmDeleteId === ws.id;
 

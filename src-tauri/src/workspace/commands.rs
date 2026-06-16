@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use tauri::AppHandle;
 use tauri::Manager;
@@ -124,7 +125,10 @@ pub async fn select_folder(app: AppHandle) -> Result<String, String> {
             let _ = tx.send(path);
         });
 
-    let file = rx.await.map_err(|_| "Dialog cancelled".to_string())?;
+    let file = tokio::time::timeout(Duration::from_secs(10), rx)
+        .await
+        .map_err(|_| "Dialog timeout: il dialog non ha risposto entro 10 secondi".to_string())?
+        .map_err(|_| "Dialog cancelled".to_string())?;
     match file {
         Some(path) => {
             info!(path = %path.to_string(), "Cartella selezionata");

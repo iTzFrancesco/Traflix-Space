@@ -39,6 +39,7 @@ pub struct TerminalConfig {
 pub struct WorkspaceRegistry {
     workspaces: Arc<Mutex<HashMap<String, WorkspaceConfig>>>,
     registry_path: PathBuf,
+    loaded: Arc<std::sync::atomic::AtomicBool>,
     _app: AppHandle,
 }
 
@@ -56,12 +57,17 @@ impl WorkspaceRegistry {
         Self {
             workspaces,
             registry_path,
+            loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             _app: app,
         }
     }
 
     pub async fn load(&self) -> Result<(), String> {
+        if self.loaded.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
         if !self.registry_path.exists() {
+            self.loaded.store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
         let data = std::fs::read_to_string(&self.registry_path)
@@ -73,6 +79,7 @@ impl WorkspaceRegistry {
         for ws in list {
             map.insert(ws.id.clone(), ws);
         }
+        self.loaded.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 

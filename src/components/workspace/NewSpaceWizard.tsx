@@ -155,7 +155,13 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     try {
       const path = await invoke<string>("select_folder");
       setFolderPath(path);
-    } catch {}
+    } catch (err) {
+      console.error("Errore selezione cartella:", err);
+      addToast({
+        type: "error",
+        message: "Impossibile aprire il dialog di selezione cartella",
+      });
+    }
   }
 
   async function handleCreate() {
