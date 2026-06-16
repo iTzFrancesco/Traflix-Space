@@ -147,6 +147,7 @@ export const XTermWrapper = memo(function XTermWrapper({
           currentPty.write(`\r\n\x1b[33m[Clipboard contains image — paste not supported in terminal]\x1b[0m\r\n`);
         }
       } catch {
+        currentPty.write(`\r\n\x1b[33m[Clipboard contains non-text content]\x1b[0m\r\n`);
       }
     };
 
