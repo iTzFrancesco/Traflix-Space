@@ -21,6 +21,7 @@
     "fs:allow-exists",
     "fs:allow-mkdir",
     "dialog:default",
-    "store:default"
+    "store:default",
+    "pty:default"
   ]
 }

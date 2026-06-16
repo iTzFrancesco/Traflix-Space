@@ -98,6 +98,7 @@ impl AgentRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_agent(&self, id: &str) -> Option<&AgentDefinition> {
         self.agents.iter().find(|a| a.id == id)
     }

@@ -1,9 +1,10 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { type IPty } from "tauri-pty";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useTerminal } from "../../hooks/useTerminal";
-import { useToastStore } from "../../stores/toastStore";
+import { AGENTS } from "../../lib/agents";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -24,7 +25,6 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const [, setCurrentTitle] = useState(title);
   const { setActiveTerminal } = useTerminal();
-  const { addToast } = useToastStore();
 
   const handleActivate = useCallback(() => {
     setActiveTerminal(terminalId);
@@ -41,24 +41,28 @@ export function TerminalPane({
   );
 
   const handleTerminalReady = useCallback(
-    async (ptyId: string) => {
-      useTerminalStore.getState().setTerminalPtyId(terminalId, ptyId);
-
+    (pty: IPty) => {
       if (agentId) {
-        try {
-          await invoke("launch_agent", {
-            ptyId,
-            terminalId,
-            agentId,
-            shell,
-          });
-        } catch (err) {
+        invoke<Record<string, string>>("get_api_keys").then((apiKeys) => {
+          const agent = AGENTS.find((a) => a.id === agentId);
+          if (!agent) return;
+
+          let envPrefix = "";
+          if (agent.requiresApiKey && agent.apiKeyEnv) {
+            const key = apiKeys[agent.apiKeyEnv];
+            if (key) {
+              envPrefix = `$env:${agent.apiKeyEnv}='${key}'; `;
+            }
+          }
+
+          const cmd = `${envPrefix}${agent.command} ${agent.args.join(" ")}\r\n`;
+          pty.write(cmd);
+        }).catch((err) => {
           console.error("Error launching agent:", err);
-          addToast({ type: "error", message: `Errore lancio agente ${agentId}` });
-        }
+        });
       }
     },
-    [terminalId, agentId],
+    [agentId],
   );
 
   return (

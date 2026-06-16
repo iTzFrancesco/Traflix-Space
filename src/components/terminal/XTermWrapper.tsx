@@ -1,8 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
 
 interface XTermWrapperProps {
@@ -10,13 +9,7 @@ interface XTermWrapperProps {
   shell: string;
   cwd: string;
   onTitleChange?: (title: string) => void;
-  onTerminalReady?: (ptyId: string) => void;
-}
-
-interface PtyOutputPayload {
-  id: string;
-  data: string;
-  eof: boolean;
+  onTerminalReady?: (pty: IPty) => void;
 }
 
 export function XTermWrapper({
@@ -27,13 +20,10 @@ export function XTermWrapper({
   onTerminalReady,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-
-    console.log(`[XTerm ${terminalId}] Initializing...`);
 
     const term = new Terminal({
       theme: STOCK_THEME,
@@ -46,107 +36,48 @@ export function XTermWrapper({
       scrollback: 10000,
       allowProposedApi: true,
     });
-    termRef.current = term;
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    let ptyId: string | null = null;
-    let disposed = false;
+    let pty: IPty | null = null;
     let opened = false;
-    const cleanupFns: (() => void)[] = [];
+    let disposed = false;
 
-    const setupTerminal = async () => {
-      if (disposed || opened) return;
+    const setupTerminal = () => {
+      if (opened || disposed) return;
       opened = true;
       fitObserver.disconnect();
 
-      console.log(`[XTerm ${terminalId}] Opening terminal container...`);
       term.open(container);
-      term.write("\x1b[1;33mDEBUG: Terminal opened, waiting for PTY...\x1b[0m\r\n");
-      term.write("Connecting to PTY...\r\n");
-
-      // Temporaneamente disabilitiamo WebGL per debug
-      /*
-      try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => webglAddon.dispose());
-        term.loadAddon(webglAddon);
-      } catch (e) {
-        console.warn(`[XTerm ${terminalId}] WebGL addon failed:`, e);
-      }
-      */
-
       fitAddon.fit();
 
-      const id = crypto.randomUUID();
-      console.log(`[XTerm ${terminalId}] Generated ptyId: ${id}`);
+      const shellCmd = shell.toLowerCase() === "bash" ? "bash.exe" : "powershell.exe";
 
-      try {
-        console.log(`[XTerm ${terminalId}] Subscribing to pty-output for ${id}`);
-        const unlisten = await listen<PtyOutputPayload>("pty-output", (event) => {
-          if (disposed || event.payload.id !== id) return;
-          
-          if (event.payload.eof) {
-            console.log(`[XTerm ${terminalId}] Received EOF`);
-            term.write("\r\n[Process completed]\r\n");
-            return;
-          }
+      pty = spawn(shellCmd, [], {
+        cols: term.cols,
+        rows: term.rows,
+        cwd,
+      });
 
-          if (event.payload.data) {
-            try {
-              const binary = Uint8Array.from(atob(event.payload.data), c => c.charCodeAt(0));
-              console.log(`[XTerm ${terminalId}] Received ${binary.length} bytes`);
-              term.write(binary);
-            } catch (err) {
-              console.error(`[XTerm ${terminalId}] Error decoding output:`, err);
-              term.write(event.payload.data);
-            }
-          }
-        });
+      pty.onData((data) => {
+        if (!disposed) term.write(data);
+      });
 
-        if (disposed) {
-          unlisten();
-          return;
-        }
-        cleanupFns.push(unlisten);
+      pty.onExit(({ exitCode }) => {
+        if (!disposed) term.write(`\r\n[Exit ${exitCode}]\r\n`);
+      });
 
-        console.log(`[XTerm ${terminalId}] Invoking create_pty for ${id}`);
-        const finalId = await invoke<string>("create_pty", {
-          id,
-          shell,
-          cols: Math.max(term.cols, 1),
-          rows: Math.max(term.rows, 1),
-          cwd,
-        });
+      term.onData((data) => {
+        if (pty && !disposed) pty.write(data);
+      });
 
-        console.log(`[XTerm ${terminalId}] PTY created successfully: ${finalId}`);
+      term.onResize((e) => {
+        if (pty && !disposed) pty.resize(e.cols, e.rows);
+      });
 
-        ptyId = finalId;
-        onTerminalReady?.(finalId);
-
-        term.onData((data) => {
-          if (ptyId && !disposed) {
-            invoke("write_pty", { id: ptyId, data }).catch(err => {
-              console.error(`[XTerm ${terminalId}] Write error:`, err);
-            });
-          }
-        });
-
-        term.onTitleChange((title) => onTitleChange?.(title));
-        
-        term.onBinary((data) => {
-          if (ptyId && !disposed) {
-            invoke("write_pty", { id: ptyId, data }).catch(err => {
-              console.error(`[XTerm ${terminalId}] Write binary error:`, err);
-            });
-          }
-        });
-
-      } catch (err) {
-        console.error(`[XTerm ${terminalId}] Setup error:`, err);
-        if (!disposed) term.write(`\r\nError: ${err}\r\n`);
-      }
+      term.onTitleChange((title) => onTitleChange?.(title));
+      onTerminalReady?.(pty);
     };
 
     const fitObserver = new ResizeObserver((entries) => {
@@ -157,25 +88,17 @@ export function XTermWrapper({
           setupTerminal();
         } else {
           fitAddon.fit();
-          if (ptyId && !disposed) {
-            invoke("resize_pty", { id: ptyId, cols: term.cols, rows: term.rows }).catch(() => {});
-          }
+          pty?.resize(term.cols, term.rows);
         }
       }
     });
     fitObserver.observe(container);
 
     return () => {
-      console.log(`[XTerm ${terminalId}] Cleaning up...`);
       disposed = true;
       fitObserver.disconnect();
-      cleanupFns.forEach(fn => fn());
-      if (ptyId) {
-        console.log(`[XTerm ${terminalId}] Killing PTY ${ptyId}`);
-        invoke("kill_pty", { id: ptyId }).catch(() => {});
-      }
+      pty?.kill();
       term.dispose();
-      termRef.current = null;
     };
   }, [terminalId, shell, cwd, onTitleChange, onTerminalReady]);
 
