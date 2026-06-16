@@ -11,4 +11,11 @@ document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+});
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+});
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(<App />);

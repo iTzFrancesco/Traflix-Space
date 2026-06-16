@@ -22,6 +22,8 @@
     "fs:allow-mkdir",
     "dialog:default",
     "store:default",
-    "pty:default"
+    "pty:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-read-image"
   ]
 }

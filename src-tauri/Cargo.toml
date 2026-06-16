@@ -12,6 +12,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 tauri-plugin-pty = "0.3.0"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }

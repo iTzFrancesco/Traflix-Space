@@ -3,6 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { writeFile } from "@tauri-apps/plugin-fs";
+import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
 
@@ -135,57 +136,35 @@ export const XTermWrapper = memo(function XTermWrapper({
       return filename;
     };
 
-    const triggerNativePaste = () => {
+    const handlePasteFromClipboard = async () => {
       if (disposed) return;
-      const textarea = document.createElement("textarea");
-      textarea.style.cssText =
-        "position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;";
-      container.appendChild(textarea);
-      textarea.focus();
+      const currentPty = ptyRef.current;
+      if (!currentPty || disposed) return;
 
-      const onPaste = (pe: ClipboardEvent) => {
-        pe.preventDefault();
-        pe.stopPropagation();
-        const currentPty = ptyRef.current;
-        if (!currentPty || disposed) {
-          cleanup();
-          return;
-        }
-        const text = pe.clipboardData?.getData("text/plain");
+      try {
+        const text = await readText();
         if (text) {
           currentPty.write(text);
-          cleanup();
           return;
         }
-        const items = pe.clipboardData?.items;
-        if (items) {
-          for (let i = 0; i < items.length; i++) {
-            if (items[i].type.startsWith("image/")) {
-              const blob = items[i].getAsFile();
-              if (blob) {
-                saveImageFromBlob(blob, items[i].type)
-                  .then((filename) => {
-                    if (!disposed) currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
-                  })
-                  .catch((err) => {
-                    if (!disposed) currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
-                  });
-              }
-              break;
-            }
-          }
+      } catch {
+      }
+
+      try {
+        const image = await readImage();
+        if (image) {
+          const rgbaData = await image.rgba();
+          const blob = new Blob([new Uint8Array(rgbaData) as BlobPart], { type: "image/png" });
+          saveImageFromBlob(blob, "image/png")
+            .then((filename) => {
+              if (!disposed) currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
+            })
+            .catch((err) => {
+              if (!disposed) currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
+            });
         }
-        cleanup();
-      };
-
-      const cleanup = () => {
-        textarea.removeEventListener("paste", onPaste);
-        if (container.contains(textarea)) container.removeChild(textarea);
-      };
-
-      textarea.addEventListener("paste", onPaste);
-      const ok = document.execCommand("paste");
-      if (!ok) cleanup();
+      } catch {
+      }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -197,43 +176,46 @@ export const XTermWrapper = memo(function XTermWrapper({
       if (!isPaste) return;
       e.preventDefault();
       e.stopPropagation();
-      triggerNativePaste();
-    };
-
-    const handlePaste = (e: ClipboardEvent) => {
-      const currentPty = ptyRef.current;
-      if (!currentPty || disposed) return;
-      const text = e.clipboardData?.getData("text/plain");
-      if (text) {
-        e.preventDefault();
-        e.stopPropagation();
-        currentPty.write(text);
-        return;
-      }
-      const items = e.clipboardData?.items;
-      if (items) {
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].type.startsWith("image/")) {
-            e.preventDefault();
-            e.stopPropagation();
-            const blob = items[i].getAsFile();
-            if (blob) {
-              saveImageFromBlob(blob, items[i].type)
-                .then((filename) => {
-                  currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
-                })
-                .catch((err) => {
-                  currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
-                });
-            }
-            return;
-          }
-        }
-      }
+      handlePasteFromClipboard();
     };
 
     container.addEventListener("keydown", handleKeyDown, true);
-    container.addEventListener("paste", handlePaste, true);
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentPty = ptyRef.current;
+      if (!currentPty || disposed) return;
+
+      const files = e.dataTransfer?.files;
+      if (files && files.length > 0) {
+        const paths: string[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const path = (file as File & { path?: string }).path;
+          if (path) {
+            paths.push(path);
+          } else {
+            paths.push(file.name);
+          }
+        }
+        currentPty.write(paths.join(" "));
+        return;
+      }
+
+      const text = e.dataTransfer?.getData("text/plain");
+      if (text) {
+        currentPty.write(text);
+      }
+    };
+
+    container.addEventListener("dragover", handleDragOver);
+    container.addEventListener("drop", handleDrop);
 
     const fitObserver = new ResizeObserver((entries) => {
       if (disposed) return;
@@ -264,7 +246,8 @@ export const XTermWrapper = memo(function XTermWrapper({
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
       container.removeEventListener("keydown", handleKeyDown, true);
-      container.removeEventListener("paste", handlePaste, true);
+      container.removeEventListener("dragover", handleDragOver);
+      container.removeEventListener("drop", handleDrop);
       ptyRef.current = null;
       if (pid) {
         invoke("kill_process_tree", { pid }).catch(() => {});
