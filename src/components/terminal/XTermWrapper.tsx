@@ -22,9 +22,9 @@ const TIMING: Record<number, { batchSize: number; delay: number }> = {
 };
 const DEFAULT_TIMING = { batchSize: 2, delay: 150 };
 
-let initQueue: Promise<void> = Promise.resolve();
-let batchCount = 0;
-let totalTerminals = 4;
+
+
+let spawnIdx = 0;
 
 export const XTermWrapper = memo(function XTermWrapper({
   terminalId,
@@ -38,6 +38,7 @@ export const XTermWrapper = memo(function XTermWrapper({
   const containerRef = useRef<HTMLDivElement>(null);
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
+  const idxRef = useRef(spawnIdx++);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -56,12 +57,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       allowProposedApi: true,
     });
 
-    term.attachCustomKeyEventHandler((e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "v" && e.type === "keydown") {
-        return false;
-      }
-      return true;
-    });
+    term.attachCustomKeyEventHandler(() => true);
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -116,18 +112,11 @@ export const XTermWrapper = memo(function XTermWrapper({
       term.focus();
       fitAddon.fit();
 
-      if (total) totalTerminals = total;
-      const timing = TIMING[totalTerminals] || DEFAULT_TIMING;
-      const currentBatch = batchCount++;
-      const delay = Math.floor(currentBatch / timing.batchSize) * timing.delay;
+      const t = Math.max(total || 4, 4);
+      const timing = TIMING[t] || DEFAULT_TIMING;
+      const delay = Math.floor(idxRef.current / timing.batchSize) * timing.delay;
 
-      initQueue = initQueue.then(
-        () =>
-          new Promise<void>((resolve) => {
-            spawnShell();
-            setTimeout(resolve, delay);
-          }),
-      );
+      setTimeout(() => spawnShell(), delay);
     };
 
     const fitObserver = new ResizeObserver((entries) => {
@@ -153,21 +142,11 @@ export const XTermWrapper = memo(function XTermWrapper({
     const handleFocusIn = () => onFocusRef.current?.();
     container.addEventListener("focusin", handleFocusIn);
 
-    const handlePaste = (e: ClipboardEvent) => {
-      e.preventDefault();
-      const text = e.clipboardData?.getData("text/plain");
-      if (text && pty && !disposed) {
-        pty.write(text);
-      }
-    };
-    container.addEventListener("paste", handlePaste);
-
     return () => {
       disposed = true;
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
-      container.removeEventListener("paste", handlePaste);
       if (pid) {
         invoke("kill_process_tree", { pid }).catch(() => {});
       }
@@ -215,9 +194,4 @@ const STOCK_THEME = {
   brightWhite: "#e5e5e5",
 };
 
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    initQueue = Promise.resolve();
-    batchCount = 0;
-  });
-}
+
