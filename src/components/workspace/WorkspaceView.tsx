@@ -19,17 +19,22 @@ interface LoadedWorkspace {
 
 export function WorkspaceView() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
   const addToast = useToastStore((s) => s.addToast);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
   const wizardOpen = useUIStore((s) => s.wizardOpen);
 
-  // Mappa di TUTTI i workspace caricati (keyed by id) — i terminali restano montati
+  const MAX_OPEN_WORKSPACES = 2;
+
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
   );
+  const loadedMapRef = useRef(loadedMap);
+  loadedMapRef.current = loadedMap;
   const loadingRef = useRef<Set<string>>(new Set());
+  const openOrderRef = useRef<string[]>([]);
 
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === s.activeWorkspaceId),
@@ -39,55 +44,71 @@ export function WorkspaceView() {
     ? loadedMap.get(activeWorkspaceId)
     : undefined;
 
-  const loadWorkspace = useCallback(
-    (id: string) => {
-      if (loadedMap.has(id) || loadingRef.current.has(id)) return;
-      loadingRef.current.add(id);
+  const loadWorkspace = useCallback((id: string) => {
+    if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
+    loadingRef.current.add(id);
 
-      let cancelled = false;
+    let cancelled = false;
 
-      invokeWithTimeout(
-        () =>
-          invoke<{
-            id: string;
-            name: string;
-            rootPath: string;
-            layout: { rows: number; cols: number };
-            terminals: TerminalConfig[];
-          }>("get_workspace", { id }),
-        15000,
-      )
-        .then((fullConfig) => {
-          if (cancelled) return;
-          setLoadedMap((prev) => {
-            const next = new Map(prev);
-            next.set(id, {
-              id: fullConfig.id,
-              name: fullConfig.name,
-              rootPath: fullConfig.rootPath,
-              layout: fullConfig.layout,
-              terminals: fullConfig.terminals || [],
-            });
-            return next;
+    invokeWithTimeout(
+      () =>
+        invoke<{
+          id: string;
+          name: string;
+          rootPath: string;
+          layout: { rows: number; cols: number };
+          terminals: TerminalConfig[];
+        }>("get_workspace", { id }),
+      15000,
+    )
+      .then((fullConfig) => {
+        if (cancelled) return;
+        setLoadedMap((prev) => {
+          const next = new Map(prev);
+          next.set(id, {
+            id: fullConfig.id,
+            name: fullConfig.name,
+            rootPath: fullConfig.rootPath,
+            layout: fullConfig.layout,
+            terminals: fullConfig.terminals || [],
           });
-        })
-        .catch((err) => {
-          console.error("Errore caricamento workspace:", err);
-          addToastRef.current({
-            type: "error",
-            message: "Errore caricamento workspace",
-          });
-        })
-        .finally(() => {
-          loadingRef.current.delete(id);
+
+          openOrderRef.current = openOrderRef.current
+            .filter((k) => k !== id)
+            .concat(id);
+
+          if (next.size > MAX_OPEN_WORKSPACES) {
+            const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
+            const toEvict = openOrderRef.current.find(
+              (k) => k !== currentActive && next.has(k),
+            );
+            if (toEvict) {
+              next.delete(toEvict);
+              openOrderRef.current = openOrderRef.current.filter(
+                (k) => k !== toEvict,
+              );
+            }
+          }
+
+          return next;
         });
+      })
+      .catch((err) => {
+        console.error("Errore caricamento workspace:", err);
+        addToastRef.current({
+          type: "error",
+          message: "Errore caricamento workspace",
+        });
+      })
+      .finally(() => {
+        loadingRef.current.delete(id);
+      });
 
-      return () => {
-        cancelled = true;
-      };
-    },
-    [loadedMap, addToastRef],
-  );
+    return () => {
+      cancelled = true;
+      loadingRef.current.delete(id);
+    };
+  }, []);
 
   // Carica il workspace attivo quando cambia
   useEffect(() => {
@@ -96,12 +117,9 @@ export function WorkspaceView() {
     return cleanup;
   }, [activeWorkspaceId, loadWorkspace]);
 
-  // Pulisci i workspace rimossi dalla mappa
+  // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
-    if (!workspace) return;
-    const allIds = new Set(
-      useWorkspaceStore.getState().workspaces.map((w) => w.id),
-    );
+    const allIds = new Set(workspaces.map((w) => w.id));
     setLoadedMap((prev) => {
       let changed = false;
       const next = new Map(prev);
@@ -113,7 +131,7 @@ export function WorkspaceView() {
       }
       return changed ? next : prev;
     });
-  }, [workspace]);
+  }, [workspaces]);
 
   // Empty state — nessun workspace aperto
   if (!workspace && !activeWorkspaceId) {

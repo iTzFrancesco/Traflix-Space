@@ -1,3 +1,5 @@
+export const MAX_CONCURRENT_AGENTS = 4;
+
 export interface AgentDefinition {
   id: string;
   name: string;

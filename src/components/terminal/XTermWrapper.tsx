@@ -1,6 +1,7 @@
 import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { invoke } from "@tauri-apps/api/core";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
 
@@ -51,7 +52,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 1,
-      scrollback: 10000,
+      scrollback: 5000,
       allowProposedApi: true,
     });
 
@@ -59,6 +60,7 @@ export const XTermWrapper = memo(function XTermWrapper({
     term.loadAddon(fitAddon);
 
     let pty: IPty | null = null;
+    let pid = 0;
     let opened = false;
     let disposed = false;
 
@@ -70,6 +72,7 @@ export const XTermWrapper = memo(function XTermWrapper({
           rows: term.rows,
           cwd,
         });
+        pid = pty.pid;
 
         pty.onData((data) => {
           if (!disposed) term.write(data);
@@ -148,6 +151,9 @@ export const XTermWrapper = memo(function XTermWrapper({
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
+      if (pid) {
+        invoke("kill_process_tree", { pid }).catch(() => {});
+      }
       pty?.kill();
       term.dispose();
     };

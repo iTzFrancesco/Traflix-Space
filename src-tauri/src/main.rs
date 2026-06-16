@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod process;
 mod settings;
 mod workspace;
 
@@ -42,7 +43,7 @@ fn main() {
             agent::commands::list_agents,
             settings::commands::get_settings,
             settings::commands::set_settings,
-
+            process::kill_process_tree,
         ])
         .run(tauri::generate_context!())
         .expect("Errore avvio Traflix Space");

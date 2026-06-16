@@ -31,6 +31,7 @@ interface TerminalStore {
   updateTerminalTitle: (id: string, title: string) => void;
   setTerminalPtyId: (id: string, ptyId: string) => void;
   getTerminalsByWorkspace: (workspaceId: string) => TerminalState[];
+  getAgentCount: () => number;
 }
 
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
@@ -104,5 +105,14 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     return Array.from(terminals.values()).filter(
       (t) => t.workspaceId === workspaceId
     );
+  },
+
+  getAgentCount: () => {
+    let count = 0;
+    const { terminals } = get();
+    terminals.forEach((t) => {
+      if (t.agent) count++;
+    });
+    return count;
   },
 }));

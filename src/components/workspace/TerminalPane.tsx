@@ -2,7 +2,7 @@ import { memo, useCallback } from "react";
 import { type IPty } from "tauri-pty";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { useTerminalStore } from "../../stores/terminalStore";
-import { AGENTS } from "../../lib/agents";
+import { AGENTS, MAX_CONCURRENT_AGENTS } from "../../lib/agents";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -60,6 +60,15 @@ export const TerminalPane = memo(function TerminalPane({
       if (!agentId) return;
       const agent = AGENTS.find((a) => a.id === agentId);
       if (!agent) return;
+
+      const agentCount = useTerminalStore.getState().getAgentCount();
+      if (agentCount >= MAX_CONCURRENT_AGENTS) {
+        pty.write(
+          `\r\n[x] Limite agenti raggiunto (${agentCount}/${MAX_CONCURRENT_AGENTS}). Chiudi un agente prima di avviarne un altro.\r\n`,
+        );
+        return;
+      }
+
       pty.write(`${agent.command} ${agent.args.join(" ")}\r\n`);
     },
     [agentId],
