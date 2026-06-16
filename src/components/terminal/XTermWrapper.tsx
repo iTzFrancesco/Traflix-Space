@@ -2,7 +2,6 @@ import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
-import { writeFile } from "@tauri-apps/plugin-fs";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
@@ -40,10 +39,12 @@ export const XTermWrapper = memo(function XTermWrapper({
   const containerRef = useRef<HTMLDivElement>(null);
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
+  const onTitleChangeRef = useRef(onTitleChange);
+  onTitleChangeRef.current = onTitleChange;
+  const onTerminalReadyRef = useRef(onTerminalReady);
+  onTerminalReadyRef.current = onTerminalReady;
   const idxRef = useRef(spawnIdx++);
   const ptyRef = useRef<IPty | null>(null);
-  const cwdRef = useRef(cwd);
-  cwdRef.current = cwd;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -71,6 +72,7 @@ export const XTermWrapper = memo(function XTermWrapper({
     let pid = 0;
     let opened = false;
     let disposed = false;
+    let spawnTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const spawnShell = () => {
       if (disposed) return;
@@ -99,8 +101,8 @@ export const XTermWrapper = memo(function XTermWrapper({
           if (pty && !disposed) pty.resize(e.cols, e.rows);
         });
 
-        term.onTitleChange((title) => onTitleChange?.(title));
-        onTerminalReady?.(pty);
+        term.onTitleChange((title) => onTitleChangeRef.current?.(title));
+        onTerminalReadyRef.current?.(pty);
       } catch (err) {
         console.error(`[XTerm ${terminalId}] Spawn error:`, err);
         if (!disposed) {
@@ -121,19 +123,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       const timing = TIMING[t] || DEFAULT_TIMING;
       const delay = Math.floor(idxRef.current / timing.batchSize) * timing.delay;
 
-      setTimeout(() => spawnShell(), delay);
-    };
-
-    const saveImageFromBlob = async (blob: Blob, mimeType: string): Promise<string> => {
-      const ext = mimeType.split("/")[1] || "png";
-      const now = new Date();
-      const pad = (n: number) => String(n).padStart(2, "0");
-      const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-      const filename = `pasted_${ts}.${ext}`;
-      const dest = `${cwdRef.current || "."}/${filename}`;
-      const buf = await blob.arrayBuffer();
-      await writeFile(dest, new Uint8Array(buf));
-      return filename;
+      spawnTimeout = setTimeout(() => spawnShell(), delay);
     };
 
     const handlePasteFromClipboard = async () => {
@@ -144,7 +134,8 @@ export const XTermWrapper = memo(function XTermWrapper({
       try {
         const text = await readText();
         if (text) {
-          currentPty.write(text);
+          const normalized = text.replace(/\r\n/g, "\n").replace(/\n/g, "\r");
+          currentPty.write(normalized);
           return;
         }
       } catch {
@@ -153,15 +144,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       try {
         const image = await readImage();
         if (image) {
-          const rgbaData = await image.rgba();
-          const blob = new Blob([new Uint8Array(rgbaData) as BlobPart], { type: "image/png" });
-          saveImageFromBlob(blob, "image/png")
-            .then((filename) => {
-              if (!disposed) currentPty.write(`\r\n\x1b[32m[Image saved: ${filename}]\x1b[0m\r\n`);
-            })
-            .catch((err) => {
-              if (!disposed) currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
-            });
+          currentPty.write(`\r\n\x1b[33m[Clipboard contains image — paste not supported in terminal]\x1b[0m\r\n`);
         }
       } catch {
       }
@@ -197,6 +180,9 @@ export const XTermWrapper = memo(function XTermWrapper({
         const paths: string[] = [];
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
+          // WebView2 exposes non-standard `file.path` property with absolute filesystem path.
+          // This is Windows-specific and not part of the Web File API spec.
+          // Fallback to file.name if path is unavailable (e.g. future cross-platform support).
           const path = (file as File & { path?: string }).path;
           if (path) {
             paths.push(path);
@@ -242,6 +228,7 @@ export const XTermWrapper = memo(function XTermWrapper({
 
     return () => {
       disposed = true;
+      if (spawnTimeout) clearTimeout(spawnTimeout);
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
@@ -255,7 +242,7 @@ export const XTermWrapper = memo(function XTermWrapper({
       pty?.kill();
       term.dispose();
     };
-  }, [terminalId, shell, cwd, total, onTitleChange, onTerminalReady]);
+  }, [terminalId, shell, cwd, total]);
 
   return (
     <div

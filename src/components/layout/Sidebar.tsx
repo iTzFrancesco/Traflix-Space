@@ -89,11 +89,7 @@ export function Sidebar() {
       console.error("Errore eliminazione workspace backend:", err);
     }
     // Kill terminali della workspace eliminata
-    const state = useTerminalStore.getState();
-    const terminalsToKill = state.getTerminalsByWorkspace(id);
-    for (const t of terminalsToKill) {
-      state.killTerminal(t.id);
-    }
+    useTerminalStore.getState().killWorkspaceTerminals(id);
     removeWorkspace(id);
     setConfirmDeleteId(null);
   };

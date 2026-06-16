@@ -27,6 +27,7 @@ interface TerminalStore {
 
   createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "isActive"> & { id?: string }) => string;
   killTerminal: (id: string) => void;
+  killWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
   updateTerminalTitle: (id: string, title: string) => void;
   setTerminalPtyId: (id: string, ptyId: string) => void;
@@ -63,6 +64,22 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         terminals: next,
         activeTerminalId:
           state.activeTerminalId === id ? null : state.activeTerminalId,
+      };
+    }),
+
+  killWorkspaceTerminals: (workspaceId) =>
+    set((state) => {
+      const next = new Map(state.terminals);
+      let activeCleared = false;
+      for (const [id, t] of next) {
+        if (t.workspaceId === workspaceId) {
+          next.delete(id);
+          if (state.activeTerminalId === id) activeCleared = true;
+        }
+      }
+      return {
+        terminals: next,
+        activeTerminalId: activeCleared ? null : state.activeTerminalId,
       };
     }),
 

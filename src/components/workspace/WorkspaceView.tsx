@@ -27,7 +27,7 @@ export function WorkspaceView() {
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
   const wizardOpen = useUIStore((s) => s.wizardOpen);
 
-  const MAX_OPEN_WORKSPACES = 16;
+  const MAX_OPEN_WORKSPACES = 8;
 
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
@@ -101,11 +101,7 @@ export function WorkspaceView() {
               (k) => k !== currentActive && next.has(k),
             );
             if (toEvict) {
-              // Cleanup terminali prima di espellere
-              const terminals = next.get(toEvict)?.terminals || [];
-              for (const tc of terminals) {
-                terminalStore.killTerminal(tc.id);
-              }
+              terminalStore.killWorkspaceTerminals(toEvict);
               next.delete(toEvict);
               openOrderRef.current = openOrderRef.current.filter(
                 (k) => k !== toEvict,
@@ -133,11 +129,18 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica il workspace attivo quando cambia
+  // Carica il workspace attivo e cleanup terminali del precedente
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    const cleanup = loadWorkspace(activeWorkspaceId);
-    return cleanup;
+
+    const terminalStore = useTerminalStore.getState();
+    for (const id of loadedMapRef.current.keys()) {
+      if (id !== activeWorkspaceId) {
+        terminalStore.killWorkspaceTerminals(id);
+      }
+    }
+
+    loadWorkspace(activeWorkspaceId);
   }, [activeWorkspaceId, loadWorkspace]);
 
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
@@ -149,10 +152,7 @@ export function WorkspaceView() {
       const next = new Map(prev);
       for (const key of next.keys()) {
         if (!allIds.has(key)) {
-          const terminals = next.get(key)?.terminals || [];
-          for (const tc of terminals) {
-            terminalStore.killTerminal(tc.id);
-          }
+          terminalStore.killWorkspaceTerminals(key);
           next.delete(key);
           changed = true;
         }
@@ -203,9 +203,6 @@ export function WorkspaceView() {
   // Loading iniziale — workspace selezionato ma non ancora caricato
   if (!activeLoaded) return null;
 
-  // Raccogli tutti i workspace da renderizzare (attivo + tutti quelli caricati)
-  const entries = Array.from(loadedMap.values());
-
   return (
     <>
       <div
@@ -244,26 +241,23 @@ export function WorkspaceView() {
           </p>
         </div>
 
-        {/* Tutti i workspace grid — solo l'attivo è visibile */}
+        {/* Solo il workspace attivo viene renderizzato */}
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          {entries.map((ws) => (
-            <div
-              key={ws.id}
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: ws.id === activeWorkspaceId ? "flex" : "none",
-                flexDirection: "column",
-                minHeight: 0,
-              }}
-            >
-              <WorkspaceGrid
-                rows={ws.layout.rows}
-                cols={ws.layout.cols}
-                terminals={ws.terminals}
-              />
-            </div>
-          ))}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+            }}
+          >
+            <WorkspaceGrid
+              rows={activeLoaded.layout.rows}
+              cols={activeLoaded.layout.cols}
+              terminals={activeLoaded.terminals}
+            />
+          </div>
         </div>
       </div>
       <NewSpaceWizard
