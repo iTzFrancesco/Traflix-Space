@@ -111,7 +111,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     let count = 0;
     const { terminals } = get();
     terminals.forEach((t) => {
-      if (t.agent) count++;
+      if (t.agent && t.ptyId) count++;
     });
     return count;
   },
