@@ -20,6 +20,8 @@
     "fs:allow-read-dir",
     "fs:allow-exists",
     "fs:allow-mkdir",
+    "fs:allow-download-write",
+    "fs:allow-download-write-recursive",
     "dialog:default",
     "store:default",
     "pty:default",

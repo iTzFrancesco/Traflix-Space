@@ -2,8 +2,9 @@ import { useEffect, useRef, memo } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
-import { writeFile } from "@tauri-apps/plugin-fs";
+import { writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
+import { downloadDir } from "@tauri-apps/api/path";
 import { spawn, type IPty } from "tauri-pty";
 import "xterm/css/xterm.css";
 
@@ -46,8 +47,6 @@ export const XTermWrapper = memo(function XTermWrapper({
   onTerminalReadyRef.current = onTerminalReady;
   const idxRef = useRef(spawnIdx++);
   const ptyRef = useRef<IPty | null>(null);
-  const cwdRef = useRef(cwd);
-  cwdRef.current = cwd;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -173,10 +172,12 @@ export const XTermWrapper = memo(function XTermWrapper({
           const pad = (n: number) => String(n).padStart(2, "0");
           const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
           const filename = `pasted_image_${ts}.png`;
-          const dest = `${cwdRef.current || "."}/${filename}`;
 
           const buf = await blob.arrayBuffer();
-          await writeFile(dest, new Uint8Array(buf));
+          await writeFile(filename, new Uint8Array(buf), { baseDir: BaseDirectory.Download });
+
+          const downloadPath = await downloadDir();
+          const dest = `${downloadPath}\\${filename}`;
 
           currentPty.write(`\r\n\x1b[32m[Image saved: ${dest}]\x1b[0m\r\n`);
         } catch (err) {

@@ -59,7 +59,7 @@
 - [ ] **Split orizzontale/verticale** — dividere un terminale in due
 - [ ] **Tabs nei terminali** — multiplexing dentro un singolo pane
 - [ ] **Search nel terminale** — Ctrl+F per cercare nello scrollback
-- [x] **Copy/Paste migliorato** — Ctrl+V e Shift+Insert funzionanti tramite `tauri-plugin-clipboard-manager`: testo con normalizzazione newline, immagini salvate come PNG nella cwd del workspace
+- [x] **Copy/Paste migliorato** — Ctrl+V e Shift+Insert funzionanti tramite `tauri-plugin-clipboard-manager`: testo con normalizzazione newline, immagini salvate come PNG nella cartella Downloads
 - [x] **Drag & Drop** — trascinamento file/testo nei terminali, path file scritto nel PTY, prevenzione navigazione WebView2
 - [ ] **Link detection** — click su URL per aprire nel browser
 
@@ -158,8 +158,9 @@
 - Fix: Ctrl+V / Shift+Insert paste non funzionava in WebView2 (`document.execCommand("paste")` rimosso)
 - Integrato `@tauri-apps/plugin-clipboard-manager` v2 (npm + Cargo) per accesso clipboard nativo
 - Nuova funzione `handlePasteFromClipboard()` in XTermWrapper: testo letto con `readText()`, newline normalizzati (`\n` → `\r`)
-- Immagini da clipboard salvate su disco: `readImage()` → Canvas 2D API → PNG via `toBlob()` → `writeFile()` nella cwd del workspace
-- Mostra `[Image saved: C:\path\to\pasted_image_...png]` nel terminale
+- Immagini da clipboard salvate su disco: `readImage()` → Canvas 2D API → PNG via `toBlob()` → `writeFile()` nella cartella Downloads
+- Mostra `[Image saved: C:\Users\...\Downloads\pasted_image_...png]` nel terminale
+- Aggiunto permesso `fs:allow-download-write` e `fs:allow-download-write-recursive` in capabilities
 - Aggiunti handler `dragover` e `drop` sul container terminale: path file e testo trascritti nel PTY
 - Aggiunti listener globali `dragover`/`drop` in `main.tsx` per prevenire navigazione WebView2 su file drop
 - Aggiunti permessi `clipboard-manager:allow-read-text` e `clipboard-manager:allow-read-image` in `capabilities/default.json`
