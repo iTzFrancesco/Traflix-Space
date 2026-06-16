@@ -106,7 +106,6 @@ export const XTermWrapper = memo(function XTermWrapper({
     const setupTerminal = () => {
       if (opened || disposed) return;
       opened = true;
-      fitObserver.disconnect();
 
       term.open(container);
       term.focus();
