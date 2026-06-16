@@ -56,6 +56,13 @@ export const XTermWrapper = memo(function XTermWrapper({
       allowProposedApi: true,
     });
 
+    term.attachCustomKeyEventHandler((e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && e.type === "keydown") {
+        return false;
+      }
+      return true;
+    });
+
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
@@ -146,11 +153,21 @@ export const XTermWrapper = memo(function XTermWrapper({
     const handleFocusIn = () => onFocusRef.current?.();
     container.addEventListener("focusin", handleFocusIn);
 
+    const handlePaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      const text = e.clipboardData?.getData("text/plain");
+      if (text && pty && !disposed) {
+        pty.write(text);
+      }
+    };
+    container.addEventListener("paste", handlePaste);
+
     return () => {
       disposed = true;
       fitObserver.disconnect();
       container.removeEventListener("click", handleClick);
       container.removeEventListener("focusin", handleFocusIn);
+      container.removeEventListener("paste", handlePaste);
       if (pid) {
         invoke("kill_process_tree", { pid }).catch(() => {});
       }
