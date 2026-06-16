@@ -134,13 +134,26 @@ export function WorkspaceView() {
     if (!activeWorkspaceId) return;
 
     const terminalStore = useTerminalStore.getState();
+    const idsToRemove: string[] = [];
     for (const id of loadedMapRef.current.keys()) {
       if (id !== activeWorkspaceId) {
         terminalStore.killWorkspaceTerminals(id);
+        idsToRemove.push(id);
       }
     }
 
-    loadWorkspace(activeWorkspaceId);
+    if (idsToRemove.length > 0) {
+      setLoadedMap((prev) => {
+        const next = new Map(prev);
+        for (const id of idsToRemove) {
+          next.delete(id);
+        }
+        return next;
+      });
+    }
+
+    const cleanup = loadWorkspace(activeWorkspaceId);
+    return cleanup;
   }, [activeWorkspaceId, loadWorkspace]);
 
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
