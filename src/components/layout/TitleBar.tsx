@@ -183,8 +183,8 @@ export function TitleBar() {
       className="flex items-center justify-between h-10 px-4 bg-neutral-darkest border-b select-none"
       style={{ borderColor: "var(--neutral-border)" }}
     >
-      <div className="flex items-center gap-2">
-        <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded" />
+      <div className="flex items-center gap-3">
+        <img src="/icon.png" alt="Traflix" className="w-8 h-8 rounded" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase">
           Traflix Space
         </span>
