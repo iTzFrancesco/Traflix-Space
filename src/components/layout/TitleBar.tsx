@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function TitleBar() {
   function getAppWindow() {
-    if (typeof window === "undefined" || !("__TAURI__" in window)) return null;
+    if (typeof window === "undefined") return null;
     try {
       return getCurrentWindow();
     } catch {

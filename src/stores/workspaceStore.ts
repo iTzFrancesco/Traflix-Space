@@ -115,12 +115,21 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
             .map((lw) => lw.id);
 
           if (toAdd.length > 0 || toRemove.length > 0) {
-            set((state) => ({
-              workspaces: [
-                ...state.workspaces.filter((w) => !toRemove.includes(w.id)),
-                ...toAdd,
-              ],
-            }));
+            set((state) => {
+              const filtered = state.workspaces.filter(
+                (w) => !toRemove.includes(w.id),
+              );
+              const nextWorkspaces = [...filtered, ...toAdd];
+              const activeStillExists =
+                state.activeWorkspaceId &&
+                !toRemove.includes(state.activeWorkspaceId);
+              return {
+                workspaces: nextWorkspaces,
+                activeWorkspaceId: activeStillExists
+                  ? state.activeWorkspaceId
+                  : nextWorkspaces[0]?.id || null,
+              };
+            });
           }
         } catch (err) {
           console.error("Errore sincronizzazione backend:", err);
