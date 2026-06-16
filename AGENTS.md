@@ -16,8 +16,8 @@ Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 ## Architecture
 
 - **Frontend** (`src/`): React 19, Zustand 5 with `persist` (localStorage), xterm.js 5.3 (WebGL + Fit), Tailwind CSS v4 (CSS-first `@theme` in `globals.css` — **no** `tailwind.config.ts`)
-- **Backend** (`src-tauri/src/`): Rust, Tauri 2, `tauri-plugin-pty` v0.3.0 (based on `portable-pty`)
-- **IPC**: Tauri `invoke` commands + `tauri-pty` plugin (`spawn`, `onData`, `onExit`, `resize`, `kill`)
+- **Backend** (`src-tauri/src/`): Rust, Tauri 2, `tauri-plugin-pty` v0.3.0 (based on `portable-pty`), `tauri-plugin-clipboard-manager` v2
+- **IPC**: Tauri `invoke` commands + `tauri-pty` plugin (`spawn`, `onData`, `onExit`, `resize`, `kill`) + `tauri-plugin-clipboard-manager` (`readText`, `readImage`)
 - **Styling**: Tailwind v4 `@theme` tokens in `src/styles/globals.css` (orange primary `#e85d04`, dark surfaces). Fonts loaded from **Google Fonts CDN** in `index.html` (Syne, Poppins, JetBrains Mono); `public/fonts/` is empty.
 - **Window**: 1400×900, min 900×600, no decorations, dark theme, centered
 - **Bundle**: MSI + NSIS targets, `embedBootstrapper` webview
@@ -63,8 +63,9 @@ PTY is managed via `tauri-plugin-pty` — no custom IPC commands.
 - `src/lib/agents.ts` — frontend agent definitions (OpenCode, Claude Code, Gemini, Codex, Anti-Gravity)
 - `src/lib/presets.ts` — workspace presets + `computeLayout` (max 2x4 grid)
 - `src/lib/timeout.ts` — `invokeWithTimeout` utility for Tauri IPC calls
-- `src-tauri/capabilities/default.json` — permissions including `"pty:default"`
-- `src/components/terminal/XTermWrapper.tsx` — terminal component with batch init, retry, React.memo
+- `src-tauri/capabilities/default.json` — permissions including `"pty:default"`, `"clipboard-manager:allow-read-text"`, `"clipboard-manager:allow-read-image"`
+- `src/components/terminal/XTermWrapper.tsx` — terminal component with batch init, retry, React.memo, clipboard paste via Tauri API, drag-and-drop handlers
+- `src/main.tsx` — entry point, contextmenu filter, global drag/drop prevention for WebView2
 - `src/components/workspace/TerminalPane.tsx` — terminal pane with memo, agent launch via `pty.write()`
 - `src/stores/terminalStore.ts` — terminal state (no outputBuffer, optimized setActiveTerminal)
 - `src/stores/workspaceStore.ts` — workspace state with partialize persist

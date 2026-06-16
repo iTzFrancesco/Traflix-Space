@@ -1,7 +1,7 @@
 # Traflix Space — Rifinizione & Nuove Feature
 
 > Ultimo aggiornamento: 2026-06-16
-> Stato attuale: v0.1.4 — Performance optimizations, terminal lifecycle fixes
+> Stato attuale: v0.1.5 — Clipboard paste (Ctrl+V) & drag-and-drop fix
 
 ---
 
@@ -59,7 +59,8 @@
 - [ ] **Split orizzontale/verticale** — dividere un terminale in due
 - [ ] **Tabs nei terminali** — multiplexing dentro un singolo pane
 - [ ] **Search nel terminale** — Ctrl+F per cercare nello scrollback
-- [ ] **Copy/Paste migliorato** — Ctrl+Shift+C/V come nel真正的 terminale
+- [x] **Copy/Paste migliorato** — Ctrl+V e Shift+Insert funzionanti tramite `tauri-plugin-clipboard-manager` (readText + readImage)
+- [x] **Drag & Drop** — trascinamento file/testo nei terminali, path file scritto nel PTY, prevenzione navigazione WebView2
 - [ ] **Link detection** — click su URL per aprire nel browser
 
 ### 2.4 Workspace — Miglioramenti
@@ -152,6 +153,15 @@
 ---
 
 ## Changelog
+
+### v0.1.5 (2026-06-16) — Clipboard & Drag-and-Drop
+- Fix: Ctrl+V / Shift+Insert paste non funzionava in WebView2 (`document.execCommand("paste")` rimosso)
+- Integrato `@tauri-apps/plugin-clipboard-manager` v2 (npm + Cargo) per accesso clipboard nativo
+- Nuova funzione `handlePasteFromClipboard()` in XTermWrapper: legge testo con `readText()`, immagini con `readImage()`
+- Aggiunti handler `dragover` e `drop` sul container terminale: path file e testo trascritti nel PTY
+- Aggiunti listener globali `dragover`/`drop` in `main.tsx` per prevenire navigazione WebView2 su file drop
+- Aggiunti permessi `clipboard-manager:allow-read-text` e `clipboard-manager:allow-read-image` in `capabilities/default.json`
+- Registrato `tauri_plugin_clipboard_manager` in `main.rs`
 
 ### v0.1.4 (2026-06-16) — Performance & Stability
 - Rimosso `outputBuffer` e `writeToTerminal` dal terminalStore (dead code che causava churn catastrofico)

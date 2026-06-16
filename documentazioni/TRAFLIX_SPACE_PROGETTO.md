@@ -92,6 +92,7 @@ Il changelog di BridgeSpace 3.2.1 (giugno 2026) rivela pattern critici:
 | **Process Management** | tauri-plugin-shell | v2 | Spawn/kill agenti e shell |
 | **Storage** | tauri-plugin-store | v2 | Persistenza settings e stato |
 | **File System** | tauri-plugin-fs | v2 | Accesso cartelle workspace |
+| **Clipboard** | tauri-plugin-clipboard-manager | v2 | Paste (Ctrl+V) testo e immagini nei terminali |
 | **Icons** | Lucide React | latest | Iconografia coerente |
 
 ### 3.3 Struttura Progetto
