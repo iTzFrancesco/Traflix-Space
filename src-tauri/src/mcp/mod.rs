@@ -3,10 +3,13 @@ pub mod commands;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{TcpStream, SocketAddr};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 use serde::Serialize;
 use tracing::{info, warn};
@@ -73,6 +76,7 @@ impl McpManager {
                 "server.py",
             ])
             .current_dir(MCP_DIR)
+            .creation_flags(CREATE_NO_WINDOW)
             .stdout(Stdio::null())
             .stderr(stderr_file)
             .spawn()
@@ -90,6 +94,7 @@ impl McpManager {
             let pid = child.id();
             let _ = Command::new("taskkill")
                 .args(["/F", "/T", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn();
