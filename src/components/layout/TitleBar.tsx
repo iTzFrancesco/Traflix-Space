@@ -189,7 +189,7 @@ export function TitleBar() {
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase">
           Traflix Space
         </span>
-        <span className="text-[10px] font-mono text-neutral-text-muted/50 -ml-1">
+        <span className="text-[10px] font-mono text-white/50 -ml-1">
           v{APP_VERSION}
         </span>
       </div>
