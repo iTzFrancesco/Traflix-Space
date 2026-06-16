@@ -179,12 +179,12 @@ export const XTermWrapper = memo(function XTermWrapper({
           const downloadPath = await downloadDir();
           const dest = `${downloadPath}\\${filename}`;
 
-          currentPty.write(`\r\n\x1b[32m[Image saved: ${dest}]\x1b[0m\r\n`);
+          term.write(`\r\n\x1b[32m[Image saved: ${dest}]\x1b[0m\r\n`);
         } catch (err) {
-          currentPty.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
+          term.write(`\r\n\x1b[31m[Error saving image: ${err}]\x1b[0m\r\n`);
         }
       } catch {
-        currentPty.write(`\r\n\x1b[33m[Clipboard contains non-text content]\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[33m[Clipboard contains non-text content]\x1b[0m\r\n`);
       }
     };
 
