@@ -42,9 +42,7 @@ fn main() {
             agent::commands::list_agents,
             settings::commands::get_settings,
             settings::commands::set_settings,
-            settings::commands::get_api_keys,
-            settings::commands::set_api_key,
-            settings::commands::remove_api_key,
+
         ])
         .run(tauri::generate_context!())
         .expect("Errore avvio Traflix Space");

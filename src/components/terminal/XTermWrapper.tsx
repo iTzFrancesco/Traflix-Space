@@ -10,7 +10,10 @@ interface XTermWrapperProps {
   cwd: string;
   onTitleChange?: (title: string) => void;
   onTerminalReady?: (pty: IPty) => void;
+  onFocus?: () => void;
 }
+
+let initQueue: Promise<void> = Promise.resolve();
 
 export function XTermWrapper({
   terminalId,
@@ -18,6 +21,7 @@ export function XTermWrapper({
   cwd,
   onTitleChange,
   onTerminalReady,
+  onFocus,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -50,34 +54,50 @@ export function XTermWrapper({
       fitObserver.disconnect();
 
       term.open(container);
+      term.focus();
       fitAddon.fit();
 
       const shellCmd = shell.toLowerCase() === "bash" ? "bash.exe" : "powershell.exe";
 
-      pty = spawn(shellCmd, [], {
-        cols: term.cols,
-        rows: term.rows,
-        cwd,
-      });
+      const doSpawn = () => {
+        if (disposed) return;
+        try {
+          pty = spawn(shellCmd, [], {
+            cols: term.cols,
+            rows: term.rows,
+            cwd,
+          });
 
-      pty.onData((data) => {
-        if (!disposed) term.write(data);
-      });
+          pty.onData((data) => {
+            if (!disposed) term.write(data);
+          });
 
-      pty.onExit(({ exitCode }) => {
-        if (!disposed) term.write(`\r\n[Exit ${exitCode}]\r\n`);
-      });
+          pty.onExit(({ exitCode }) => {
+            if (!disposed) term.write(`\r\n[Exit ${exitCode}]\r\n`);
+          });
 
-      term.onData((data) => {
-        if (pty && !disposed) pty.write(data);
-      });
+          term.onData((data) => {
+            if (pty && !disposed) pty.write(data);
+          });
 
-      term.onResize((e) => {
-        if (pty && !disposed) pty.resize(e.cols, e.rows);
-      });
+          term.onResize((e) => {
+            if (pty && !disposed) pty.resize(e.cols, e.rows);
+          });
 
-      term.onTitleChange((title) => onTitleChange?.(title));
-      onTerminalReady?.(pty);
+          term.onTitleChange((title) => onTitleChange?.(title));
+          onTerminalReady?.(pty);
+        } catch (err) {
+          console.error(`[XTerm ${terminalId}] Spawn error:`, err);
+          if (!disposed) {
+            term.write(`\r\nError: ${err}\r\n`);
+          }
+        }
+      };
+
+      initQueue = initQueue.then(() => new Promise<void>((resolve) => {
+        doSpawn();
+        setTimeout(resolve, 200);
+      }));
     };
 
     const fitObserver = new ResizeObserver((entries) => {
@@ -94,9 +114,16 @@ export function XTermWrapper({
     });
     fitObserver.observe(container);
 
+    const handleClick = () => term.focus();
+    container.addEventListener("click", handleClick);
+    const handleFocusIn = () => onFocus?.();
+    container.addEventListener("focusin", handleFocusIn);
+
     return () => {
       disposed = true;
       fitObserver.disconnect();
+      container.removeEventListener("click", handleClick);
+      container.removeEventListener("focusin", handleFocusIn);
       pty?.kill();
       term.dispose();
     };

@@ -1,5 +1,4 @@
 import { useState, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { type IPty } from "tauri-pty";
 import { XTermWrapper } from "../terminal/XTermWrapper";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -42,32 +41,16 @@ export function TerminalPane({
 
   const handleTerminalReady = useCallback(
     (pty: IPty) => {
-      if (agentId) {
-        invoke<Record<string, string>>("get_api_keys").then((apiKeys) => {
-          const agent = AGENTS.find((a) => a.id === agentId);
-          if (!agent) return;
-
-          let envPrefix = "";
-          if (agent.requiresApiKey && agent.apiKeyEnv) {
-            const key = apiKeys[agent.apiKeyEnv];
-            if (key) {
-              envPrefix = `$env:${agent.apiKeyEnv}='${key}'; `;
-            }
-          }
-
-          const cmd = `${envPrefix}${agent.command} ${agent.args.join(" ")}\r\n`;
-          pty.write(cmd);
-        }).catch((err) => {
-          console.error("Error launching agent:", err);
-        });
-      }
+      if (!agentId) return;
+      const agent = AGENTS.find((a) => a.id === agentId);
+      if (!agent) return;
+      pty.write(`${agent.command} ${agent.args.join(" ")}\r\n`);
     },
     [agentId],
   );
 
   return (
     <div
-      onClick={handleActivate}
       style={{
         position: "relative",
         width: "100%",
@@ -83,6 +66,7 @@ export function TerminalPane({
         cwd={cwd}
         onTitleChange={handleTitleChange}
         onTerminalReady={handleTerminalReady}
+        onFocus={handleActivate}
       />
     </div>
   );

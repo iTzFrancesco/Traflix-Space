@@ -24,10 +24,12 @@ export function WorkspaceView() {
   const displayWorkspace = workspace || lastValidWorkspace.current;
 
   useEffect(() => {
+    // Reset immediato: pulisce i terminali vecchi prima del caricamento async
+    setConfigTerminals([]);
+    lastValidWorkspace.current = null;
+
     if (!activeWorkspaceId) {
-      setConfigTerminals([]);
       loadedForRef.current = null;
-      lastValidWorkspace.current = null;
       return;
     }
     

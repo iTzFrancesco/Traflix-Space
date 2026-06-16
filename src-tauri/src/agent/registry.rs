@@ -10,8 +10,6 @@ pub struct AgentDefinition {
     pub env: std::collections::HashMap<String, String>,
     pub icon: String,
     pub color: String,
-    pub requires_api_key: bool,
-    pub api_key_env: Option<String>,
 }
 
 pub struct AgentRegistry {
@@ -23,18 +21,6 @@ impl AgentRegistry {
         Self {
             agents: vec![
                 AgentDefinition {
-                    id: "aider".into(),
-                    name: "Aider".into(),
-                    description: "AI pair programming nel terminale".into(),
-                    command: "aider".into(),
-                    args: vec!["--model".into(), "claude-3-5-sonnet-20241022".into()],
-                    env: std::collections::HashMap::new(),
-                    icon: "Bot".into(),
-                    color: "#e85d04".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("ANTHROPIC_API_KEY".into()),
-                },
-                AgentDefinition {
                     id: "opencode".into(),
                     name: "OpenCode".into(),
                     description: "Agente AI con TUI avanzata".into(),
@@ -43,8 +29,6 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Terminal".into(),
                     color: "#22c55e".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("OPENAI_API_KEY".into()),
                 },
                 AgentDefinition {
                     id: "claude".into(),
@@ -55,8 +39,6 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "MessageSquare".into(),
                     color: "#d97757".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("ANTHROPIC_API_KEY".into()),
                 },
                 AgentDefinition {
                     id: "gemini".into(),
@@ -67,8 +49,6 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#4285F4".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("GEMINI_API_KEY".into()),
                 },
                 AgentDefinition {
                     id: "codex".into(),
@@ -79,8 +59,6 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#6b46c1".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("OPENAI_API_KEY".into()),
                 },
                 AgentDefinition {
                     id: "anti-gravity".into(),
@@ -91,8 +69,6 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#06b6d4".into(),
-                    requires_api_key: true,
-                    api_key_env: Some("AGY_API_KEY".into()),
                 },
             ],
         }
@@ -115,8 +91,7 @@ impl AgentRegistry {
                     "args": a.args,
                     "icon": a.icon,
                     "color": a.color,
-                    "requiresApiKey": a.requires_api_key,
-                    "apiKeyEnv": a.api_key_env,
+
                 })
             })
             .collect()

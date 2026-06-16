@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -12,7 +11,6 @@ use tauri::Manager;
 pub struct AppSettings {
     pub sidebar: SidebarSettings,
     pub theme: ThemeSettings,
-    pub api_keys: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +38,6 @@ impl Default for AppSettings {
             theme: ThemeSettings {
                 accent_color: "#e85d04".into(),
             },
-            api_keys: HashMap::new(),
         }
     }
 }
@@ -107,23 +104,4 @@ impl SettingsManager {
         Self::save_to_disk(&self.store_path, &settings)
     }
 
-    pub async fn get_api_keys(&self) -> HashMap<String, String> {
-        self.settings.lock().await.api_keys.clone()
-    }
-
-    pub async fn set_api_key(&self, key: String, value: String) -> Result<(), String> {
-        let mut settings = self.settings.lock().await;
-        settings.api_keys.insert(key, value);
-        let data = settings.clone();
-        drop(settings);
-        Self::save_to_disk(&self.store_path, &data)
-    }
-
-    pub async fn remove_api_key(&self, key: &str) -> Result<(), String> {
-        let mut settings = self.settings.lock().await;
-        settings.api_keys.remove(key);
-        let data = settings.clone();
-        drop(settings);
-        Self::save_to_disk(&self.store_path, &data)
-    }
 }

@@ -38,13 +38,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         })),
 
       removeWorkspace: (id) =>
-        set((state) => ({
-          workspaces: state.workspaces.filter((w) => w.id !== id),
-          activeWorkspaceId:
-            state.activeWorkspaceId === id
-              ? state.workspaces[0]?.id || null
-              : state.activeWorkspaceId,
-        })),
+        set((state) => {
+          const filtered = state.workspaces.filter((w) => w.id !== id);
+          return {
+            workspaces: filtered,
+            activeWorkspaceId:
+              state.activeWorkspaceId === id
+                ? filtered[0]?.id || null
+                : state.activeWorkspaceId,
+          };
+        }),
 
       setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
 
