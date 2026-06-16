@@ -8,7 +8,7 @@ class AgentLaunchQueue {
 
   enqueue(terminalId: string, agentId: string) {
     this.queue.push({ terminalId, agentId });
-    this.processNext();
+    setTimeout(() => this.processNext(), 1000);
   }
 
   private async processNext() {
@@ -18,9 +18,11 @@ class AgentLaunchQueue {
     try {
       const agent = AGENTS.find((a) => a.id === agentId);
       if (agent) {
+        const cmd = `${agent.command} ${agent.args.join(" ")}\r\n`;
+        const encoder = new TextEncoder();
         await invoke("terminal_write", {
           terminalId,
-          data: `${agent.command} ${agent.args.join(" ")}\r\n`,
+          data: Array.from(encoder.encode(cmd)),
         });
       }
     } catch {

@@ -94,9 +94,6 @@ export const TerminalPane = memo(function TerminalPane({
             terminalId, shell, cwd, cols: 80, rows: 24,
           });
           useTerminalStore.getState().markSpawned(terminalId);
-          if (agentId) {
-            agentLaunchQueue.enqueue(terminalId, agentId);
-          }
         } catch {
           // Terminal may already be spawned
         }
@@ -104,6 +101,12 @@ export const TerminalPane = memo(function TerminalPane({
 
       pool.initXTerm();
       await pool.attachTo(containerRef.current!, terminalId);
+
+      // Shell is now spawned (set_active triggers spawn_shell in backend).
+      // Queue agent launch after shell is ready.
+      if (agentId && spawnedRef.current) {
+        agentLaunchQueue.enqueue(terminalId, agentId);
+      }
     })();
   }, [isActive, terminalId, shell, cwd, pool, agentId]);
 
