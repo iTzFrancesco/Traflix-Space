@@ -8,21 +8,28 @@ interface XTermWrapperProps {
   terminalId: string;
   shell: string;
   cwd: string;
+  totalTerminals?: number;
   onTitleChange?: (title: string) => void;
   onTerminalReady?: (pty: IPty) => void;
   onFocus?: () => void;
 }
 
-const BATCH_SIZE = 4;
-const BATCH_DELAY = 150;
+const TIMING: Record<number, { batchSize: number; delay: number }> = {
+  4: { batchSize: 4, delay: 0 },
+  6: { batchSize: 3, delay: 100 },
+  8: { batchSize: 2, delay: 150 },
+};
+const DEFAULT_TIMING = { batchSize: 2, delay: 150 };
 
 let initQueue: Promise<void> = Promise.resolve();
 let batchCount = 0;
+let totalTerminals = 4;
 
 export function XTermWrapper({
   terminalId,
   shell,
   cwd,
+  totalTerminals: total,
   onTitleChange,
   onTerminalReady,
   onFocus,
@@ -97,9 +104,10 @@ export function XTermWrapper({
       term.focus();
       fitAddon.fit();
 
+      if (total) totalTerminals = total;
+      const timing = TIMING[totalTerminals] || DEFAULT_TIMING;
       const currentBatch = batchCount++;
-      const delay =
-        BATCH_DELAY + Math.floor(currentBatch / BATCH_SIZE) * BATCH_DELAY;
+      const delay = Math.floor(currentBatch / timing.batchSize) * timing.delay;
 
       initQueue = initQueue.then(
         () =>
@@ -141,7 +149,7 @@ export function XTermWrapper({
       pty?.kill();
       term.dispose();
     };
-  }, [terminalId, shell, cwd, onTitleChange, onTerminalReady]);
+  }, [terminalId, shell, cwd, total, onTitleChange, onTerminalReady]);
 
   return (
     <div

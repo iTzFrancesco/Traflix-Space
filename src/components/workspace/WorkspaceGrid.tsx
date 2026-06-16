@@ -42,6 +42,7 @@ export function WorkspaceGrid({ rows, cols, terminals }: WorkspaceGridProps) {
           title={term.title}
           agentId={term.agentId}
           isActive={term.id === activeTerminalId}
+          totalTerminals={terminals.length}
         />
       ))}
     </div>

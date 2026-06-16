@@ -12,6 +12,7 @@ interface TerminalPaneProps {
   title: string;
   agentId?: string | null;
   isActive: boolean;
+  totalTerminals?: number;
 }
 
 export function TerminalPane({
@@ -21,6 +22,7 @@ export function TerminalPane({
   title,
   agentId,
   isActive,
+  totalTerminals,
 }: TerminalPaneProps) {
   const [, setCurrentTitle] = useState(title);
   const { setActiveTerminal } = useTerminal();
@@ -64,6 +66,7 @@ export function TerminalPane({
         terminalId={terminalId}
         shell={shell}
         cwd={cwd}
+        totalTerminals={totalTerminals}
         onTitleChange={handleTitleChange}
         onTerminalReady={handleTerminalReady}
         onFocus={handleActivate}
