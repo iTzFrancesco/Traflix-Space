@@ -2,13 +2,15 @@
 
 mod agent;
 mod mcp;
-mod process;
 mod settings;
+mod terminal_engine;
 mod workspace;
 
 use tauri::Manager;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+
+use crate::terminal_engine::TerminalManager;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -38,6 +40,10 @@ fn main() {
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(mcp::McpManager::new());
+            app.manage(TerminalManager::new());
+            let handle = app.handle().clone();
+            let manager = app.state::<TerminalManager>();
+            manager.start_event_loop(handle);
             info!("Stato applicazione inizializzato");
 
             let handle = app.handle().clone();
@@ -73,7 +79,13 @@ fn main() {
             mcp::commands::mcp_logs,
             settings::commands::get_settings,
             settings::commands::set_settings,
-            process::kill_process_tree,
+            terminal_engine::commands::terminal_spawn,
+            terminal_engine::commands::terminal_write,
+            terminal_engine::commands::terminal_resize,
+            terminal_engine::commands::terminal_kill,
+            terminal_engine::commands::terminal_set_active,
+            terminal_engine::commands::terminal_get_snapshot,
+            terminal_engine::commands::terminal_get_scrollback,
         ])
         .run(tauri::generate_context!())
         .expect("Errore avvio Traflix Space");

@@ -8,6 +8,7 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
+import { useTerminalPool } from "../terminal/TerminalPool";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface LoadedWorkspace {
@@ -69,13 +70,12 @@ export function WorkspaceView() {
         const terminalStore = useTerminalStore.getState();
         for (const tc of fullConfig.terminals || []) {
           if (!terminalStore.terminals.has(tc.id)) {
-            terminalStore.createTerminal({
+            terminalStore.addTerminal({
               id: tc.id,
               workspaceId: id,
               shell: tc.shell,
               cwd: tc.cwd,
               title: tc.title,
-              process: tc.shell,
               agent: tc.agentId || null,
             });
           }
@@ -127,6 +127,13 @@ export function WorkspaceView() {
       cancelled = true;
       loadingRef.current.delete(id);
     };
+  }, []);
+
+  const pool = useTerminalPool();
+
+  useEffect(() => {
+    pool.initXTerm();
+    return () => { pool.dispose(); };
   }, []);
 
   // Carica il workspace attivo e cleanup terminali del precedente
@@ -269,6 +276,10 @@ export function WorkspaceView() {
               rows={activeLoaded.layout.rows}
               cols={activeLoaded.layout.cols}
               terminals={activeLoaded.terminals}
+              pool={pool}
+              onActivate={(id) => {
+                useTerminalStore.getState().setActiveTerminal(id);
+              }}
             />
           </div>
         </div>

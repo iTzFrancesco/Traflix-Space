@@ -3,13 +3,13 @@ import { create } from "zustand";
 export interface TerminalState {
   id: string;
   workspaceId: string;
-  ptyId: string | null;
   title: string;
-  process: string;
-  agent: string | null;
-  isActive: boolean;
   shell: string;
   cwd: string;
+  agent: string | null;
+  isActive: boolean;
+  spawned: boolean;
+  exitCode: number | null;
 }
 
 export interface TerminalConfig {
@@ -25,45 +25,46 @@ interface TerminalStore {
   terminals: Map<string, TerminalState>;
   activeTerminalId: string | null;
 
-  createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "isActive"> & { id?: string }) => string;
-  killTerminal: (id: string) => void;
+  addTerminal: (config: { id: string; workspaceId: string; shell: string; cwd: string; title: string; agent: string | null }) => void;
+  removeTerminal: (id: string) => void;
   killWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
-  updateTerminalTitle: (id: string, title: string) => void;
-  setTerminalPtyId: (id: string, ptyId: string) => void;
-  getTerminalsByWorkspace: (workspaceId: string) => TerminalState[];
-  getAgentCount: () => number;
+  updateTitle: (id: string, title: string) => void;
+  markSpawned: (id: string) => void;
+  markExited: (id: string, exitCode: number) => void;
+  getByWorkspace: (workspaceId: string) => TerminalState[];
 }
 
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   terminals: new Map(),
   activeTerminalId: null,
 
-  createTerminal: (config) => {
-    const id = config.id || crypto.randomUUID();
+  addTerminal: (config) =>
     set((state) => {
-      const newConfig = { ...config };
-      delete newConfig.id;
-      return {
-        terminals: new Map(state.terminals).set(id, {
-          ...newConfig,
-          id,
-          ptyId: null,
+      const next = new Map(state.terminals);
+      if (!next.has(config.id)) {
+        next.set(config.id, {
+          id: config.id,
+          workspaceId: config.workspaceId,
+          title: config.title,
+          shell: config.shell,
+          cwd: config.cwd,
+          agent: config.agent,
           isActive: false,
-        }),
-      };
-    });
-    return id;
-  },
+          spawned: false,
+          exitCode: null,
+        });
+      }
+      return { terminals: next };
+    }),
 
-  killTerminal: (id) =>
+  removeTerminal: (id) =>
     set((state) => {
       const next = new Map(state.terminals);
       next.delete(id);
       return {
         terminals: next,
-        activeTerminalId:
-          state.activeTerminalId === id ? null : state.activeTerminalId,
+        activeTerminalId: state.activeTerminalId === id ? null : state.activeTerminalId,
       };
     }),
 
@@ -85,51 +86,43 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
   setActiveTerminal: (id) =>
     set((state) => {
-      const prev = state.activeTerminalId;
-      if (prev === id) return {};
+      if (state.activeTerminalId === id) return {};
       const next = new Map(state.terminals);
-      if (prev) {
-        const prevTerminal = next.get(prev);
-        if (prevTerminal) next.set(prev, { ...prevTerminal, isActive: false });
+      if (state.activeTerminalId) {
+        const prev = next.get(state.activeTerminalId);
+        if (prev) next.set(state.activeTerminalId, { ...prev, isActive: false });
       }
-      const nextTerminal = next.get(id);
-      if (nextTerminal) next.set(id, { ...nextTerminal, isActive: true });
+      const terminal = next.get(id);
+      if (terminal) next.set(id, { ...terminal, isActive: true });
       return { terminals: next, activeTerminalId: id };
     }),
 
-  updateTerminalTitle: (id, title) =>
+  updateTitle: (id, title) =>
     set((state) => {
       const next = new Map(state.terminals);
-      const terminal = next.get(id);
-      if (terminal) {
-        next.set(id, { ...terminal, title });
-      }
+      const t = next.get(id);
+      if (t) next.set(id, { ...t, title });
       return { terminals: next };
     }),
 
-  setTerminalPtyId: (id, ptyId) =>
+  markSpawned: (id) =>
     set((state) => {
       const next = new Map(state.terminals);
-      const terminal = next.get(id);
-      if (terminal) {
-        next.set(id, { ...terminal, ptyId });
-      }
+      const t = next.get(id);
+      if (t) next.set(id, { ...t, spawned: true });
       return { terminals: next };
     }),
 
-  getTerminalsByWorkspace: (workspaceId) => {
-    const { terminals } = get();
-    return Array.from(terminals.values()).filter(
-      (t) => t.workspaceId === workspaceId
-    );
-  },
+  markExited: (id, exitCode) =>
+    set((state) => {
+      const next = new Map(state.terminals);
+      const t = next.get(id);
+      if (t) next.set(id, { ...t, exitCode, spawned: false });
+      return { terminals: next };
+    }),
 
-  getAgentCount: () => {
-    let count = 0;
+  getByWorkspace: (workspaceId) => {
     const { terminals } = get();
-    terminals.forEach((t) => {
-      if (t.agent && t.ptyId) count++;
-    });
-    return count;
+    return Array.from(terminals.values()).filter((t) => t.workspaceId === workspaceId);
   },
 }));
