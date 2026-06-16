@@ -55,6 +55,7 @@ PTY is managed via `tauri-plugin-pty` — no custom IPC commands.
 - **No CI/CD**: no GitHub workflows
 - **Vite watch** ignores `src-tauri/**` — restart Tauri after Rust changes
 - **Tailwind v4**: use `@theme` in CSS files, not `tailwind.config.ts`. Import `globals.css` at entrypoint (`main.tsx`).
+- **No auto prod build**: Agents must NOT run `npm run build`, `npm run tauri build`, or any production build automatically. Only the user can request a build.
 
 ## Notable files
 
