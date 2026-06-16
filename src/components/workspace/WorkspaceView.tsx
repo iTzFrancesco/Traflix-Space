@@ -3,12 +3,16 @@ import { TerminalSquare } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
+import { invokeWithTimeout } from "../../lib/timeout";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 export function WorkspaceView() {
-  const { activeWorkspaceId, workspaces } = useWorkspaceStore();
-  const { addToast } = useToastStore();
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const addToast = useToastStore((s) => s.addToast);
+  const addToastRef = useRef(addToast);
+  addToastRef.current = addToast;
   const [configTerminals, setConfigTerminals] = useState<TerminalConfig[]>([]);
   const loadedForRef = useRef<string | null>(null);
   
@@ -38,13 +42,16 @@ export function WorkspaceView() {
 
     let cancelled = false;
 
-    invoke<{
-      id: string;
-      name: string;
-      rootPath: string;
-      layout: { rows: number; cols: number };
-      terminals: TerminalConfig[];
-    }>("get_workspace", { id: activeWorkspaceId })
+    invokeWithTimeout(
+      () => invoke<{
+        id: string;
+        name: string;
+        rootPath: string;
+        layout: { rows: number; cols: number };
+        terminals: TerminalConfig[];
+      }>("get_workspace", { id: activeWorkspaceId }),
+      15000,
+    )
       .then((fullConfig) => {
         if (!cancelled) {
           setConfigTerminals(fullConfig.terminals || []);
@@ -52,14 +59,14 @@ export function WorkspaceView() {
       })
       .catch((err) => {
         console.error("Errore caricamento workspace:", err);
-        addToast({ type: "error", message: "Errore caricamento workspace" });
+        addToastRef.current({ type: "error", message: "Errore caricamento workspace" });
         if (!cancelled) setConfigTerminals([]);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceId, addToast]);
+  }, [activeWorkspaceId]);
 
   if (!displayWorkspace && !activeWorkspaceId) {
     return (

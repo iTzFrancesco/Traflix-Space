@@ -2,8 +2,12 @@ import { useCallback } from "react";
 import { useTerminalStore } from "../stores/terminalStore";
 
 export function useTerminal() {
-  const { createTerminal, killTerminal, setActiveTerminal, updateTerminalTitle, setTerminalPtyId, getTerminalsByWorkspace } =
-    useTerminalStore();
+  const createTerminal = useTerminalStore((s) => s.createTerminal);
+  const killTerminal = useTerminalStore((s) => s.killTerminal);
+  const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
+  const updateTerminalTitle = useTerminalStore((s) => s.updateTerminalTitle);
+  const setTerminalPtyId = useTerminalStore((s) => s.setTerminalPtyId);
+  const getTerminalsByWorkspace = useTerminalStore((s) => s.getTerminalsByWorkspace);
 
   const create = useCallback(
     (config: {

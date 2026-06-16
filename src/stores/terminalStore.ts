@@ -10,7 +10,6 @@ export interface TerminalState {
   isActive: boolean;
   shell: string;
   cwd: string;
-  outputBuffer: string[];
 }
 
 export interface TerminalConfig {
@@ -26,12 +25,11 @@ interface TerminalStore {
   terminals: Map<string, TerminalState>;
   activeTerminalId: string | null;
 
-  createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "outputBuffer" | "isActive"> & { id?: string }) => string;
+  createTerminal: (config: Omit<TerminalState, "id" | "ptyId" | "isActive"> & { id?: string }) => string;
   killTerminal: (id: string) => void;
   setActiveTerminal: (id: string) => void;
   updateTerminalTitle: (id: string, title: string) => void;
   setTerminalPtyId: (id: string, ptyId: string) => void;
-  writeToTerminal: (id: string, data: string) => void;
   getTerminalsByWorkspace: (workspaceId: string) => TerminalState[];
 }
 
@@ -50,7 +48,6 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
           id,
           ptyId: null,
           isActive: false,
-          outputBuffer: [],
         }),
       };
     });
@@ -70,10 +67,15 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
   setActiveTerminal: (id) =>
     set((state) => {
+      const prev = state.activeTerminalId;
+      if (prev === id) return {};
       const next = new Map(state.terminals);
-      next.forEach((t, key) => {
-        next.set(key, { ...t, isActive: key === id });
-      });
+      if (prev) {
+        const prevTerminal = next.get(prev);
+        if (prevTerminal) next.set(prev, { ...prevTerminal, isActive: false });
+      }
+      const nextTerminal = next.get(id);
+      if (nextTerminal) next.set(id, { ...nextTerminal, isActive: true });
       return { terminals: next, activeTerminalId: id };
     }),
 
@@ -93,19 +95,6 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const terminal = next.get(id);
       if (terminal) {
         next.set(id, { ...terminal, ptyId });
-      }
-      return { terminals: next };
-    }),
-
-  writeToTerminal: (id, data) =>
-    set((state) => {
-      const next = new Map(state.terminals);
-      const terminal = next.get(id);
-      if (terminal) {
-        next.set(id, {
-          ...terminal,
-          outputBuffer: [...terminal.outputBuffer, data],
-        });
       }
       return { terminals: next };
     }),

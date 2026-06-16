@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeWithTimeout } from "../lib/timeout";
 
 export interface Workspace {
   id: string;
@@ -74,17 +75,20 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
       syncWithBackend: async () => {
         try {
-          const backendWorkspaces = await invoke<
-            Array<{
-              id: string;
-              name: string;
-              rootPath: string;
-              layout: { rows: number; cols: number };
-              terminals: Array<{ agentId: string | null }>;
-              createdAt: string;
-              updatedAt: string;
-            }>
-          >("get_workspaces");
+          const backendWorkspaces = await invokeWithTimeout(
+            () => invoke<
+              Array<{
+                id: string;
+                name: string;
+                rootPath: string;
+                layout: { rows: number; cols: number };
+                terminals: Array<{ agentId: string | null }>;
+                createdAt: string;
+                updatedAt: string;
+              }>
+            >("get_workspaces"),
+            10000,
+          );
 
           const backendIds = new Set(backendWorkspaces.map((w) => w.id));
           const { workspaces: localWorkspaces } = get();

@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { usePresetStore } from "../../stores/presetStore";
 import { useToastStore } from "../../stores/toastStore";
+import { invokeWithTimeout } from "../../lib/timeout";
 import { AGENTS } from "../../lib/agents";
 import { computeLayout, QUICK_COUNTS } from "../../lib/presets";
 import { Modal } from "../ui/Modal";
@@ -41,7 +42,8 @@ const agentIcons: Record<string, typeof Bot> = {
 };
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
-  const { addWorkspace, setActiveWorkspace } = useWorkspaceStore();
+  const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
+  const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const { addPreset, removePreset, presets } = usePresetStore();
   const { addToast } = useToastStore();
 
@@ -86,7 +88,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   function updateCount(delta: number) {
     setTerminalCount((prev) => {
-      const next = Math.max(1, Math.min(16, prev + delta));
+      const next = Math.max(1, Math.min(8, prev + delta));
       setAgentCounts((c) => normalizeCounts(c, next));
       return next;
     });
@@ -153,7 +155,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   async function handleSelectFolder() {
     try {
-      const path = await invoke<string>("select_folder");
+      const path = await invokeWithTimeout(
+        () => invoke<string>("select_folder"),
+        30000,
+      );
       setFolderPath(path);
     } catch (err) {
       console.error("Errore selezione cartella:", err);
@@ -198,7 +203,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         updatedAt: now,
       };
 
-      await invoke("create_workspace", { config });
+      await invokeWithTimeout(
+        () => invoke("create_workspace", { config }),
+        15000,
+      );
 
       const workspace: Workspace = {
         id: config.id,
@@ -375,7 +383,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               Quanti terminali vuoi aprire?
             </p>
 
-            <div className="grid grid-cols-5 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               {QUICK_COUNTS.map((n) => {
                 const active = terminalCount === n;
                 return (
@@ -417,7 +425,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </span>
                 <button
                   onClick={() => updateCount(1)}
-                  disabled={terminalCount >= 16}
+                  disabled={terminalCount >= 8}
                   className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-20 active:scale-[0.92]"
                   aria-label="Aumenta terminali"
                 >

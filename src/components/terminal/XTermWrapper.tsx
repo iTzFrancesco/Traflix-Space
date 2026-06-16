@@ -35,6 +35,8 @@ export function XTermWrapper({
   onFocus,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -138,7 +140,7 @@ export function XTermWrapper({
 
     const handleClick = () => term.focus();
     container.addEventListener("click", handleClick);
-    const handleFocusIn = () => onFocus?.();
+    const handleFocusIn = () => onFocusRef.current?.();
     container.addEventListener("focusin", handleFocusIn);
 
     return () => {
@@ -187,3 +189,10 @@ const STOCK_THEME = {
   brightCyan: "#29b8db",
   brightWhite: "#e5e5e5",
 };
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    initQueue = Promise.resolve();
+    batchCount = 0;
+  });
+}

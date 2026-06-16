@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useUIStore } from "../../stores/uiStore";
+import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
 
 const WORKSPACE_COLORS = [
@@ -31,10 +32,16 @@ function getWorkspaceColor(index: number): string {
 }
 
 export function Sidebar() {
-  const { workspaces, activeWorkspaceId, setActiveWorkspace, updateWorkspace, removeWorkspace } =
-    useWorkspaceStore();
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
+  const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
+  const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const terminalStore = useTerminalStore();
-  const { isCollapsed, toggleSidebar, activeModal, closeModal } = useUIStore();
+  const isCollapsed = useUIStore((s) => s.isCollapsed);
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const activeModal = useUIStore((s) => s.activeModal);
+  const closeModal = useUIStore((s) => s.closeModal);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -75,16 +82,16 @@ export function Sidebar() {
   };
 
   const handleDelete = async (id: string) => {
+    // Notifica il backend per primo
+    try {
+      await invokeWithTimeout(() => invoke("delete_workspace", { id }), 10000);
+    } catch (err) {
+      console.error("Errore eliminazione workspace backend:", err);
+    }
     // Kill terminali della workspace eliminata
     const terminalsToKill = terminalStore.getTerminalsByWorkspace(id);
     for (const t of terminalsToKill) {
       terminalStore.killTerminal(t.id);
-    }
-    // Notifica il backend
-    try {
-      await invoke("delete_workspace", { id });
-    } catch (err) {
-      console.error("Errore eliminazione workspace backend:", err);
     }
     removeWorkspace(id);
     setConfirmDeleteId(null);
