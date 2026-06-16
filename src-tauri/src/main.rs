@@ -1,12 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod mcp;
 mod process;
 mod settings;
 mod workspace;
 
 use tauri::Manager;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -30,8 +31,27 @@ fn main() {
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
+            app.manage(mcp::McpManager::new());
             info!("Stato applicazione inizializzato");
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let manager = handle.state::<mcp::McpManager>();
+                match manager.start() {
+                    Ok(pid) => info!("MCP server auto-avviato, PID: {pid}"),
+                    Err(e) => warn!("Auto-avvio MCP server fallito: {e}"),
+                }
+            });
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(manager) = window.try_state::<mcp::McpManager>() {
+                    let _ = manager.stop();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             workspace::commands::create_workspace,
@@ -41,6 +61,10 @@ fn main() {
             workspace::commands::delete_workspace,
             workspace::commands::select_folder,
             agent::commands::list_agents,
+            mcp::commands::mcp_start,
+            mcp::commands::mcp_stop,
+            mcp::commands::mcp_status,
+            mcp::commands::mcp_logs,
             settings::commands::get_settings,
             settings::commands::set_settings,
             process::kill_process_tree,
