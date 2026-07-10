@@ -1,7 +1,8 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tracing::{error, info, warn};
-use portable_pty::{CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
 use crate::terminal_engine::frame::TerminalOutput;
@@ -11,6 +12,7 @@ pub struct TerminalSession {
     pub shell: String,
     pub cwd: String,
     pub pty: Option<Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send>>>>,
+    pub master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     pub reader: Option<Arc<Mutex<Box<dyn std::io::Read + Send>>>>,
     pub writer: Option<Arc<Mutex<Box<dyn std::io::Write + Send>>>>,
     pub grid: GridBuffer,
@@ -18,6 +20,7 @@ pub struct TerminalSession {
     pub active: bool,
     pub agent_id: Option<String>,
     pub exit_code: Option<i32>,
+    pub reader_stop: Arc<AtomicBool>,
 }
 
 impl TerminalSession {
@@ -27,6 +30,7 @@ impl TerminalSession {
             shell,
             cwd,
             pty: None,
+            master: None,
             reader: None,
             writer: None,
             grid: GridBuffer::new(cols, rows),
@@ -34,6 +38,7 @@ impl TerminalSession {
             active: false,
             agent_id: None,
             exit_code: None,
+            reader_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -76,6 +81,7 @@ impl TerminalSession {
         })?;
 
         self.pty = Some(Arc::new(Mutex::new(child_killer)));
+        self.master = Some(Arc::new(Mutex::new(pair.master)));
         self.reader = Some(Arc::new(Mutex::new(reader)));
         self.writer = Some(Arc::new(Mutex::new(writer)));
 
@@ -84,10 +90,12 @@ impl TerminalSession {
         let id = self.id.clone();
         let _cols = self.grid.cols;
         let _rows = self.grid.rows;
+        let stop = self.reader_stop.clone();
 
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 65536];
             loop {
+                if stop.load(Ordering::Relaxed) { break; }
                 let n = {
                     let mut reader = match reader_arc.lock() {
                         Ok(guard) => guard,
@@ -138,11 +146,22 @@ impl TerminalSession {
         }
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         self.grid.resize(cols, rows);
+        if let Some(ref master) = self.master {
+            let master = master.lock().map_err(|_| "Master lock poisoned".to_string())?;
+            master.resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: cols * 8,
+                pixel_height: rows * 16,
+            }).map_err(|e| format!("PTY resize error: {}", e))?;
+        }
+        Ok(())
     }
 
     pub fn kill(&mut self) {
+        self.reader_stop.store(true, Ordering::Relaxed);
         if let Some(ref pty) = self.pty {
             let pty = pty.lock();
             if let Ok(mut pty) = pty {

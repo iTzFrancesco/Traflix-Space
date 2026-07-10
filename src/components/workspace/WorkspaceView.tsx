@@ -8,7 +8,6 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
-import { useTerminalPool } from "../terminal/TerminalPool";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface LoadedWorkspace {
@@ -69,7 +68,7 @@ export function WorkspaceView() {
         // Registra i terminali nel terminalStore
         const terminalStore = useTerminalStore.getState();
         for (const tc of fullConfig.terminals || []) {
-          if (!terminalStore.terminals.has(tc.id)) {
+          if (!terminalStore.terminals[tc.id]) {
             terminalStore.addTerminal({
               id: tc.id,
               workspaceId: id,
@@ -129,38 +128,12 @@ export function WorkspaceView() {
     };
   }, []);
 
-  const pool = useTerminalPool();
-
-  useEffect(() => {
-    pool.initXTerm();
-    return () => { pool.dispose(); };
-  }, []);
-
-  // Carica il workspace attivo e cleanup terminali del precedente
+  // Carica workspace attivo se non già in cache
   useEffect(() => {
     if (!activeWorkspaceId) return;
-
-    const terminalStore = useTerminalStore.getState();
-    const idsToRemove: string[] = [];
-    for (const id of loadedMapRef.current.keys()) {
-      if (id !== activeWorkspaceId) {
-        terminalStore.killWorkspaceTerminals(id);
-        idsToRemove.push(id);
-      }
+    if (!loadedMapRef.current.has(activeWorkspaceId)) {
+      loadWorkspace(activeWorkspaceId);
     }
-
-    if (idsToRemove.length > 0) {
-      setLoadedMap((prev) => {
-        const next = new Map(prev);
-        for (const id of idsToRemove) {
-          next.delete(id);
-        }
-        return next;
-      });
-    }
-
-    const cleanup = loadWorkspace(activeWorkspaceId);
-    return cleanup;
   }, [activeWorkspaceId, loadWorkspace]);
 
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
@@ -276,7 +249,6 @@ export function WorkspaceView() {
               rows={activeLoaded.layout.rows}
               cols={activeLoaded.layout.cols}
               terminals={activeLoaded.terminals}
-              pool={pool}
               onActivate={(id) => {
                 useTerminalStore.getState().setActiveTerminal(id);
               }}

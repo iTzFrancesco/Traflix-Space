@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { useStoreWithEqualityFn } from "zustand/traditional";
+import { shallow } from "zustand/shallow";
 
 export interface TerminalState {
   id: string;
@@ -22,7 +24,7 @@ export interface TerminalConfig {
 }
 
 interface TerminalStore {
-  terminals: Map<string, TerminalState>;
+  terminals: Record<string, TerminalState>;
   activeTerminalId: string | null;
 
   addTerminal: (config: { id: string; workspaceId: string; shell: string; cwd: string; title: string; agent: string | null }) => void;
@@ -36,47 +38,49 @@ interface TerminalStore {
 }
 
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
-  terminals: new Map(),
+  terminals: {},
   activeTerminalId: null,
 
   addTerminal: (config) =>
     set((state) => {
-      const next = new Map(state.terminals);
-      if (!next.has(config.id)) {
-        next.set(config.id, {
-          id: config.id,
-          workspaceId: config.workspaceId,
-          title: config.title,
-          shell: config.shell,
-          cwd: config.cwd,
-          agent: config.agent,
-          isActive: false,
-          spawned: false,
-          exitCode: null,
-        });
-      }
-      return { terminals: next };
+      if (state.terminals[config.id]) return state;
+      return {
+        terminals: {
+          ...state.terminals,
+          [config.id]: {
+            id: config.id,
+            workspaceId: config.workspaceId,
+            title: config.title,
+            shell: config.shell,
+            cwd: config.cwd,
+            agent: config.agent,
+            isActive: false,
+            spawned: false,
+            exitCode: null,
+          },
+        },
+      };
     }),
 
   removeTerminal: (id) =>
     set((state) => {
-      const next = new Map(state.terminals);
-      next.delete(id);
+      const { [id]: _, ...rest } = state.terminals;
       return {
-        terminals: next,
+        terminals: rest,
         activeTerminalId: state.activeTerminalId === id ? null : state.activeTerminalId,
       };
     }),
 
   killWorkspaceTerminals: (workspaceId) =>
     set((state) => {
-      const next = new Map(state.terminals);
+      const next: Record<string, TerminalState> = {};
       let activeCleared = false;
-      for (const [id, t] of next) {
+      for (const [id, t] of Object.entries(state.terminals)) {
         if (t.workspaceId === workspaceId) {
-          next.delete(id);
           if (state.activeTerminalId === id) activeCleared = true;
+          continue;
         }
+        next[id] = t;
       }
       return {
         terminals: next,
@@ -86,43 +90,52 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
   setActiveTerminal: (id) =>
     set((state) => {
-      if (state.activeTerminalId === id) return {};
-      const next = new Map(state.terminals);
-      if (state.activeTerminalId) {
-        const prev = next.get(state.activeTerminalId);
-        if (prev) next.set(state.activeTerminalId, { ...prev, isActive: false });
+      if (state.activeTerminalId === id) return state;
+      const next: Record<string, TerminalState> = {};
+      for (const [tid, t] of Object.entries(state.terminals)) {
+        next[tid] = { ...t, isActive: tid === id };
       }
-      const terminal = next.get(id);
-      if (terminal) next.set(id, { ...terminal, isActive: true });
       return { terminals: next, activeTerminalId: id };
     }),
 
   updateTitle: (id, title) =>
     set((state) => {
-      const next = new Map(state.terminals);
-      const t = next.get(id);
-      if (t) next.set(id, { ...t, title });
-      return { terminals: next };
+      const t = state.terminals[id];
+      if (!t || t.title === title) return state;
+      return {
+        terminals: { ...state.terminals, [id]: { ...t, title } },
+      };
     }),
 
   markSpawned: (id) =>
     set((state) => {
-      const next = new Map(state.terminals);
-      const t = next.get(id);
-      if (t) next.set(id, { ...t, spawned: true });
-      return { terminals: next };
+      const t = state.terminals[id];
+      if (!t || t.spawned) return state;
+      return {
+        terminals: { ...state.terminals, [id]: { ...t, spawned: true } },
+      };
     }),
 
   markExited: (id, exitCode) =>
     set((state) => {
-      const next = new Map(state.terminals);
-      const t = next.get(id);
-      if (t) next.set(id, { ...t, exitCode, spawned: false });
-      return { terminals: next };
+      const t = state.terminals[id];
+      if (!t) return state;
+      return {
+        terminals: { ...state.terminals, [id]: { ...t, exitCode, spawned: false } },
+      };
     }),
 
   getByWorkspace: (workspaceId) => {
     const { terminals } = get();
-    return Array.from(terminals.values()).filter((t) => t.workspaceId === workspaceId);
+    return Object.values(terminals).filter((t) => t.workspaceId === workspaceId);
   },
 }));
+
+// Hook helper con shallow comparison per evitare re-render
+export function useTerminalsByWorkspace(workspaceId: string) {
+  return useStoreWithEqualityFn(
+    useTerminalStore,
+    (s) => Object.values(s.terminals).filter((t) => t.workspaceId === workspaceId),
+    shallow,
+  );
+}

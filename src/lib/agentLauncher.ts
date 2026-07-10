@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { AGENTS } from "./agents";
+import { useTerminalStore } from "../stores/terminalStore";
 
 class AgentLaunchQueue {
   private queue: Array<{ terminalId: string; agentId: string }> = [];
@@ -7,6 +8,9 @@ class AgentLaunchQueue {
   private maxConcurrent = 2;
 
   enqueue(terminalId: string, agentId: string) {
+    const terminal = useTerminalStore.getState().terminals[terminalId];
+    if (!terminal) return;
+
     this.queue.push({ terminalId, agentId });
     setTimeout(() => this.processNext(), 1000);
   }

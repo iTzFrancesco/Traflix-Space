@@ -20,19 +20,23 @@ use crate::terminal_engine::scheduler::FrameScheduler;
 
 pub struct TerminalManager {
     pub sessions: DashMap<String, Arc<RwLock<TerminalSession>>>,
-    scheduler: FrameScheduler,
+    scheduler: tokio::sync::Mutex<FrameScheduler>,
 }
 
 impl TerminalManager {
     pub fn new() -> Self {
         Self {
             sessions: DashMap::new(),
-            scheduler: FrameScheduler::new(),
+            scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
         }
     }
 
-    pub async fn spawn(&self, _app: AppHandle, config: crate::workspace::registry::TerminalConfig) -> Result<String, String> {
+    pub async fn spawn(&self, app: AppHandle, config: crate::workspace::registry::TerminalConfig) -> Result<String, String> {
         let id = config.id.clone();
+        if self.sessions.contains_key(&id) {
+            info!(terminal_id = %id, "Terminal session already exists, reusing");
+            return Ok(id);
+        }
         let shell = if config.shell.is_empty() {
             "powershell.exe".to_string()
         } else {
@@ -56,6 +60,9 @@ impl TerminalManager {
 
         self.sessions.insert(id.clone(), Arc::new(RwLock::new(session)));
         info!(terminal_id = %id, "Terminal session created");
+
+        // Spawn the shell immediately so the PTY reader starts sending output
+        self.spawn_shell(&app, &id).await?;
 
         Ok(id)
     }
@@ -84,7 +91,7 @@ impl TerminalManager {
         let session = self.sessions.get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
-        session.resize(cols, rows);
+        session.resize(cols, rows)?;
         info!(terminal_id = %id, cols, rows, "Terminal resized");
         Ok(())
     }
@@ -94,7 +101,7 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.1.write().await;
         session.kill();
-        self.scheduler.stop(id);
+        self.scheduler.lock().await.stop(id);
         info!(terminal_id = %id, "Terminal killed and removed");
         Ok(())
     }
@@ -106,10 +113,10 @@ impl TerminalManager {
             if Some(entry.key().as_str()) == id {
                 session.active = true;
                 active_id = Some(entry.key().clone());
-                self.scheduler.start(app.clone(), entry.value().clone());
+                self.scheduler.lock().await.start(app.clone(), entry.value().clone());
             } else {
                 session.active = false;
-                self.scheduler.stop(entry.key());
+                self.scheduler.lock().await.stop(entry.key());
             }
         }
 
@@ -199,12 +206,12 @@ impl TerminalManager {
     pub async fn start_frame_scheduler(&self, app: AppHandle, id: &str) -> Result<(), String> {
         let session = self.sessions.get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        self.scheduler.start(app, session.value().clone());
+        self.scheduler.lock().await.start(app, session.value().clone());
         Ok(())
     }
 
     pub async fn stop_frame_scheduler(&self, id: &str) {
-        self.scheduler.stop(id);
+        self.scheduler.lock().await.stop(id);
     }
 }
 
