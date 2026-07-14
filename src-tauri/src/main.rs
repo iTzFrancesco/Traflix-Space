@@ -72,6 +72,8 @@ fn main() {
             workspace::commands::update_workspace,
             workspace::commands::delete_workspace,
             workspace::commands::select_folder,
+            workspace::commands::navigate_folder,
+            workspace::commands::get_default_workspace_path,
             agent::commands::list_agents,
             mcp::commands::mcp_start,
             mcp::commands::mcp_stop,

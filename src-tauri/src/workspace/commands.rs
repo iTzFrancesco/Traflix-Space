@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -8,6 +9,15 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use super::registry::{WorkspaceConfig, WorkspaceRegistry};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderNavResult {
+    pub path: String,
+    pub exists: bool,
+    pub parent: Option<String>,
+    pub children: Vec<String>,
+}
 
 #[tauri::command]
 pub async fn create_workspace(
@@ -111,6 +121,92 @@ pub async fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> 
     registry.save().await?;
     info!(%id, "Workspace eliminato");
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_default_workspace_path() -> Result<String, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Impossibile ottenere la home directory".to_string())?;
+    let default = PathBuf::from(&home)
+        .join("OneDrive")
+        .join("Documenti")
+        .join("developer")
+        .join("GitHub");
+    Ok(default.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn navigate_folder(
+    current_path: Option<String>,
+    input: String,
+) -> Result<FolderNavResult, String> {
+    let trimmed = input.trim();
+
+    // Supporta sia "cd percorso" sia direttamente il percorso
+    let target = if let Some(rest) = trimmed.strip_prefix("cd ") {
+        rest.trim()
+    } else {
+        trimmed
+    };
+
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "C:\\".to_string());
+
+    let base = current_path.unwrap_or_else(|| home.clone());
+    let base_path = PathBuf::from(&base);
+
+    let resolved = match target {
+        "~" | "~\\" | "~/" => PathBuf::from(&home),
+        ".." => base_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(&home)),
+        "." => base_path.clone(),
+        // Se il target contiene ":" (es. "C:") o inizia con "\\" è un path assoluto
+        t if t.contains(":\\") || t.starts_with("\\") => PathBuf::from(t),
+        t if t.starts_with("~/") || t.starts_with("~\\") => {
+            let rel = &t[2..];
+            PathBuf::from(&home).join(rel)
+        }
+        t => base_path.join(t),
+    };
+
+    // Canonicalizza il path
+    let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
+        format!("Percorso non trovato: {} ({})", resolved.display(), e)
+    })?;
+
+    // Leggi il contenuto della directory
+    let mut children: Vec<String> = Vec::new();
+    if canonical.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&canonical) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Nascondi file/nascosti
+                if !name.starts_with('.') {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        children.push(format!("{}/", name));
+                    } else {
+                        children.push(name);
+                    }
+                }
+            }
+        }
+        children.sort();
+    }
+
+    let parent = canonical
+        .parent()
+        .map(|p| p.to_string_lossy().to_string());
+
+    Ok(FolderNavResult {
+        path: canonical.to_string_lossy().to_string(),
+        exists: true,
+        parent,
+        children,
+    })
 }
 
 #[tauri::command]

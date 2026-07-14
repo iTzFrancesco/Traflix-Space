@@ -13,6 +13,7 @@ export interface Preset {
 interface PresetStore {
   presets: Preset[];
   addPreset: (preset: Preset) => void;
+  updatePreset: (id: string, updates: Partial<Preset>) => void;
   removePreset: (id: string) => void;
 }
 
@@ -24,6 +25,13 @@ export const usePresetStore = create<PresetStore>()(
       addPreset: (preset) =>
         set((state) => ({
           presets: [...state.presets, preset],
+        })),
+
+      updatePreset: (id, updates) =>
+        set((state) => ({
+          presets: state.presets.map((p) =>
+            p.id === id ? { ...p, ...updates } : p,
+          ),
         })),
 
       removePreset: (id) =>

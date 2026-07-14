@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   FolderOpen,
   ChevronLeft,
@@ -41,10 +41,17 @@ const agentIcons: Record<string, typeof Bot> = {
   "anti-gravity": Bot,
 };
 
+interface FolderNavResult {
+  path: string;
+  exists: boolean;
+  parent: string | null;
+  children: string[];
+}
+
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
-  const { addPreset, removePreset, presets } = usePresetStore();
+  const { addPreset, updatePreset, removePreset, presets } = usePresetStore();
   const { addToast } = useToastStore();
 
   const [step, setStep] = useState(1);
@@ -52,6 +59,16 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const [terminalCount, setTerminalCount] = useState(4);
   const [agentCounts, setAgentCounts] = useState<Record<string, number>>({});
   const [creating, setCreating] = useState(false);
+
+  // Mini terminal state
+  const [terminalInput, setTerminalInput] = useState("");
+  const [terminalHistory, setTerminalHistory] = useState<string[]>([]);
+  const [dirChildren, setDirChildren] = useState<string[]>([]);
+  const [navLoading, setNavLoading] = useState(false);
+  const terminalInputRef = useRef<HTMLInputElement>(null);
+
+  // Track which preset we're modifying (null = new preset)
+  const [presetSourceId, setPresetSourceId] = useState<string | null>(null);
 
   const assignedCount = useMemo(
     () => Object.values(agentCounts).reduce((a, b) => a + b, 0),
@@ -65,6 +82,42 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     const parts = folderPath.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1] || "untitled";
   }, [folderPath]);
+
+  // Carica il path di default all'apertura
+  useEffect(() => {
+    if (open && !folderPath) {
+      invokeWithTimeout(
+        () => invoke<string>("get_default_workspace_path"),
+        5000,
+      )
+        .then((defaultPath) => {
+          setFolderPath(defaultPath);
+          // Carica anche i children per il terminale
+          invokeWithTimeout(
+            () =>
+              invoke<FolderNavResult>("navigate_folder", {
+                currentPath: null,
+                input: defaultPath,
+              }),
+            5000,
+          )
+            .then((result) => {
+              setDirChildren(result.children);
+            })
+            .catch(() => {});
+        })
+        .catch(() => {
+          // Fallback: prova col profilo utente
+        });
+    }
+  }, [open]);
+
+  // Focus sul terminal input quando si arriva allo step 1
+  useEffect(() => {
+    if (step === 1 && terminalInputRef.current) {
+      terminalInputRef.current.focus();
+    }
+  }, [step]);
 
   function normalizeCounts(
     counts: Record<string, number>,
@@ -121,13 +174,43 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   }
 
   function loadPreset(preset: Preset) {
+    setPresetSourceId(preset.id);
     setFolderPath(preset.folderPath);
     setTerminalCount(preset.terminalCount);
     setAgentCounts(preset.agentCounts);
+    setTerminalHistory([]);
+    setDirChildren([]);
     setStep(4);
   }
 
   function handleSavePreset() {
+    const name = workspaceName || "Senza nome";
+    const now = new Date().toISOString();
+
+    if (presetSourceId) {
+      // Aggiorna il preset esistente
+      updatePreset(presetSourceId, {
+        name,
+        folderPath,
+        terminalCount,
+        agentCounts,
+      });
+      addToast({ type: "success", message: `Preset "${name}" aggiornato` });
+    } else {
+      // Crea un nuovo preset
+      addPreset({
+        id: crypto.randomUUID(),
+        name,
+        folderPath,
+        terminalCount,
+        agentCounts,
+        createdAt: now,
+      });
+      addToast({ type: "success", message: `Preset "${name}" salvato` });
+    }
+  }
+
+  function handleSaveAsNewPreset() {
     const name = workspaceName || "Senza nome";
     addPreset({
       id: crypto.randomUUID(),
@@ -137,7 +220,55 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       agentCounts,
       createdAt: new Date().toISOString(),
     });
-    addToast({ type: "success", message: `Preset "${name}" salvato` });
+    addToast({ type: "success", message: `Nuovo preset "${name}" salvato` });
+    setPresetSourceId(null);
+  }
+
+  async function executeNavigation(target: string) {
+    setNavLoading(true);
+
+    try {
+      const result = await invokeWithTimeout(
+        () =>
+          invoke<FolderNavResult>("navigate_folder", {
+            currentPath: folderPath || null,
+            input: target,
+          }),
+        10000,
+      );
+
+      setFolderPath(result.path);
+      setDirChildren(result.children);
+
+      setTerminalHistory((prev) => [
+        ...prev,
+        `📁 ${result.path}`,
+      ]);
+    } catch (err) {
+      const msg = typeof err === "string" ? err : "Comando non valido";
+      setTerminalHistory((prev) => [...prev, `❌ ${msg}`]);
+    } finally {
+      setNavLoading(false);
+      setTimeout(() => terminalInputRef.current?.focus(), 50);
+    }
+  }
+
+  async function handleTerminalCommand(e: React.KeyboardEvent) {
+    if (e.key !== "Enter" || !terminalInput.trim()) return;
+
+    const cmd = terminalInput.trim();
+    setTerminalHistory((prev) => [...prev, `> ${cmd}`]);
+    setTerminalInput("");
+
+    // Supporta "cd path" o direttamente il path
+    const target = cmd.startsWith("cd ") ? cmd.slice(3).trim() : cmd;
+    executeNavigation(target);
+  }
+
+  function handleDirClick(child: string) {
+    const dirName = child.endsWith("/") ? child.slice(0, -1) : child;
+    setTerminalHistory((prev) => [...prev, `> cd ${dirName}/`]);
+    executeNavigation(dirName);
   }
 
   function reset() {
@@ -146,6 +277,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     setTerminalCount(4);
     setAgentCounts({});
     setCreating(false);
+    setPresetSourceId(null);
+    setTerminalInput("");
+    setTerminalHistory([]);
+    setDirChildren([]);
   }
 
   function handleClose() {
@@ -160,6 +295,18 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         30000,
       );
       setFolderPath(path);
+      // Aggiorna la directory listing
+      try {
+        const result = await invokeWithTimeout(
+          () =>
+            invoke<FolderNavResult>("navigate_folder", {
+              currentPath: null,
+              input: path,
+            }),
+          5000,
+        );
+        setDirChildren(result.children);
+      } catch {}
     } catch (err) {
       console.error("Errore selezione cartella:", err);
       addToast({
@@ -280,16 +427,19 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 1 — Cartella */}
         {step === 1 && (
-          <div className="space-y-6">
-            <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-8 space-y-6">
-              <p className="text-lg text-neutral-text-dim leading-relaxed">
+          <div className="space-y-5">
+            {/* Path attuale + Sfoglia */}
+            <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-6 space-y-5">
+              <p className="text-base text-neutral-text-dim leading-relaxed">
                 Seleziona la cartella del progetto.
               </p>
+
+              {/* Path display + Sfoglia button */}
               <div className="flex items-center gap-4">
-                <div className="flex items-center gap-4 px-6 py-5 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.06]">
-                  <FolderOpen size={24} className="text-primary shrink-0" />
+                <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.06]">
+                  <FolderOpen size={20} className="text-primary shrink-0" />
                   <span
-                    className={`text-lg font-mono truncate ${
+                    className={`text-sm font-mono truncate ${
                       folderPath
                         ? "text-neutral-text"
                         : "text-neutral-text-muted"
@@ -300,7 +450,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </div>
                 <button
                   onClick={handleSelectFolder}
-                  className="px-8 py-5 text-lg font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97]"
+                  className="px-7 py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97] shrink-0"
                   style={{
                     background: "linear-gradient(135deg, #e85d04, #ff7b00)",
                   }}
@@ -310,6 +460,95 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               </div>
             </div>
 
+            {/* Mini Terminale */}
+            <div className="rounded-3xl border border-white/[0.06] overflow-hidden"
+                 style={{ backgroundColor: "#0d0d0f" }}>
+              {/* Terminal header */}
+              <div className="flex items-center gap-2 px-5 py-3 border-b border-white/[0.06]">
+                <Terminal size={14} className="text-primary/70" />
+                <span className="text-xs font-semibold uppercase tracking-[0.15em] text-neutral-text-muted">
+                  Terminale Navigazione
+                </span>
+                <span className="text-[10px] font-mono text-neutral-text-muted/50 ml-auto">
+                  cd &lt;cartella&gt; • cd .. • cd ~
+                </span>
+              </div>
+
+              {/* History / Directory listing */}
+              <div className="max-h-48 overflow-y-auto px-5 py-3 space-y-1 font-mono text-sm"
+                   style={{ scrollbarWidth: "thin" }}>
+                {terminalHistory.length === 0 && dirChildren.length === 0 && (
+                  <p className="text-neutral-text-muted/40 text-xs py-2">
+                    Scrivi un comando, es: <span className="text-primary/60">cd progetti</span> o <span className="text-primary/60">cd ..</span>
+                  </p>
+                )}
+
+                {terminalHistory.map((line, i) => (
+                  <div
+                    key={i}
+                    className={`${
+                      line.startsWith(">")
+                        ? "text-orange-300/80"
+                        : line.startsWith("❌")
+                          ? "text-red-400/70"
+                          : line.startsWith("📁")
+                            ? "text-emerald-400/70"
+                            : "text-neutral-text-muted"
+                    }`}
+                  >
+                    {line}
+                  </div>
+                ))}
+
+                {/* Directory listing inline */}
+                {dirChildren.length > 0 && (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1 pb-2">
+                    <span className="text-neutral-text-muted/40">..</span>
+                    {dirChildren.slice(0, 20).map((child) => (
+                      <button
+                        key={child}
+                        onClick={() => handleDirClick(child)}
+                        className={`text-left transition-colors hover:text-primary ${
+                          child.endsWith("/")
+                            ? "text-blue-400/70 hover:text-blue-300"
+                            : "text-neutral-text-muted/40"
+                        }`}
+                        title={`cd ${child}`}
+                      >
+                        {child}
+                      </button>
+                    ))}
+                    {dirChildren.length > 20 && (
+                      <span className="text-neutral-text-muted/30 text-xs">
+                        +{dirChildren.length - 20} altri
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Comando corrente */}
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-primary/60 shrink-0">❯</span>
+                  <input
+                    ref={terminalInputRef}
+                    type="text"
+                    value={terminalInput}
+                    onChange={(e) => setTerminalInput(e.target.value)}
+                    onKeyDown={handleTerminalCommand}
+                    placeholder="cd &lt;cartella&gt; o percorso..."
+                    disabled={navLoading}
+                    className="flex-1 bg-transparent border-none outline-none text-sm font-mono text-neutral-text placeholder-neutral-text-muted/30"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  {navLoading && (
+                    <span className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin shrink-0" />
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Preset salvati */}
             {presets.length > 0 && (
               <>
                 <div className="relative">
@@ -332,17 +571,17 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                       <div
                         key={preset.id}
                         onClick={() => loadPreset(preset)}
-                        className="rounded-2xl bg-neutral-elevated border border-white/[0.06] p-6 cursor-pointer hover:bg-white/[0.04] hover:border-white/[0.1] transition-all duration-200 active:scale-[0.98] group"
+                        className="rounded-2xl bg-neutral-elevated border border-white/[0.06] p-5 cursor-pointer hover:bg-white/[0.04] hover:border-white/[0.1] transition-all duration-200 active:scale-[0.98] group"
                       >
                         <div className="flex items-start justify-between">
                           <div className="min-w-0 flex-1">
-                            <p className="text-lg font-bold text-neutral-text truncate">
+                            <p className="text-base font-bold text-neutral-text truncate">
                               {preset.name}
                             </p>
-                            <p className="text-sm font-mono text-neutral-text-muted mt-2 truncate">
+                            <p className="text-xs font-mono text-neutral-text-muted mt-1.5 truncate">
                               {preset.folderPath}
                             </p>
-                            <div className="flex items-center gap-3 mt-3 text-xs text-neutral-text-muted">
+                            <div className="flex items-center gap-3 mt-2 text-xs text-neutral-text-muted">
                               <span className="font-medium tabular-nums">
                                 {preset.terminalCount} terminali
                               </span>
@@ -361,10 +600,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                                 message: `Preset "${preset.name}" rimosso`,
                               });
                             }}
-                            className="w-9 h-9 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/[0.06] transition-all duration-200 shrink-0 ml-3"
+                            className="w-8 h-8 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/[0.06] transition-all duration-200 shrink-0 ml-3"
                             aria-label={`Elimina preset ${preset.name}`}
                           >
-                            <Trash2 size={16} className="text-red-400/60" />
+                            <Trash2 size={14} className="text-red-400/60" />
                           </button>
                         </div>
                       </div>
@@ -610,17 +849,42 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               </div>
             )}
 
-            <button
-              onClick={handleSavePreset}
-              className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
-              style={{
-                background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                boxShadow: "0 4px 20px rgba(232, 93, 4, 0.25)",
-              }}
-            >
-              <Save size={20} />
-              Salva come preset
-            </button>
+            <div className="flex flex-col gap-3">
+              {presetSourceId ? (
+                <>
+                  <button
+                    onClick={handleSavePreset}
+                    className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
+                    style={{
+                      background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                      boxShadow: "0 4px 20px rgba(232, 93, 4, 0.25)",
+                    }}
+                  >
+                    <Save size={20} />
+                    Aggiorna preset esistente
+                  </button>
+                  <button
+                    onClick={handleSaveAsNewPreset}
+                    className="flex items-center justify-center gap-3 w-full py-3 text-sm font-medium text-neutral-text-muted rounded-2xl border border-white/[0.06] hover:bg-white/[0.03] transition-all duration-200 active:scale-[0.98]"
+                  >
+                    <Save size={16} />
+                    Salva come nuovo preset
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleSavePreset}
+                  className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
+                  style={{
+                    background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                    boxShadow: "0 4px 20px rgba(232, 93, 4, 0.25)",
+                  }}
+                >
+                  <Save size={20} />
+                  Salva come preset
+                </button>
+              )}
+            </div>
           </div>
         )}
 

@@ -12,6 +12,7 @@ export interface TerminalState {
   isActive: boolean;
   spawned: boolean;
   exitCode: number | null;
+  agentLaunched: boolean;
 }
 
 export interface TerminalConfig {
@@ -34,6 +35,7 @@ interface TerminalStore {
   updateTitle: (id: string, title: string) => void;
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
+  markAgentLaunched: (id: string) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
 }
 
@@ -57,6 +59,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             isActive: false,
             spawned: false,
             exitCode: null,
+            agentLaunched: false,
           },
         },
       };
@@ -122,6 +125,15 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       if (!t) return state;
       return {
         terminals: { ...state.terminals, [id]: { ...t, exitCode, spawned: false } },
+      };
+    }),
+
+  markAgentLaunched: (id) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t || t.agentLaunched) return state;
+      return {
+        terminals: { ...state.terminals, [id]: { ...t, agentLaunched: true } },
       };
     }),
 

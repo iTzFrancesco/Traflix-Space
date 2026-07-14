@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTerminalInput } from "../terminal/useTerminalInput";
+import { useTerminalStore } from "../../stores/terminalStore";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
 import type { TerminalOutput } from "../terminal/types";
 import "xterm/css/xterm.css";
@@ -79,7 +80,6 @@ export const TerminalPane = memo(function TerminalPane({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
-  const agentLaunchedRef = useRef(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
@@ -134,9 +134,13 @@ export const TerminalPane = memo(function TerminalPane({
       terminalId, shell, cwd, cols: Math.max(term.cols, 80), rows: Math.max(term.rows, 24),
     }).catch(() => {});
 
-    if (agentId && !agentLaunchedRef.current) {
-      agentLaunchedRef.current = true;
-      agentLaunchQueue.enqueue(terminalId, agentId);
+    if (agentId) {
+      const store = useTerminalStore.getState();
+      const terminal = store.terminals[terminalId];
+      if (!terminal?.agentLaunched) {
+        store.markAgentLaunched(terminalId);
+        agentLaunchQueue.enqueue(terminalId, agentId);
+      }
     }
   }, [terminalId, shell, cwd, agentId]);
 
