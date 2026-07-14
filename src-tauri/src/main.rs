@@ -1,13 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
-mod mcp;
 mod settings;
 mod terminal_engine;
 mod workspace;
 
-use tauri::Manager;
-use tracing::{info, warn};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+    Manager,
+};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::terminal_engine::TerminalManager;
@@ -30,41 +38,91 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = app.get_webview_window("main")
-                .expect("no main window")
-                .set_focus();
+            if let Some(window) = app.get_webview_window("main") {
+                // Se la finestra è nascosta in tray, mostrala prima di mettere a fuoco
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }))
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
-            app.manage(mcp::McpManager::new());
             app.manage(TerminalManager::new());
             let handle = app.handle().clone();
             let manager = app.state::<TerminalManager>();
             manager.start_event_loop(handle);
-            info!("Stato applicazione inizializzato");
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let manager = handle.state::<mcp::McpManager>();
-                match manager.start() {
-                    Ok(pid) => info!("MCP server auto-avviato, PID: {pid}"),
-                    Err(e) => warn!("Auto-avvio MCP server fallito: {e}"),
+            // Flag condiviso: la tray è stata creata con successo?
+            let tray_ok = Arc::new(AtomicBool::new(false));
+            let tray_ok_close = tray_ok.clone();
+
+            // Crea icona della tray di sistema
+            if let Some(default_icon) = app.default_window_icon().cloned() {
+                let show = MenuItemBuilder::with_id("show", "Mostra Traflix Space")
+                    .build(app)?;
+                let quit = PredefinedMenuItem::quit(app, Some("Esci"))?;
+                let menu = MenuBuilder::new(app)
+                    .item(&show)
+                    .separator()
+                    .item(&quit)
+                    .build()?;
+
+                TrayIconBuilder::new()
+                    .icon(default_icon)
+                    .menu(&menu)
+                    .tooltip("Traflix Space")
+                    .on_menu_event(|app, event| {
+                        match event.id.as_ref() {
+                            "show" => {
+                                if let Some(window) = app.get_webview_window("main") {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    })
+                    .build(app)?;
+
+                tray_ok.store(true, Ordering::Release);
+                info!("Tray icon creata con successo");
+            } else {
+                info!("Nessuna icona di default — la finestra si chiuderà normalmente");
+            }
+
+            // Registra on_window_event DOPO aver stabilito se la tray è attiva
+            let win_tray_ok = tray_ok_close.clone();
+            let app_handle = app.handle().clone();
+            let window = app.get_webview_window("main")
+                .expect("main window should exist");
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if win_tray_ok.load(Ordering::Acquire) {
+                        // Tray presente: nascondi la finestra invece di chiudere
+                        api.prevent_close();
+                        if let Some(w) = app_handle.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                    // Se non c'è tray, la chiusura procede normalmente
                 }
             });
 
+            info!("Stato applicazione inizializzato");
+
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                if let Some(manager) = window.try_state::<mcp::McpManager>() {
-                    let _ = manager.stop();
-                }
-            }
-        })
+
         .invoke_handler(tauri::generate_handler![
             workspace::commands::create_workspace,
             workspace::commands::get_workspaces,
@@ -75,10 +133,6 @@ fn main() {
             workspace::commands::navigate_folder,
             workspace::commands::get_default_workspace_path,
             agent::commands::list_agents,
-            mcp::commands::mcp_start,
-            mcp::commands::mcp_stop,
-            mcp::commands::mcp_status,
-            mcp::commands::mcp_logs,
             settings::commands::get_settings,
             settings::commands::set_settings,
             terminal_engine::commands::terminal_spawn,

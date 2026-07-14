@@ -6,9 +6,6 @@ import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { ToastContainer } from "./components/ui/Toast";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { useMcpStore } from "./stores/mcpStore";
-
-const MCP_POLL_INTERVAL = 5000;
 
 function App() {
   useKeyboardShortcuts(undefined, () => {
@@ -16,17 +13,10 @@ function App() {
     if (typeof fn === "function") fn();
   });
   const syncWithBackend = useWorkspaceStore((s) => s.syncWithBackend);
-  const checkMcpStatus = useMcpStore((s) => s.checkStatus);
 
   useEffect(() => {
     syncWithBackend();
   }, [syncWithBackend]);
-
-  useEffect(() => {
-    checkMcpStatus();
-    const interval = setInterval(checkMcpStatus, MCP_POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, [checkMcpStatus]);
 
   return (
     <ErrorBoundary>
