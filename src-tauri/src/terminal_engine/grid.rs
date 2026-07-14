@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::terminal_engine::cell::Cell;
 use crate::terminal_engine::frame::{CursorPosition, FrameSnapshot};
 

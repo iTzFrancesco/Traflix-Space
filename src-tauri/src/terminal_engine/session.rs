@@ -15,12 +15,16 @@ pub struct TerminalSession {
     pub master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     pub reader: Option<Arc<Mutex<Box<dyn std::io::Read + Send>>>>,
     pub writer: Option<Arc<Mutex<Box<dyn std::io::Write + Send>>>>,
+    pub child: Option<Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>,
     pub grid: GridBuffer,
     pub parser: Arc<Mutex<AnsiParser>>,
     pub active: bool,
+    #[allow(dead_code)]
     pub agent_id: Option<String>,
+    #[allow(dead_code)]
     pub exit_code: Option<i32>,
     pub reader_stop: Arc<AtomicBool>,
+    pub exit_emitted: Arc<AtomicBool>,
 }
 
 impl TerminalSession {
@@ -33,12 +37,14 @@ impl TerminalSession {
             master: None,
             reader: None,
             writer: None,
+            child: None,
             grid: GridBuffer::new(cols, rows),
             parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
             exit_code: None,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            exit_emitted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -80,18 +86,22 @@ impl TerminalSession {
             format!("PTY writer error: {}", e)
         })?;
 
+        let child_arc = Arc::new(Mutex::new(child));
+        self.child = Some(child_arc.clone());
         self.pty = Some(Arc::new(Mutex::new(child_killer)));
         self.master = Some(Arc::new(Mutex::new(pair.master)));
         self.reader = Some(Arc::new(Mutex::new(reader)));
         self.writer = Some(Arc::new(Mutex::new(writer)));
 
+        let app_reader = app.clone();
+        let app_watch = app.clone();
         let reader_arc = self.reader.clone().unwrap();
         let parser = self.parser.clone();
         let id = self.id.clone();
-        let _cols = self.grid.cols;
-        let _rows = self.grid.rows;
         let stop = self.reader_stop.clone();
+        let exit_emitted_reader = self.exit_emitted.clone();
 
+        // Thread lettore PTY: legge l'output del processo
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 65536];
             let mut natural_exit = false;
@@ -112,7 +122,10 @@ impl TerminalSession {
                         }
                         Ok(_) => continue,
                         Err(e) => {
-                            warn!(terminal_id = %id, error = %e, "PTY read error");
+                            // Su Windows/ConPTY, ERROR_BROKEN_PIPE è normale quando il
+                            // processo figlio termina — trattalo come EOF naturale
+                            natural_exit = true;
+                            warn!(terminal_id = %id, error = %e, "PTY read error (treating as EOF)");
                             break;
                         }
                     }
@@ -125,7 +138,7 @@ impl TerminalSession {
                     drop(p);
                 }
 
-                let _ = app.emit("terminal-output", TerminalOutput {
+                let _ = app_reader.emit("terminal-output", TerminalOutput {
                     terminal_id: id.clone(),
                     data,
                 });
@@ -133,12 +146,52 @@ impl TerminalSession {
 
             info!(terminal_id = %id, "PTY reader task ended");
 
-            // Emetti evento di exit solo se è stato un exit naturale (non una kill forzata)
-            if natural_exit {
-                let _ = app.emit("terminal-exited", TerminalExited {
+            if natural_exit && exit_emitted_reader.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).is_ok() {
+                let _ = app_reader.emit("terminal-exited", TerminalExited {
                     terminal_id: id.clone(),
                     exit_code: 0,
                 });
+            }
+        });
+
+        // Thread watch del processo figlio: aspetta che il processo termini
+        // e se il reader non ha già emesso l'evento di exit, lo emette qui.
+        // Questo è un fallback per Windows/ConPTY dove il reader potrebbe
+        // non ricevere EOF pulito.
+        let watch_id = self.id.clone();
+        let watch_stop = self.reader_stop.clone();
+        let watch_child = child_arc.clone();
+        let exit_emitted_watch = self.exit_emitted.clone();
+        tokio::task::spawn_blocking(move || {
+            loop {
+                if watch_stop.load(Ordering::Relaxed) {
+                    return; // kill forzata, non emettere evento
+                }
+
+                let exited = {
+                    let mut c = match watch_child.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => return,
+                    };
+                    match c.try_wait() {
+                        Ok(Some(_status)) => true,
+                        Ok(None) => false,
+                        Err(_) => true,
+                    }
+                };
+
+                if exited {
+                    info!(terminal_id = %watch_id, "Child process exited (watch thread)");
+                    if exit_emitted_watch.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).is_ok() {
+                        let _ = app_watch.emit("terminal-exited", TerminalExited {
+                            terminal_id: watch_id.clone(),
+                            exit_code: 0,
+                        });
+                    }
+                    return;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
 
@@ -183,6 +236,7 @@ impl TerminalSession {
         self.pty = None;
         self.reader = None;
         self.writer = None;
+        self.child = None;
         info!(terminal_id = %self.id, "Terminal session cleaned up");
     }
 }

@@ -20,6 +20,7 @@ impl AnsiParser {
         self.parser.screen()
     }
 
+    #[allow(dead_code)]
     pub fn cursor_position(&self) -> CursorPosition {
         let (row, col) = self.parser.screen().cursor_position();
         CursorPosition {
@@ -28,6 +29,7 @@ impl AnsiParser {
         }
     }
 
+    #[allow(dead_code)]
     pub fn window_title(&self) -> Option<String> {
         let title = self.parser.screen().title();
         if title.is_empty() {

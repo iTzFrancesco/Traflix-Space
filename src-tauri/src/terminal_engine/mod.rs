@@ -7,7 +7,7 @@ mod scheduler;
 mod session;
 
 pub use cell::{Cell, Color};
-pub use frame::{CellUpdate, FrameDiff, FrameSnapshot, TerminalExited, TerminalOutput};
+pub use frame::FrameSnapshot;
 pub use session::TerminalSession;
 
 use dashmap::DashMap;
@@ -79,11 +79,10 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+    pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let session = self.sessions.get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.try_read()
-            .map_err(|_| "Terminal session locked".to_string())?;
+        let session = session.read().await;
         session.write(data)
     }
 
@@ -216,6 +215,7 @@ impl TerminalManager {
         info!("Terminal manager event loop ready");
     }
 
+    #[allow(dead_code)]
     pub async fn start_frame_scheduler(&self, app: AppHandle, id: &str) -> Result<(), String> {
         let session = self.sessions.get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
@@ -223,6 +223,7 @@ impl TerminalManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn stop_frame_scheduler(&self, id: &str) {
         self.scheduler.lock().await.stop(id);
     }

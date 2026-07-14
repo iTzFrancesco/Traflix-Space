@@ -10,6 +10,15 @@ use tracing::{error, info, warn};
 
 use super::registry::{WorkspaceConfig, WorkspaceRegistry};
 
+/// Normalizza un path Windows rimuovendo il prefisso `\\?\` (e `\\.\`)
+/// che `std::fs::canonicalize` aggiunge automaticamente.
+fn normalize_windows_path(p: &str) -> String {
+    let p = p.trim_start_matches("\\\\?\\");
+    let p = p.trim_start_matches("\\\\.\\");
+    // `\\?\C:\...` dopo lo strip diventa `C:\...`, già corretto
+    p.to_string()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderNavResult {
@@ -178,6 +187,8 @@ pub async fn navigate_folder(
         format!("Percorso non trovato: {} ({})", resolved.display(), e)
     })?;
 
+    let canonical_str = normalize_windows_path(&canonical.to_string_lossy());
+
     // Leggi il contenuto della directory
     let mut children: Vec<String> = Vec::new();
     if canonical.is_dir() {
@@ -197,12 +208,13 @@ pub async fn navigate_folder(
         children.sort();
     }
 
+    // Anche il parent va normalizzato (viene da canonical)
     let parent = canonical
         .parent()
-        .map(|p| p.to_string_lossy().to_string());
+        .map(|p| normalize_windows_path(&p.to_string_lossy()));
 
     Ok(FolderNavResult {
-        path: canonical.to_string_lossy().to_string(),
+        path: canonical_str,
         exists: true,
         parent,
         children,

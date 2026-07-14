@@ -105,6 +105,7 @@ impl FrameScheduler {
         }
     }
 
+    #[allow(dead_code)]
     pub fn stop_all(&mut self) {
         for (_, token) in self.tokens.drain() {
             token.cancel();

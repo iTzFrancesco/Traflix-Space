@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use tauri::{AppHandle, Manager};
 use tracing::info;
 
@@ -35,7 +37,7 @@ pub async fn terminal_write(
     data: Vec<u8>,
 ) -> Result<(), String> {
     let manager = app.state::<TerminalManager>();
-    manager.write(&terminal_id, &data)
+    manager.write(&terminal_id, &data).await
 }
 
 #[tauri::command]
