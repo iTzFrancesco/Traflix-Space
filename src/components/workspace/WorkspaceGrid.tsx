@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { TerminalPane } from "./TerminalPane";
 import { useTerminalStore } from "../../stores/terminalStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -12,6 +13,11 @@ interface WorkspaceGridProps {
 
 export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTerminal }: WorkspaceGridProps) {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
+
+  // Stabilizza la callback per non invalidare React.memo di TerminalPane ad ogni render
+  const stableOnActivate = useCallback((id: string) => {
+    onActivate(id);
+  }, [onActivate]);
 
   if (terminals.length === 0) {
     return (
@@ -28,7 +34,8 @@ export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTermin
       style={{
         display: "grid",
         flex: 1,
-        gap: "1px",
+        gap: "12px",
+        padding: "12px",
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
         gridTemplateRows: `repeat(${rows}, 1fr)`,
         minHeight: 0,
@@ -44,7 +51,7 @@ export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTermin
           title={term.title}
           agentId={term.agentId}
           isActive={term.id === activeTerminalId}
-          onActivate={onActivate}
+          onActivate={stableOnActivate}
           onClose={onCloseTerminal}
         />
       ))}

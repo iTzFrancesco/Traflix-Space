@@ -43,10 +43,21 @@ export function Sidebar() {
   const closeModal = useUIStore((s) => s.closeModal);
   const wizardOpen = useUIStore((s) => s.wizardOpen);
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
+  const sidebarWidth = useUIStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useUIStore((s) => s.setSidebarWidth);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    workspaceId: string;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(0);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
 
   // Apri il wizard quando il keyboard shortcut (Ctrl+N) imposta activeModal
   useEffect(() => {
@@ -94,15 +105,105 @@ export function Sidebar() {
     setConfirmDeleteId(null);
   };
 
+  // Chiudi menu contestuale al click fuori
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    // Piccolo delay per evitare che lo stesso click che apre lo chiuda
+    const timer = setTimeout(() => {
+      document.addEventListener("click", close);
+      document.addEventListener("contextmenu", close);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("click", close);
+      document.removeEventListener("contextmenu", close);
+    };
+  }, [contextMenu]);
+
+  /* ─── Resize handler: zero re-render durante il drag ─── */
+  const handleResizeMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!sidebarRef.current) return;
+    const handleEl = e.currentTarget as HTMLElement;
+
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = sidebarRef.current.getBoundingClientRect().width;
+    isDraggingRef.current = true;
+    const defaultSnap = sidebarWidth;
+
+    // Feedback visivo immediato via DOM diretto (nessun re-render)
+    const lineEl = handleEl.querySelector<HTMLElement>("[data-resize-line]");
+    const bgEl = handleEl.querySelector<HTMLElement>("[data-resize-bg]");
+    if (lineEl) {
+      lineEl.style.backgroundColor = "var(--color-primary)";
+      lineEl.style.boxShadow = "0 0 6px rgba(232,93,4,0.4)";
+      lineEl.style.width = "2px";
+    }
+    if (bgEl) {
+      bgEl.style.background =
+        "linear-gradient(90deg, transparent, rgba(232,93,4,0.12))";
+      bgEl.style.opacity = "1";
+    }
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - dragStartX.current;
+      const newWidth = Math.max(
+        240,
+        Math.min(500, dragStartWidth.current + delta),
+      );
+      // Liscio — nessun grid snap
+      // Solo snap al default quando ci passi vicino (entro 10px)
+      const finalWidth =
+        Math.abs(newWidth - defaultSnap) <= 10 ? defaultSnap : newWidth;
+      if (sidebarRef.current) {
+        sidebarRef.current.style.width = `${finalWidth}px`;
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+
+      // Reset feedback visivo
+      if (lineEl) {
+        lineEl.style.backgroundColor = "";
+        lineEl.style.boxShadow = "";
+        lineEl.style.width = "";
+      }
+      if (bgEl) {
+        bgEl.style.background = "";
+        bgEl.style.opacity = "";
+      }
+
+      // Salva la larghezza finale solo al rilascio
+      if (sidebarRef.current) {
+        const finalWidth = parseFloat(sidebarRef.current.style.width);
+        if (!isNaN(finalWidth)) {
+          setSidebarWidth(Math.round(finalWidth));
+        }
+      }
+
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
   /* ─── Collapsed mode: compact dots ─── */
   if (isCollapsed) {
     return (
       <>
         <motion.aside
           layout
-          className="flex flex-col items-center h-full select-none py-4 gap-3"
+          className="flex flex-col items-center h-full select-none py-8 gap-6"
           style={{
-            width: "52px",
+            width: "76px",
             backgroundColor: "var(--color-neutral-surface)",
             borderRight: "1px solid var(--color-neutral-border)",
           }}
@@ -111,7 +212,7 @@ export function Sidebar() {
           <motion.div
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200 cursor-pointer"
+            className="w-11 h-11 rounded-xl flex items-center justify-center transition-colors duration-200 cursor-pointer"
             style={{ color: "var(--color-neutral-text-muted)" }}
             onClick={toggleSidebar}
             onMouseEnter={(e) =>
@@ -122,14 +223,14 @@ export function Sidebar() {
             }
             title="Espandi sidebar"
           >
-            <PanelLeftOpen size={15} />
+            <PanelLeftOpen size={20} />
           </motion.div>
 
           {/* New workspace dot */}
           <motion.div
             whileHover={{ scale: 1.15 }}
             whileTap={{ scale: 0.9 }}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors duration-200 cursor-pointer"
+            className="w-11 h-11 rounded-xl flex items-center justify-center transition-colors duration-200 cursor-pointer"
             style={{
               color: "var(--color-primary)",
               backgroundColor: "rgba(232,93,4,0.1)",
@@ -143,17 +244,17 @@ export function Sidebar() {
             }
             title="Nuovo Spazio"
           >
-            <Plus size={14} />
+            <Plus size={19} />
           </motion.div>
 
           {/* Divider */}
           <div
-            className="w-4 h-px"
+            className="w-8 h-px"
             style={{ backgroundColor: "var(--color-neutral-border)" }}
           />
 
           {/* Workspace dots */}
-          <div className="flex flex-col items-center gap-2 flex-1 overflow-y-auto">
+          <div className="flex flex-col items-center gap-5 flex-1 overflow-y-auto">
             {workspaces.map((ws, index) => {
               const color = getWorkspaceColor(index);
               const isActive = activeWorkspaceId === ws.id;
@@ -161,18 +262,35 @@ export function Sidebar() {
               return (
                 <motion.button
                   key={ws.id}
-                  whileHover={{ scale: 1.2 }}
-                  whileTap={{ scale: 0.85 }}
+                  whileHover={{ scale: 1.15 }}
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => setActiveWorkspace(ws.id)}
-                  className="relative w-3 h-3 rounded-full transition-all duration-200"
+                  className="relative w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200"
                   style={{
-                    backgroundColor: color,
-                    boxShadow: isActive
-                      ? `0 0 0 2px var(--color-neutral-surface), 0 0 0 3.5px ${color}`
-                      : "none",
+                    backgroundColor: isActive
+                      ? `${color}18`
+                      : "transparent",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive)
+                      e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive)
+                      e.currentTarget.style.backgroundColor = "transparent";
                   }}
                   title={ws.name}
-                />
+                >
+                  <div
+                    className="w-5 h-5 rounded-full transition-all duration-200"
+                    style={{
+                      backgroundColor: color,
+                      boxShadow: isActive
+                        ? `0 0 0 2.5px var(--color-neutral-surface), 0 0 0 4.5px ${color}`
+                        : `0 0 0 0px var(--color-neutral-surface), 0 0 0 0px ${color}`,
+                    }}
+                  />
+                </motion.button>
               );
             })}
           </div>
@@ -187,20 +305,44 @@ export function Sidebar() {
   return (
     <>
       <motion.aside
-        layout
-        className="flex flex-col w-sidebar h-full select-none"
+        ref={sidebarRef}
+        layout={false}
+        className="flex flex-col h-full select-none relative"
         style={{
+          width: `${sidebarWidth}px`,
+          minWidth: "240px",
           backgroundColor: "var(--color-neutral-surface)",
           borderRight: "1px solid var(--color-neutral-border)",
         }}
       >
+        {/* Resize handle */}
+        <div
+          onMouseDown={handleResizeMouseDown}
+          className="absolute right-0 top-0 bottom-0 w-2 z-20 cursor-col-resize group"
+        >
+          <div
+            data-resize-line
+            className="absolute inset-y-2 right-0 w-px transition-all duration-150 group-hover:w-0.5"
+            style={{
+              backgroundColor: "var(--color-neutral-border)",
+            }}
+          />
+          <div
+            data-resize-bg
+            className="absolute inset-y-0 right-0 w-full opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+            style={{
+              background:
+                "linear-gradient(90deg, transparent, rgba(255,255,255,0.04))",
+            }}
+          />
+        </div>
         {/* Top section - Collapse button + New workspace */}
-        <div className="flex items-center gap-1.5 px-4 pt-5 pb-2">
+        <div className="flex items-center gap-3 px-5 pt-6 pb-4">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={toggleSidebar}
-            className="p-1.5 rounded-lg transition-colors duration-200 shrink-0"
+            className="p-6 rounded-xl transition-colors duration-200 shrink-0"
             style={{ color: "var(--color-neutral-text-muted)" }}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
@@ -210,14 +352,14 @@ export function Sidebar() {
             }
             title="Comprimi sidebar"
           >
-            <PanelLeftClose size={15} />
+            <PanelLeftClose size={24} />
           </motion.button>
 
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-[0.8125rem] font-medium rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-3 px-5 py-7 text-[1.0625rem] font-medium rounded-xl transition-all duration-200"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
               color: "var(--color-neutral-text-dim)",
@@ -232,17 +374,17 @@ export function Sidebar() {
               e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
             }}
           >
-            <Plus size={15} style={{ color: "var(--color-primary)" }} />
+            <Plus size={22} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
         </div>
 
         {/* Workspaces section */}
-        <div className="flex-1 overflow-y-auto px-3 pt-4 pb-4">
+        <div className="flex-1 overflow-y-auto px-4 pt-7 pb-6">
           {/* Section header */}
-          <div className="flex items-center gap-2 px-2 mb-3">
+          <div className="flex items-center gap-2 px-2 mb-5">
             <span
-              className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em]"
+              className="text-[0.8125rem] font-semibold uppercase tracking-[0.12em]"
               style={{
                 fontFamily: "var(--font-display)",
                 color: "var(--color-neutral-text-muted)",
@@ -253,7 +395,7 @@ export function Sidebar() {
           </div>
 
           {/* Workspace list */}
-          <div className="space-y-1">
+          <div className="space-y-3">
             <AnimatePresence mode="popLayout">
               {workspaces.map((ws, index) => {
                 const color = getWorkspaceColor(index);
@@ -278,18 +420,18 @@ export function Sidebar() {
                     {isRenaming ? (
                       /* Inline rename mode */
                       <div
-                        className="flex items-center gap-2 px-2.5 py-2 rounded-xl"
+                        className="flex items-center gap-3.5 px-4 py-5 rounded-xl"
                         style={{
                           backgroundColor: "rgba(255,255,255,0.06)",
-                          borderLeft: `2.5px solid ${color}`,
+                          borderLeft: `4px solid ${color}`,
                         }}
                       >
                         <div
-                          className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
+                          className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
                           style={{ backgroundColor: `${color}18` }}
                         >
                           <div
-                            className="w-2.5 h-2.5 rounded"
+                            className="w-5 h-5 rounded"
                             style={{ backgroundColor: color }}
                           />
                         </div>
@@ -303,12 +445,12 @@ export function Sidebar() {
                             if (e.key === "Escape") cancelRename();
                           }}
                           onBlur={() => confirmRename(ws.id)}
-                          className="flex-1 bg-transparent text-[0.8125rem] font-medium outline-none border-b border-white/20 pb-0.5"
+                          className="flex-1 bg-transparent text-[1rem] font-medium outline-none border-b border-white/20 pb-0.5"
                           style={{ color: "var(--color-neutral-text)" }}
                         />
                         <button
                           onClick={() => confirmRename(ws.id)}
-                          className="p-1 rounded-md transition-colors"
+                          className="p-2 rounded-lg transition-colors"
                           style={{ color: "#10b981" }}
                           onMouseEnter={(e) =>
                             (e.currentTarget.style.backgroundColor =
@@ -318,11 +460,11 @@ export function Sidebar() {
                             (e.currentTarget.style.backgroundColor = "transparent")
                           }
                         >
-                          <Check size={13} />
+                          <Check size={18} />
                         </button>
                         <button
                           onClick={cancelRename}
-                          className="p-1 rounded-md transition-colors"
+                          className="p-2 rounded-lg transition-colors"
                           style={{ color: "var(--color-neutral-text-muted)" }}
                           onMouseEnter={(e) =>
                             (e.currentTarget.style.backgroundColor =
@@ -332,27 +474,29 @@ export function Sidebar() {
                             (e.currentTarget.style.backgroundColor = "transparent")
                           }
                         >
-                          <X size={13} />
+                          <X size={18} />
                         </button>
                       </div>
                     ) : isDeleting ? (
                       /* Delete confirmation mode */
                       <div
-                        className="flex items-center gap-2 px-2.5 py-2 rounded-xl"
+                        className="flex items-center gap-3.5 px-4 py-5 rounded-xl"
                         style={{
                           backgroundColor: "rgba(239,68,68,0.08)",
-                          borderLeft: `2.5px solid #ef4444`,
+                          borderLeft: `4px solid #ef4444`,
                         }}
                       >
+                        {/* Spacer invisibile per matchare l'altezza dell'icona workspace (48px) */}
+                        <div className="w-0 h-12 shrink-0" aria-hidden="true" />
                         <span
-                          className="flex-1 text-[0.75rem] truncate"
+                          className="flex-1 text-[0.9375rem] truncate"
                           style={{ color: "var(--color-neutral-text-dim)" }}
                         >
                           Eliminare "{ws.name}"?
                         </span>
                         <button
                           onClick={() => handleDelete(ws.id)}
-                          className="px-2 py-0.5 rounded-md text-[0.6875rem] font-medium transition-colors"
+                          className="px-5 py-2 rounded-lg text-[0.875rem] font-medium transition-colors"
                           style={{
                             backgroundColor: "rgba(239,68,68,0.2)",
                             color: "#ef4444",
@@ -370,7 +514,7 @@ export function Sidebar() {
                         </button>
                         <button
                           onClick={() => setConfirmDeleteId(null)}
-                          className="px-2 py-0.5 rounded-md text-[0.6875rem] font-medium transition-colors"
+                          className="px-5 py-2 rounded-lg text-[0.875rem] font-medium transition-colors"
                           style={{
                             backgroundColor: "rgba(255,255,255,0.06)",
                             color: "var(--color-neutral-text-muted)",
@@ -393,17 +537,25 @@ export function Sidebar() {
                         role="button"
                         tabIndex={0}
                         onClick={() => setActiveWorkspace(ws.id)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setContextMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            workspaceId: ws.id,
+                          });
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             setActiveWorkspace(ws.id);
                           }
                         }}
-                        className="flex items-center gap-2.5 w-full px-2.5 py-2.5 rounded-xl transition-all duration-200 group cursor-pointer"
+                        className="flex items-center gap-3.5 w-full px-4 py-5 rounded-xl transition-all duration-200 group cursor-pointer"
                         style={{
                           backgroundColor: isActive
                             ? "rgba(255,255,255,0.06)"
                             : "transparent",
-                          borderLeft: `2.5px solid ${isActive ? color : "transparent"}`,
+                          borderLeft: `4px solid ${isActive ? color : "transparent"}`,
                         }}
                         onMouseEnter={(e) => {
                           if (!isActive)
@@ -417,19 +569,19 @@ export function Sidebar() {
                       >
                         {/* Colored square icon */}
                         <div
-                          className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"
+                          className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"
                           style={{ backgroundColor: `${color}18` }}
                         >
                           <div
-                            className="w-2.5 h-2.5 rounded"
+                            className="w-5 h-5 rounded"
                             style={{ backgroundColor: color }}
                           />
                         </div>
 
                         {/* Workspace name */}
                         <span
-                          className={`truncate text-[0.8125rem] flex-1 text-left ${
-                            isActive ? "font-medium" : ""
+                          className={`truncate text-[1rem] flex-1 text-left ${
+                            isActive ? "font-semibold" : ""
                           }`}
                           style={{
                             color: isActive
@@ -443,7 +595,7 @@ export function Sidebar() {
                         {/* Terminal count badge */}
                         {terminalCount > 0 && (
                           <span
-                            className="text-[0.625rem] font-mono font-medium px-1.5 py-0.5 rounded-md shrink-0 transition-opacity duration-200"
+                            className="text-[0.8125rem] font-mono font-medium px-3 py-1 rounded-lg shrink-0 transition-opacity duration-200"
                             style={{
                               backgroundColor: `${color}15`,
                               color: color,
@@ -454,14 +606,14 @@ export function Sidebar() {
                         )}
 
                         {/* Action buttons - visible on hover */}
-                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                        <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                           {/* Rename button */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               startRename(ws.id, ws.name);
                             }}
-                            className="p-1 rounded-md transition-colors"
+                            className="p-2.5 rounded-xl transition-colors"
                             style={{ color: "var(--color-neutral-text-muted)" }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.backgroundColor =
@@ -476,7 +628,7 @@ export function Sidebar() {
                             }}
                             title="Rinomina workspace"
                           >
-                            <Pencil size={12} />
+                            <Pencil size={18} />
                           </button>
 
                           {/* Delete button */}
@@ -485,7 +637,7 @@ export function Sidebar() {
                               e.stopPropagation();
                               setConfirmDeleteId(ws.id);
                             }}
-                            className="p-1 rounded-md transition-colors"
+                            className="p-2.5 rounded-xl transition-colors"
                             style={{ color: "var(--color-neutral-text-muted)" }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.backgroundColor =
@@ -499,7 +651,7 @@ export function Sidebar() {
                             }}
                             title="Elimina workspace"
                           >
-                            <Trash2 size={12} />
+                            <Trash2 size={18} />
                           </button>
                         </div>
                       </motion.div>
@@ -513,7 +665,7 @@ export function Sidebar() {
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="px-3 py-8 text-[0.8125rem] text-center"
+                className="px-4 py-16 text-[1rem] text-center"
                 style={{ color: "var(--color-neutral-text-muted)" }}
               >
                 Nessun workspace.
@@ -524,6 +676,56 @@ export function Sidebar() {
       </motion.aside>
 
       <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+
+      {/* Menu contestuale tasto destro */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 py-2.5 rounded-xl shadow-2xl"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            minWidth: "210px",
+            backgroundColor: "var(--color-neutral-elevated)",
+            border: "1px solid var(--color-neutral-border)",
+          }}
+        >
+          <button
+            onClick={() => {
+              const ws = workspaces.find((w) => w.id === contextMenu.workspaceId);
+              if (ws) startRename(ws.id, ws.name);
+              setContextMenu(null);
+            }}
+            className="w-full flex items-center gap-3.5 px-5 py-3 text-[0.9375rem] text-left transition-colors"
+            style={{ color: "var(--color-neutral-text-dim)" }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.backgroundColor = "transparent")
+            }
+          >
+            <Pencil size={16} />
+            Rinomina
+          </button>
+          <button
+            onClick={() => {
+              setConfirmDeleteId(contextMenu.workspaceId);
+              setContextMenu(null);
+            }}
+            className="w-full flex items-center gap-3.5 px-5 py-3 text-[0.9375rem] text-left transition-colors"
+            style={{ color: "#ef4444" }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.backgroundColor = "rgba(239,68,68,0.1)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.backgroundColor = "transparent")
+            }
+          >
+            <Trash2 size={16} />
+            Elimina
+          </button>
+        </div>
+      )}
     </>
   );
 }

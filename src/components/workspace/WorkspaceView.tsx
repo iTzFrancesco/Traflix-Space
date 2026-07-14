@@ -39,6 +39,10 @@ export function WorkspaceView() {
   loadedMapRef.current = loadedMap;
   const loadingRef = useRef<Set<string>>(new Set());
   const openOrderRef = useRef<string[]>([]);
+  // Coda di serializzazione per la chiusura terminali — previene race condition
+  const closeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Ref sincrono della lista terminali (aggiornato subito, non dopo re-render)
+  const workspaceTerminalsRef = useRef<TerminalConfig[]>([]);
 
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === s.activeWorkspaceId),
@@ -140,68 +144,88 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Gestisce la chiusura di un terminale: kill backend, rimuovi da config, aggiorna layout
-  const handleCloseTerminal = useCallback(async (terminalId: string) => {
+  // Gestisce la chiusura di un terminale: serializzata per evitare race condition.
+  // La coda (closeQueueRef) garantisce che due chiusure consecutive non leggano
+  // lo stesso stato stale, e workspaceTerminalsRef viene aggiornato
+  // sincronicamente dopo ogni filtro, prima della prossima operazione in coda.
+  const handleCloseTerminal = useCallback((terminalId: string) => {
     const workspaceId = activeWorkspaceId;
     if (!workspaceId) return;
 
-    // 1. Kill backend session
-    await invokeWithTimeout(
-      () => invoke("terminal_kill", { terminalId }),
-      5000,
-    ).catch(() => {});
+    closeQueueRef.current = closeQueueRef.current
+      .then(async () => {
+        // Guard: se il workspace non è più attivo, ignora
+        if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return;
 
-    // 2. Rimuovi dal terminal store
-    useTerminalStore.getState().removeTerminal(terminalId);
+        // 1. Kill backend session
+        await invokeWithTimeout(
+          () => invoke("terminal_kill", { terminalId }),
+          5000,
+        ).catch(() => {});
 
-    // 3. Aggiorna loadedMap e workspace config
-    const current = loadedMapRef.current.get(workspaceId);
-    if (!current) return;
+        // 2. Rimuovi dal terminal store
+        useTerminalStore.getState().removeTerminal(terminalId);
 
-    const newTerminals = current.terminals.filter((t) => t.id !== terminalId);
-    const newLayout = computeLayout(newTerminals.length);
+        // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione)
+        //    NON da loadedMapRef.current, che potrebbe essere stale
+        const currentTerminals = workspaceTerminalsRef.current;
+        const newTerminals = currentTerminals.filter((t) => t.id !== terminalId);
+        const newLayout = computeLayout(newTerminals.length);
 
-    // 4. Aggiorna backend
-    const updatedConfig = {
-      id: workspaceId,
-      name: current.name,
-      rootPath: current.rootPath,
-      layout: newLayout,
-      terminals: newTerminals,
-      createdAt: current.createdAt,
-      updatedAt: new Date().toISOString(),
-    };
+        // Aggiorna il ref sincrono IMMEDIATAMENTE (prima di await)
+        workspaceTerminalsRef.current = newTerminals;
 
-    try {
-      await invokeWithTimeout(
-        () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
-        10000,
-      );
-    } catch (err) {
-      console.error("Errore aggiornamento workspace:", err);
-    }
+        // 4. Aggiorna backend
+        const currentWs = loadedMapRef.current.get(workspaceId);
+        if (currentWs) {
+          const updatedConfig = {
+            id: workspaceId,
+            name: currentWs.name,
+            rootPath: currentWs.rootPath,
+            layout: newLayout,
+            terminals: newTerminals,
+            createdAt: currentWs.createdAt,
+            updatedAt: new Date().toISOString(),
+          };
+          try {
+            await invokeWithTimeout(
+              () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
+              10000,
+            );
+          } catch (err) {
+            console.error("Errore aggiornamento workspace:", err);
+          }
+        }
 
-    // 5. Aggiorna loadedMap
-    setLoadedMap((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(workspaceId);
-      if (existing) {
-        next.set(workspaceId, {
-          ...existing,
-          terminals: newTerminals,
-          layout: newLayout,
+        // 5. Aggiorna loadedMap
+        setLoadedMap((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(workspaceId);
+          if (existing) {
+            next.set(workspaceId, {
+              ...existing,
+              terminals: newTerminals,
+              layout: newLayout,
+            });
+          }
+          return new Map(next);
         });
-      }
-      return new Map(next);
-    });
 
-    // 6. Aggiorna workspace store (per la sidebar)
-    const agentCount = newTerminals.filter((t) => t.agentId).length;
-    useWorkspaceStore.getState().updateWorkspace(workspaceId, {
-      terminalCount: newTerminals.length,
-      agentCount,
-    });
+        // 6. Aggiorna workspace store (per la sidebar)
+        const agentCount = newTerminals.filter((t) => t.agentId).length;
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: newTerminals.length,
+          agentCount,
+        });
+      })
+      .catch((err) => {
+        console.error("Close queue error:", err);
+      });
   }, [activeWorkspaceId]);
+
+  const handleActivateTerminal = useCallback((id: string) => {
+    useTerminalStore.getState().setActiveTerminal(id);
+  }, []);
 
   // Esponi handleCloseTerminal globalmente per la keyboard shortcut
   const closeTerminalRef = useRef(handleCloseTerminal);
@@ -216,6 +240,123 @@ export function WorkspaceView() {
     };
     return () => {
       delete (window as any).__traflix_close_terminal;
+    };
+  }, []);
+
+  // Aggiunge un nuovo terminale al workspace corrente.
+  // Usa la stessa coda di closeQueueRef per evitare race con le chiusure.
+  const handleAddTerminal = useCallback(() => {
+    const workspaceId = activeWorkspaceId;
+    if (!workspaceId) return;
+
+    closeQueueRef.current = closeQueueRef.current
+      .then(async () => {
+        // Guard: se il workspace non è più attivo, ignora
+        if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return;
+
+        const currentWs = loadedMapRef.current.get(workspaceId);
+        if (!currentWs) return;
+
+        const newId = crypto.randomUUID();
+        const newTerminal: TerminalConfig = {
+          id: newId,
+          shell: "powershell.exe",
+          agentId: null,
+          command: null,
+          cwd: currentWs.rootPath,
+          title: "Terminale",
+        };
+
+        // 1. Spawn backend
+        try {
+          await invokeWithTimeout(
+            () =>
+              invoke("terminal_spawn", {
+                terminalId: newId,
+                shell: newTerminal.shell,
+                cwd: newTerminal.cwd,
+                cols: 80,
+                rows: 24,
+              }),
+            10000,
+          );
+        } catch (err) {
+          console.error("Errore spawn terminale:", err);
+          return;
+        }
+
+        // 2. Registra nel terminal store
+        useTerminalStore.getState().addTerminal({
+          id: newId,
+          workspaceId,
+          shell: newTerminal.shell,
+          cwd: newTerminal.cwd,
+          title: newTerminal.title,
+          agent: null,
+        });
+
+        // 3. Aggiungi alla lista e ricalcola layout (ref sincrono)
+        const currentTerminals = workspaceTerminalsRef.current;
+        const newTerminals = [...currentTerminals, newTerminal];
+        const newLayout = computeLayout(newTerminals.length);
+        workspaceTerminalsRef.current = newTerminals;
+
+        // 4. Aggiorna backend
+        try {
+          await invokeWithTimeout(
+            () =>
+              invoke("update_workspace", {
+                id: workspaceId,
+                config: {
+                  id: workspaceId,
+                  name: currentWs.name,
+                  rootPath: currentWs.rootPath,
+                  layout: newLayout,
+                  terminals: newTerminals,
+                  createdAt: currentWs.createdAt,
+                  updatedAt: new Date().toISOString(),
+                },
+              }),
+            10000,
+          );
+        } catch (err) {
+          console.error("Errore aggiornamento workspace:", err);
+        }
+
+        // 5. Aggiorna loadedMap
+        setLoadedMap((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(workspaceId);
+          if (existing) {
+            next.set(workspaceId, {
+              ...existing,
+              terminals: newTerminals,
+              layout: newLayout,
+            });
+          }
+          return new Map(next);
+        });
+
+        // 6. Aggiorna workspace store + attiva il nuovo terminale
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: newTerminals.length,
+        });
+        useTerminalStore.getState().setActiveTerminal(newId);
+      })
+      .catch((err) => {
+        console.error("Add queue error:", err);
+      });
+  }, [activeWorkspaceId]);
+
+  // Esponi handleAddTerminal globalmente per la shortcut Shift+Alt+D
+  const addTerminalRef = useRef(handleAddTerminal);
+  addTerminalRef.current = handleAddTerminal;
+  useEffect(() => {
+    (window as any).__traflix_add_terminal = () => {
+      addTerminalRef.current();
+    };
+    return () => {
+      delete (window as any).__traflix_add_terminal;
     };
   }, []);
 
@@ -244,6 +385,16 @@ export function WorkspaceView() {
       return changed ? next : prev;
     });
   }, [workspaces]);
+
+  // Sincronizza il ref workspaceTerminalsRef quando loadedMap cambia
+  useEffect(() => {
+    if (activeWorkspaceId) {
+      const loaded = loadedMap.get(activeWorkspaceId);
+      if (loaded) {
+        workspaceTerminalsRef.current = loaded.terminals;
+      }
+    }
+  }, [loadedMap, activeWorkspaceId]);
 
   // Empty state — nessun workspace aperto
   if (!workspace && !activeWorkspaceId) {
@@ -298,31 +449,74 @@ export function WorkspaceView() {
         }}
       >
         {/* Header del workspace attivo */}
-        <div style={{ padding: "12px 20px 8px", flexShrink: 0 }}>
-          <h1
+        <div
+          style={{
+            padding: "12px 20px 8px",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <h1
+              style={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 700,
+                fontSize: "16px",
+                color: "#f4f4f5",
+                letterSpacing: "-0.01em",
+              }}
+            >
+              {activeLoaded.name}
+            </h1>
+            <p
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "11px",
+                color: "#52525b",
+                marginTop: "2px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {activeLoaded.rootPath}
+            </p>
+          </div>
+          <button
+            onClick={handleAddTerminal}
+            title="Aggiungi terminale (Shift+Alt+D)"
             style={{
-              fontFamily: "var(--font-display)",
-              fontWeight: 700,
-              fontSize: "16px",
-              color: "#f4f4f5",
-              letterSpacing: "-0.01em",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "36px",
+              height: "36px",
+              borderRadius: "10px",
+              border: "1px solid rgba(255,255,255,0.06)",
+              background: "rgba(255,255,255,0.03)",
+              color: "#a1a1aa",
+              cursor: "pointer",
+              fontSize: "18px",
+              lineHeight: 1,
+              transition: "all 0.15s ease",
+              flexShrink: 0,
+              marginTop: "-4px",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(232,93,4,0.15)";
+              e.currentTarget.style.borderColor = "rgba(232,93,4,0.3)";
+              e.currentTarget.style.color = "#e85d04";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+              e.currentTarget.style.color = "#a1a1aa";
             }}
           >
-            {activeLoaded.name}
-          </h1>
-          <p
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              color: "#52525b",
-              marginTop: "2px",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {activeLoaded.rootPath}
-          </p>
+            +
+          </button>
         </div>
 
         {/* Solo il workspace attivo viene renderizzato */}
@@ -340,9 +534,7 @@ export function WorkspaceView() {
               rows={activeLoaded.layout.rows}
               cols={activeLoaded.layout.cols}
               terminals={activeLoaded.terminals}
-              onActivate={(id) => {
-                useTerminalStore.getState().setActiveTerminal(id);
-              }}
+              onActivate={handleActivateTerminal}
               onCloseTerminal={handleCloseTerminal}
             />
           </div>
