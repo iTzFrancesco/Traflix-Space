@@ -56,4 +56,13 @@ export const AGENTS: AgentDefinition[] = [
     icon: "Bot",
     color: "#06b6d4",
   },
+  {
+    id: "pi",
+    name: "PI",
+    description: "Agente AI PI",
+    command: "pi",
+    args: [],
+    icon: "Bot",
+    color: "#a855f7",
+  },
 ];

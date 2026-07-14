@@ -108,15 +108,28 @@ impl TerminalManager {
 
     pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
         let mut active_id: Option<String> = None;
+
+        // Fase 1: aggiorna flag active su tutte le sessioni
         for entry in self.sessions.iter() {
+            let key = entry.key().clone();
             let mut session = entry.value().write().await;
-            if Some(entry.key().as_str()) == id {
+            if Some(key.as_str()) == id {
                 session.active = true;
-                active_id = Some(entry.key().clone());
-                self.scheduler.lock().await.start(app.clone(), entry.value().clone());
+                active_id = Some(key);
             } else {
                 session.active = false;
-                self.scheduler.lock().await.stop(entry.key());
+            }
+        }
+
+        // Fase 2: gestisci scheduler — colleziona Arc prima per evitare di tenere shard lock across await
+        let entries: Vec<(String, Arc<RwLock<TerminalSession>>)> = self.sessions.iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        for (key, session_arc) in &entries {
+            if Some(key.as_str()) == id {
+                self.scheduler.lock().await.start(app.clone(), session_arc.clone(), key.clone()).await;
+            } else {
+                self.scheduler.lock().await.stop(key);
             }
         }
 
@@ -206,7 +219,7 @@ impl TerminalManager {
     pub async fn start_frame_scheduler(&self, app: AppHandle, id: &str) -> Result<(), String> {
         let session = self.sessions.get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        self.scheduler.lock().await.start(app, session.value().clone());
+        self.scheduler.lock().await.start(app, session.value().clone(), id.to_string()).await;
         Ok(())
     }
 

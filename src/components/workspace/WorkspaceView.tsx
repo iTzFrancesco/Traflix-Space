@@ -67,6 +67,7 @@ export function WorkspaceView() {
 
         // Registra i terminali nel terminalStore
         const terminalStore = useTerminalStore.getState();
+        let firstId: string | null = null;
         for (const tc of fullConfig.terminals || []) {
           if (!terminalStore.terminals[tc.id]) {
             terminalStore.addTerminal({
@@ -78,6 +79,12 @@ export function WorkspaceView() {
               agent: tc.agentId || null,
             });
           }
+          if (!firstId) firstId = tc.id;
+        }
+
+        // Auto-attiva il primo terminale
+        if (firstId) {
+          terminalStore.setActiveTerminal(firstId);
         }
 
         setLoadedMap((prev) => {

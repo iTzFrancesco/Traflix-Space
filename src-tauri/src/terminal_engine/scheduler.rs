@@ -22,10 +22,7 @@ impl FrameScheduler {
         }
     }
 
-    pub fn start(&mut self, app: AppHandle, session: Arc<RwLock<TerminalSession>>) {
-        let id = { let s = session.blocking_read(); s.id.clone() };
-
-        // Ferma eventuale task esistente per questo terminale
+    pub async fn start(&mut self, app: AppHandle, session: Arc<RwLock<TerminalSession>>, id: String) {
         self.stop(&id);
 
         let token = CancellationToken::new();

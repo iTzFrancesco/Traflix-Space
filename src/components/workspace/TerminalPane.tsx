@@ -1,12 +1,11 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { TerminalSnapshot } from "../terminal/TerminalSnapshot";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
-import type { TerminalOutput, FrameSnapshot } from "../terminal/types";
+import type { TerminalOutput } from "../terminal/types";
 import "xterm/css/xterm.css";
 
 const STOCK_THEME = {
@@ -33,22 +32,6 @@ const STOCK_THEME = {
   brightCyan: "#29b8db",
   brightWhite: "#e5e5e5",
 };
-
-function renderSnapshotToTerm(term: Terminal, snapshot: FrameSnapshot) {
-  term.reset();
-  if (!snapshot.cells) return;
-  for (let r = 0; r < snapshot.cells.length && r < snapshot.rows; r++) {
-    const row = snapshot.cells[r];
-    if (!row) continue;
-    let line = "";
-    for (let c = 0; c < row.length && c < snapshot.cols; c++) {
-      const cell = row[c];
-      line += cell?.ch || " ";
-    }
-    term.write(line + "\r\n");
-  }
-  term.write(`\x1b[${snapshot.cursor.row + 1};${snapshot.cursor.col + 1}H`);
-}
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -90,16 +73,16 @@ const CONTAINER_STYLE = {
 };
 
 export const TerminalPane = memo(function TerminalPane({
-  terminalId, shell, cwd, title, agentId, isActive, onActivate,
+  terminalId, shell, cwd, title: _title, agentId, isActive, onActivate,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
+  const agentLaunchedRef = useRef(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
-  const [snapshot, setSnapshot] = useState<FrameSnapshot | null>(null);
 
   // 1. Crea xterm al mount, aprilo nel container (sempre nel DOM), distruggi al unmount
   useEffect(() => {
@@ -140,7 +123,24 @@ export const TerminalPane = memo(function TerminalPane({
     };
   }, []);
 
-  // 2. Gestione stato attivo: fit (dopo layout) + focus + spawn PTY + restore snapshot
+  // 2. Spawn PTY + launch agente al mount (senza click)
+  useEffect(() => {
+    const term = xtermRef.current;
+    if (!term) return;
+    if (spawnedRef.current) return;
+    spawnedRef.current = true;
+
+    invoke("terminal_spawn", {
+      terminalId, shell, cwd, cols: Math.max(term.cols, 80), rows: Math.max(term.rows, 24),
+    }).catch(() => {});
+
+    if (agentId && !agentLaunchedRef.current) {
+      agentLaunchedRef.current = true;
+      agentLaunchQueue.enqueue(terminalId, agentId);
+    }
+  }, [terminalId, shell, cwd, agentId]);
+
+  // 3. Focus + active state quando cliccato
   useEffect(() => {
     const term = xtermRef.current;
     const fitAddon = fitAddonRef.current;
@@ -152,40 +152,12 @@ export const TerminalPane = memo(function TerminalPane({
         term.focus();
       });
 
-      // Notifica il backend che questo terminale è attivo
       invoke("terminal_set_active", { terminalId }).catch(() => {});
-
-      // Spawn PTY solo al primo attivamento
-      if (!spawnedRef.current) {
-        spawnedRef.current = true;
-        invoke("terminal_spawn", {
-          terminalId, shell, cwd, cols: term.cols, rows: term.rows,
-        }).catch(() => {});
-      }
-
-      // Restore snapshot se disponibile
-      if (snapshot) {
-        renderSnapshotToTerm(term, snapshot);
-        setSnapshot(null);
-      }
-
-      // Agent launch
-      if (agentId) {
-        agentLaunchQueue.enqueue(terminalId, agentId);
-      }
     }
-  }, [isActive, terminalId, shell, cwd, agentId, snapshot]);
+  }, [isActive, terminalId]);
 
-  // 3. Listener output terminale — solo quando attivo
+  // 4. Listener output terminale — sempre attivo
   useEffect(() => {
-    if (!isActive) {
-      // Cattura snapshot quando si disattiva
-      invoke<FrameSnapshot>("terminal_get_snapshot", { terminalId })
-        .then((s) => { if (s && s.cells) setSnapshot(s); })
-        .catch(() => {});
-      return;
-    }
-
     let cancelled = false;
 
     (async () => {
@@ -204,12 +176,10 @@ export const TerminalPane = memo(function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [isActive, terminalId]);
+  }, [terminalId]);
 
-  // 4. Resize handler
+  // 4. Resize handler — sempre attivo
   useEffect(() => {
-    if (!isActive) return;
-
     const handleResize = () => {
       const term = xtermRef.current;
       const fitAddon = fitAddonRef.current;
@@ -219,7 +189,6 @@ export const TerminalPane = memo(function TerminalPane({
         .catch(() => {});
     };
 
-    // Fit iniziale dopo che il DOM è stabilizzato
     const raf = requestAnimationFrame(() => handleResize());
 
     window.addEventListener("resize", handleResize);
@@ -227,23 +196,31 @@ export const TerminalPane = memo(function TerminalPane({
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", handleResize);
     };
-  }, [isActive, terminalId]);
+  }, [terminalId]);
 
   useTerminalInput(terminalId, containerRef);
 
-  const handleActivate = useCallback(() => {
-    onActivate(terminalId);
+  // Attiva il terminale al click — in capture phase per bypassare stopPropagation di xterm
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  useEffect(() => {
+    const el = containerRef.current?.parentElement;
+    if (!el) return;
+    const handleMouseDown = () => {
+      if (!isActiveRef.current) {
+        onActivate(terminalId);
+      }
+    };
+    el.addEventListener("mousedown", handleMouseDown, { capture: true });
+    return () => el.removeEventListener("mousedown", handleMouseDown, { capture: true });
   }, [terminalId, onActivate]);
 
   return (
     <div
       style={isActive ? ACTIVE_STYLE : INACTIVE_STYLE}
-      onClick={isActive ? undefined : handleActivate}
       tabIndex={-1}
-      role="button"
     >
-      <div ref={containerRef} style={{ ...CONTAINER_STYLE, display: isActive ? '' : 'none' }} />
-      {!isActive && <TerminalSnapshot snapshot={snapshot} title={title} />}
+      <div ref={containerRef} style={CONTAINER_STYLE} />
     </div>
   );
 });

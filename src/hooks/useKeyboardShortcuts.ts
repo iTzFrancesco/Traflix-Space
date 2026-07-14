@@ -14,17 +14,15 @@ interface ShortcutDef {
 }
 
 export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
-  // Selector stabili: solo le action, non lo stato
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const openModal = useUIStore((s) => s.openModal);
+  const setWizardOpen = useUIStore((s) => s.setWizardOpen);
 
-  // Ref per stato mutabile — leggiamo il valore fresco nel handler
   const workspacesRef = useRef(useWorkspaceStore.getState().workspaces);
   const activeWorkspaceIdRef = useRef(useWorkspaceStore.getState().activeWorkspaceId);
   const extraShortcutsRef = useRef(extraShortcuts);
   extraShortcutsRef.current = extraShortcuts;
 
-  // Sottoscrivi i cambiamenti di stato nel ref
   useEffect(() => {
     const unsub = useWorkspaceStore.subscribe((s) => {
       workspacesRef.current = s.workspaces;
@@ -33,13 +31,11 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
     return unsub;
   }, []);
 
-  // Listener unico: legge stato fresco dai refs, mai re-registrato
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const workspaces = workspacesRef.current;
       const activeWorkspaceId = activeWorkspaceIdRef.current;
 
-      // Shortcut default
       const defaults: ShortcutDef[] = [
         {
           key: "n",
@@ -57,6 +53,13 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
             setActiveWorkspace(workspaces[nextIndex].id);
           },
           description: "Prossimo workspace",
+        },
+        {
+          key: "d",
+          ctrl: true,
+          shift: true,
+          handler: () => setWizardOpen(true),
+          description: "Nuovo terminale (wizard)",
         },
       ];
 
