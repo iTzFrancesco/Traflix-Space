@@ -42,13 +42,20 @@ impl TerminalManager {
         } else {
             config.shell.clone()
         };
-        let cwd = if config.cwd.is_empty() {
+        let cwd_raw = if config.cwd.is_empty() {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string())
         } else {
             config.cwd.clone()
         };
+        // Normalizza il path rimuovendo il prefisso \\\?\ (extended-length path di Windows)
+        // che std::env::current_dir() o std::fs::canonicalize() aggiungono automaticamente.
+        // Il prefisso \\\?\ causa problemi con alcuni comandi nelle shell spawnate.
+        let cwd = cwd_raw
+            .trim_start_matches("\\\\?\\")
+            .trim_start_matches("\\\\.\\")
+            .to_string();
 
         let session = TerminalSession::new(
             id.clone(),

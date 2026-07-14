@@ -16,6 +16,8 @@ import { useUIStore } from "../../stores/uiStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
 
+const IS_DEV = import.meta.env.DEV;
+
 const WORKSPACE_COLORS = [
   "#e85d04",
   "#06b6d4",
@@ -294,6 +296,13 @@ export function Sidebar() {
               );
             })}
           </div>
+
+          {/* DEV badge */}
+          {IS_DEV && (
+            <div className="pb-4 flex justify-center">
+              <div className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.8)]" />
+            </div>
+          )}
         </motion.aside>
 
         <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
@@ -673,6 +682,13 @@ export function Sidebar() {
             )}
           </div>
         </div>
+
+        {/* DEV badge */}
+        {IS_DEV && (
+          <div className="pb-3 text-center">
+            <span className="text-[0.5rem] font-bold tracking-[0.15em] text-red-500/70 uppercase">Dev</span>
+          </div>
+        )}
       </motion.aside>
 
       <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />

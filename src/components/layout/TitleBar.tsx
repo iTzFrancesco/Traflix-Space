@@ -1,8 +1,17 @@
+import { useEffect } from "react";
 import { Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { version as APP_VERSION } from "../../../package.json";
 
+const IS_DEV = import.meta.env.DEV;
+
 export function TitleBar() {
+  useEffect(() => {
+    if (IS_DEV) {
+      document.title = "Traflix Space [DEV]";
+    }
+  }, []);
+
   function getAppWindow() {
     if (typeof window === "undefined") return null;
     try {
@@ -23,6 +32,9 @@ export function TitleBar() {
         <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded shrink-0" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase whitespace-nowrap">
           Traflix Space
+          {IS_DEV && (
+            <span className="ml-2 text-[0.625rem] font-bold text-red-500 tracking-[0.15em]">DEV</span>
+          )}
         </span>
         <span className="text-[10px] font-mono text-white/50 -ml-1">
           v{APP_VERSION}

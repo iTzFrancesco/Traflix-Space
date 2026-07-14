@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, TauriEvent } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readText, readImage, writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { downloadDir } from "@tauri-apps/api/path";
@@ -8,30 +8,59 @@ import { Terminal } from "xterm";
 import { invokeWithTimeout } from "../../lib/timeout";
 
 // ────────────────────────────────────────────────────────────
-// Module-level cache: percorsi file ricevuti dagli eventi Tauri drag-drop
-// (tauri://drag-enter / tauri://drag-drop)
+// Module-level: mappa container → terminalId per drag&drop
+// e cache dei path ricevuti da Tauri drag-drop events.
 // ────────────────────────────────────────────────────────────
+const containerMap = new WeakMap<HTMLElement, string>();
 let tauriDragFilePaths: string[] | null = null;
-
 let tauriDragInitialized = false;
+
+function findTerminalIdAtPoint(x: number, y: number): string | null {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  // Risali nel DOM per trovare il container con data-terminal-id
+  let current: HTMLElement | null = el instanceof HTMLElement ? el : null;
+  while (current) {
+    const tid = current.dataset.terminalId;
+    if (tid) return tid;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+async function writePathsToTerminal(paths: string[], x: number, y: number) {
+  const tid = findTerminalIdAtPoint(x, y);
+  if (!tid) return;
+  const text = paths.join(" ");
+  await invoke("terminal_write", {
+    terminalId: tid,
+    data: Array.from(new TextEncoder().encode(text)),
+  });
+}
 
 function ensureTauriDragListeners() {
   if (tauriDragInitialized) return;
   tauriDragInitialized = true;
 
-  // Il core di Tauri emette questi eventi quando l'utente trascina file
-  // da Windows Explorer nella finestra. Contengono i path completi.
-  listen(TauriEvent.DRAG_ENTER, (event) => {
-    tauriDragFilePaths = (event.payload as { paths: string[] }).paths;
-  }).catch(() => { /* Ignora se l'evento non è disponibile */ });
-
-  listen(TauriEvent.DRAG_DROP, (event) => {
-    tauriDragFilePaths = (event.payload as { paths: string[] }).paths;
-  }).catch(() => {});
-
-  listen(TauriEvent.DRAG_LEAVE, () => {
-    tauriDragFilePaths = null;
-  }).catch(() => {});
+  // onDragDropEvent è l'API nativa Tauri v2. Quando il native handler
+  // è attivo (default), il DOM drop event NON viene mai sparato — wry
+  // consuma l'evento a livello nativo. Quindi gestiamo tutto qui.
+  getCurrentWebview().onDragDropEvent(async (event) => {
+    const p = event.payload;
+    if (p.type === "enter") {
+      tauriDragFilePaths = p.paths ?? null;
+    } else if (p.type === "drop") {
+      const filePaths = p.paths ?? null;
+      tauriDragFilePaths = filePaths;
+      if (filePaths && filePaths.length > 0) {
+        await writePathsToTerminal(filePaths, p.position.x, p.position.y);
+      }
+    } else if (p.type === "leave") {
+      tauriDragFilePaths = null;
+    }
+  }).catch(() => {
+    // Ignora se l'evento non è disponibile
+  });
 }
 
 // Prova a estrarre i path dei file dall'evento DOM drop,
@@ -91,6 +120,10 @@ export function useTerminalInput(
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    // Registra questo container nella mappa per drag&drop
+    container.dataset.terminalId = terminalId;
+    containerMap.set(container, terminalId);
 
     // Inizializza i listener Tauri drag-drop (una tantum)
     ensureTauriDragListeners();

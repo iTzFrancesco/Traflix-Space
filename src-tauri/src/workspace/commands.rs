@@ -239,8 +239,10 @@ pub async fn select_folder(app: AppHandle) -> Result<String, String> {
         .map_err(|_| "Dialog cancelled".to_string())?;
     match file {
         Some(path) => {
-            info!(path = %path.to_string(), "Cartella selezionata");
-            Ok(path.to_string())
+            let raw = path.to_string();
+            let normalized = normalize_windows_path(&raw);
+            info!(path = %normalized, "Cartella selezionata");
+            Ok(normalized)
         }
         None => {
             warn!("Nessuna cartella selezionata");

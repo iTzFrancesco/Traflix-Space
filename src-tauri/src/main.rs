@@ -72,7 +72,7 @@ fn main() {
                 TrayIconBuilder::new()
                     .icon(default_icon)
                     .menu(&menu)
-                    .tooltip("Traflix Space")
+                    .tooltip(if cfg!(debug_assertions) { "Traflix Space [DEV]" } else { "Traflix Space" })
                     .on_menu_event(|app, event| {
                         match event.id.as_ref() {
                             "show" => {
@@ -117,6 +117,13 @@ fn main() {
                     // Se non c'è tray, la chiusura procede normalmente
                 }
             });
+
+            // Imposta titolo finestra per DEV mode
+            if cfg!(debug_assertions) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title("Traflix Space [DEV]");
+                }
+            }
 
             info!("Stato applicazione inizializzato");
 
