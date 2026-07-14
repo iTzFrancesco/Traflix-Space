@@ -7,9 +7,10 @@ interface WorkspaceGridProps {
   cols: number;
   terminals: TerminalConfig[];
   onActivate: (id: string) => void;
+  onCloseTerminal?: (id: string) => void;
 }
 
-export function WorkspaceGrid({ rows, cols, terminals, onActivate }: WorkspaceGridProps) {
+export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTerminal }: WorkspaceGridProps) {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
 
   if (terminals.length === 0) {
@@ -44,6 +45,7 @@ export function WorkspaceGrid({ rows, cols, terminals, onActivate }: WorkspaceGr
           agentId={term.agentId}
           isActive={term.id === activeTerminalId}
           onActivate={onActivate}
+          onClose={onCloseTerminal}
         />
       ))}
     </div>

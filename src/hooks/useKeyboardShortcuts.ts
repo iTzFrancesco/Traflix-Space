@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useWorkspaceStore } from "../stores/workspaceStore";
+import { useTerminalStore } from "../stores/terminalStore";
 import { useUIStore } from "../stores/uiStore";
 
 type ShortcutHandler = () => void;
@@ -13,7 +14,7 @@ interface ShortcutDef {
   description: string;
 }
 
-export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
+export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[], onCloseTerminal?: () => void) {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const openModal = useUIStore((s) => s.openModal);
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
@@ -22,6 +23,8 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
   const activeWorkspaceIdRef = useRef(useWorkspaceStore.getState().activeWorkspaceId);
   const extraShortcutsRef = useRef(extraShortcuts);
   extraShortcutsRef.current = extraShortcuts;
+  const onCloseTerminalRef = useRef(onCloseTerminal);
+  onCloseTerminalRef.current = onCloseTerminal;
 
   useEffect(() => {
     const unsub = useWorkspaceStore.subscribe((s) => {
@@ -61,6 +64,19 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
           handler: () => setWizardOpen(true),
           description: "Nuovo terminale (wizard)",
         },
+        {
+          key: "w",
+          ctrl: true,
+          shift: true,
+          handler: () => {
+            const store = useTerminalStore.getState();
+            const activeId = store.activeTerminalId;
+            if (activeId && onCloseTerminalRef.current) {
+              onCloseTerminalRef.current();
+            }
+          },
+          description: "Chiudi terminale attivo",
+        },
       ];
 
       const allShortcuts = [...defaults, ...(extraShortcutsRef.current || [])];
@@ -84,7 +100,8 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[]) {
       }
     };
 
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    // Usa capture phase per intercettare eventi PRIMA che xterm.js li catturi
+    document.addEventListener("keydown", handler, { capture: true });
+    return () => document.removeEventListener("keydown", handler, { capture: true });
   }, [setActiveWorkspace, openModal]);
 }

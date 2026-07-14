@@ -115,7 +115,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const t = state.terminals[id];
       if (!t || t.spawned) return state;
       return {
-        terminals: { ...state.terminals, [id]: { ...t, spawned: true } },
+        terminals: { ...state.terminals, [id]: { ...t, spawned: true, exitCode: null } },
       };
     }),
 

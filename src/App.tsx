@@ -11,7 +11,10 @@ import { useMcpStore } from "./stores/mcpStore";
 const MCP_POLL_INTERVAL = 5000;
 
 function App() {
-  useKeyboardShortcuts();
+  useKeyboardShortcuts(undefined, () => {
+    const fn = (window as any).__traflix_close_terminal;
+    if (typeof fn === "function") fn();
+  });
   const syncWithBackend = useWorkspaceStore((s) => s.syncWithBackend);
   const checkMcpStatus = useMcpStore((s) => s.checkStatus);
 

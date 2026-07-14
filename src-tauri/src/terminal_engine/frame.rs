@@ -47,3 +47,10 @@ pub struct FrameSnapshot {
     pub cursor_visible: bool,
     pub title: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExited {
+    pub terminal_id: String,
+    pub exit_code: i32,
+}

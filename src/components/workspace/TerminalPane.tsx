@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useCallback } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,7 +6,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
-import type { TerminalOutput } from "../terminal/types";
+import type { TerminalOutput, TerminalExited } from "../terminal/types";
 import "xterm/css/xterm.css";
 
 const STOCK_THEME = {
@@ -42,6 +42,7 @@ interface TerminalPaneProps {
   agentId?: string | null;
   isActive: boolean;
   onActivate: (id: string) => void;
+  onClose?: (id: string) => void;
 }
 
 const ACTIVE_STYLE = {
@@ -67,6 +68,37 @@ const INACTIVE_STYLE = {
   cursor: "pointer" as const,
 };
 
+const EXITED_STYLE = {
+  position: "relative" as const,
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  background: "#0c0c0c",
+  borderRadius: "4px",
+  border: "1px solid rgba(239,68,68,0.3)",
+  overflow: "hidden" as const,
+};
+
+const CLOSE_BTN_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: "6px",
+  right: "6px",
+  width: "24px",
+  height: "24px",
+  borderRadius: "6px",
+  border: "none",
+  background: "rgba(239,68,68,0.2)",
+  color: "#ef4444",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: "14px",
+  lineHeight: 1,
+  zIndex: 10,
+  transition: "all 0.15s ease",
+};
+
 const CONTAINER_STYLE = {
   position: "absolute" as const,
   inset: 0,
@@ -74,15 +106,20 @@ const CONTAINER_STYLE = {
 };
 
 export const TerminalPane = memo(function TerminalPane({
-  terminalId, shell, cwd, title: _title, agentId, isActive, onActivate,
+  terminalId, shell, cwd, title: _title, agentId, isActive, onActivate, onClose,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const unlistenExitRef = useRef<UnlistenFn | null>(null);
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
+
+  // Leggi lo stato exit dallo store
+  const exitCode = useTerminalStore((s) => s.terminals[terminalId]?.exitCode ?? null);
+  const hasExited = exitCode !== null;
 
   // 1. Crea xterm al mount, aprilo nel container (sempre nel DOM), distruggi al unmount
   useEffect(() => {
@@ -109,6 +146,10 @@ export const TerminalPane = memo(function TerminalPane({
     term.onData((data) => {
       const tid = terminalIdRef.current;
       if (!tid) return;
+      // Non scrivere se il terminale è uscito
+      const store = useTerminalStore.getState();
+      const termState = store.terminals[tid];
+      if (termState && termState.exitCode !== null) return;
       invoke("terminal_write", {
         terminalId: tid,
         data: Array.from(new TextEncoder().encode(data)),
@@ -117,6 +158,7 @@ export const TerminalPane = memo(function TerminalPane({
 
     return () => {
       unlistenRef.current?.();
+      unlistenExitRef.current?.();
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -128,6 +170,10 @@ export const TerminalPane = memo(function TerminalPane({
     const term = xtermRef.current;
     if (!term) return;
     if (spawnedRef.current) return;
+    // Non respawnare se è uscito
+    const storeState = useTerminalStore.getState();
+    const t = storeState.terminals[terminalId];
+    if (t && t.exitCode !== null) return;
     spawnedRef.current = true;
 
     invoke("terminal_spawn", {
@@ -160,7 +206,7 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, [isActive, terminalId]);
 
-  // 4. Listener output terminale — sempre attivo
+  // 4a. Listener output terminale — sempre attivo
   useEffect(() => {
     let cancelled = false;
 
@@ -182,7 +228,29 @@ export const TerminalPane = memo(function TerminalPane({
     };
   }, [terminalId]);
 
-  // 4. Resize handler — sempre attivo
+  // 4b. Listener terminal-exited — aggiorna lo store
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const unlisten = await listen<TerminalExited>("terminal-exited", (event) => {
+        if (cancelled) return;
+        const { terminalId: tid, exitCode } = event.payload;
+        if (tid !== terminalId) return;
+        useTerminalStore.getState().markExited(tid, exitCode);
+      });
+      if (!cancelled) {
+        unlistenExitRef.current?.();
+        unlistenExitRef.current = unlisten;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [terminalId]);
+
+  // 5. Resize handler — sempre attivo
   useEffect(() => {
     const handleResize = () => {
       const term = xtermRef.current;
@@ -219,12 +287,104 @@ export const TerminalPane = memo(function TerminalPane({
     return () => el.removeEventListener("mousedown", handleMouseDown, { capture: true });
   }, [terminalId, onActivate]);
 
+  const handleClose = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onClose?.(terminalId);
+  }, [terminalId, onClose]);
+
+  const handleRestart = useCallback(async () => {
+    try {
+      await invoke("terminal_reopen", {
+        terminalId,
+        shell,
+        cwd,
+      });
+      useTerminalStore.getState().markSpawned(terminalId);
+      spawnedRef.current = true;
+    } catch (err) {
+      console.error("Errore reopen terminale:", err);
+    }
+  }, [terminalId, shell, cwd]);
+
+  const outerStyle = hasExited
+    ? EXITED_STYLE
+    : (isActive ? ACTIVE_STYLE : INACTIVE_STYLE);
+
   return (
     <div
-      style={isActive ? ACTIVE_STYLE : INACTIVE_STYLE}
+      style={outerStyle}
       tabIndex={-1}
     >
+      {/* Container xterm — sempre presente nel DOM */}
       <div ref={containerRef} style={CONTAINER_STYLE} />
+
+      {/* Pulsante chiudi — visibile in alto a destra */}
+      {onClose && !hasExited && (
+        <button
+          onClick={handleClose}
+          style={CLOSE_BTN_STYLE}
+          title="Chiudi terminale"
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(239,68,68,0.35)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(239,68,68,0.2)";
+          }}
+        >
+          ✕
+        </button>
+      )}
+
+      {/* Overlay terminale uscito */}
+      {hasExited && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(12,12,12,0.92)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "12px",
+            zIndex: 20,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "13px",
+              color: "#ef4444",
+              fontWeight: 500,
+            }}
+          >
+            Terminale chiuso (exit code: {exitCode})
+          </span>
+          <button
+            onClick={handleRestart}
+            style={{
+              padding: "8px 20px",
+              borderRadius: "8px",
+              border: "1px solid rgba(232,93,4,0.4)",
+              background: "rgba(232,93,4,0.15)",
+              color: "#e85d04",
+              cursor: "pointer",
+              fontFamily: "var(--font-display)",
+              fontSize: "13px",
+              fontWeight: 600,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(232,93,4,0.25)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(232,93,4,0.15)";
+            }}
+          >
+            🔄 Riapri terminale
+          </button>
+        </div>
+      )}
     </div>
   );
 });

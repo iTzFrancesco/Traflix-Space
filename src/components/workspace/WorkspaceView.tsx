@@ -6,6 +6,7 @@ import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { invokeWithTimeout } from "../../lib/timeout";
+import { computeLayout } from "../../lib/presets";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -16,6 +17,8 @@ interface LoadedWorkspace {
   rootPath: string;
   layout: { rows: number; cols: number };
   terminals: TerminalConfig[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export function WorkspaceView() {
@@ -95,6 +98,8 @@ export function WorkspaceView() {
             rootPath: fullConfig.rootPath,
             layout: fullConfig.layout,
             terminals: fullConfig.terminals || [],
+            createdAt: (fullConfig as any).createdAt ?? new Date().toISOString(),
+            updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
           });
 
           openOrderRef.current = openOrderRef.current
@@ -132,6 +137,85 @@ export function WorkspaceView() {
     return () => {
       cancelled = true;
       loadingRef.current.delete(id);
+    };
+  }, []);
+
+  // Gestisce la chiusura di un terminale: kill backend, rimuovi da config, aggiorna layout
+  const handleCloseTerminal = useCallback(async (terminalId: string) => {
+    const workspaceId = activeWorkspaceId;
+    if (!workspaceId) return;
+
+    // 1. Kill backend session
+    await invokeWithTimeout(
+      () => invoke("terminal_kill", { terminalId }),
+      5000,
+    ).catch(() => {});
+
+    // 2. Rimuovi dal terminal store
+    useTerminalStore.getState().removeTerminal(terminalId);
+
+    // 3. Aggiorna loadedMap e workspace config
+    const current = loadedMapRef.current.get(workspaceId);
+    if (!current) return;
+
+    const newTerminals = current.terminals.filter((t) => t.id !== terminalId);
+    const newLayout = computeLayout(newTerminals.length);
+
+    // 4. Aggiorna backend
+    const updatedConfig = {
+      id: workspaceId,
+      name: current.name,
+      rootPath: current.rootPath,
+      layout: newLayout,
+      terminals: newTerminals,
+      createdAt: current.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await invokeWithTimeout(
+        () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
+        10000,
+      );
+    } catch (err) {
+      console.error("Errore aggiornamento workspace:", err);
+    }
+
+    // 5. Aggiorna loadedMap
+    setLoadedMap((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(workspaceId);
+      if (existing) {
+        next.set(workspaceId, {
+          ...existing,
+          terminals: newTerminals,
+          layout: newLayout,
+        });
+      }
+      return new Map(next);
+    });
+
+    // 6. Aggiorna workspace store (per la sidebar)
+    const agentCount = newTerminals.filter((t) => t.agentId).length;
+    useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+      terminalCount: newTerminals.length,
+      agentCount,
+    });
+  }, [activeWorkspaceId]);
+
+  // Esponi handleCloseTerminal globalmente per la keyboard shortcut
+  const closeTerminalRef = useRef(handleCloseTerminal);
+  closeTerminalRef.current = handleCloseTerminal;
+  useEffect(() => {
+    (window as any).__traflix_close_terminal = () => {
+      const store = useTerminalStore.getState();
+      const activeId = store.activeTerminalId;
+      if (activeId) {
+        closeTerminalRef.current(activeId);
+      }
+    };
+    return () => {
+      delete (window as any).__traflix_close_terminal;
     };
   }, []);
 
@@ -259,6 +343,7 @@ export function WorkspaceView() {
               onActivate={(id) => {
                 useTerminalStore.getState().setActiveTerminal(id);
               }}
+              onCloseTerminal={handleCloseTerminal}
             />
           </div>
         </div>

@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
-use crate::terminal_engine::frame::TerminalOutput;
+use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 
 pub struct TerminalSession {
     pub id: String,
@@ -94,6 +94,8 @@ impl TerminalSession {
 
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 65536];
+            let mut natural_exit = false;
+
             loop {
                 if stop.load(Ordering::Relaxed) { break; }
                 let n = {
@@ -104,6 +106,7 @@ impl TerminalSession {
                     match reader.read(&mut buf) {
                         Ok(n) if n > 0 => n,
                         Ok(0) => {
+                            natural_exit = true;
                             info!(terminal_id = %id, "PTY read EOF");
                             break;
                         }
@@ -127,7 +130,16 @@ impl TerminalSession {
                     data,
                 });
             }
+
             info!(terminal_id = %id, "PTY reader task ended");
+
+            // Emetti evento di exit solo se è stato un exit naturale (non una kill forzata)
+            if natural_exit {
+                let _ = app.emit("terminal-exited", TerminalExited {
+                    terminal_id: id.clone(),
+                    exit_code: 0,
+                });
+            }
         });
 
         info!(terminal_id = %self.id, shell = %self.shell, "Shell spawned successfully");

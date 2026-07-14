@@ -43,3 +43,8 @@ export interface TerminalOutput {
   terminalId: string;
   data: number[];
 }
+
+export interface TerminalExited {
+  terminalId: string;
+  exitCode: number;
+}

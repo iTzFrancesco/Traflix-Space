@@ -90,3 +90,32 @@ pub async fn terminal_get_scrollback(
     let manager = app.state::<TerminalManager>();
     manager.get_scrollback(&terminal_id, offset, limit).await
 }
+
+#[tauri::command]
+pub async fn terminal_reopen(
+    app: AppHandle,
+    terminal_id: String,
+    shell: String,
+    cwd: String,
+) -> Result<(), String> {
+    info!(%terminal_id, "terminal_reopen called");
+    let manager = app.state::<TerminalManager>();
+
+    // Prima uccidi la sessione morta (se esiste)
+    match manager.kill(&app, &terminal_id).await {
+        Ok(_) => info!(%terminal_id, "Old session killed for reopen"),
+        Err(e) => info!(%terminal_id, error = %e, "No old session to kill for reopen"),
+    }
+
+    // Poi creane una nuova
+    let config = crate::workspace::registry::TerminalConfig {
+        id: terminal_id.clone(),
+        shell,
+        agent_id: None,
+        command: None,
+        cwd,
+        title: "Terminal".to_string(),
+    };
+    manager.spawn(app.clone(), config).await?;
+    Ok(())
+}

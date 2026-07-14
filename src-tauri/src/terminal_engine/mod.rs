@@ -7,7 +7,7 @@ mod scheduler;
 mod session;
 
 pub use cell::{Cell, Color};
-pub use frame::{CellUpdate, FrameDiff, FrameSnapshot, TerminalOutput};
+pub use frame::{CellUpdate, FrameDiff, FrameSnapshot, TerminalExited, TerminalOutput};
 pub use session::TerminalSession;
 
 use dashmap::DashMap;
