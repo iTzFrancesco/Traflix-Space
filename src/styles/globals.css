@@ -19,7 +19,7 @@
 
   --radius-pane: 12px;
 
-  --spacing-sidebar: 260px;
+  --spacing-sidebar: 360px;
 }
 
 * {
@@ -57,11 +57,11 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Custom cursor glow on interactive elements */
+/* Cursor mano su tutti gli elementi interattivi */
 button:not(:disabled),
 a:not(:disabled),
 [role="button"]:not(:disabled) {
-  cursor: default;
+  cursor: pointer;
 }
 
 /* Animated selection glow */

@@ -62,7 +62,17 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[], onCloseTerm
           ctrl: true,
           shift: true,
           handler: () => setWizardOpen(true),
-          description: "Nuovo terminale (wizard)",
+          description: "Nuovo workspace (wizard)",
+        },
+        {
+          key: "d",
+          shift: true,
+          alt: true,
+          handler: () => {
+            const fn = (window as any).__traflix_add_terminal;
+            if (typeof fn === "function") fn();
+          },
+          description: "Nuovo terminale",
         },
         {
           key: "w",
