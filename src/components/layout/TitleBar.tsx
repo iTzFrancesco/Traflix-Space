@@ -22,7 +22,7 @@ export function TitleBar() {
   }
 
   return (
-    <div className="flex items-center h-10 bg-neutral-darkest border-b select-none"
+    <div className="relative flex items-center h-10 bg-neutral-darkest border-b select-none"
       style={{ borderColor: "var(--neutral-border)" }}
     >
       <div
@@ -32,14 +32,19 @@ export function TitleBar() {
         <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded shrink-0" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase whitespace-nowrap">
           Traflix Space
-          {IS_DEV && (
-            <span className="ml-2 text-[0.625rem] font-bold text-red-500 tracking-[0.15em]">DEV</span>
-          )}
         </span>
         <span className="text-[10px] font-mono text-white/50 -ml-1">
           v{APP_VERSION}
         </span>
       </div>
+
+      {IS_DEV && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 pointer-events-none">
+          <span className="font-display font-extrabold text-[1.1rem] tracking-[0.2em] text-red-500/90">
+            DEV
+          </span>
+        </div>
+      )}
 
       <div className="flex h-full">
         <button

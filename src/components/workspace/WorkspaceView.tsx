@@ -31,6 +31,7 @@ export function WorkspaceView() {
   const wizardOpen = useUIStore((s) => s.wizardOpen);
 
   const MAX_OPEN_WORKSPACES = 8;
+  const MAX_TERMINALS_PER_WORKSPACE = 8;
 
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
@@ -257,6 +258,16 @@ export function WorkspaceView() {
         const currentWs = loadedMapRef.current.get(workspaceId);
         if (!currentWs) return;
 
+        // Limite massimo 8 terminali per workspace
+        const currentTerminals = workspaceTerminalsRef.current;
+        if (currentTerminals.length >= MAX_TERMINALS_PER_WORKSPACE) {
+          addToastRef.current({
+            type: "info",
+            message: `Limite di ${MAX_TERMINALS_PER_WORKSPACE} terminali raggiunto in questo workspace.`,
+          });
+          return;
+        }
+
         const newId = crypto.randomUUID();
         const newTerminal: TerminalConfig = {
           id: newId,
@@ -296,7 +307,6 @@ export function WorkspaceView() {
         });
 
         // 3. Aggiungi alla lista e ricalcola layout (ref sincrono)
-        const currentTerminals = workspaceTerminalsRef.current;
         const newTerminals = [...currentTerminals, newTerminal];
         const newLayout = computeLayout(newTerminals.length);
         workspaceTerminalsRef.current = newTerminals;

@@ -31,8 +31,14 @@ pub struct FolderNavResult {
 #[tauri::command]
 pub async fn create_workspace(
     app: AppHandle,
-    config: WorkspaceConfig,
+    mut config: WorkspaceConfig,
 ) -> Result<WorkspaceConfig, String> {
+    // Normalizza tutti i path rimuovendo eventuale prefisso \\\?\ di Windows
+    config.root_path = normalize_windows_path(&config.root_path);
+    for term in &mut config.terminals {
+        term.cwd = normalize_windows_path(&term.cwd);
+    }
+
     info!(name = %config.name, path = %config.root_path, "Creazione workspace");
 
     let registry = app.state::<WorkspaceRegistry>();
@@ -91,11 +97,17 @@ pub async fn get_workspace(app: AppHandle, id: String) -> Result<WorkspaceConfig
 pub async fn update_workspace(
     app: AppHandle,
     id: String,
-    config: WorkspaceConfig,
+    mut config: WorkspaceConfig,
 ) -> Result<WorkspaceConfig, String> {
     if id != config.id {
         warn!(%id, new_id = %config.id, "ID mismatch nell'update workspace");
         return Err("ID mismatch: url param differs from body".into());
+    }
+
+    // Normalizza tutti i path rimuovendo eventuale prefisso \\\?\ di Windows
+    config.root_path = normalize_windows_path(&config.root_path);
+    for term in &mut config.terminals {
+        term.cwd = normalize_windows_path(&term.cwd);
     }
 
     info!(%id, name = %config.name, "Aggiornamento workspace");
