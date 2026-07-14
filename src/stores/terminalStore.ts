@@ -67,10 +67,24 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
   removeTerminal: (id) =>
     set((state) => {
-      const { [id]: _, ...rest } = state.terminals;
+      const { [id]: removed, ...rest } = state.terminals;
+      // Se stiamo rimuovendo il terminale attivo, attiva un altro terminale
+      // nello stesso workspace (se presente)
+      let newActive = state.activeTerminalId;
+      if (newActive === id) {
+        const workspaceId = removed?.workspaceId;
+        if (workspaceId) {
+          const sameWs = Object.values(rest).find(
+            (t) => t.workspaceId === workspaceId,
+          );
+          newActive = sameWs?.id ?? null;
+        } else {
+          newActive = null;
+        }
+      }
       return {
         terminals: rest,
-        activeTerminalId: state.activeTerminalId === id ? null : state.activeTerminalId,
+        activeTerminalId: newActive,
       };
     }),
 
