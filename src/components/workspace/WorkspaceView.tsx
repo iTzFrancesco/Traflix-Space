@@ -494,39 +494,7 @@ export function WorkspaceView() {
               {activeLoaded.rootPath}
             </p>
           </div>
-          <button
-            onClick={handleAddTerminal}
-            title="Aggiungi terminale (Shift+Alt+D)"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: "36px",
-              height: "36px",
-              borderRadius: "10px",
-              border: "1px solid rgba(255,255,255,0.06)",
-              background: "rgba(255,255,255,0.03)",
-              color: "#a1a1aa",
-              cursor: "pointer",
-              fontSize: "18px",
-              lineHeight: 1,
-              transition: "all 0.15s ease",
-              flexShrink: 0,
-              marginTop: "-4px",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(232,93,4,0.15)";
-              e.currentTarget.style.borderColor = "rgba(232,93,4,0.3)";
-              e.currentTarget.style.color = "#e85d04";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
-              e.currentTarget.style.color = "#a1a1aa";
-            }}
-          >
-            +
-          </button>
+
         </div>
 
         {/* Solo il workspace attivo viene renderizzato */}

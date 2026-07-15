@@ -351,7 +351,7 @@ export function Sidebar() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={toggleSidebar}
-            className="p-6 rounded-xl transition-colors duration-200 shrink-0"
+            className="p-2.5 rounded-xl transition-colors duration-200 shrink-0"
             style={{ color: "var(--color-neutral-text-muted)" }}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
@@ -361,14 +361,14 @@ export function Sidebar() {
             }
             title="Comprimi sidebar"
           >
-            <PanelLeftClose size={24} />
+            <PanelLeftClose size={20} />
           </motion.button>
 
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex-1 flex items-center justify-center gap-3 px-5 py-7 text-[1.0625rem] font-medium rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-3 px-4 py-3 text-[0.9375rem] font-semibold rounded-xl transition-all duration-200"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
               color: "var(--color-neutral-text-dim)",

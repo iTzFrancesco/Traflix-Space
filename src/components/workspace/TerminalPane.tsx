@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useSkillStore } from "../../stores/skillStore";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
 import type { TerminalOutput, TerminalExited } from "../terminal/types";
 import "xterm/css/xterm.css";
@@ -121,6 +122,8 @@ export const TerminalPane = memo(function TerminalPane({
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
   const autoScrollRef = useRef(true);
+  // Flag per distinguere scroll programmatici (scrollToBottom, resize) da scroll utente
+  const programmaticScrollRef = useRef(false);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
   // Leggi lo stato exit dallo store
@@ -143,12 +146,20 @@ export const TerminalPane = memo(function TerminalPane({
   // Stato conferma chiusura
   const [confirmClose, setConfirmClose] = useState(false);
 
+  // Drag-over state per skills drop
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
   // Auto-annulla conferma dopo 3s
   useEffect(() => {
     if (!confirmClose) return;
     const timer = setTimeout(() => setConfirmClose(false), 3000);
     return () => clearTimeout(timer);
   }, [confirmClose]);
+
+  // Leggi pending drops per questo terminale
+  const pendingDrops = useSkillStore((s) => s.pendingDrops[terminalId]);
+  const pendingNames = pendingDrops?.names ?? [];
 
   // Escape annulla conferma
   useEffect(() => {
@@ -195,9 +206,15 @@ export const TerminalPane = memo(function TerminalPane({
       }).catch(() => {});
     });
 
-    // Auto-scroll: traccia se l'utente è incollato al fondo
+    // Auto-scroll: traccia se l'utente è incollato al fondo.
+    // Ignora scroll programmatici (scrollToBottom, resize) per evitare che
+    // lo stato interno di xterm.js corrompa autoScrollRef.
     scrollDisposableRef.current?.dispose();
     scrollDisposableRef.current = term.onScroll(() => {
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        return;
+      }
       const buffer = term.buffer.active;
       autoScrollRef.current = buffer.viewportY >= buffer.baseY;
     });
@@ -274,6 +291,7 @@ export const TerminalPane = memo(function TerminalPane({
         const term = xtermRef.current;
         term?.write(new Uint8Array(data));
         if (autoScrollRef.current && term) {
+          programmaticScrollRef.current = true;
           term.scrollToBottom();
         }
       });
@@ -319,17 +337,28 @@ export const TerminalPane = memo(function TerminalPane({
     };
   }, [terminalId]);
 
-  // 5. Resize handler — ResizeObserver + rAF per throttling
-  // Usa ResizeObserver invece di window.resize per catturare cambi layout griglia
+  // 5. Resize handler — ResizeObserver con throttle per evitare resize rapidi
+  // che troncherebbero lo scrollback di xterm.js e corromperebbero l'autoscroll.
+  // Usa time throttle (min 100ms tra resize) + rAF.
   useEffect(() => {
     const handleResize = () => {
       const term = xtermRef.current;
       const fitAddon = fitAddonRef.current;
       if (!term || !fitAddon) return;
+
+      // Salva lo stato autoscroll PRIMA del resize: fit() può generare onScroll
+      // internamente che altererebbe autoScrollRef in modo spurio.
+      const wasAtBottom = autoScrollRef.current;
+
       fitAddon.fit();
-      if (autoScrollRef.current) {
+
+      // Dopo il resize, scrolla in fondo SOLO se l'utente era già lì.
+      // Usa programmaticScrollRef per evitare che onScroll corregga autoScrollRef.
+      if (wasAtBottom) {
+        programmaticScrollRef.current = true;
         term.scrollToBottom();
       }
+
       invoke("terminal_resize", { terminalId, cols: term.cols, rows: term.rows })
         .catch(() => {});
     };
@@ -337,14 +366,28 @@ export const TerminalPane = memo(function TerminalPane({
     const container = containerRef.current;
     if (!container) return;
 
-    // Initial fit al mount (serve anche come resize iniziale)
-    const raf = requestAnimationFrame(() => handleResize());
+    // Throttle: minimo 100ms tra resize per evitare distruzione dello scrollback
+    // durante drag rapidi della sidebar o cambi layout della griglia.
+    let lastResizeTime = 0;
+    const RESIZE_THROTTLE_MS = 100;
 
-    // ResizeObserver: cattura qualsiasi variazione dimensionale del container
+    // Initial fit al mount con aggiornamento lastResizeTime
+    const raf = requestAnimationFrame(() => {
+      lastResizeTime = Date.now();
+      handleResize();
+    });
+
+    // ResizeObserver con throttle temporale + rAF
     let observerRaf: number | null = null;
     const observer = new ResizeObserver(() => {
       if (observerRaf !== null) cancelAnimationFrame(observerRaf);
-      observerRaf = requestAnimationFrame(() => handleResize());
+      observerRaf = requestAnimationFrame(() => {
+        const now = Date.now();
+        if (now - lastResizeTime >= RESIZE_THROTTLE_MS) {
+          lastResizeTime = now;
+          handleResize();
+        }
+      });
     });
     observer.observe(container);
 
@@ -402,14 +445,80 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, [terminalId, shell, cwd]);
 
+  /* ─── Drag & Drop handlers ─── */
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current++;
+    if (dragCounterRef.current === 1) {
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      dragCounterRef.current = 0;
+
+      try {
+        // Tenta application/json (formato strutturato)
+        const raw = e.dataTransfer.getData("application/json");
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data.type === "skill" && data.name) {
+            useSkillStore.getState().addPendingDrop(terminalId, data.name);
+            return;
+          }
+        }
+
+        // Fallback: text/plain (compatibilità con @dnd-kit o drag semplici)
+        const text = e.dataTransfer.getData("text/plain");
+        if (text && text.trim()) {
+          // Verifica se sembra un nome di skill (confronto case-insensitive con skills note)
+          const skills = useSkillStore.getState().skills;
+          const matchedSkill = skills.find(
+            (s) => s.name.toLowerCase() === text.trim().toLowerCase()
+          );
+          if (matchedSkill) {
+            useSkillStore.getState().addPendingDrop(terminalId, matchedSkill.name);
+          }
+        }
+      } catch {
+        // Ignora drop malformati
+      }
+    },
+    [terminalId],
+  );
+
   const outerStyle = hasExited
     ? EXITED_STYLE
     : (isActive ? ACTIVE_STYLE : INACTIVE_STYLE);
 
+  const dragOverlayStyle = isDragOver
+    ? { borderColor: "var(--color-primary)", boxShadow: "inset 0 0 0 1px var(--color-primary), 0 0 16px rgba(232,93,4,0.15)" }
+    : {};
+
   return (
     <div
-      style={outerStyle}
+      style={{ ...outerStyle, ...dragOverlayStyle }}
       tabIndex={-1}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
       {/* Container xterm — sempre presente nel DOM */}
       <div ref={containerRef} style={CONTAINER_STYLE} />
@@ -517,6 +626,43 @@ export const TerminalPane = memo(function TerminalPane({
             ✕
           </button>
         )
+      )}
+
+      {/* Pending skill drops indicator */}
+      {pendingNames.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "8px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 15,
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            padding: "6px 14px",
+            borderRadius: "10px",
+            fontSize: "12px",
+            fontFamily: "var(--font-mono)",
+            fontWeight: 500,
+            color: "var(--color-primary)",
+            backgroundColor: "rgba(232,93,4,0.12)",
+            border: "1px solid rgba(232,93,4,0.25)",
+            backdropFilter: "blur(8px)",
+            whiteSpace: "nowrap",
+            pointerEvents: "none" as const,
+          }}
+        >
+          <span style={{ fontSize: "14px", lineHeight: 1 }}>🎯</span>
+          <span>usa{" "}
+            {pendingNames.length === 1
+              ? `la skill ${pendingNames[0]}`
+              : pendingNames.length === 2
+                ? `le skill ${pendingNames.join(" e ")}`
+                : `le skill ${pendingNames.slice(0, -1).join(", ")} e ${pendingNames[pendingNames.length - 1]}`
+            }
+          </span>
+        </div>
       )}
 
       {/* Overlay terminale uscito */}

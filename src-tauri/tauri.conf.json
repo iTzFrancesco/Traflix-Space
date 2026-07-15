@@ -20,11 +20,12 @@
         "center": true,
         "decorations": false,
         "transparent": false,
-        "theme": "Dark"
+        "theme": "Dark",
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' ipc://localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; worker-src 'self' blob:;"
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' ipc://localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; worker-src 'self' blob:; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*;"
     }
   },
   "bundle": {

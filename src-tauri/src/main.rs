@@ -2,6 +2,7 @@
 
 mod agent;
 mod settings;
+mod skills;
 mod terminal_engine;
 mod workspace;
 
@@ -30,26 +31,36 @@ fn main() {
 
     info!("Avvio Traflix Space");
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_pty::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_pty::init());
+
+    // Solo in release: evita che il dev vada in conflitto con l'istanza installata
+    if !cfg!(debug_assertions) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 // Se la finestra è nascosta in tray, mostrala prima di mettere a fuoco
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    }
+
+    builder
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
+
+            // Avvia skills watcher
+            skills::watcher::start_skills_watcher(app.handle().clone());
+
             let handle = app.handle().clone();
             let manager = app.state::<TerminalManager>();
             manager.start_event_loop(handle);
@@ -139,6 +150,7 @@ fn main() {
             workspace::commands::select_folder,
             workspace::commands::navigate_folder,
             workspace::commands::get_default_workspace_path,
+            skills::commands::list_skills,
             agent::commands::list_agents,
             settings::commands::get_settings,
             settings::commands::set_settings,
