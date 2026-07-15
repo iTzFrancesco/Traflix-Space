@@ -203,9 +203,9 @@ export function Sidebar() {
       <>
         <motion.aside
           layout
-          className="flex flex-col items-center h-full select-none py-8 gap-6"
+          className="flex flex-col items-center h-full select-none py-10 gap-8"
           style={{
-            width: "76px",
+            width: "80px",
             backgroundColor: "var(--color-neutral-surface)",
             borderRight: "1px solid var(--color-neutral-border)",
           }}
@@ -225,7 +225,7 @@ export function Sidebar() {
             }
             title="Espandi sidebar"
           >
-            <PanelLeftOpen size={20} />
+            <PanelLeftOpen size={22} />
           </motion.div>
 
           {/* New workspace dot */}
@@ -256,7 +256,7 @@ export function Sidebar() {
           />
 
           {/* Workspace dots */}
-          <div className="flex flex-col items-center gap-5 flex-1 overflow-y-auto">
+          <div className="flex flex-col items-center gap-6 flex-1 overflow-y-auto">
             {workspaces.map((ws, index) => {
               const color = getWorkspaceColor(index);
               const isActive = activeWorkspaceId === ws.id;
@@ -267,7 +267,7 @@ export function Sidebar() {
                   whileHover={{ scale: 1.15 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={() => setActiveWorkspace(ws.id)}
-                  className="relative w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200"
+                  className="relative w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200"
                   style={{
                     backgroundColor: isActive
                       ? `${color}18`
@@ -284,7 +284,7 @@ export function Sidebar() {
                   title={ws.name}
                 >
                   <div
-                    className="w-5 h-5 rounded-full transition-all duration-200"
+                    className="w-6 h-6 rounded-full transition-all duration-200"
                     style={{
                       backgroundColor: color,
                       boxShadow: isActive
@@ -346,12 +346,12 @@ export function Sidebar() {
           />
         </div>
         {/* Top section - Collapse button + New workspace */}
-        <div className="flex items-center gap-3 px-5 pt-6 pb-4">
+        <div className="flex items-center gap-4 px-5 pt-6 pb-4">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={toggleSidebar}
-            className="p-2.5 rounded-xl transition-colors duration-200 shrink-0"
+            className="p-3 rounded-xl transition-colors duration-200 shrink-0"
             style={{ color: "var(--color-neutral-text-muted)" }}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
@@ -361,14 +361,14 @@ export function Sidebar() {
             }
             title="Comprimi sidebar"
           >
-            <PanelLeftClose size={20} />
+            <PanelLeftClose size={22} />
           </motion.button>
 
           <motion.button
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex-1 flex items-center justify-center gap-3 px-4 py-3 text-[0.9375rem] font-semibold rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-4 px-5 py-3.5 text-[1rem] font-semibold rounded-xl transition-all duration-200"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
               color: "var(--color-neutral-text-dim)",
@@ -383,15 +383,15 @@ export function Sidebar() {
               e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
             }}
           >
-            <Plus size={22} style={{ color: "var(--color-primary)" }} />
+            <Plus size={24} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
         </div>
 
         {/* Workspaces section */}
-        <div className="flex-1 overflow-y-auto px-4 pt-7 pb-6">
+        <div className="flex-1 overflow-y-auto px-5 pt-8 pb-6">
           {/* Section header */}
-          <div className="flex items-center gap-2 px-2 mb-5">
+          <div className="flex items-center gap-2 px-3 mb-6">
             <span
               className="text-[0.8125rem] font-semibold uppercase tracking-[0.12em]"
               style={{
@@ -404,7 +404,7 @@ export function Sidebar() {
           </div>
 
           {/* Workspace list */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             <AnimatePresence mode="popLayout">
               {workspaces.map((ws, index) => {
                 const color = getWorkspaceColor(index);
@@ -429,7 +429,7 @@ export function Sidebar() {
                     {isRenaming ? (
                       /* Inline rename mode */
                       <div
-                        className="flex items-center gap-3.5 px-4 py-5 rounded-xl"
+                        className="flex items-center gap-3.5 px-5 py-5 rounded-xl"
                         style={{
                           backgroundColor: "rgba(255,255,255,0.06)",
                           borderLeft: `4px solid ${color}`,
@@ -489,7 +489,7 @@ export function Sidebar() {
                     ) : isDeleting ? (
                       /* Delete confirmation mode */
                       <div
-                        className="flex items-center gap-3.5 px-4 py-5 rounded-xl"
+                        className="flex items-center gap-3.5 px-5 py-5 rounded-xl"
                         style={{
                           backgroundColor: "rgba(239,68,68,0.08)",
                           borderLeft: `4px solid #ef4444`,
@@ -559,7 +559,7 @@ export function Sidebar() {
                             setActiveWorkspace(ws.id);
                           }
                         }}
-                        className="flex items-center gap-3.5 w-full px-4 py-5 rounded-xl transition-all duration-200 group cursor-pointer"
+                        className="flex items-center gap-3.5 w-full px-5 py-5 rounded-xl transition-all duration-200 group cursor-pointer"
                         style={{
                           backgroundColor: isActive
                             ? "rgba(255,255,255,0.06)"
@@ -615,7 +615,7 @@ export function Sidebar() {
                         )}
 
                         {/* Action buttons - visible on hover */}
-                        <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                           {/* Rename button */}
                           <button
                             onClick={(e) => {
