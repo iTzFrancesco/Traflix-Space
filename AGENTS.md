@@ -96,7 +96,7 @@ Se l'utente chiede anche **build + push**: `npm run build`, `git add -A`, `git c
 - **Vite watch** ignores `src-tauri/**` — restart Tauri after Rust changes
 - **No auto prod build**: Agents must NOT run `npm run build`, `npm run tauri build`, or any production build automatically
 - **Windows path normalization**: Rust commands normalize `\\?\` prefix from `std::fs::canonicalize` before persisting paths
-- **Scrollback 500**: xterm.js `scrollback: 500` — larger scrollback may cause performance issues
+- **Scrollback 1000**: xterm.js + vt100 parser both keep 1000 lines; workspace remount rehydrates via `terminal_get_screen_text` (PTY stays alive)
 - **Max limits**: 8 open workspaces (LRU eviction), 8 terminals per workspace
 - **Context menu**: Globally suppressed via `contextmenu` listener (except inside `.xterm` elements for right-click paste)
 - **Global drag prevention**: `dragover`/`drop` blocked at document level in `main.tsx` — native Tauri events handle file drops instead

@@ -5,6 +5,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useSkillStore } from "../../stores/skillStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { computeLayout } from "../../lib/presets";
 import { WorkspaceGrid } from "./WorkspaceGrid";
@@ -164,7 +165,8 @@ export function WorkspaceView() {
           5000,
         ).catch(() => {});
 
-        // 2. Rimuovi dal terminal store
+        // 2. Rimuovi dal terminal store (+ clear focus se necessario)
+        useSkillStore.getState().clearPendingDrop(terminalId);
         useTerminalStore.getState().removeTerminal(terminalId);
 
         // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione)
@@ -370,9 +372,11 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica workspace attivo se non già in cache
+  // Carica workspace attivo se non già in cache; esci dal focus mode al cambio workspace
   useEffect(() => {
     if (!activeWorkspaceId) return;
+    // Focus mode is per-workspace visual layout — clear when switching.
+    useTerminalStore.getState().setFocusedTerminal(null);
     if (!loadedMapRef.current.has(activeWorkspaceId)) {
       loadWorkspace(activeWorkspaceId);
     }

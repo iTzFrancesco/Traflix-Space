@@ -116,8 +116,8 @@ pub async fn terminal_reopen(
     Ok(())
 }
 
-/// Plain-text screen contents for rehydrating xterm after a workspace remount
-/// while the backend PTY session was kept alive.
+/// Scrollback (~1000 lines) + visible screen as plain text for rehydrating
+/// xterm after a workspace remount while the backend PTY session stayed alive.
 #[tauri::command]
 pub async fn terminal_get_screen_text(
     app: AppHandle,

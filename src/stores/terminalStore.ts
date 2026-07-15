@@ -29,12 +29,23 @@ export interface TerminalConfig {
 interface TerminalStore {
   terminals: Record<string, TerminalState>;
   activeTerminalId: string | null;
+  /** When set, that terminal fills the workspace; others stay mounted but hidden. */
+  focusedTerminalId: string | null;
 
-  addTerminal: (config: { id: string; workspaceId: string; shell: string; cwd: string; title: string; agent: string | null }) => void;
+  addTerminal: (config: {
+    id: string;
+    workspaceId: string;
+    shell: string;
+    cwd: string;
+    title: string;
+    agent: string | null;
+  }) => void;
   removeTerminal: (id: string) => void;
   /** Removes FE state and fires backend terminal_kill for each PTY (fire-and-forget). */
   killWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
+  setFocusedTerminal: (id: string | null) => void;
+  toggleFocusTerminal: (id: string) => void;
   updateTitle: (id: string, title: string) => void;
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
@@ -52,6 +63,7 @@ function killBackendSession(terminalId: string) {
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   terminals: {},
   activeTerminalId: null,
+  focusedTerminalId: null,
 
   addTerminal: (config) =>
     set((state) => {
@@ -78,8 +90,6 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   removeTerminal: (id) =>
     set((state) => {
       const { [id]: removed, ...rest } = state.terminals;
-      // Se stiamo rimuovendo il terminale attivo, attiva un altro terminale
-      // nello stesso workspace (se presente)
       let newActive = state.activeTerminalId;
       if (newActive === id) {
         const workspaceId = removed?.workspaceId;
@@ -95,11 +105,12 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       return {
         terminals: rest,
         activeTerminalId: newActive,
+        focusedTerminalId:
+          state.focusedTerminalId === id ? null : state.focusedTerminalId,
       };
     }),
 
   killWorkspaceTerminals: (workspaceId) => {
-    // Collect IDs first so we can kill backend PTYs even after state is cleared.
     const idsToKill: string[] = [];
     const state = get();
     for (const [id, t] of Object.entries(state.terminals)) {
@@ -107,8 +118,6 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         idsToKill.push(id);
       }
     }
-    // CRITICAL: previously this only removed Zustand entries and left ConPTY
-    // child processes + reader threads alive → RAM/CPU leak after open/close cycles.
     const skillStore = useSkillStore.getState();
     for (const id of idsToKill) {
       killBackendSession(id);
@@ -118,9 +127,11 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     set((s) => {
       const next: Record<string, TerminalState> = {};
       let activeCleared = false;
+      let focusCleared = false;
       for (const [id, t] of Object.entries(s.terminals)) {
         if (t.workspaceId === workspaceId) {
           if (s.activeTerminalId === id) activeCleared = true;
+          if (s.focusedTerminalId === id) focusCleared = true;
           continue;
         }
         next[id] = t;
@@ -128,23 +139,33 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       return {
         terminals: next,
         activeTerminalId: activeCleared ? null : s.activeTerminalId,
+        focusedTerminalId: focusCleared ? null : s.focusedTerminalId,
       };
     });
   },
 
+  // Only touch activeTerminalId — isActive on each entry is unused by selectors
+  // (WorkspaceGrid compares against activeTerminalId). Avoids rewriting the Record.
   setActiveTerminal: (id) =>
     set((state) => {
       if (state.activeTerminalId === id) return state;
-      // Only rewrite the two affected entries (not the entire Record).
-      const next = { ...state.terminals };
-      const prevId = state.activeTerminalId;
-      if (prevId && next[prevId]) {
-        next[prevId] = { ...next[prevId], isActive: false };
+      return { activeTerminalId: id };
+    }),
+
+  setFocusedTerminal: (id) =>
+    set((state) => {
+      if (state.focusedTerminalId === id) return state;
+      return { focusedTerminalId: id };
+    }),
+
+  toggleFocusTerminal: (id) =>
+    set((state) => {
+      const next = state.focusedTerminalId === id ? null : id;
+      // Entering focus also activates the terminal.
+      if (next) {
+        return { focusedTerminalId: next, activeTerminalId: id };
       }
-      if (next[id]) {
-        next[id] = { ...next[id], isActive: true };
-      }
-      return { terminals: next, activeTerminalId: id };
+      return { focusedTerminalId: null };
     }),
 
   updateTitle: (id, title) =>
@@ -161,7 +182,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const t = state.terminals[id];
       if (!t || t.spawned) return state;
       return {
-        terminals: { ...state.terminals, [id]: { ...t, spawned: true, exitCode: null } },
+        terminals: {
+          ...state.terminals,
+          [id]: { ...t, spawned: true, exitCode: null },
+        },
       };
     }),
 
@@ -170,7 +194,12 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const t = state.terminals[id];
       if (!t) return state;
       return {
-        terminals: { ...state.terminals, [id]: { ...t, exitCode, spawned: false } },
+        terminals: {
+          ...state.terminals,
+          [id]: { ...t, exitCode, spawned: false },
+        },
+        focusedTerminalId:
+          state.focusedTerminalId === id ? null : state.focusedTerminalId,
       };
     }),
 
@@ -189,7 +218,6 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   },
 }));
 
-// Hook helper con shallow comparison per evitare re-render
 export function useTerminalsByWorkspace(workspaceId: string) {
   return useStoreWithEqualityFn(
     useTerminalStore,
