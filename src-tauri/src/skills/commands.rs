@@ -142,7 +142,7 @@ pub fn scan_skills() -> Vec<SkillInfo> {
     }
 
     // Ordine alfabetico per nome
-    skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    skills.sort_by_key(|a| a.name.to_lowercase());
 
     skills
 }
