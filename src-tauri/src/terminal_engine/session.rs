@@ -242,6 +242,8 @@ impl TerminalSession {
             writer
                 .write_all(data)
                 .map_err(|e| format!("Write error: {}", e))?;
+            // Flush so agents / paste bursts reach the child promptly.
+            writer.flush().map_err(|e| format!("Flush error: {}", e))?;
             Ok(())
         } else {
             Err("PTY not spawned".to_string())

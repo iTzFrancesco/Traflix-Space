@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { TerminalPane } from "./TerminalPane";
 import { useTerminalStore } from "../../stores/terminalStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -37,13 +37,13 @@ export function WorkspaceGrid({
   );
 
   // Escape exits focus mode without destroying panes.
+  // Skip when a close-confirm dialog is open (it handles Escape itself).
   useEffect(() => {
     if (!focusedTerminalId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        useTerminalStore.getState().setFocusedTerminal(null);
-      }
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      useTerminalStore.getState().setFocusedTerminal(null);
     };
     document.addEventListener("keydown", onKey, { capture: true });
     return () => document.removeEventListener("keydown", onKey, { capture: true });
@@ -57,12 +57,6 @@ export function WorkspaceGrid({
       useTerminalStore.getState().setFocusedTerminal(null);
     }
   }, [terminalIdsKey, terminals]);
-
-  // Track previous focus so we can force-fit on enter/exit (via pane props).
-  const prevFocusedRef = useRef<string | null>(null);
-  useEffect(() => {
-    prevFocusedRef.current = focusedTerminalId;
-  }, [focusedTerminalId]);
 
   if (terminals.length === 0) {
     return (

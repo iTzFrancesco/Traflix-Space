@@ -167,6 +167,8 @@ export const TerminalPane = memo(function TerminalPane({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
+  /** True while backend history is being written into xterm — drop live output to avoid wipe/race. */
+  const rehydratingRef = useRef(false);
   const unsubOutputRef = useRef<(() => void) | null>(null);
   const unsubExitRef = useRef<(() => void) | null>(null);
   const terminalIdRef = useRef(terminalId);
@@ -287,6 +289,10 @@ export const TerminalPane = memo(function TerminalPane({
     if (t && t.exitCode !== null) return;
     spawnedRef.current = true;
 
+    // Rehydrate only when this FE entry was already live (workspace remount /
+    // keep-alive). Skip on first open so we don't reset() a fresh stream.
+    const shouldRehydrate = !!t?.spawned;
+
     const cols = Math.max(term.cols, 80);
     const rows = Math.max(term.rows, 24);
 
@@ -301,50 +307,53 @@ export const TerminalPane = memo(function TerminalPane({
         });
         useTerminalStore.getState().markSpawned(terminalId);
 
-        // Rehydrate scrollback + screen if the backend PTY was kept alive
-        // (workspace switch). Backend caps history at ~1000 lines.
-        try {
-          const text = await invoke<string>("terminal_get_screen_text", {
-            terminalId,
-          });
-          const termNow = xtermRef.current;
-          if (text && text.trim().length > 0 && termNow) {
-            termNow.reset();
-            // Chunk large dumps so a single write does not freeze the UI
-            // when many panes rehydrate at once after a workspace switch.
-            const CHUNK = 16_384;
-            if (text.length <= CHUNK) {
-              termNow.write(text);
-            } else {
-              await new Promise<void>((resolve) => {
-                let offset = 0;
-                const pump = () => {
-                  if (!xtermRef.current) {
-                    resolve();
-                    return;
-                  }
-                  const end = Math.min(offset + CHUNK, text.length);
-                  xtermRef.current.write(text.slice(offset, end));
-                  offset = end;
-                  if (offset >= text.length) {
-                    resolve();
-                  } else {
-                    requestAnimationFrame(pump);
-                  }
-                };
-                requestAnimationFrame(pump);
-              });
+        if (shouldRehydrate) {
+          rehydratingRef.current = true;
+          try {
+            const text = await invoke<string>("terminal_get_screen_text", {
+              terminalId,
+            });
+            const termNow = xtermRef.current;
+            if (text && text.trim().length > 0 && termNow) {
+              termNow.reset();
+              // Chunk large dumps so multi-pane remount stays responsive.
+              const CHUNK = 16_384;
+              if (text.length <= CHUNK) {
+                termNow.write(text);
+              } else {
+                await new Promise<void>((resolve) => {
+                  let offset = 0;
+                  const pump = () => {
+                    if (!xtermRef.current) {
+                      resolve();
+                      return;
+                    }
+                    const end = Math.min(offset + CHUNK, text.length);
+                    xtermRef.current.write(text.slice(offset, end));
+                    offset = end;
+                    if (offset >= text.length) {
+                      resolve();
+                    } else {
+                      requestAnimationFrame(pump);
+                    }
+                  };
+                  requestAnimationFrame(pump);
+                });
+              }
+              if (xtermRef.current) {
+                programmaticScrollRef.current = true;
+                xtermRef.current.scrollToBottom();
+              }
             }
-            if (xtermRef.current) {
-              programmaticScrollRef.current = true;
-              xtermRef.current.scrollToBottom();
-            }
+          } catch {
+            // Command unavailable — live stream only.
+          } finally {
+            rehydratingRef.current = false;
           }
-        } catch {
-          // New session or command unavailable — ignore.
         }
       } catch {
         spawnedRef.current = false;
+        rehydratingRef.current = false;
       }
 
       if (agentId) {
@@ -444,6 +453,9 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     unsubOutputRef.current?.();
     unsubOutputRef.current = subscribeTerminalOutput(terminalId, ({ data }) => {
+      // While rehydrate runs, backend history is authoritative — applying live
+      // chunks mid-reset would race and corrupt the buffer.
+      if (rehydratingRef.current) return;
       const term = xtermRef.current;
       if (!term) return;
       term.write(new Uint8Array(data));

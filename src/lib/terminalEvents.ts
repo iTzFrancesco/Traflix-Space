@@ -27,6 +27,7 @@ let exitSetup: Promise<void> | null = null;
 function mergeChunks(chunks: Uint8Array[]): number[] {
   let total = 0;
   for (const c of chunks) total += c.length;
+  // Build number[] once for TerminalOutput / xterm write path.
   const out = new Array<number>(total);
   let offset = 0;
   for (const c of chunks) {
@@ -46,7 +47,11 @@ function flushOutput(terminalId: string) {
   const handlers = outputHandlers.get(terminalId);
   if (!handlers || handlers.size === 0) return;
 
-  const data = mergeChunks(chunks);
+  // Single chunk fast-path avoids an extra merge allocation.
+  const data =
+    chunks.length === 1
+      ? Array.from(chunks[0])
+      : mergeChunks(chunks);
   const payload: TerminalOutput = { terminalId, data };
   for (const handler of handlers) {
     try {
@@ -58,13 +63,27 @@ function flushOutput(terminalId: string) {
 }
 
 function enqueueOutput(terminalId: string, data: number[] | Uint8Array) {
+  // No subscribers (e.g. mid-remount): drop — rehydrate will restore from backend.
+  if (!outputHandlers.has(terminalId)) return;
+
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if (bytes.length === 0) return;
+
   let list = pendingChunks.get(terminalId);
   if (!list) {
     list = [];
     pendingChunks.set(terminalId, list);
   }
   list.push(bytes);
+
+  // Cap pending burst per terminal (~256KB) to avoid unbounded RAM if the
+  // renderer stalls under heavy multi-pane output.
+  let pendingBytes = 0;
+  for (const c of list) pendingBytes += c.length;
+  while (pendingBytes > 262_144 && list.length > 1) {
+    const dropped = list.shift()!;
+    pendingBytes -= dropped.length;
+  }
 
   if (!flushScheduled.get(terminalId)) {
     flushScheduled.set(terminalId, true);

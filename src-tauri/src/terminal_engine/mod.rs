@@ -159,40 +159,39 @@ impl TerminalManager {
     }
 
     pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
-        let mut active = self.active_id.lock().await;
-        let prev = active.clone();
-
-        // No-op when already active.
-        if prev.as_deref() == id {
-            return Ok(());
-        }
-
-        // Clear previous active flag (single write lock).
-        if let Some(ref prev_id) = prev {
-            if let Some(entry) = self.sessions.get(prev_id) {
-                let mut session = entry.write().await;
-                session.active = false;
+        // No-op when already active (short lock).
+        {
+            let active = self.active_id.lock().await;
+            if active.as_deref() == id {
+                return Ok(());
             }
         }
 
-        // Set new active flag.
+        // Snapshot previous id, then update flags without holding active_id
+        // across session write locks longer than needed.
+        let prev = {
+            let mut active = self.active_id.lock().await;
+            let prev = active.clone();
+            *active = id.map(|s| s.to_string());
+            prev
+        };
+
+        if let Some(ref prev_id) = prev {
+            if Some(prev_id.as_str()) != id {
+                if let Some(entry) = self.sessions.get(prev_id) {
+                    let mut session = entry.write().await;
+                    session.active = false;
+                }
+            }
+        }
+
         if let Some(new_id) = id {
             if let Some(entry) = self.sessions.get(new_id) {
                 let mut session = entry.write().await;
                 session.active = true;
             }
-            *active = Some(new_id.to_string());
-        } else {
-            *active = None;
-        }
-        drop(active);
-
-        // Legacy frame scheduler is unused with per-pane xterm; ensure no tasks leak.
-        self.scheduler.lock().await.stop_all();
-
-        if let Some(aid) = id {
             // Recovery path if spawn was missed.
-            self.spawn_shell(app, aid).await?;
+            self.spawn_shell(app, new_id).await?;
         }
 
         info!(terminal_id = ?id, "Active terminal set");

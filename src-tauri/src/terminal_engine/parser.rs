@@ -54,12 +54,20 @@ impl AnsiParser {
     /// Always leaves the view offset at 0 (live screen) when done.
     /// Capped at [`SCROLLBACK_LINES`] + viewport rows.
     pub fn rehydrate_text(&mut self) -> String {
+        // Always restore live viewport offset, even on early return / panic paths.
+        let result = self.rehydrate_text_inner();
+        self.parser.set_scrollback(0);
+        result
+    }
+
+    fn rehydrate_text_inner(&mut self) -> String {
         // Discover how many history rows are stored (set_scrollback clamps).
         self.parser.set_scrollback(usize::MAX);
         let max_off = self.parser.screen().scrollback();
         let cols = self.cols;
         let cap = SCROLLBACK_LINES.saturating_add(self.rows as usize);
-        let mut lines: Vec<String> = Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
+        let mut lines: Vec<String> =
+            Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
 
         // History lines (oldest first): at offset N the top visible row is
         // scrollback[scrollback_len - N]. Walking N from max_off → 1 yields
