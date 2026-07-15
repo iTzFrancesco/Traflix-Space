@@ -38,6 +38,14 @@ jobs:
             src-tauri/target
           key: rust-${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm install
+        working-directory: .
+      - run: npm run build
+        working-directory: .
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
 
