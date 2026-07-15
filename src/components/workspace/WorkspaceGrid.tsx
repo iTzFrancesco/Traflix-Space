@@ -21,8 +21,8 @@ export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTermin
 
   if (terminals.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-neutral-text-muted">
+      <div className="flex-1 flex items-center justify-center px-8">
+        <p className="text-sm text-neutral-text-muted leading-relaxed text-center">
           Nessun terminale configurato.
         </p>
       </div>
@@ -34,8 +34,8 @@ export function WorkspaceGrid({ rows, cols, terminals, onActivate, onCloseTermin
       style={{
         display: "grid",
         flex: 1,
-        gap: "12px",
-        padding: "12px",
+        gap: "16px",
+        padding: "8px 16px 16px",
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
         gridTemplateRows: `repeat(${rows}, 1fr)`,
         minHeight: 0,

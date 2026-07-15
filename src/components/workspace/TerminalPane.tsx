@@ -2,12 +2,14 @@ import { memo, useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useSkillStore } from "../../stores/skillStore";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
-import type { TerminalOutput, TerminalExited } from "../terminal/types";
+import {
+  subscribeTerminalExit,
+  subscribeTerminalOutput,
+} from "../../lib/terminalEvents";
 import "xterm/css/xterm.css";
 
 const STOCK_THEME = {
@@ -85,11 +87,11 @@ const EXITED_STYLE = {
 
 const CLOSE_BTN_STYLE: React.CSSProperties = {
   position: "absolute",
-  top: "6px",
-  right: "6px",
-  width: "24px",
-  height: "24px",
-  borderRadius: "6px",
+  top: "8px",
+  right: "8px",
+  width: "28px",
+  height: "28px",
+  borderRadius: "8px",
   border: "none",
   background: "rgba(239,68,68,0.2)",
   color: "#ef4444",
@@ -117,8 +119,8 @@ export const TerminalPane = memo(function TerminalPane({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
-  const unlistenRef = useRef<UnlistenFn | null>(null);
-  const unlistenExitRef = useRef<UnlistenFn | null>(null);
+  const unsubOutputRef = useRef<(() => void) | null>(null);
+  const unsubExitRef = useRef<(() => void) | null>(null);
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
   const autoScrollRef = useRef(true);
@@ -220,8 +222,10 @@ export const TerminalPane = memo(function TerminalPane({
     });
 
     return () => {
-      unlistenRef.current?.();
-      unlistenExitRef.current?.();
+      unsubOutputRef.current?.();
+      unsubOutputRef.current = null;
+      unsubExitRef.current?.();
+      unsubExitRef.current = null;
       scrollDisposableRef.current?.dispose();
       scrollDisposableRef.current = null;
       term.dispose();
@@ -279,61 +283,32 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, [isActive, terminalId]);
 
-  // 4a. Listener output terminale — sempre attivo
+  // 4a. Output — shared bus (one Tauri listen for all panes)
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      const unlisten = await listen<TerminalOutput>("terminal-output", (event) => {
-        if (cancelled) return;
-        const { terminalId: tid, data } = event.payload;
-        if (tid !== terminalId) return;
-        const term = xtermRef.current;
-        term?.write(new Uint8Array(data));
-        if (autoScrollRef.current && term) {
-          programmaticScrollRef.current = true;
-          term.scrollToBottom();
-        }
-      });
-      if (cancelled) {
-        // Component già smontato/effetto già pulito — unlisten subito
-        unlisten();
-      } else {
-        unlistenRef.current?.();
-        unlistenRef.current = unlisten;
+    unsubOutputRef.current?.();
+    unsubOutputRef.current = subscribeTerminalOutput(terminalId, ({ data }) => {
+      const term = xtermRef.current;
+      term?.write(new Uint8Array(data));
+      if (autoScrollRef.current && term) {
+        programmaticScrollRef.current = true;
+        term.scrollToBottom();
       }
-    })();
-
+    });
     return () => {
-      cancelled = true;
-      unlistenRef.current?.();
-      unlistenRef.current = null;
+      unsubOutputRef.current?.();
+      unsubOutputRef.current = null;
     };
   }, [terminalId]);
 
-  // 4b. Listener terminal-exited — aggiorna lo store + auto-close
+  // 4b. Exit — shared bus
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      const unlisten = await listen<TerminalExited>("terminal-exited", (event) => {
-        if (cancelled) return;
-        const { terminalId: tid, exitCode } = event.payload;
-        if (tid !== terminalId) return;
-        useTerminalStore.getState().markExited(tid, exitCode);
-      });
-      if (cancelled) {
-        unlisten();
-      } else {
-        unlistenExitRef.current?.();
-        unlistenExitRef.current = unlisten;
-      }
-    })();
-
+    unsubExitRef.current?.();
+    unsubExitRef.current = subscribeTerminalExit(terminalId, ({ terminalId: tid, exitCode }) => {
+      useTerminalStore.getState().markExited(tid, exitCode);
+    });
     return () => {
-      cancelled = true;
-      unlistenExitRef.current?.();
-      unlistenExitRef.current = null;
+      unsubExitRef.current?.();
+      unsubExitRef.current = null;
     };
   }, [terminalId]);
 
@@ -529,24 +504,24 @@ export const TerminalPane = memo(function TerminalPane({
           <div
             style={{
               position: "absolute",
-              top: "6px",
-              right: "6px",
+              top: "8px",
+              right: "8px",
               zIndex: 10,
               display: "flex",
-              gap: "4px",
+              gap: "6px",
               alignItems: "center",
               background: "rgba(12,12,12,0.96)",
-              borderRadius: "8px",
-              padding: "3px 4px",
+              borderRadius: "10px",
+              padding: "5px 6px",
               border: "1px solid rgba(239,68,68,0.35)",
               boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
             }}
           >
             <span
               style={{
-                fontSize: "11px",
+                fontSize: "12px",
                 color: "#ef4444",
-                padding: "0 4px",
+                padding: "0 6px",
                 fontWeight: 600,
                 whiteSpace: "nowrap",
                 fontFamily: "var(--font-mono)",
@@ -558,9 +533,9 @@ export const TerminalPane = memo(function TerminalPane({
               onClick={handleConfirmClose}
               title="Conferma chiusura"
               style={{
-                width: "24px",
-                height: "24px",
-                borderRadius: "6px",
+                width: "28px",
+                height: "28px",
+                borderRadius: "8px",
                 border: "none",
                 background: "rgba(239,68,68,0.25)",
                 color: "#ef4444",
@@ -585,9 +560,9 @@ export const TerminalPane = memo(function TerminalPane({
               onClick={handleCancelClose}
               title="Annulla"
               style={{
-                width: "24px",
-                height: "24px",
-                borderRadius: "6px",
+                width: "28px",
+                height: "28px",
+                borderRadius: "8px",
                 border: "none",
                 background: "rgba(255,255,255,0.08)",
                 color: "#a1a1aa",
@@ -676,9 +651,10 @@ export const TerminalPane = memo(function TerminalPane({
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: "16px",
+            gap: "20px",
             zIndex: 20,
             backdropFilter: "blur(4px)",
+            padding: "24px",
           }}
         >
           {/* Icona terminale spento */}
@@ -700,10 +676,12 @@ export const TerminalPane = memo(function TerminalPane({
           <span
             style={{
               fontFamily: "var(--font-mono)",
-              fontSize: "13px",
+              fontSize: "14px",
               color: "#ef4444",
               fontWeight: 500,
-              opacity: 0.85,
+              opacity: 0.9,
+              textAlign: "center",
+              lineHeight: 1.4,
             }}
           >
             Terminale chiuso (exit code: {exitCode})
@@ -712,18 +690,18 @@ export const TerminalPane = memo(function TerminalPane({
           <button
             onClick={handleRestart}
             style={{
-              padding: "10px 24px",
-              borderRadius: "8px",
+              padding: "12px 28px",
+              borderRadius: "10px",
               border: "1px solid rgba(232,93,4,0.4)",
               background: "rgba(232,93,4,0.12)",
               color: "#e85d04",
               cursor: "pointer",
               fontFamily: "var(--font-display)",
-              fontSize: "13px",
+              fontSize: "14px",
               fontWeight: 600,
               display: "flex",
               alignItems: "center",
-              gap: "8px",
+              gap: "10px",
               letterSpacing: "0.02em",
               transition: "all 0.2s ease",
             }}

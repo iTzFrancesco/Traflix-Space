@@ -53,6 +53,11 @@ impl TerminalSession {
             return Ok(());
         }
 
+        // Allow re-spawn after a previous kill on a reused session struct
+        // (normally sessions are removed from the map; reopen creates fresh ones).
+        self.reader_stop.store(false, Ordering::Relaxed);
+        self.exit_emitted.store(false, Ordering::Relaxed);
+
         let pty_system = portable_pty::native_pty_system();
 
         let pair = pty_system
@@ -99,17 +104,18 @@ impl TerminalSession {
         let app_watch = app.clone();
         let reader_arc = self.reader.clone().unwrap();
         let parser = self.parser.clone();
-        let id = self.id.clone();
+        // Arc<str> avoids allocating a new String on every terminal-output emit.
+        let id: Arc<str> = Arc::from(self.id.as_str());
         let stop = self.reader_stop.clone();
         let exit_emitted_reader = self.exit_emitted.clone();
 
-        // Thread lettore PTY: legge l'output del processo
+        // PTY reader thread — exits on stop flag, EOF, or after master is dropped.
         tokio::task::spawn_blocking(move || {
-            let mut buf = [0u8; 65536];
+            let mut buf = [0u8; 32768];
             let mut natural_exit = false;
 
             loop {
-                if stop.load(Ordering::Relaxed) {
+                if stop.load(Ordering::Acquire) {
                     break;
                 }
                 let n = {
@@ -126,8 +132,11 @@ impl TerminalSession {
                         }
                         Ok(_) => continue,
                         Err(e) => {
-                            // Su Windows/ConPTY, ERROR_BROKEN_PIPE è normale quando il
-                            // processo figlio termina — trattalo come EOF naturale
+                            // ConPTY: broken pipe is normal when the child exits.
+                            // Also expected after kill() drops the master handle.
+                            if stop.load(Ordering::Acquire) {
+                                break;
+                            }
                             natural_exit = true;
                             warn!(terminal_id = %id, error = %e, "PTY read error (treating as EOF)");
                             break;
@@ -135,25 +144,30 @@ impl TerminalSession {
                     }
                 };
 
+                // Clone only the valid slice once for both parser + emit.
                 let data = buf[..n].to_vec();
 
                 if let Ok(mut p) = parser.lock() {
                     p.process(&data);
-                    drop(p);
                 }
 
                 let _ = app_reader.emit(
                     "terminal-output",
                     TerminalOutput {
-                        terminal_id: id.clone(),
+                        terminal_id: id.to_string(),
                         data,
                     },
                 );
             }
 
+            // Explicitly drop reader so the OS handle is released even if the
+            // session-side Arc was already cleared by kill().
+            drop(reader_arc);
+
             info!(terminal_id = %id, "PTY reader task ended");
 
             if natural_exit
+                && !stop.load(Ordering::Acquire)
                 && exit_emitted_reader
                     .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
@@ -161,25 +175,22 @@ impl TerminalSession {
                 let _ = app_reader.emit(
                     "terminal-exited",
                     TerminalExited {
-                        terminal_id: id.clone(),
+                        terminal_id: id.to_string(),
                         exit_code: 0,
                     },
                 );
             }
         });
 
-        // Thread watch del processo figlio: aspetta che il processo termini
-        // e se il reader non ha già emesso l'evento di exit, lo emette qui.
-        // Questo è un fallback per Windows/ConPTY dove il reader potrebbe
-        // non ricevere EOF pulito.
-        let watch_id = self.id.clone();
+        // Child-process watch thread (fallback when reader misses EOF on ConPTY).
+        let watch_id: Arc<str> = Arc::from(self.id.as_str());
         let watch_stop = self.reader_stop.clone();
-        let watch_child = child_arc.clone();
+        let watch_child = child_arc;
         let exit_emitted_watch = self.exit_emitted.clone();
         tokio::task::spawn_blocking(move || {
             loop {
-                if watch_stop.load(Ordering::Relaxed) {
-                    return; // kill forzata, non emettere evento
+                if watch_stop.load(Ordering::Acquire) {
+                    return;
                 }
 
                 let exited = {
@@ -196,14 +207,15 @@ impl TerminalSession {
 
                 if exited {
                     info!(terminal_id = %watch_id, "Child process exited (watch thread)");
-                    if exit_emitted_watch
-                        .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
-                        .is_ok()
+                    if !watch_stop.load(Ordering::Acquire)
+                        && exit_emitted_watch
+                            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+                            .is_ok()
                     {
                         let _ = app_watch.emit(
                             "terminal-exited",
                             TerminalExited {
-                                terminal_id: watch_id.clone(),
+                                terminal_id: watch_id.to_string(),
                                 exit_code: 0,
                             },
                         );
@@ -211,7 +223,7 @@ impl TerminalSession {
                     return;
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
 
@@ -220,6 +232,9 @@ impl TerminalSession {
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
+        if self.reader_stop.load(Ordering::Acquire) {
+            return Err("Terminal is shutting down".to_string());
+        }
         if let Some(ref writer) = self.writer {
             let mut writer = writer
                 .lock()
@@ -234,7 +249,21 @@ impl TerminalSession {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+        if cols == 0 || rows == 0 {
+            return Err("Invalid terminal size".to_string());
+        }
+        if self.grid.cols == cols && self.grid.rows == rows {
+            return Ok(());
+        }
+
         self.grid.resize(cols, rows);
+
+        // Keep the vt100 parser in sync with the PTY size so snapshots after
+        // remount match the live geometry.
+        if let Ok(mut p) = self.parser.lock() {
+            p.resize(cols, rows);
+        }
+
         if let Some(ref master) = self.master {
             let master = master
                 .lock()
@@ -252,17 +281,44 @@ impl TerminalSession {
     }
 
     pub fn kill(&mut self) {
-        self.reader_stop.store(true, Ordering::Relaxed);
+        // 1. Signal reader + watch threads (Acquire/Release pairing with loads).
+        self.reader_stop.store(true, Ordering::Release);
+
+        // 2. Suppress exit events for forced kills.
+        self.exit_emitted.store(true, Ordering::Release);
+
+        // 3. Drop writer so the child sees EOF on stdin.
+        self.writer = None;
+
+        // 4. Kill the child process tree via portable-pty ChildKiller.
         if let Some(ref pty) = self.pty {
-            let pty = pty.lock();
-            if let Ok(mut pty) = pty {
-                let _ = pty.kill();
+            if let Ok(mut killer) = pty.lock() {
+                let _ = killer.kill();
             }
         }
+
+        // 5. Best-effort wait so the OS reaps the process promptly.
+        if let Some(ref child) = self.child {
+            if let Ok(mut c) = child.lock() {
+                let _ = c.try_wait();
+            }
+        }
+
+        // 6. Drop master PTY — closes the pair and unblocks a blocking
+        //    reader.read() so the spawn_blocking reader task can finish.
+        self.master = None;
         self.pty = None;
         self.reader = None;
-        self.writer = None;
         self.child = None;
+
+        // 7. Free scrollback/screen buffers held by a lingering Arc session.
+        let cols = self.grid.cols.max(1);
+        let rows = self.grid.rows.max(1);
+        self.grid = GridBuffer::new(cols, rows);
+        if let Ok(mut p) = self.parser.lock() {
+            *p = AnsiParser::new(cols, rows);
+        }
+
         info!(terminal_id = %self.id, "Terminal session cleaned up");
     }
 }

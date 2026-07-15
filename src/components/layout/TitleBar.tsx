@@ -22,48 +22,52 @@ export function TitleBar() {
   }
 
   return (
-    <div className="relative flex items-center h-10 bg-neutral-darkest border-b select-none"
-      style={{ borderColor: "var(--neutral-border)" }}
+    <div
+      className="relative flex items-center h-11 bg-neutral-darkest border-b select-none"
+      style={{ borderColor: "var(--color-neutral-border)" }}
     >
       <div
         data-tauri-drag-region
-        className="flex items-center gap-3 flex-1 min-w-0 h-full px-4"
+        className="flex items-center gap-3.5 flex-1 min-w-0 h-full px-4"
       >
         <img src="/icon.png" alt="Traflix" className="w-5 h-5 rounded shrink-0" />
         <span className="font-display font-extrabold text-sm text-primary tracking-wider uppercase whitespace-nowrap">
           Traflix Space
         </span>
-        <span className="text-[10px] font-mono text-white/50 -ml-1">
+        <span className="text-[11px] font-mono text-white/45">
           v{APP_VERSION}
         </span>
       </div>
 
       {IS_DEV && (
         <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 pointer-events-none">
-          <span className="font-display font-extrabold text-[1.1rem] tracking-[0.2em] text-red-500/90">
+          <span className="font-display font-extrabold text-[1rem] tracking-[0.2em] text-red-500/90">
             DEV
           </span>
         </div>
       )}
 
-      <div className="flex h-full">
+      <div className="flex h-full shrink-0">
         <button
           onClick={() => getAppWindow()?.minimize()}
-          className="flex items-center justify-center w-[46px] h-full hover:bg-white/[0.08] active:bg-white/[0.04] transition-colors"
+          className="flex items-center justify-center w-12 h-full hover:bg-white/[0.08] active:bg-white/[0.04] transition-colors"
+          title="Riduci a icona"
         >
-          <Minus size={14} className="text-neutral-text-muted" />
+          <Minus size={15} className="text-neutral-text-muted" />
         </button>
         <button
           onClick={() => getAppWindow()?.toggleMaximize()}
-          className="flex items-center justify-center w-[46px] h-full hover:bg-white/[0.08] active:bg-white/[0.04] transition-colors"
+          className="flex items-center justify-center w-12 h-full hover:bg-white/[0.08] active:bg-white/[0.04] transition-colors"
+          title="Ingrandisci"
         >
-          <Square size={12} className="text-neutral-text-muted" />
+          <Square size={13} className="text-neutral-text-muted" />
         </button>
         <button
           onClick={() => getAppWindow()?.close()}
-          className="flex items-center justify-center w-[46px] h-full hover:bg-red-500/20 active:bg-red-500/10 transition-colors"
+          className="flex items-center justify-center w-12 h-full hover:bg-red-500/20 active:bg-red-500/10 transition-colors"
+          title="Chiudi"
         >
-          <X size={14} className="text-neutral-text-muted hover:text-red-400" />
+          <X size={15} className="text-neutral-text-muted hover:text-red-400" />
         </button>
       </div>
     </div>

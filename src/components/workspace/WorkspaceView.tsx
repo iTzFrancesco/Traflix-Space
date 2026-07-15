@@ -410,29 +410,29 @@ export function WorkspaceView() {
   if (!workspace && !activeWorkspaceId) {
     return (
       <>
-        <div className="flex flex-col items-center justify-center h-full gap-6 text-neutral-text-muted">
+        <div className="flex flex-col items-center justify-center h-full gap-8 px-8 text-neutral-text-muted">
           <TerminalSquare
-            size={64}
+            size={72}
             strokeWidth={1}
             className="text-primary/30"
           />
           <div className="text-center">
-            <h2 className="font-display font-bold text-xl text-neutral-text-dim mb-2">
+            <h2 className="font-display font-bold text-2xl text-neutral-text-dim mb-3 tracking-tight">
               Nessun Workspace Aperto
             </h2>
-            <p className="text-sm max-w-md mb-6">
+            <p className="text-[0.9375rem] max-w-md mb-8 leading-relaxed mx-auto">
               Seleziona un workspace dalla sidebar o creane uno nuovo per
               iniziare.
             </p>
             <button
               onClick={() => setWizardOpen(true)}
-              className="inline-flex items-center gap-2 px-6 py-3 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
+              className="inline-flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
                 boxShadow: "0 4px 16px rgba(232, 93, 4, 0.25)",
               }}
             >
-              <Plus size={16} />
+              <Plus size={18} />
               Nuovo Spazio
             </button>
           </div>
@@ -461,11 +461,12 @@ export function WorkspaceView() {
         {/* Header del workspace attivo */}
         <div
           style={{
-            padding: "12px 20px 8px",
+            padding: "16px 20px 12px",
             flexShrink: 0,
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "space-between",
+            gap: "16px",
           }}
         >
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -473,9 +474,10 @@ export function WorkspaceView() {
               style={{
                 fontFamily: "var(--font-display)",
                 fontWeight: 700,
-                fontSize: "16px",
+                fontSize: "17px",
                 color: "#f4f4f5",
                 letterSpacing: "-0.01em",
+                lineHeight: 1.3,
               }}
             >
               {activeLoaded.name}
@@ -483,12 +485,13 @@ export function WorkspaceView() {
             <p
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "#52525b",
-                marginTop: "2px",
+                fontSize: "12px",
+                color: "#71717a",
+                marginTop: "4px",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
+                lineHeight: 1.4,
               }}
             >
               {activeLoaded.rootPath}

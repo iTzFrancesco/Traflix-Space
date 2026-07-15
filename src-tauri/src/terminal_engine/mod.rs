@@ -11,6 +11,7 @@ pub use frame::FrameSnapshot;
 pub use session::TerminalSession;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::RwLock;
@@ -21,6 +22,8 @@ use crate::terminal_engine::scheduler::FrameScheduler;
 pub struct TerminalManager {
     pub sessions: DashMap<String, Arc<RwLock<TerminalSession>>>,
     scheduler: tokio::sync::Mutex<FrameScheduler>,
+    /// Currently focused terminal id (avoids write-locking every session on set_active).
+    active_id: tokio::sync::Mutex<Option<String>>,
 }
 
 impl Default for TerminalManager {
@@ -34,6 +37,7 @@ impl TerminalManager {
         Self {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
+            active_id: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -43,38 +47,44 @@ impl TerminalManager {
         config: crate::workspace::registry::TerminalConfig,
     ) -> Result<String, String> {
         let id = config.id.clone();
-        if self.sessions.contains_key(&id) {
-            info!(terminal_id = %id, "Terminal session already exists, reusing");
-            return Ok(id);
+
+        // Atomic check-or-insert to avoid dual-spawn races under concurrent IPC.
+        match self.sessions.entry(id.clone()) {
+            Entry::Occupied(_) => {
+                info!(terminal_id = %id, "Terminal session already exists, reusing");
+                return Ok(id);
+            }
+            Entry::Vacant(slot) => {
+                let shell = if config.shell.is_empty() {
+                    "powershell.exe".to_string()
+                } else {
+                    config.shell.clone()
+                };
+                let cwd_raw = if config.cwd.is_empty() {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| ".".to_string())
+                } else {
+                    config.cwd.clone()
+                };
+                // Strip Windows extended-length prefixes that break some shells.
+                let cwd = cwd_raw
+                    .trim_start_matches("\\\\?\\")
+                    .trim_start_matches("\\\\.\\")
+                    .to_string();
+
+                let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
+                slot.insert(Arc::new(RwLock::new(session)));
+                info!(terminal_id = %id, "Terminal session created");
+            }
         }
-        let shell = if config.shell.is_empty() {
-            "powershell.exe".to_string()
-        } else {
-            config.shell.clone()
-        };
-        let cwd_raw = if config.cwd.is_empty() {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        } else {
-            config.cwd.clone()
-        };
-        // Normalizza il path rimuovendo il prefisso \\\?\ (extended-length path di Windows)
-        // che std::env::current_dir() o std::fs::canonicalize() aggiungono automaticamente.
-        // Il prefisso \\\?\ causa problemi con alcuni comandi nelle shell spawnate.
-        let cwd = cwd_raw
-            .trim_start_matches("\\\\?\\")
-            .trim_start_matches("\\\\.\\")
-            .to_string();
 
-        let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
-
-        self.sessions
-            .insert(id.clone(), Arc::new(RwLock::new(session)));
-        info!(terminal_id = %id, "Terminal session created");
-
-        // Spawn the shell immediately so the PTY reader starts sending output
-        self.spawn_shell(&app, &id).await?;
+        // Spawn the shell immediately so the PTY reader starts sending output.
+        // If spawn fails, remove the empty session to avoid zombies in the map.
+        if let Err(e) = self.spawn_shell(&app, &id).await {
+            let _ = self.sessions.remove(&id);
+            return Err(e);
+        }
 
         Ok(id)
     }
@@ -109,7 +119,6 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         session.resize(cols, rows)?;
-        info!(terminal_id = %id, cols, rows, "Terminal resized");
         Ok(())
     }
 
@@ -121,49 +130,89 @@ impl TerminalManager {
         let mut session = session.1.write().await;
         session.kill();
         self.scheduler.lock().await.stop(id);
+
+        let mut active = self.active_id.lock().await;
+        if active.as_deref() == Some(id) {
+            *active = None;
+        }
+
         info!(terminal_id = %id, "Terminal killed and removed");
         Ok(())
     }
 
-    pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
-        let mut active_id: Option<String> = None;
+    /// Kill every live session — used on app exit so no ConPTY/shell orphans remain.
+    pub async fn kill_all(&self) {
+        let ids: Vec<String> = self.sessions.iter().map(|e| e.key().clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        info!(count = ids.len(), "Killing all terminal sessions on shutdown");
+        for id in ids {
+            if let Some((_, session)) = self.sessions.remove(&id) {
+                let mut session = session.write().await;
+                session.kill();
+            }
+            self.scheduler.lock().await.stop(&id);
+        }
+        *self.active_id.lock().await = None;
+        self.scheduler.lock().await.stop_all();
+    }
 
-        // Fase 1: aggiorna flag active su tutte le sessioni
-        for entry in self.sessions.iter() {
-            let key = entry.key().clone();
-            let mut session = entry.value().write().await;
-            if Some(key.as_str()) == id {
-                session.active = true;
-                active_id = Some(key);
-            } else {
+    pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
+        let mut active = self.active_id.lock().await;
+        let prev = active.clone();
+
+        // No-op when already active.
+        if prev.as_deref() == id {
+            return Ok(());
+        }
+
+        // Clear previous active flag (single write lock).
+        if let Some(ref prev_id) = prev {
+            if let Some(entry) = self.sessions.get(prev_id) {
+                let mut session = entry.write().await;
                 session.active = false;
             }
         }
 
-        // Fase 2: gestisci scheduler — colleziona Arc prima per evitare di tenere shard lock across await
-        let entries: Vec<(String, Arc<RwLock<TerminalSession>>)> = self
-            .sessions
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
-        for (key, session_arc) in &entries {
-            if Some(key.as_str()) == id {
-                self.scheduler
-                    .lock()
-                    .await
-                    .start(app.clone(), session_arc.clone(), key.clone())
-                    .await;
-            } else {
-                self.scheduler.lock().await.stop(key);
+        // Set new active flag.
+        if let Some(new_id) = id {
+            if let Some(entry) = self.sessions.get(new_id) {
+                let mut session = entry.write().await;
+                session.active = true;
             }
+            *active = Some(new_id.to_string());
+        } else {
+            *active = None;
         }
+        drop(active);
 
-        if let Some(ref aid) = active_id {
+        // Legacy frame scheduler is unused with per-pane xterm; ensure no tasks leak.
+        self.scheduler.lock().await.stop_all();
+
+        if let Some(aid) = id {
+            // Recovery path if spawn was missed.
             self.spawn_shell(app, aid).await?;
         }
 
         info!(terminal_id = ?id, "Active terminal set");
         Ok(())
+    }
+
+    /// Plain-text screen for rehydrating xterm after workspace switch (PTY keep-alive).
+    pub async fn get_screen_text(&self, id: &str) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        let rows = session.grid.rows;
+        let cols = session.grid.cols;
+        if let Ok(p) = session.parser.lock() {
+            Ok(p.screen_text(rows, cols))
+        } else {
+            Ok(String::new())
+        }
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {

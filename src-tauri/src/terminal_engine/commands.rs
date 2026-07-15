@@ -115,3 +115,14 @@ pub async fn terminal_reopen(
     manager.spawn(app.clone(), config).await?;
     Ok(())
 }
+
+/// Plain-text screen contents for rehydrating xterm after a workspace remount
+/// while the backend PTY session was kept alive.
+#[tauri::command]
+pub async fn terminal_get_screen_text(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<String, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_screen_text(&terminal_id).await
+}

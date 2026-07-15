@@ -308,6 +308,8 @@ export function useTerminalInput(
       container.removeEventListener("paste", handlePasteCapture, true);
       container.removeEventListener("dragover", handleDragOver);
       container.removeEventListener("drop", handleDrop);
+      delete container.dataset.terminalId;
+      containerMap.delete(container);
     };
-  }, [containerRef]);
+  }, [containerRef, terminalId, xtermRef]);
 }

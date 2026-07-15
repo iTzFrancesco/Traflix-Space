@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { shallow } from "zustand/shallow";
+import { invoke } from "@tauri-apps/api/core";
+import { useSkillStore } from "./skillStore";
 
 export interface TerminalState {
   id: string;
@@ -30,6 +32,7 @@ interface TerminalStore {
 
   addTerminal: (config: { id: string; workspaceId: string; shell: string; cwd: string; title: string; agent: string | null }) => void;
   removeTerminal: (id: string) => void;
+  /** Removes FE state and fires backend terminal_kill for each PTY (fire-and-forget). */
   killWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
   updateTitle: (id: string, title: string) => void;
@@ -37,6 +40,13 @@ interface TerminalStore {
   markExited: (id: string, exitCode: number) => void;
   markAgentLaunched: (id: string) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
+}
+
+/** Best-effort backend PTY kill — never throws into the store. */
+function killBackendSession(terminalId: string) {
+  invoke("terminal_kill", { terminalId }).catch(() => {
+    // Session may already be gone (natural exit / double-kill).
+  });
 }
 
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
@@ -88,29 +98,51 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       };
     }),
 
-  killWorkspaceTerminals: (workspaceId) =>
-    set((state) => {
+  killWorkspaceTerminals: (workspaceId) => {
+    // Collect IDs first so we can kill backend PTYs even after state is cleared.
+    const idsToKill: string[] = [];
+    const state = get();
+    for (const [id, t] of Object.entries(state.terminals)) {
+      if (t.workspaceId === workspaceId) {
+        idsToKill.push(id);
+      }
+    }
+    // CRITICAL: previously this only removed Zustand entries and left ConPTY
+    // child processes + reader threads alive → RAM/CPU leak after open/close cycles.
+    const skillStore = useSkillStore.getState();
+    for (const id of idsToKill) {
+      killBackendSession(id);
+      skillStore.clearPendingDrop(id);
+    }
+
+    set((s) => {
       const next: Record<string, TerminalState> = {};
       let activeCleared = false;
-      for (const [id, t] of Object.entries(state.terminals)) {
+      for (const [id, t] of Object.entries(s.terminals)) {
         if (t.workspaceId === workspaceId) {
-          if (state.activeTerminalId === id) activeCleared = true;
+          if (s.activeTerminalId === id) activeCleared = true;
           continue;
         }
         next[id] = t;
       }
       return {
         terminals: next,
-        activeTerminalId: activeCleared ? null : state.activeTerminalId,
+        activeTerminalId: activeCleared ? null : s.activeTerminalId,
       };
-    }),
+    });
+  },
 
   setActiveTerminal: (id) =>
     set((state) => {
       if (state.activeTerminalId === id) return state;
-      const next: Record<string, TerminalState> = {};
-      for (const [tid, t] of Object.entries(state.terminals)) {
-        next[tid] = { ...t, isActive: tid === id };
+      // Only rewrite the two affected entries (not the entire Record).
+      const next = { ...state.terminals };
+      const prevId = state.activeTerminalId;
+      if (prevId && next[prevId]) {
+        next[prevId] = { ...next[prevId], isActive: false };
+      }
+      if (next[id]) {
+        next[id] = { ...next[id], isActive: true };
       }
       return { terminals: next, activeTerminalId: id };
     }),
