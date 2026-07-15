@@ -1,5 +1,5 @@
-pub(crate) mod commands;
 mod cell;
+pub(crate) mod commands;
 mod frame;
 mod grid;
 mod parser;
@@ -31,7 +31,11 @@ impl TerminalManager {
         }
     }
 
-    pub async fn spawn(&self, app: AppHandle, config: crate::workspace::registry::TerminalConfig) -> Result<String, String> {
+    pub async fn spawn(
+        &self,
+        app: AppHandle,
+        config: crate::workspace::registry::TerminalConfig,
+    ) -> Result<String, String> {
         let id = config.id.clone();
         if self.sessions.contains_key(&id) {
             info!(terminal_id = %id, "Terminal session already exists, reusing");
@@ -57,15 +61,10 @@ impl TerminalManager {
             .trim_start_matches("\\\\.\\")
             .to_string();
 
-        let session = TerminalSession::new(
-            id.clone(),
-            shell,
-            cwd,
-            80,
-            24,
-        );
+        let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
 
-        self.sessions.insert(id.clone(), Arc::new(RwLock::new(session)));
+        self.sessions
+            .insert(id.clone(), Arc::new(RwLock::new(session)));
         info!(terminal_id = %id, "Terminal session created");
 
         // Spawn the shell immediately so the PTY reader starts sending output
@@ -75,7 +74,9 @@ impl TerminalManager {
     }
 
     pub async fn spawn_shell(&self, app: &AppHandle, id: &str) -> Result<(), String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         if session.pty.is_some() {
@@ -87,14 +88,18 @@ impl TerminalManager {
     }
 
     pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         session.write(data)
     }
 
     pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         session.resize(cols, rows)?;
@@ -103,7 +108,9 @@ impl TerminalManager {
     }
 
     pub async fn kill(&self, _app: &AppHandle, id: &str) -> Result<(), String> {
-        let session = self.sessions.remove(id)
+        let session = self
+            .sessions
+            .remove(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.1.write().await;
         session.kill();
@@ -128,12 +135,18 @@ impl TerminalManager {
         }
 
         // Fase 2: gestisci scheduler — colleziona Arc prima per evitare di tenere shard lock across await
-        let entries: Vec<(String, Arc<RwLock<TerminalSession>>)> = self.sessions.iter()
+        let entries: Vec<(String, Arc<RwLock<TerminalSession>>)> = self
+            .sessions
+            .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
         for (key, session_arc) in &entries {
             if Some(key.as_str()) == id {
-                self.scheduler.lock().await.start(app.clone(), session_arc.clone(), key.clone()).await;
+                self.scheduler
+                    .lock()
+                    .await
+                    .start(app.clone(), session_arc.clone(), key.clone())
+                    .await;
             } else {
                 self.scheduler.lock().await.stop(key);
             }
@@ -148,7 +161,9 @@ impl TerminalManager {
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
 
@@ -181,10 +196,7 @@ impl TerminalManager {
 
         let cursor_pos = if let Ok(p) = session.parser.lock() {
             let (cr, cc) = p.screen().cursor_position();
-            crate::terminal_engine::frame::CursorPosition {
-                row: cr,
-                col: cc,
-            }
+            crate::terminal_engine::frame::CursorPosition { row: cr, col: cc }
         } else {
             session.grid.cursor.clone()
         };
@@ -212,7 +224,9 @@ impl TerminalManager {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<Vec<Cell>>, String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         Ok(session.grid.get_scrollback(offset, limit))
@@ -224,9 +238,15 @@ impl TerminalManager {
 
     #[allow(dead_code)]
     pub async fn start_frame_scheduler(&self, app: AppHandle, id: &str) -> Result<(), String> {
-        let session = self.sessions.get(id)
+        let session = self
+            .sessions
+            .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        self.scheduler.lock().await.start(app, session.value().clone(), id.to_string()).await;
+        self.scheduler
+            .lock()
+            .await
+            .start(app, session.value().clone(), id.to_string())
+            .await;
         Ok(())
     }
 

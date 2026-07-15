@@ -71,8 +71,7 @@ fn main() {
 
             // Crea icona della tray di sistema
             if let Some(default_icon) = app.default_window_icon().cloned() {
-                let show = MenuItemBuilder::with_id("show", "Mostra Traflix Space")
-                    .build(app)?;
+                let show = MenuItemBuilder::with_id("show", "Mostra Traflix Space").build(app)?;
                 let quit = PredefinedMenuItem::quit(app, Some("Esci"))?;
                 let menu = MenuBuilder::new(app)
                     .item(&show)
@@ -83,17 +82,19 @@ fn main() {
                 TrayIconBuilder::new()
                     .icon(default_icon)
                     .menu(&menu)
-                    .tooltip(if cfg!(debug_assertions) { "Traflix Space [DEV]" } else { "Traflix Space" })
-                    .on_menu_event(|app, event| {
-                        match event.id.as_ref() {
-                            "show" => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                    .tooltip(if cfg!(debug_assertions) {
+                        "Traflix Space [DEV]"
+                    } else {
+                        "Traflix Space"
+                    })
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
                             }
-                            _ => {}
                         }
+                        _ => {}
                     })
                     .on_tray_icon_event(|tray, event| {
                         if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
@@ -114,7 +115,8 @@ fn main() {
             // Registra on_window_event DOPO aver stabilito se la tray è attiva
             let win_tray_ok = tray_ok_close.clone();
             let app_handle = app.handle().clone();
-            let window = app.get_webview_window("main")
+            let window = app
+                .get_webview_window("main")
                 .expect("main window should exist");
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -140,7 +142,6 @@ fn main() {
 
             Ok(())
         })
-
         .invoke_handler(tauri::generate_handler![
             workspace::commands::create_workspace,
             workspace::commands::get_workspaces,

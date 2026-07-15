@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::terminal_engine::session::TerminalSession;
 use crate::terminal_engine::frame::{CellUpdate, FrameDiff};
+use crate::terminal_engine::session::TerminalSession;
 
 pub struct FrameScheduler {
     inactive_interval: Duration,
@@ -22,7 +22,12 @@ impl FrameScheduler {
         }
     }
 
-    pub async fn start(&mut self, app: AppHandle, session: Arc<RwLock<TerminalSession>>, id: String) {
+    pub async fn start(
+        &mut self,
+        app: AppHandle,
+        session: Arc<RwLock<TerminalSession>>,
+        id: String,
+    ) {
         self.stop(&id);
 
         let token = CancellationToken::new();

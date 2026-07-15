@@ -69,9 +69,15 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
 
     for line in yaml_block.lines() {
         let line = line.trim();
-        if let Some(val) = line.strip_prefix("name:").map(|v| v.trim().trim_matches('"').to_string()) {
+        if let Some(val) = line
+            .strip_prefix("name:")
+            .map(|v| v.trim().trim_matches('"').to_string())
+        {
             name = Some(val);
-        } else if let Some(val) = line.strip_prefix("description:").map(|v| v.trim().trim_matches('"').to_string()) {
+        } else if let Some(val) = line
+            .strip_prefix("description:")
+            .map(|v| v.trim().trim_matches('"').to_string())
+        {
             desc = Some(val);
         }
     }

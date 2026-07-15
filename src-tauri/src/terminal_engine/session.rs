@@ -1,11 +1,11 @@
+use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
+use crate::terminal_engine::grid::GridBuffer;
+use crate::terminal_engine::parser::AnsiParser;
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tracing::{error, info, warn};
-use portable_pty::{CommandBuilder, MasterPty, PtySize};
-use crate::terminal_engine::grid::GridBuffer;
-use crate::terminal_engine::parser::AnsiParser;
-use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 
 pub struct TerminalSession {
     pub id: String,
@@ -55,15 +55,17 @@ impl TerminalSession {
 
         let pty_system = portable_pty::native_pty_system();
 
-        let pair = pty_system.openpty(PtySize {
-            rows: self.grid.rows,
-            cols: self.grid.cols,
-            pixel_width: self.grid.cols as u16 * 8,
-            pixel_height: self.grid.rows as u16 * 16,
-        }).map_err(|e| {
-            error!("Failed to open PTY: {}", e);
-            format!("PTY open error: {}", e)
-        })?;
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: self.grid.rows,
+                cols: self.grid.cols,
+                pixel_width: self.grid.cols as u16 * 8,
+                pixel_height: self.grid.rows as u16 * 16,
+            })
+            .map_err(|e| {
+                error!("Failed to open PTY: {}", e);
+                format!("PTY open error: {}", e)
+            })?;
 
         let mut cmd = CommandBuilder::new(&self.shell);
         cmd.cwd(&self.cwd);
@@ -107,7 +109,9 @@ impl TerminalSession {
             let mut natural_exit = false;
 
             loop {
-                if stop.load(Ordering::Relaxed) { break; }
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 let n = {
                     let mut reader = match reader_arc.lock() {
                         Ok(guard) => guard,
@@ -138,19 +142,29 @@ impl TerminalSession {
                     drop(p);
                 }
 
-                let _ = app_reader.emit("terminal-output", TerminalOutput {
-                    terminal_id: id.clone(),
-                    data,
-                });
+                let _ = app_reader.emit(
+                    "terminal-output",
+                    TerminalOutput {
+                        terminal_id: id.clone(),
+                        data,
+                    },
+                );
             }
 
             info!(terminal_id = %id, "PTY reader task ended");
 
-            if natural_exit && exit_emitted_reader.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).is_ok() {
-                let _ = app_reader.emit("terminal-exited", TerminalExited {
-                    terminal_id: id.clone(),
-                    exit_code: 0,
-                });
+            if natural_exit
+                && exit_emitted_reader
+                    .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+                    .is_ok()
+            {
+                let _ = app_reader.emit(
+                    "terminal-exited",
+                    TerminalExited {
+                        terminal_id: id.clone(),
+                        exit_code: 0,
+                    },
+                );
             }
         });
 
@@ -182,11 +196,17 @@ impl TerminalSession {
 
                 if exited {
                     info!(terminal_id = %watch_id, "Child process exited (watch thread)");
-                    if exit_emitted_watch.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).is_ok() {
-                        let _ = app_watch.emit("terminal-exited", TerminalExited {
-                            terminal_id: watch_id.clone(),
-                            exit_code: 0,
-                        });
+                    if exit_emitted_watch
+                        .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        let _ = app_watch.emit(
+                            "terminal-exited",
+                            TerminalExited {
+                                terminal_id: watch_id.clone(),
+                                exit_code: 0,
+                            },
+                        );
                     }
                     return;
                 }
@@ -201,9 +221,11 @@ impl TerminalSession {
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
         if let Some(ref writer) = self.writer {
-            let mut writer = writer.lock()
+            let mut writer = writer
+                .lock()
                 .map_err(|_| "Writer lock poisoned".to_string())?;
-            writer.write_all(data)
+            writer
+                .write_all(data)
                 .map_err(|e| format!("Write error: {}", e))?;
             Ok(())
         } else {
@@ -214,13 +236,17 @@ impl TerminalSession {
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         self.grid.resize(cols, rows);
         if let Some(ref master) = self.master {
-            let master = master.lock().map_err(|_| "Master lock poisoned".to_string())?;
-            master.resize(portable_pty::PtySize {
-                rows,
-                cols,
-                pixel_width: cols * 8,
-                pixel_height: rows * 16,
-            }).map_err(|e| format!("PTY resize error: {}", e))?;
+            let master = master
+                .lock()
+                .map_err(|_| "Master lock poisoned".to_string())?;
+            master
+                .resize(portable_pty::PtySize {
+                    rows,
+                    cols,
+                    pixel_width: cols * 8,
+                    pixel_height: rows * 16,
+                })
+                .map_err(|e| format!("PTY resize error: {}", e))?;
         }
         Ok(())
     }

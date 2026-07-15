@@ -14,5 +14,3 @@ pub async fn set_settings(
 ) -> Result<(), String> {
     manager.set(settings).await
 }
-
-

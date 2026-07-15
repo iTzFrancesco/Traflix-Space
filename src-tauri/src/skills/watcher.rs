@@ -27,7 +27,10 @@ pub fn start_skills_watcher(app: AppHandle) {
     };
 
     if !dir.exists() {
-        tracing::info!("Cartella skills non trovata: {:?} — watcher non avviato", dir);
+        tracing::info!(
+            "Cartella skills non trovata: {:?} — watcher non avviato",
+            dir
+        );
         return;
     }
 
@@ -56,9 +59,7 @@ pub fn start_skills_watcher(app: AppHandle) {
                 Ok(Ok(event)) => {
                     // Filtra solo eventi rilevanti (modifiche a file/cartelle)
                     match event.kind {
-                        EventKind::Create(_)
-                        | EventKind::Modify(_)
-                        | EventKind::Remove(_) => {
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
                             let now = std::time::Instant::now();
                             if now.duration_since(last_emit) >= debounce_ms {
                                 last_emit = now;

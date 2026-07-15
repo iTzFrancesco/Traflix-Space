@@ -46,22 +46,19 @@ pub async fn create_workspace(
     // Save local .traflix/workspace.json
     let root = Path::new(&config.root_path);
     let traflix_dir = root.join(".traflix");
-    std::fs::create_dir_all(&traflix_dir)
-        .map_err(|e| {
-            error!(%config.name, error = %e, "Errore creazione .traflix");
-            format!("Errore creazione .traflix: {}", e)
-        })?;
+    std::fs::create_dir_all(&traflix_dir).map_err(|e| {
+        error!(%config.name, error = %e, "Errore creazione .traflix");
+        format!("Errore creazione .traflix: {}", e)
+    })?;
 
-    let local_config = serde_json::to_string_pretty(&config)
-        .map_err(|e| {
-            error!(%config.name, error = %e, "Errore serializzazione config");
-            format!("Errore serializzazione: {}", e)
-        })?;
-    std::fs::write(traflix_dir.join("workspace.json"), &local_config)
-        .map_err(|e| {
-            error!(%config.name, error = %e, "Errore scrittura workspace.json");
-            format!("Errore scrittura workspace.json: {}", e)
-        })?;
+    let local_config = serde_json::to_string_pretty(&config).map_err(|e| {
+        error!(%config.name, error = %e, "Errore serializzazione config");
+        format!("Errore serializzazione: {}", e)
+    })?;
+    std::fs::write(traflix_dir.join("workspace.json"), &local_config).map_err(|e| {
+        error!(%config.name, error = %e, "Errore scrittura workspace.json");
+        format!("Errore scrittura workspace.json: {}", e)
+    })?;
 
     // Save to global registry
     registry.insert(config.clone()).await;
@@ -84,13 +81,10 @@ pub async fn get_workspaces(app: AppHandle) -> Result<Vec<WorkspaceConfig>, Stri
 pub async fn get_workspace(app: AppHandle, id: String) -> Result<WorkspaceConfig, String> {
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
-    registry
-        .get(&id)
-        .await
-        .ok_or_else(|| {
-            warn!(%id, "Workspace non trovato");
-            "Workspace non trovato".into()
-        })
+    registry.get(&id).await.ok_or_else(|| {
+        warn!(%id, "Workspace non trovato");
+        "Workspace non trovato".into()
+    })
 }
 
 #[tauri::command]
@@ -115,16 +109,14 @@ pub async fn update_workspace(
 
     // Update local .traflix/workspace.json
     let root = Path::new(&config.root_path);
-    let local_config = serde_json::to_string_pretty(&config)
-        .map_err(|e| {
-            error!(%id, error = %e, "Errore serializzazione update");
-            format!("Errore serializzazione: {}", e)
-        })?;
-    std::fs::write(root.join(".traflix").join("workspace.json"), &local_config)
-        .map_err(|e| {
-            error!(%id, error = %e, "Errore update workspace.json");
-            format!("Errore scrittura workspace.json: {}", e)
-        })?;
+    let local_config = serde_json::to_string_pretty(&config).map_err(|e| {
+        error!(%id, error = %e, "Errore serializzazione update");
+        format!("Errore serializzazione: {}", e)
+    })?;
+    std::fs::write(root.join(".traflix").join("workspace.json"), &local_config).map_err(|e| {
+        error!(%id, error = %e, "Errore update workspace.json");
+        format!("Errore scrittura workspace.json: {}", e)
+    })?;
 
     // Update global registry
     registry.insert(config.clone()).await;
@@ -195,9 +187,8 @@ pub async fn navigate_folder(
     };
 
     // Canonicalizza il path
-    let canonical = std::fs::canonicalize(&resolved).map_err(|e| {
-        format!("Percorso non trovato: {} ({})", resolved.display(), e)
-    })?;
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|e| format!("Percorso non trovato: {} ({})", resolved.display(), e))?;
 
     let canonical_str = normalize_windows_path(&canonical.to_string_lossy());
 

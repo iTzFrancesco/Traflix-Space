@@ -3,9 +3,9 @@
 use tauri::{AppHandle, Manager};
 use tracing::info;
 
-use crate::terminal_engine::TerminalManager;
 use crate::terminal_engine::cell::Cell;
 use crate::terminal_engine::frame::FrameSnapshot;
+use crate::terminal_engine::TerminalManager;
 
 #[tauri::command]
 pub async fn terminal_spawn(
@@ -52,19 +52,13 @@ pub async fn terminal_resize(
 }
 
 #[tauri::command]
-pub async fn terminal_kill(
-    app: AppHandle,
-    terminal_id: String,
-) -> Result<(), String> {
+pub async fn terminal_kill(app: AppHandle, terminal_id: String) -> Result<(), String> {
     let manager = app.state::<TerminalManager>();
     manager.kill(&app, &terminal_id).await
 }
 
 #[tauri::command]
-pub async fn terminal_set_active(
-    app: AppHandle,
-    terminal_id: String,
-) -> Result<(), String> {
+pub async fn terminal_set_active(app: AppHandle, terminal_id: String) -> Result<(), String> {
     let manager = app.state::<TerminalManager>();
     if terminal_id.is_empty() {
         manager.set_active(&app, None).await

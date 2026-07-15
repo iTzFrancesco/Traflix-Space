@@ -76,22 +76,19 @@ impl SettingsManager {
 
     fn save_to_disk(path: &str, settings: &AppSettings) -> Result<(), String> {
         if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| {
-                    error!(error = %e, "Errore creazione directory settings");
-                    format!("Errore creazione directory: {}", e)
-                })?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                error!(error = %e, "Errore creazione directory settings");
+                format!("Errore creazione directory: {}", e)
+            })?;
         }
-        let data = serde_json::to_string_pretty(settings)
-            .map_err(|e| {
-                error!(error = %e, "Errore serializzazione settings");
-                format!("Errore serializzazione: {}", e)
-            })?;
-        std::fs::write(path, data)
-            .map_err(|e| {
-                error!(error = %e, "Errore scrittura settings su disco");
-                format!("Errore scrittura settings: {}", e)
-            })?;
+        let data = serde_json::to_string_pretty(settings).map_err(|e| {
+            error!(error = %e, "Errore serializzazione settings");
+            format!("Errore serializzazione: {}", e)
+        })?;
+        std::fs::write(path, data).map_err(|e| {
+            error!(error = %e, "Errore scrittura settings su disco");
+            format!("Errore scrittura settings: {}", e)
+        })?;
         Ok(())
     }
 
@@ -103,5 +100,4 @@ impl SettingsManager {
         *self.settings.lock().await = settings.clone();
         Self::save_to_disk(&self.store_path, &settings)
     }
-
 }
