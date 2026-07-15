@@ -59,8 +59,8 @@ impl TerminalSession {
             .openpty(PtySize {
                 rows: self.grid.rows,
                 cols: self.grid.cols,
-                pixel_width: self.grid.cols as u16 * 8,
-                pixel_height: self.grid.rows as u16 * 16,
+                pixel_width: self.grid.cols * 8,
+                pixel_height: self.grid.rows * 16,
             })
             .map_err(|e| {
                 error!("Failed to open PTY: {}", e);

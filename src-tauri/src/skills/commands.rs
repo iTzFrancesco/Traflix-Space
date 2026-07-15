@@ -82,11 +82,7 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
         }
     }
 
-    if let Some(n) = name {
-        Some((n, desc.unwrap_or_default()))
-    } else {
-        None
-    }
+    name.map(|n| (n, desc.unwrap_or_default()))
 }
 
 /// Scansiona la cartella skills e restituisce la lista di SkillInfo.

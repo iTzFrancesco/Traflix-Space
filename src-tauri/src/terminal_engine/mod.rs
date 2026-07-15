@@ -23,6 +23,12 @@ pub struct TerminalManager {
     scheduler: tokio::sync::Mutex<FrameScheduler>,
 }
 
+impl Default for TerminalManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self {
@@ -290,7 +296,7 @@ fn idx_to_rgb(idx: u8) -> Color {
         let b = ((n % 6) * 255 / 5) as u8;
         Color::new(r, g, b)
     } else {
-        let gray = ((idx - 232) * 255 / 23) as u8;
+        let gray = (idx - 232) * 255 / 23;
         Color::new(gray, gray, gray)
     }
 }

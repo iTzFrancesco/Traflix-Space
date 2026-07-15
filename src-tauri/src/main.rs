@@ -87,14 +87,13 @@ fn main() {
                     } else {
                         "Traflix Space"
                     })
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "show" => {
+                    .on_menu_event(|app, event| {
+                        if event.id.as_ref() == "show" {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
                         }
-                        _ => {}
                     })
                     .on_tray_icon_event(|tray, event| {
                         if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {

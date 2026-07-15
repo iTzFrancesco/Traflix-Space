@@ -23,10 +23,7 @@ impl AnsiParser {
     #[allow(dead_code)]
     pub fn cursor_position(&self) -> CursorPosition {
         let (row, col) = self.parser.screen().cursor_position();
-        CursorPosition {
-            row: row as u16,
-            col: col as u16,
-        }
+        CursorPosition { row, col }
     }
 
     #[allow(dead_code)]

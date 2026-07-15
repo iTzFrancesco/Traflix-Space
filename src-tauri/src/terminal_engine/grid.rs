@@ -37,7 +37,7 @@ impl GridBuffer {
             self.cursor.row += 1;
             if self.cursor.row >= self.rows {
                 self.scroll_up(1);
-                self.cursor.row = (self.rows - 1) as u16;
+                self.cursor.row = self.rows - 1;
             }
         }
     }
@@ -92,7 +92,7 @@ impl GridBuffer {
                     self.cursor.row += 1;
                     if self.cursor.row >= self.rows {
                         self.scroll_up(1);
-                        self.cursor.row = (self.rows - 1) as u16;
+                        self.cursor.row = self.rows - 1;
                     }
                 }
                 '\t' => {
