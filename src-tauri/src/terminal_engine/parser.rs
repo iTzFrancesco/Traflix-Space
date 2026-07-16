@@ -61,7 +61,6 @@ impl AnsiParser {
     }
 
     fn rehydrate_text_inner(&mut self) -> String {
-        // Discover how many history rows are stored (set_scrollback clamps).
         self.parser.set_scrollback(usize::MAX);
         let max_off = self.parser.screen().scrollback();
         let cols = self.cols;
@@ -69,31 +68,25 @@ impl AnsiParser {
         let mut lines: Vec<String> =
             Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
 
-        // History lines (oldest first): at offset N the top visible row is
-        // scrollback[scrollback_len - N]. Walking N from max_off → 1 yields
-        // every history line exactly once.
         if max_off > 0 {
             for off in (1..=max_off).rev() {
                 self.parser.set_scrollback(off);
-                if let Some(line) = self.parser.screen().rows(0, cols).next() {
-                    lines.push(trim_trailing_ws(line));
+                if let Some(line) = self.parser.screen().rows_formatted(0, cols).next() {
+                    lines.push(String::from_utf8_lossy(&line).into_owned());
                 }
             }
         }
 
-        // Live screen (all viewport rows at offset 0).
         self.parser.set_scrollback(0);
-        for line in self.parser.screen().rows(0, cols) {
-            lines.push(trim_trailing_ws(line));
+        for line in self.parser.screen().rows_formatted(0, cols) {
+            lines.push(String::from_utf8_lossy(&line).into_owned());
         }
 
-        // Safety cap: keep the most recent lines only.
         let start = lines.len().saturating_sub(cap);
         let selected = &lines[start..];
 
-        // Drop trailing empty lines (common at the bottom of a half-filled screen).
         let mut end = selected.len();
-        while end > 0 && selected[end - 1].is_empty() {
+        while end > 0 && strip_ansi(&selected[end - 1]).trim_end().is_empty() {
             end -= 1;
         }
         if end == 0 {
@@ -153,11 +146,19 @@ impl AnsiParser {
     }
 }
 
-fn trim_trailing_ws(s: String) -> String {
-    let trimmed = s.trim_end();
-    if trimmed.len() == s.len() {
-        s
-    } else {
-        trimmed.to_string()
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if c >= '\x40' && c <= '\x7E' {
+                    break;
+                }
+            }
+        } else if c != '\x1b' {
+            out.push(c);
+        }
     }
+    out
 }
