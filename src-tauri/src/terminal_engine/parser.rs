@@ -60,9 +60,27 @@ impl AnsiParser {
         result
     }
 
+    // Recover scrollback + viewport content for xterm rehydrate.
+    //
+    // The vt100 crate only exposes scrollback through its offset-based
+    // visible_rows(), not as a contiguous list. We walk the offset from
+    // max down to 1, capturing one scrollback row per step, then append
+    // the full viewport at offset 0.
+    //
+    // CRITICAL: max_off is clamped to self.rows because vt100's
+    // visible_rows() does `rows_len - scrollback_offset` which underflows
+    // when scrollback_len > rows_len (SCROLLBACK_LINES=1000 vs rows=24).
+    // This caps recovered history at rows lines but prevents a panic that
+    // would kill the entire rehydrate path.
     fn rehydrate_text_inner(&mut self) -> String {
         self.parser.set_scrollback(usize::MAX);
-        let max_off = self.parser.screen().scrollback();
+        let mut max_off = self.parser.screen().scrollback();
+        // Clamp to rows to prevent underflow in vt100 visible_rows() when
+        // scrollback (1000) > visible rows (24). Without this clamp,
+        // rows_len - scrollback_offset overflows usize.
+        if max_off > self.rows as usize {
+            max_off = self.rows as usize;
+        }
         let cols = self.cols;
         let cap = SCROLLBACK_LINES.saturating_add(self.rows as usize);
         let mut lines: Vec<String> =
