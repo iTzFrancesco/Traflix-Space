@@ -83,8 +83,7 @@ impl AnsiParser {
         }
         let cols = self.cols;
         let cap = SCROLLBACK_LINES.saturating_add(self.rows as usize);
-        let mut lines: Vec<String> =
-            Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
+        let mut lines: Vec<String> = Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
 
         if max_off > 0 {
             for off in (1..=max_off).rev() {

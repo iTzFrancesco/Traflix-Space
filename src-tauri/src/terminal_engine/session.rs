@@ -196,44 +196,42 @@ impl TerminalSession {
         let watch_stop = self.reader_stop.clone();
         let watch_child = child_arc;
         let exit_emitted_watch = self.exit_emitted.clone();
-        tokio::task::spawn_blocking(move || {
-            loop {
-                if watch_stop.load(Ordering::Acquire) {
-                    return;
-                }
-
-                let exited = {
-                    let mut c = match watch_child.lock() {
-                        Ok(guard) => guard,
-                        Err(_) => return,
-                    };
-                    match c.try_wait() {
-                        Ok(Some(_status)) => true,
-                        Ok(None) => false,
-                        Err(_) => true,
-                    }
-                };
-
-                if exited {
-                    info!(terminal_id = %watch_id, "Child process exited (watch thread)");
-                    if !watch_stop.load(Ordering::Acquire)
-                        && exit_emitted_watch
-                            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
-                            .is_ok()
-                    {
-                        let _ = app_watch.emit(
-                            "terminal-exited",
-                            TerminalExited {
-                                terminal_id: watch_id.to_string(),
-                                exit_code: 0,
-                            },
-                        );
-                    }
-                    return;
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(250));
+        tokio::task::spawn_blocking(move || loop {
+            if watch_stop.load(Ordering::Acquire) {
+                return;
             }
+
+            let exited = {
+                let mut c = match watch_child.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => return,
+                };
+                match c.try_wait() {
+                    Ok(Some(_status)) => true,
+                    Ok(None) => false,
+                    Err(_) => true,
+                }
+            };
+
+            if exited {
+                info!(terminal_id = %watch_id, "Child process exited (watch thread)");
+                if !watch_stop.load(Ordering::Acquire)
+                    && exit_emitted_watch
+                        .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    let _ = app_watch.emit(
+                        "terminal-exited",
+                        TerminalExited {
+                            terminal_id: watch_id.to_string(),
+                            exit_code: 0,
+                        },
+                    );
+                }
+                return;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(250));
         });
 
         info!(terminal_id = %self.id, shell = %self.shell, "Shell spawned successfully");
@@ -322,10 +320,21 @@ impl TerminalSession {
         // A terminal command must start with the cd-like verb. Searching inside
         // the input would incorrectly treat e.g. `echo cd .\\project` as a
         // directory change.
-        let prefixes = ["cd ", "chdir ", "CD ", "CHDIR ", "Set-Location ", "set-location ", "sl ", "SL "];
+        let prefixes = [
+            "cd ",
+            "chdir ",
+            "CD ",
+            "CHDIR ",
+            "Set-Location ",
+            "set-location ",
+            "sl ",
+            "SL ",
+        ];
 
         let command = s.trim_start_matches("\x1b[200~").trim_start();
-        let remainder = prefixes.iter().find_map(|prefix| command.strip_prefix(prefix))?;
+        let remainder = prefixes
+            .iter()
+            .find_map(|prefix| command.strip_prefix(prefix))?;
 
         // Take up to \r or \n. A clipboard paste is wrapped in bracketed
         // paste markers, whose closing `ESC[201~` is not entirely control
@@ -340,7 +349,11 @@ impl TerminalSession {
             .unwrap_or(line)
             .trim_end_matches(|c: char| c.is_control() || c.is_whitespace());
 
-        if path.is_empty() || path == "~" { None } else { Some(path.to_string()) }
+        if path.is_empty() || path == "~" {
+            None
+        } else {
+            Some(path.to_string())
+        }
     }
 
     /// Find the first directory-change command in a pasted multi-line input.
@@ -368,7 +381,11 @@ impl TerminalSession {
         let cleaned = trimmed
             .strip_prefix('\'')
             .and_then(|path| path.strip_suffix('\''))
-            .or_else(|| trimmed.strip_prefix('"').and_then(|path| path.strip_suffix('"')))
+            .or_else(|| {
+                trimmed
+                    .strip_prefix('"')
+                    .and_then(|path| path.strip_suffix('"'))
+            })
             .unwrap_or(trimmed);
 
         // Detect Windows bare drive letter "D:" → make "D:\" absolute

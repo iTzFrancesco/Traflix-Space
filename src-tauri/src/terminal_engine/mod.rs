@@ -183,7 +183,10 @@ impl TerminalManager {
         if ids.is_empty() {
             return;
         }
-        info!(count = ids.len(), "Killing all terminal sessions on shutdown");
+        info!(
+            count = ids.len(),
+            "Killing all terminal sessions on shutdown"
+        );
         for id in ids {
             if let Some((_, session)) = self.sessions.remove(&id) {
                 let mut session = session.write().await;
@@ -349,11 +352,7 @@ impl TerminalManager {
     /// Synchronizes the tracked CWD with the shell prompt rendered in xterm.
     /// This covers PowerShell tab completion, whose completed path never passes
     /// back through the PTY input stream as literal keystrokes.
-    pub async fn sync_terminal_cwd(
-        &self,
-        id: &str,
-        cwd: &str,
-    ) -> Result<TerminalContext, String> {
+    pub async fn sync_terminal_cwd(&self, id: &str, cwd: &str) -> Result<TerminalContext, String> {
         let canonical = std::path::Path::new(cwd)
             .canonicalize()
             .map_err(|error| format!("Could not resolve terminal CWD: {error}"))?;
@@ -402,12 +401,7 @@ impl TerminalManager {
             .map_err(|_| format!("Terminal {} CWD lock poisoned", id))
     }
 
-    async fn get_git_branch_for_cwd(
-        &self,
-        id: &str,
-        cwd: &str,
-    ) -> Result<Option<String>, String> {
-
+    async fn get_git_branch_for_cwd(&self, id: &str, cwd: &str) -> Result<Option<String>, String> {
         info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
 
         let result = tokio::time::timeout(
@@ -440,7 +434,11 @@ impl TerminalManager {
                 branch = %branch,
                 "get_git_branch: success"
             );
-            Ok(if branch.is_empty() { None } else { Some(branch) })
+            Ok(if branch.is_empty() {
+                None
+            } else {
+                Some(branch)
+            })
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             info!(
