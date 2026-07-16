@@ -343,6 +343,16 @@ export const TerminalPane = memo(function TerminalPane({
               if (xtermRef.current) {
                 programmaticScrollRef.current = true;
                 xtermRef.current.scrollToBottom();
+                const fitAddon = fitAddonRef.current;
+                if (fitAddon) {
+                  fitAndResizePty(
+                    xtermRef.current,
+                    fitAddon,
+                    terminalId,
+                    autoScrollRef,
+                    programmaticScrollRef,
+                  );
+                }
               }
             }
           } catch {
