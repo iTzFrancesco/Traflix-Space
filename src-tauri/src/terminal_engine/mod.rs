@@ -404,15 +404,20 @@ impl TerminalManager {
     async fn get_git_branch_for_cwd(&self, id: &str, cwd: &str) -> Result<Option<String>, String> {
         info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            tokio::process::Command::new("git")
-                .args(["-C", &cwd, "branch", "--show-current"])
-                .stderr(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .output(),
-        )
-        .await;
+        let mut git_command = tokio::process::Command::new("git");
+        git_command
+            .args(["-C", cwd, "branch", "--show-current"])
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+
+        // The release app is a Windows GUI process without a console. Without
+        // CREATE_NO_WINDOW, every background `git` probe can create a visible
+        // console window when the user changes directory or workspace.
+        #[cfg(windows)]
+        git_command.creation_flags(0x08000000);
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), git_command.output()).await;
 
         let output = match result {
             Ok(Ok(out)) => out,
