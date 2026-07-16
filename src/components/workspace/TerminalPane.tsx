@@ -352,6 +352,30 @@ export const TerminalPane = memo(function TerminalPane({
                     autoScrollRef,
                     programmaticScrollRef,
                   );
+
+                  // Forza un resize reale per triggerare il repaint completo nei
+                  // processi TUI (agenti) che mantengono un proprio modello
+                  // differenziale dello schermo. Un cols/rows identico viene
+                  // scartato dal backend (early-return in session.rs::resize)
+                  // quindi non arriva alcun segnale di ridimensionamento al
+                  // processo figlio. Con questo toggle il resize passa davvero
+                  // il guard, il figlio vede (l'equivalente di) SIGWINCH e
+                  // ridisegna tutto da zero su ConPTY.
+                  const term = xtermRef.current;
+                  if (term.cols > 1 && term.rows > 0) {
+                    invoke("terminal_resize", {
+                      terminalId,
+                      cols: term.cols - 1,
+                      rows: term.rows,
+                    }).catch(() => {});
+                    requestAnimationFrame(() => {
+                      invoke("terminal_resize", {
+                        terminalId,
+                        cols: term.cols,
+                        rows: term.rows,
+                      }).catch(() => {});
+                    });
+                  }
                 }
               }
             }
