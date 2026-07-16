@@ -46,8 +46,10 @@ jobs:
         working-directory: .
       - run: npm run build
         working-directory: .
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      - name: Format Rust sources
+        run: cargo fmt --all
+      - name: Lint Rust
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   test-rust:
     name: Test Rust
