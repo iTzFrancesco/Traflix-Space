@@ -1,15 +1,13 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_sha || github.ref }}
+  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -19,11 +17,123 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-release:
-    name: Build MSI & Release
+  prepare-release:
+    name: Prepare version tag
     if: >-
-      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      should_release: ${{ steps.version.outputs.should_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Validate synchronized version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO_VERSION=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+
+          if [ -z "$PACKAGE_VERSION" ] || [ "$PACKAGE_VERSION" != "$TAURI_VERSION" ] || [ "$PACKAGE_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Version mismatch: package=$PACKAGE_VERSION tauri=$TAURI_VERSION cargo=$CARGO_VERSION"
+            exit 1
+          fi
+
+          TAG="v$PACKAGE_VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to publish."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create and push version tag
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
+          else
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
+
+  build-and-release:
+    name: Build MSI & Release
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: windows-latest
 
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-cargo-release-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm install
+
+      - name: Apply Rust formatting
+        run: cargo fmt --all
+        working-directory: src-tauri
+
+      - name: Apply machine-fixable Clippy suggestions
+        run: cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
+        working-directory: src-tauri
+
+      - name: Verify strict Rust lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: src-tauri
+
+      - name: Test Rust
+        run: cargo test
+        working-directory: src-tauri
+
+      - name: Build Windows MSI
+        run: npm run tauri build
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          files: src-tauri/target/release/bundle/msi/*.msi
+          generate_release_notes: true
+          fail_on_unmatched_files: true
