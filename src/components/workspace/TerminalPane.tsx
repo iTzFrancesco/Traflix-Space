@@ -761,6 +761,16 @@ export const TerminalPane = memo(function TerminalPane({
 
   // Titolo visualizzato: prima controlla se l'utente ha rinominato, poi deriva.
   const customTitle = useTerminalStore((s) => s.terminalTitles[terminalId]);
+  const terminalWorkspaceId = useTerminalStore(
+    (s) => s.terminals[terminalId]?.workspaceId,
+  );
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const workspaceIndex = workspaces.findIndex(
+    (workspace) => workspace.id === terminalWorkspaceId,
+  );
+  const workspaceColor = getWorkspaceColor(
+    workspaceIndex >= 0 ? workspaceIndex : 0,
+  );
   const displayTitle =
     customTitle ??
     (agentId
@@ -888,12 +898,7 @@ export const TerminalPane = memo(function TerminalPane({
           <div
             style={{
               ...TITLE_BAR_DOT,
-              background: (() => {
-                const ws = useWorkspaceStore.getState().workspaces;
-                const ts = useTerminalStore.getState().terminals[terminalId];
-                const idx = ws.findIndex((w) => w.id === ts?.workspaceId);
-                return getWorkspaceColor(idx >= 0 ? idx : 0);
-              })(),
+              background: workspaceColor,
             }}
           />
           {editing ? (
