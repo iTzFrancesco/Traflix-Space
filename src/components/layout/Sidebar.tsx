@@ -15,23 +15,9 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { useUIStore } from "../../stores/uiStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
+import { getWorkspaceColor } from "../../lib/workspaceColors";
 
 const IS_DEV = import.meta.env.DEV;
-
-const WORKSPACE_COLORS = [
-  "#e85d04",
-  "#06b6d4",
-  "#8b5cf6",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#ec4899",
-  "#3b82f6",
-];
-
-function getWorkspaceColor(index: number): string {
-  return WORKSPACE_COLORS[index % WORKSPACE_COLORS.length];
-}
 
 export function Sidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
