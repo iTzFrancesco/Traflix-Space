@@ -126,3 +126,14 @@ pub async fn terminal_get_screen_text(
     let manager = app.state::<TerminalManager>();
     manager.get_screen_text(&terminal_id).await
 }
+
+/// Returns the git branch for the terminal's working directory.
+/// Returns null/None if not in a git repo.
+#[tauri::command]
+pub async fn get_git_branch(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<Option<String>, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_git_branch(&terminal_id).await
+}

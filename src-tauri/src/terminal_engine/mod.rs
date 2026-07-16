@@ -293,6 +293,36 @@ impl TerminalManager {
         Ok(session.grid.get_scrollback(offset, limit))
     }
 
+    /// Returns the current git branch name for the terminal's working directory.
+    /// Runs `git -C <cwd> branch --show-current` and returns Some(branch) if
+    /// the directory is a git repository, or None otherwise.
+    /// Errors only if the terminal session doesn't exist.
+    pub async fn get_git_branch(&self, id: &str) -> Result<Option<String>, String> {
+        let cwd = {
+            let session = self
+                .sessions
+                .get(id)
+                .ok_or_else(|| format!("Terminal {} not found", id))?;
+            let session = session.read().await;
+            session.cwd.clone()
+        };
+
+        let output = tokio::process::Command::new("git")
+            .args(["-C", &cwd, "branch", "--show-current"])
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(if branch.is_empty() { None } else { Some(branch) })
+            }
+            _ => Ok(None), // Not a git repo, git not installed, or error
+        }
+    }
+
     pub fn start_event_loop(&self, _app: AppHandle) {
         info!("Terminal manager event loop ready");
     }

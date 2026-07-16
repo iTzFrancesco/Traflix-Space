@@ -163,6 +163,7 @@ fn main() {
             terminal_engine::commands::terminal_get_snapshot,
             terminal_engine::commands::terminal_get_scrollback,
             terminal_engine::commands::terminal_get_screen_text,
+            terminal_engine::commands::get_git_branch,
         ])
         .build(tauri::generate_context!())
         .expect("Errore build Traflix Space")
