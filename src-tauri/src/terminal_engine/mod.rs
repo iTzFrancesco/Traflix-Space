@@ -207,12 +207,18 @@ impl TerminalManager {
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
+
         let session = session.read().await;
-        if let Ok(mut p) = session.parser.lock() {
-            Ok(p.rehydrate_text())
-        } else {
-            Ok(String::new())
-        }
+
+        let result = {
+            if let Ok(mut p) = session.parser.lock() {
+                p.rehydrate_text()
+            } else {
+                String::new()
+            }
+        };
+
+        Ok(result)
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
