@@ -67,6 +67,18 @@ const ACTIVE_STYLE: React.CSSProperties = {
   isolation: "isolate",
 };
 
+const FOCUSED_STYLE: React.CSSProperties = {
+  position: "relative",
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  background: "#0c0c0c",
+  borderRadius: "var(--radius-pane)",
+  border: "1px solid #3b82f6",
+  overflow: "hidden",
+  isolation: "isolate",
+};
+
 const INACTIVE_STYLE: React.CSSProperties = {
   position: "relative",
   flex: 1,
@@ -315,8 +327,9 @@ export const TerminalPane = memo(function TerminalPane({
             });
             const termNow = xtermRef.current;
             if (text && text.trim().length > 0 && termNow) {
-              termNow.reset();
               // Chunk large dumps so multi-pane remount stays responsive.
+              // Reset NON serve: xterm è appena stato creato (mount fresco),
+              // buffer già pulito. reset() causa solo un frame nero extra.
               const CHUNK = 16_384;
               if (text.length <= CHUNK) {
                 termNow.write(text);
@@ -353,16 +366,14 @@ export const TerminalPane = memo(function TerminalPane({
                     programmaticScrollRef,
                   );
 
-                  // Forza un resize reale per triggerare il repaint completo nei
-                  // processi TUI (agenti) che mantengono un proprio modello
-                  // differenziale dello schermo. Un cols/rows identico viene
-                  // scartato dal backend (early-return in session.rs::resize)
-                  // quindi non arriva alcun segnale di ridimensionamento al
-                  // processo figlio. Con questo toggle il resize passa davvero
-                  // il guard, il figlio vede (l'equivalente di) SIGWINCH e
-                  // ridisegna tutto da zero su ConPTY.
+                  // Solo per TUI agent: resize toggle (cols-1 → cols) per
+                  // triggerare repaint completo nel processo figlio.
+                  // Un cols/rows identico viene scartato dal backend
+                  // (early-return in session.rs::resize) quindi non arriva
+                  // alcun segnale di ridimensionamento. PowerShell / cmd
+                  // non necessitano di questo toggle.
                   const term = xtermRef.current;
-                  if (term.cols > 1 && term.rows > 0) {
+                  if (agentId && term.cols > 1 && term.rows > 0) {
                     invoke("terminal_resize", {
                       terminalId,
                       cols: term.cols - 1,
@@ -687,9 +698,11 @@ export const TerminalPane = memo(function TerminalPane({
 
   const outerStyle = hasExited
     ? EXITED_STYLE
-    : isActive || isFocused
-      ? ACTIVE_STYLE
-      : INACTIVE_STYLE;
+    : isFocused
+      ? FOCUSED_STYLE
+      : isActive
+        ? ACTIVE_STYLE
+        : INACTIVE_STYLE;
 
   const dragOverlayStyle = isDragOver
     ? {
@@ -721,21 +734,21 @@ export const TerminalPane = memo(function TerminalPane({
               style={{
                 ...TOOL_BTN_BASE,
                 background: isFocused
-                  ? "rgba(232,93,4,0.28)"
+                  ? "rgba(59,130,246,0.25)"
                   : "rgba(255,255,255,0.08)",
-                color: isFocused ? "#e85d04" : "#a1a1aa",
+                color: isFocused ? "#60a5fa" : "#a1a1aa",
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = isFocused
-                  ? "rgba(232,93,4,0.4)"
+                  ? "rgba(59,130,246,0.4)"
                   : "rgba(255,255,255,0.14)";
-                e.currentTarget.style.color = isFocused ? "#ff7b00" : "#f4f4f5";
+                e.currentTarget.style.color = isFocused ? "#93c5fd" : "#f4f4f5";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = isFocused
-                  ? "rgba(232,93,4,0.28)"
+                  ? "rgba(59,130,246,0.25)"
                   : "rgba(255,255,255,0.08)";
-                e.currentTarget.style.color = isFocused ? "#e85d04" : "#a1a1aa";
+                e.currentTarget.style.color = isFocused ? "#60a5fa" : "#a1a1aa";
               }}
             >
               {isFocused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}

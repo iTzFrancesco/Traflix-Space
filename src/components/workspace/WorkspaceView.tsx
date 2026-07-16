@@ -381,11 +381,12 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica workspace attivo se non già in cache; esci dal focus mode al cambio workspace
+  // Carica workspace attivo se non già in cache.
+  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare
+  // il focus sul solo workspace attivo. Così se esci da una
+  // workspace in focus mode e ci torni, il focus è preservato.
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    // Focus mode is per-workspace visual layout — clear when switching.
-    useTerminalStore.getState().setFocusedTerminal(null);
     if (!loadedMapRef.current.has(activeWorkspaceId)) {
       loadWorkspace(activeWorkspaceId);
     }

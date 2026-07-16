@@ -22,6 +22,16 @@ export function WorkspaceGrid({
   const focusedTerminalId = useTerminalStore((s) => s.focusedTerminalId);
   const toggleFocusTerminal = useTerminalStore((s) => s.toggleFocusTerminal);
 
+  // Only apply focus mode if the focused terminal belongs to THIS workspace.
+  // This allows focus to persist across workspace switches: when you leave
+  // a workspace in focus mode and come back, the focus is restored because
+  // WorkspaceGrid for the other workspace sees localFocusId = null.
+  const localFocusId =
+    focusedTerminalId !== null && terminals.some((t) => t.id === focusedTerminalId)
+      ? focusedTerminalId
+      : null;
+  const isFocusMode = localFocusId !== null;
+
   const stableOnActivate = useCallback(
     (id: string) => {
       onActivate(id);
@@ -39,7 +49,7 @@ export function WorkspaceGrid({
   // Escape exits focus mode without destroying panes.
   // Skip when a close-confirm dialog is open (it handles Escape itself).
   useEffect(() => {
-    if (!focusedTerminalId) return;
+    if (!localFocusId) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -47,13 +57,15 @@ export function WorkspaceGrid({
     };
     document.addEventListener("keydown", onKey, { capture: true });
     return () => document.removeEventListener("keydown", onKey, { capture: true });
-  }, [focusedTerminalId]);
+  }, [localFocusId]);
 
-  // Clear focus if the focused terminal is no longer in this workspace grid.
+  // Clear focus if the focused terminal no longer exists in the store
+  // (e.g., removed from workspace). Don't clear on workspace switch —
+  // that's handled by localFocusId per-workspace filtering.
   const terminalIdsKey = terminals.map((t) => t.id).join(",");
   useEffect(() => {
     const focused = useTerminalStore.getState().focusedTerminalId;
-    if (focused && !terminals.some((t) => t.id === focused)) {
+    if (focused && !useTerminalStore.getState().terminals[focused]) {
       useTerminalStore.getState().setFocusedTerminal(null);
     }
   }, [terminalIdsKey, terminals]);
@@ -67,8 +79,6 @@ export function WorkspaceGrid({
       </div>
     );
   }
-
-  const isFocusMode = focusedTerminalId !== null;
 
   return (
     <div
@@ -91,7 +101,7 @@ export function WorkspaceGrid({
       }}
     >
       {terminals.map((term) => {
-        const isFocused = focusedTerminalId === term.id;
+        const isFocused = localFocusId === term.id;
         const isHidden = isFocusMode && !isFocused;
 
         return (
