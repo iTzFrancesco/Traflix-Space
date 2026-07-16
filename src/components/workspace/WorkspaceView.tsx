@@ -96,6 +96,24 @@ export function WorkspaceView() {
           terminalStore.setActiveTerminal(firstId);
         }
 
+        // Calculate eviction BEFORE setState — React may call updaters multiple
+        // times (StrictMode, concurrent rendering) so side effects don't belong
+        // inside the updater function. Read from refs, not from stale closure.
+        const newOrder = openOrderRef.current
+          .filter((k) => k !== id)
+          .concat(id);
+
+        const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
+        const toEvict = loadedMapRef.current.size >= MAX_OPEN_WORKSPACES
+          ? newOrder.find(
+              (k) => k !== currentActive && loadedMapRef.current.has(k),
+            )
+          : undefined;
+
+        if (toEvict) {
+          terminalStore.killWorkspaceTerminals(toEvict);
+        }
+
         setLoadedMap((prev) => {
           const next = new Map(prev);
           next.set(id, {
@@ -108,22 +126,13 @@ export function WorkspaceView() {
             updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
           });
 
-          openOrderRef.current = openOrderRef.current
-            .filter((k) => k !== id)
-            .concat(id);
+          openOrderRef.current = newOrder;
 
-          if (next.size > MAX_OPEN_WORKSPACES) {
-            const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
-            const toEvict = openOrderRef.current.find(
-              (k) => k !== currentActive && next.has(k),
+          if (toEvict) {
+            next.delete(toEvict);
+            openOrderRef.current = openOrderRef.current.filter(
+              (k) => k !== toEvict,
             );
-            if (toEvict) {
-              terminalStore.killWorkspaceTerminals(toEvict);
-              next.delete(toEvict);
-              openOrderRef.current = openOrderRef.current.filter(
-                (k) => k !== toEvict,
-              );
-            }
           }
 
           return next;
