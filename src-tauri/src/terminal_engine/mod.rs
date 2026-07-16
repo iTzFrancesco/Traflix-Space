@@ -316,9 +316,11 @@ impl TerminalManager {
             cwd
         };
 
+        info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
+
         let output = tokio::process::Command::new("git")
             .args(["-C", &cwd, "branch", "--show-current"])
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .output()
             .await;
@@ -326,9 +328,34 @@ impl TerminalManager {
         match output {
             Ok(out) if out.status.success() => {
                 let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                info!(
+                    terminal_id = %id,
+                    cwd = %cwd,
+                    branch = %branch,
+                    "get_git_branch: success"
+                );
                 Ok(if branch.is_empty() { None } else { Some(branch) })
             }
-            _ => Ok(None), // Not a git repo, git not installed, or error
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                info!(
+                    terminal_id = %id,
+                    cwd = %cwd,
+                    git_exit = %out.status,
+                    git_stderr = %stderr,
+                    "get_git_branch: git failed"
+                );
+                Ok(None)
+            }
+            Err(e) => {
+                info!(
+                    terminal_id = %id,
+                    cwd = %cwd,
+                    error = %e,
+                    "get_git_branch: command error"
+                );
+                Ok(None)
+            }
         }
     }
 

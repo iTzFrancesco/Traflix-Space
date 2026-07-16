@@ -423,8 +423,11 @@ export const TerminalPane = memo(function TerminalPane({
         // Carica il branch git all'avvio del terminale (primo mount + rehydrate).
         // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
         invoke<string | null>("get_git_branch", { terminalId })
-          .then((b) => { if (b) setGitBranch(b); })
-          .catch(() => {});
+          .then((b) => {
+            console.log(`[branch] mount fetch for ${terminalId}:`, b);
+            if (b) setGitBranch(b);
+          })
+          .catch((err) => console.error(`[branch] mount fetch error for ${terminalId}:`, err));
 
         if (shouldRehydrate) {
           rehydratingRef.current = true;
@@ -534,9 +537,13 @@ export const TerminalPane = memo(function TerminalPane({
     let unlistenFn: (() => void) | null = null;
     listen<string>("terminal-cwd-changed", (event) => {
       if (event.payload === terminalId) {
+        console.log(`[branch] cwd-changed event for ${terminalId}, re-fetching`);
         invoke<string | null>("get_git_branch", { terminalId })
-          .then((b) => { if (b) setGitBranch(b); else setGitBranch(null); })
-          .catch(() => {});
+          .then((b) => {
+            console.log(`[branch] cwd-changed fetch for ${terminalId}:`, b);
+            if (b) setGitBranch(b); else setGitBranch(null);
+          })
+          .catch((err) => console.error(`[branch] cwd-changed error for ${terminalId}:`, err));
       }
     }).then((fn) => { unlistenFn = fn; });
     return () => { unlistenFn?.(); };

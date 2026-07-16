@@ -258,6 +258,12 @@ impl TerminalSession {
                 let after = &text[cd_start..];
                 let path_str = Self::extract_cd_path_from(after);
                 if let Some(p) = path_str {
+                    info!(
+                        terminal_cwd_detected = "paste",
+                        raw = %after,
+                        path = %p,
+                        "Paste/agent cd command detected"
+                    );
                     Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
                     return;
                 }
@@ -283,6 +289,12 @@ impl TerminalSession {
                     buf.clear();
                     if !trimmed.is_empty() {
                         if let Some(p) = Self::extract_cd_path_from(&trimmed) {
+                            info!(
+                                terminal_cwd_detected = "keystroke",
+                                buffer = %trimmed,
+                                path = %p,
+                                "Keystroke cd command detected"
+                            );
                             drop(buf);
                             Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
                             return;
@@ -324,31 +336,57 @@ impl TerminalSession {
     }
 
     /// Resolve a path string (absolute or relative to cwd) and update cwd.
+    /// Strips surrounding single/double quotes (PowerShell syntax).
     /// Sets cwd_changed to true if the update succeeds.
     fn resolve_and_update_cwd(
         cwd_mutex: &std::sync::Mutex<String>,
         cwd_changed: &AtomicBool,
         path_str: &str,
     ) {
+        // Strip surrounding quotes: 'path' or "path"
+        let cleaned = path_str
+            .trim_start_matches(|c| c == '\'' || c == '"')
+            .trim_end_matches(|c| c == '\'' || c == '"')
+            .trim_end_matches(|c: char| c == '\\' || c == '/');
+
         let current_cwd = match cwd_mutex.lock() {
             Ok(g) => g.clone(),
             Err(_) => return,
         };
         let current = std::path::PathBuf::from(&current_cwd);
 
-        let new_path = if std::path::Path::new(path_str).is_absolute()
-            || path_str.contains(":\\")
-            || path_str.contains(":/")
+        let new_path = if std::path::Path::new(cleaned).is_absolute()
+            || cleaned.contains(":\\")
+            || cleaned.contains(":/")
         {
-            std::path::PathBuf::from(path_str)
+            std::path::PathBuf::from(cleaned)
         } else {
-            current.join(path_str)
+            current.join(cleaned)
         };
 
-        if let Ok(canonical) = new_path.canonicalize() {
-            if let Ok(mut cwd_guard) = cwd_mutex.lock() {
-                *cwd_guard = canonical.to_string_lossy().to_string();
-                cwd_changed.store(true, Ordering::Release);
+        match new_path.canonicalize() {
+            Ok(canonical) => {
+                let new_cwd_str = canonical.to_string_lossy().to_string();
+                info!(
+                    terminal_cwd_changed = true,
+                    from = %current_cwd,
+                    to = %new_cwd_str,
+                    via = %path_str,
+                    "CD detected — CWD updated"
+                );
+                if let Ok(mut cwd_guard) = cwd_mutex.lock() {
+                    *cwd_guard = new_cwd_str;
+                    cwd_changed.store(true, Ordering::Release);
+                }
+            }
+            Err(e) => {
+                info!(
+                    terminal_cwd_resolve_failed = true,
+                    raw = %path_str,
+                    cleaned = %cleaned,
+                    error = %e,
+                    "CD path canonicalize failed"
+                );
             }
         }
     }
