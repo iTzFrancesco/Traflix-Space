@@ -258,7 +258,6 @@ function fitAndResizePty(
   fitAddon: FitAddon,
   terminalId: string,
   autoScrollRef: React.MutableRefObject<boolean>,
-  programmaticScrollRef: React.MutableRefObject<boolean>,
 ) {
   const wasAtBottom = autoScrollRef.current;
   try {
@@ -268,8 +267,8 @@ function fitAndResizePty(
     return;
   }
   if (wasAtBottom) {
-    programmaticScrollRef.current = true;
     term.scrollToBottom();
+    autoScrollRef.current = true;
   }
   if (term.cols > 0 && term.rows > 0) {
     invoke("terminal_resize", {
@@ -305,7 +304,6 @@ export const TerminalPane = memo(function TerminalPane({
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
   const autoScrollRef = useRef(true);
-  const programmaticScrollRef = useRef(false);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
@@ -418,10 +416,6 @@ export const TerminalPane = memo(function TerminalPane({
 
     scrollDisposableRef.current?.dispose();
     scrollDisposableRef.current = term.onScroll(() => {
-      if (programmaticScrollRef.current) {
-        programmaticScrollRef.current = false;
-        return;
-      }
       const buffer = term.buffer.active;
       autoScrollRef.current = buffer.viewportY >= buffer.baseY;
     });
@@ -487,7 +481,7 @@ export const TerminalPane = memo(function TerminalPane({
               // buffer già pulito. reset() causa solo un frame nero extra.
               const CHUNK = 16_384;
               if (text.length <= CHUNK) {
-                termNow.write(text);
+                await new Promise<void>((resolve) => termNow.write(text, resolve));
               } else {
                 await new Promise<void>((resolve) => {
                   let offset = 0;
@@ -497,20 +491,21 @@ export const TerminalPane = memo(function TerminalPane({
                       return;
                     }
                     const end = Math.min(offset + CHUNK, text.length);
-                    xtermRef.current.write(text.slice(offset, end));
-                    offset = end;
-                    if (offset >= text.length) {
-                      resolve();
-                    } else {
-                      requestAnimationFrame(pump);
-                    }
+                    xtermRef.current.write(text.slice(offset, end), () => {
+                      offset = end;
+                      if (offset >= text.length) {
+                        resolve();
+                      } else {
+                        requestAnimationFrame(pump);
+                      }
+                    });
                   };
                   requestAnimationFrame(pump);
                 });
               }
               if (xtermRef.current) {
-                programmaticScrollRef.current = true;
                 xtermRef.current.scrollToBottom();
+                autoScrollRef.current = true;
                 const fitAddon = fitAddonRef.current;
                 if (fitAddon) {
                   fitAndResizePty(
@@ -518,7 +513,6 @@ export const TerminalPane = memo(function TerminalPane({
                     fitAddon,
                     terminalId,
                     autoScrollRef,
-                    programmaticScrollRef,
                   );
 
                   // Solo per TUI agent: resize toggle (cols-1 → cols) per
@@ -606,7 +600,6 @@ export const TerminalPane = memo(function TerminalPane({
           fitAddon,
           terminalId,
           autoScrollRef,
-          programmaticScrollRef,
         );
         if (isActive || isFocused) {
           term.focus();
@@ -641,7 +634,6 @@ export const TerminalPane = memo(function TerminalPane({
           fitAddon,
           terminalId,
           autoScrollRef,
-          programmaticScrollRef,
         );
         if (isFocused || isActive) term.focus();
       });
@@ -666,7 +658,6 @@ export const TerminalPane = memo(function TerminalPane({
           fitAddon,
           terminalId,
           autoScrollRef,
-          programmaticScrollRef,
         );
       });
     });
@@ -681,11 +672,16 @@ export const TerminalPane = memo(function TerminalPane({
       if (rehydratingRef.current) return;
       const term = xtermRef.current;
       if (!term) return;
-      term.write(new Uint8Array(data));
-      if (autoScrollRef.current) {
-        programmaticScrollRef.current = true;
-        term.scrollToBottom();
-      }
+      term.write(new Uint8Array(data), () => {
+        // xterm writes asynchronously. Scrolling before this callback uses the
+        // previous baseY and leaves the viewport one or more chunks behind.
+        // Check the current value so a user scroll during a large agent output
+        // is respected instead of being pulled back to the bottom.
+        if (autoScrollRef.current) {
+          term.scrollToBottom();
+          autoScrollRef.current = true;
+        }
+      });
     });
     return () => {
       unsubOutputRef.current?.();
@@ -720,7 +716,6 @@ export const TerminalPane = memo(function TerminalPane({
         fitAddon,
         terminalId,
         autoScrollRef,
-        programmaticScrollRef,
       );
     };
 
