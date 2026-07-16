@@ -16,6 +16,7 @@ import {
 import { encodeForPty } from "../../lib/ptyWrite";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
 import { AGENTS } from "../../lib/agents";
+import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
 import "xterm/css/xterm.css";
 
 /** Map agent id to a short display name for the title bar. */
@@ -164,17 +165,39 @@ function getTitleBarMetrics(terminalCount: number) {
   return { height: 28, padding: "0 10px", fontSize: 11, buttonSize: 22, iconSize: 12, dotSize: 8 };
 }
 
-/** Return the most recent standard PowerShell prompt path from xterm. */
-function powerShellPromptCwd(term: Terminal): string | null {
+/** Return the latest complete PowerShell prompt, including wrapped paths. */
+function powerShellPrompt(term: Terminal) {
   const buffer = term.buffer.active;
   const lastLine = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY);
-  const firstLine = Math.max(0, lastLine - 4);
-  for (let lineIndex = lastLine; lineIndex >= firstLine; lineIndex--) {
-    const line = buffer.getLine(lineIndex)?.translateToString(true).trim();
-    const match = line?.match(/^PS\s+(.+)>$/i);
-    if (match?.[1]) return match[1];
+  let firstLine = Math.max(0, lastLine - 16);
+  while (firstLine > 0 && buffer.getLine(firstLine)?.isWrapped) {
+    firstLine--;
   }
-  return null;
+
+  const lines = [];
+  for (let lineIndex = firstLine; lineIndex <= lastLine; lineIndex++) {
+    const line = buffer.getLine(lineIndex);
+    if (!line) continue;
+    const nextLine = buffer.getLine(lineIndex + 1);
+    lines.push({
+      // A wrapped continuation means this row was completely filled. Keeping
+      // its trailing spaces preserves valid paths split exactly on a space.
+      text: line.translateToString(!nextLine?.isWrapped),
+      isWrapped: line.isWrapped,
+    });
+  }
+  return findCurrentPowerShellPrompt(lines);
+}
+
+function sameWindowsPath(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    value.replace(/^\\\\[?.]\\/, "").replace(/[\\/]+$/, "").toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
+function isPowerShell(shell: string): boolean {
+  const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
+  return /^(?:powershell|pwsh)(?:\.exe)?$/i.test(executable);
 }
 
 interface TerminalContext {
@@ -346,6 +369,8 @@ export const TerminalPane = memo(function TerminalPane({
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const currentCwdRef = useRef(cwd);
+  const contextRequestRef = useRef(0);
+  const atPowerShellPromptRef = useRef(false);
 
   useEffect(() => {
     currentCwdRef.current = cwd;
@@ -353,18 +378,12 @@ export const TerminalPane = memo(function TerminalPane({
   }, [cwd]);
 
   const refreshTerminalContext = useCallback(async () => {
-    const expectedCwd = currentCwdRef.current;
+    const requestId = ++contextRequestRef.current;
     try {
       const context = await invoke<TerminalContext>("terminal_get_context", {
         terminalId,
       });
-      // A newer CWD event arrived while this request was in flight.
-      if (
-        expectedCwd !== currentCwdRef.current &&
-        context.cwd !== currentCwdRef.current
-      ) {
-        return;
-      }
+      if (requestId !== contextRequestRef.current) return;
       currentCwdRef.current = context.cwd;
       setCurrentCwd(context.cwd);
       setGitBranch(context.gitBranch);
@@ -374,14 +393,23 @@ export const TerminalPane = memo(function TerminalPane({
   }, [terminalId]);
 
   const syncContextFromPowerShellPrompt = useCallback(async (term: Terminal) => {
-    const promptCwd = powerShellPromptCwd(term);
-    if (!promptCwd || promptCwd === currentCwdRef.current) return;
+    const prompt = powerShellPrompt(term);
+    if (!prompt) {
+      atPowerShellPromptRef.current = false;
+      return;
+    }
+    if (atPowerShellPromptRef.current) return;
+    atPowerShellPromptRef.current = true;
+    const requestId = ++contextRequestRef.current;
 
     try {
-      const context = await invoke<TerminalContext>("terminal_sync_cwd", {
-        terminalId,
-        cwd: promptCwd,
-      });
+      const context = sameWindowsPath(prompt.cwd, currentCwdRef.current)
+        ? await invoke<TerminalContext>("terminal_get_context", { terminalId })
+        : await invoke<TerminalContext>("terminal_sync_cwd", {
+            terminalId,
+            cwd: prompt.cwd,
+          });
+      if (requestId !== contextRequestRef.current) return;
       currentCwdRef.current = context.cwd;
       setCurrentCwd(context.cwd);
       setGitBranch(context.gitBranch);
@@ -434,6 +462,9 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     dataDisposableRef.current = term.onData((data) => {
+      // The current prompt is being edited/executed. The next complete prompt
+      // marks command completion even when it has the same CWD and text.
+      atPowerShellPromptRef.current = false;
       const tid = terminalIdRef.current;
       if (!tid) return;
       const store = useTerminalStore.getState();
@@ -444,10 +475,13 @@ export const TerminalPane = memo(function TerminalPane({
         data: encodeForPty(data),
       });
 
-      // Once the backend accepts Enter it has already resolved any `cd` in
-      // that command. This is a reliable fallback when the global Tauri event
-      // was emitted while the listener was being re-registered.
-      if (data.includes("\r") || data.includes("\n")) {
+      // PowerShell is refreshed only after its next completed prompt, when
+      // commands such as `git checkout` have actually finished. Other shells
+      // retain the Enter fallback because their prompt format is unknown.
+      if (
+        !isPowerShell(shell) &&
+        (data.includes("\r") || data.includes("\n"))
+      ) {
         write.then(() => void refreshTerminalContext()).catch(() => {});
       } else {
         write.catch(() => {});
@@ -473,7 +507,7 @@ export const TerminalPane = memo(function TerminalPane({
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [refreshTerminalContext]);
+  }, [refreshTerminalContext, shell]);
 
   // 2. Spawn PTY + optional screen rehydrate + agent launch
   useEffect(() => {
