@@ -71,6 +71,8 @@ interface TerminalPaneProps {
   isFocused?: boolean;
   /** Any pane is currently in focus mode (grid collapsed). */
   focusModeActive?: boolean;
+  /** Monotonic token used to request the close confirmation from a shortcut. */
+  closeRequestToken?: number;
   onActivate: (id: string) => void;
   onClose?: (id: string) => void;
   onToggleFocus?: (id: string) => void;
@@ -326,6 +328,7 @@ export const TerminalPane = memo(function TerminalPane({
   isActive,
   isFocused = false,
   focusModeActive = false,
+  closeRequestToken,
   onActivate,
   onClose,
   onToggleFocus,
@@ -423,6 +426,11 @@ export const TerminalPane = memo(function TerminalPane({
     const timer = setTimeout(() => setConfirmClose(false), 3000);
     return () => clearTimeout(timer);
   }, [confirmClose]);
+
+  useEffect(() => {
+    if (closeRequestToken === undefined) return;
+    setConfirmClose(true);
+  }, [closeRequestToken]);
 
   const pendingDrops = useSkillStore((s) => s.pendingDrops[terminalId]);
   const pendingNames = pendingDrops?.names ?? [];

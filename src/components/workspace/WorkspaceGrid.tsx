@@ -7,6 +7,7 @@ interface WorkspaceGridProps {
   rows: number;
   cols: number;
   terminals: TerminalConfig[];
+  closeRequest?: { terminalId: string; token: number } | null;
   onActivate: (id: string) => void;
   onCloseTerminal?: (id: string) => void;
 }
@@ -15,6 +16,7 @@ export function WorkspaceGrid({
   rows,
   cols,
   terminals,
+  closeRequest,
   onActivate,
   onCloseTerminal,
 }: WorkspaceGridProps) {
@@ -147,6 +149,11 @@ export function WorkspaceGrid({
               title={term.title}
               agentId={term.agentId}
               terminalCount={terminals.length}
+              closeRequestToken={
+                closeRequest?.terminalId === term.id
+                  ? closeRequest.token
+                  : undefined
+              }
               isActive={term.id === activeTerminalId}
               isFocused={isFocused}
               focusModeActive={isFocusMode}

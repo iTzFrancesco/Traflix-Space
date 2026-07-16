@@ -9,7 +9,7 @@ import { useWorkspaceStore } from "./stores/workspaceStore";
 
 function App() {
   useKeyboardShortcuts(undefined, () => {
-    const fn = (window as any).__traflix_close_terminal;
+    const fn = (window as any).__traflix_request_close_terminal;
     if (typeof fn === "function") fn();
   });
   const syncWithBackend = useWorkspaceStore((s) => s.syncWithBackend);

@@ -22,6 +22,11 @@ interface LoadedWorkspace {
   updatedAt: string;
 }
 
+interface TerminalCloseRequest {
+  terminalId: string;
+  token: number;
+}
+
 export function WorkspaceView() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -37,6 +42,7 @@ export function WorkspaceView() {
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
   );
+  const [closeRequest, setCloseRequest] = useState<TerminalCloseRequest | null>(null);
   const loadedMapRef = useRef(loadedMap);
   loadedMapRef.current = loadedMap;
   const loadingRef = useRef<Set<string>>(new Set());
@@ -244,19 +250,22 @@ export function WorkspaceView() {
     useTerminalStore.getState().setActiveTerminal(id);
   }, []);
 
-  // Esponi handleCloseTerminal globalmente per la keyboard shortcut
-  const closeTerminalRef = useRef(handleCloseTerminal);
-  closeTerminalRef.current = handleCloseTerminal;
+  // La shortcut deve mostrare la conferma dentro al pane attivo, non chiudere
+  // direttamente il terminale saltando il flusso visuale del TerminalPane.
+  const closeRequestTokenRef = useRef(0);
+  const requestCloseTerminalRef = useRef(() => {
+    const activeId = useTerminalStore.getState().activeTerminalId;
+    if (!activeId) return;
+    setCloseRequest({
+      terminalId: activeId,
+      token: ++closeRequestTokenRef.current,
+    });
+  });
   useEffect(() => {
-    (window as any).__traflix_close_terminal = () => {
-      const store = useTerminalStore.getState();
-      const activeId = store.activeTerminalId;
-      if (activeId) {
-        closeTerminalRef.current(activeId);
-      }
-    };
+    (window as any).__traflix_request_close_terminal = () =>
+      requestCloseTerminalRef.current();
     return () => {
-      delete (window as any).__traflix_close_terminal;
+      delete (window as any).__traflix_request_close_terminal;
     };
   }, []);
 
@@ -536,6 +545,7 @@ export function WorkspaceView() {
               rows={activeLayout?.rows ?? 1}
               cols={activeLayout?.cols ?? 1}
               terminals={activeLoaded.terminals}
+              closeRequest={closeRequest}
               onActivate={handleActivateTerminal}
               onCloseTerminal={handleCloseTerminal}
             />
