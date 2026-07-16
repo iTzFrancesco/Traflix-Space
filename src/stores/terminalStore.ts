@@ -31,6 +31,10 @@ interface TerminalStore {
   activeTerminalId: string | null;
   /** When set, that terminal fills the workspace; others stay mounted but hidden. */
   focusedTerminalId: string | null;
+  /** User-renamed titles (only in memory, not persisted).
+   *  Key = terminal id, value = custom title.
+   *  UI should check this first, then fall back to derived title. */
+  terminalTitles: Record<string, string>;
 
   addTerminal: (config: {
     id: string;
@@ -46,6 +50,8 @@ interface TerminalStore {
   setActiveTerminal: (id: string) => void;
   setFocusedTerminal: (id: string | null) => void;
   toggleFocusTerminal: (id: string) => void;
+  /** Rename a terminal — stores the custom title in terminalTitles (memory only). */
+  renameTerminal: (id: string, title: string) => void;
   updateTitle: (id: string, title: string) => void;
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
@@ -64,6 +70,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   terminals: {},
   activeTerminalId: null,
   focusedTerminalId: null,
+  terminalTitles: {},
 
   addTerminal: (config) =>
     set((state) => {
@@ -166,6 +173,16 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         return { focusedTerminalId: next, activeTerminalId: id };
       }
       return { focusedTerminalId: null };
+    }),
+
+  renameTerminal: (id, title) =>
+    set((state) => {
+      const trimmed = title.trim();
+      if (!trimmed || !state.terminals[id]) return state;
+      if (state.terminalTitles[id] === trimmed) return state;
+      return {
+        terminalTitles: { ...state.terminalTitles, [id]: trimmed },
+      };
     }),
 
   updateTitle: (id, title) =>
