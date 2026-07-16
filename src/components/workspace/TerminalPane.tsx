@@ -169,9 +169,10 @@ interface TerminalContext {
   gitBranch: string | null;
 }
 
-interface TerminalCwdChanged {
-  terminalId: string;
-  cwd: string;
+interface TerminalCwdChangedPayload {
+  terminalId?: string;
+  terminal_id?: string;
+  cwd?: string;
 }
 
 const TITLE_BAR_LEFT: React.CSSProperties = {
@@ -408,10 +409,19 @@ export const TerminalPane = memo(function TerminalPane({
       const store = useTerminalStore.getState();
       const termState = store.terminals[tid];
       if (termState && termState.exitCode !== null) return;
-      invoke("terminal_write", {
+      const write = invoke("terminal_write", {
         terminalId: tid,
         data: encodeForPty(data),
-      }).catch(() => {});
+      });
+
+      // Once the backend accepts Enter it has already resolved any `cd` in
+      // that command. This is a reliable fallback when the global Tauri event
+      // was emitted while the listener was being re-registered.
+      if (data.includes("\r") || data.includes("\n")) {
+        write.then(() => void refreshTerminalContext()).catch(() => {});
+      } else {
+        write.catch(() => {});
+      }
     });
 
     scrollDisposableRef.current?.dispose();
@@ -433,7 +443,7 @@ export const TerminalPane = memo(function TerminalPane({
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, []);
+  }, [refreshTerminalContext]);
 
   // 2. Spawn PTY + optional screen rehydrate + agent launch
   useEffect(() => {
@@ -573,10 +583,17 @@ export const TerminalPane = memo(function TerminalPane({
   // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
-    listen<TerminalCwdChanged>("terminal-cwd-changed", (event) => {
-      if (event.payload.terminalId === terminalId) {
-        currentCwdRef.current = event.payload.cwd;
-        setCurrentCwd(event.payload.cwd);
+    listen<TerminalCwdChangedPayload | string>("terminal-cwd-changed", (event) => {
+      const payload = event.payload;
+      const changedTerminalId =
+        typeof payload === "string"
+          ? payload
+          : payload.terminalId ?? payload.terminal_id;
+      if (changedTerminalId === terminalId) {
+        if (typeof payload !== "string" && payload.cwd) {
+          currentCwdRef.current = payload.cwd;
+          setCurrentCwd(payload.cwd);
+        }
         console.log(`[branch] cwd-changed event for ${terminalId}, re-fetching`);
         void refreshTerminalContext();
       }
