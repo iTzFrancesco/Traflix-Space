@@ -253,20 +253,17 @@ impl TerminalSession {
         // Check if this looks like a paste or agent command (multi-char write).
         let is_paste = text.contains("\x1b[200~");
         if is_paste || text.len() > 10 {
-            // Search for `cd <path>\r` or `chdir <path>\r` in the full text.
-            if let Some(cd_start) = text.find("cd ") {
-                let after = &text[cd_start..];
-                let path_str = Self::extract_cd_path_from(after);
-                if let Some(p) = path_str {
-                    info!(
-                        terminal_cwd_detected = "paste",
-                        raw = %after,
-                        path = %p,
-                        "Paste/agent cd command detected"
-                    );
-                    Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
-                    return;
-                }
+            // A paste can contain any supported command (`cd`, `chdir`,
+            // `Set-Location`, `sl`), not just the literal `cd ` prefix.
+            if let Some(p) = Self::extract_cd_path_from_input(text) {
+                info!(
+                    terminal_cwd_detected = "paste",
+                    raw = %text,
+                    path = %p,
+                    "Paste/agent cd command detected"
+                );
+                Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, &p);
+                return;
             }
             // Not a cd command — clear buffer to avoid cross-talk with keystrokes.
             if let Ok(mut buf) = self.cd_buffer.lock() {
@@ -296,7 +293,7 @@ impl TerminalSession {
                                 "Keystroke cd command detected"
                             );
                             drop(buf);
-                            Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
+                            Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, &p);
                             return;
                         }
                     }
@@ -346,6 +343,16 @@ impl TerminalSession {
         if path.is_empty() || path == "~" { None } else { Some(path.to_string()) }
     }
 
+    /// Find the first directory-change command in a pasted multi-line input.
+    /// Every line is still parsed from its start, so `echo cd ..` is never
+    /// mistaken for a real directory change.
+    fn extract_cd_path_from_input(input: &str) -> Option<String> {
+        input
+            .trim_start_matches("\x1b[200~")
+            .split(|c: char| c == '\r' || c == '\n')
+            .find_map(Self::extract_cd_path_from)
+    }
+
     /// Resolve a path string (absolute or relative to cwd) and update cwd.
     /// Strips surrounding single/double quotes (PowerShell syntax).
     /// Handles Windows drive letters ("D:" → "D:\").
@@ -390,7 +397,14 @@ impl TerminalSession {
 
         match new_path.canonicalize() {
             Ok(canonical) => {
-                let new_cwd_str = canonical.to_string_lossy().to_string();
+                // `canonicalize()` on Windows returns an extended-length path
+                // (`\\?\C:\...`). Keep that internal implementation detail out
+                // of shell commands, logs, and title-bar state.
+                let new_cwd_str = canonical
+                    .to_string_lossy()
+                    .trim_start_matches("\\\\?\\")
+                    .trim_start_matches("\\\\.\\")
+                    .to_string();
                 info!(
                     terminal_cwd_changed = true,
                     from = %current_cwd,

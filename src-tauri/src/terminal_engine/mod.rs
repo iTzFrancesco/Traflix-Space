@@ -10,9 +10,10 @@ pub use cell::{Cell, Color};
 pub use frame::FrameSnapshot;
 pub use session::TerminalSession;
 
-use dashmap::DashMap;
-use std::sync::atomic::Ordering;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
+use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
@@ -25,6 +26,23 @@ pub struct TerminalManager {
     scheduler: tokio::sync::Mutex<FrameScheduler>,
     /// Currently focused terminal id (avoids write-locking every session on set_active).
     active_id: tokio::sync::Mutex<Option<String>>,
+}
+
+/// Current terminal location and the branch resolved for that exact location.
+/// Keeping the two values together prevents the title bar from showing a branch
+/// that belongs to a previous directory after rapid `cd` commands.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalContext {
+    pub cwd: String,
+    pub git_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalCwdChanged {
+    terminal_id: String,
+    cwd: String,
 }
 
 impl Default for TerminalManager {
@@ -114,7 +132,18 @@ impl TerminalManager {
 
         // If the CWD was updated by a cd command detection, notify the frontend.
         if session.cwd_changed.swap(false, Ordering::Acquire) {
-            let _ = app.emit("terminal-cwd-changed", id);
+            let cwd = session
+                .cwd
+                .lock()
+                .map(|cwd| cwd.clone())
+                .unwrap_or_default();
+            let _ = app.emit(
+                "terminal-cwd-changed",
+                TerminalCwdChanged {
+                    terminal_id: id.to_string(),
+                    cwd,
+                },
+            );
         }
 
         Ok(())
@@ -306,15 +335,35 @@ impl TerminalManager {
     /// the directory is a git repository, or None otherwise.
     /// Errors only if the terminal session doesn't exist.
     pub async fn get_git_branch(&self, id: &str) -> Result<Option<String>, String> {
-        let cwd = {
-            let session = self
-                .sessions
-                .get(id)
-                .ok_or_else(|| format!("Terminal {} not found", id))?;
-            let session = session.read().await;
-            let cwd = session.cwd.lock().unwrap().clone();
-            cwd
-        };
+        let cwd = self.get_terminal_cwd(id).await?;
+        self.get_git_branch_for_cwd(id, &cwd).await
+    }
+
+    /// Returns a CWD and its branch from the same backend snapshot.
+    pub async fn get_terminal_context(&self, id: &str) -> Result<TerminalContext, String> {
+        let cwd = self.get_terminal_cwd(id).await?;
+        let git_branch = self.get_git_branch_for_cwd(id, &cwd).await?;
+        Ok(TerminalContext { cwd, git_branch })
+    }
+
+    async fn get_terminal_cwd(&self, id: &str) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        session
+            .cwd
+            .lock()
+            .map(|cwd| cwd.clone())
+            .map_err(|_| format!("Terminal {} CWD lock poisoned", id))
+    }
+
+    async fn get_git_branch_for_cwd(
+        &self,
+        id: &str,
+        cwd: &str,
+    ) -> Result<Option<String>, String> {
 
         info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
 

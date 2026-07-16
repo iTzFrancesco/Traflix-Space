@@ -146,6 +146,7 @@ export function WorkspaceGrid({
               cwd={term.cwd}
               title={term.title}
               agentId={term.agentId}
+              terminalCount={terminals.length}
               isActive={term.id === activeTerminalId}
               isFocused={isFocused}
               focusModeActive={isFocusMode}

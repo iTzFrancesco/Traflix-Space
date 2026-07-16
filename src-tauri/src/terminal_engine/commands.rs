@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::terminal_engine::cell::Cell;
 use crate::terminal_engine::frame::FrameSnapshot;
-use crate::terminal_engine::TerminalManager;
+use crate::terminal_engine::{TerminalContext, TerminalManager};
 
 #[tauri::command]
 pub async fn terminal_spawn(
@@ -136,4 +136,14 @@ pub async fn get_git_branch(
 ) -> Result<Option<String>, String> {
     let manager = app.state::<TerminalManager>();
     manager.get_git_branch(&terminal_id).await
+}
+
+/// Returns the current directory and branch together for a terminal title bar.
+#[tauri::command]
+pub async fn terminal_get_context(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<TerminalContext, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_terminal_context(&terminal_id).await
 }

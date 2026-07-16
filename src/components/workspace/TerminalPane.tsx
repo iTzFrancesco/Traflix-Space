@@ -63,6 +63,8 @@ interface TerminalPaneProps {
   cwd: string;
   title: string;
   agentId?: string | null;
+  /** Number of panes in this workspace; drives the title-bar density. */
+  terminalCount: number;
   isActive: boolean;
   /** This pane is the focus-mode target. */
   isFocused?: boolean;
@@ -139,20 +141,38 @@ const CONTAINER_STYLE: React.CSSProperties = {
   overflow: "hidden",
 };
 
-const TITLE_BAR_HEIGHT = 28;
-
 const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  height: TITLE_BAR_HEIGHT,
-  minHeight: TITLE_BAR_HEIGHT,
-  padding: "0 10px",
   background: "rgba(255,255,255,0.03)",
   borderBottom: "1px solid rgba(255,255,255,0.06)",
   userSelect: "none",
   overflow: "hidden",
 };
+
+function getTitleBarMetrics(terminalCount: number) {
+  if (terminalCount <= 1) {
+    return { height: 38, padding: "0 14px", fontSize: 13, buttonSize: 26, iconSize: 14, dotSize: 10 };
+  }
+  if (terminalCount === 2) {
+    return { height: 34, padding: "0 12px", fontSize: 12, buttonSize: 24, iconSize: 13, dotSize: 9 };
+  }
+  if (terminalCount <= 4) {
+    return { height: 31, padding: "0 11px", fontSize: 12, buttonSize: 23, iconSize: 12, dotSize: 8 };
+  }
+  return { height: 28, padding: "0 10px", fontSize: 11, buttonSize: 22, iconSize: 12, dotSize: 8 };
+}
+
+interface TerminalContext {
+  cwd: string;
+  gitBranch: string | null;
+}
+
+interface TerminalCwdChanged {
+  terminalId: string;
+  cwd: string;
+}
 
 const TITLE_BAR_LEFT: React.CSSProperties = {
   display: "flex",
@@ -266,6 +286,7 @@ export const TerminalPane = memo(function TerminalPane({
   cwd,
   title: _title,
   agentId,
+  terminalCount,
   isActive,
   isFocused = false,
   focusModeActive = false,
@@ -306,11 +327,39 @@ export const TerminalPane = memo(function TerminalPane({
   }, [hasExited, terminalId]);
 
   const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const [currentCwd, setCurrentCwd] = useState(cwd);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [confirmClose, setConfirmClose] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
+  const currentCwdRef = useRef(cwd);
+
+  useEffect(() => {
+    currentCwdRef.current = cwd;
+    setCurrentCwd(cwd);
+  }, [cwd]);
+
+  const refreshTerminalContext = useCallback(async () => {
+    const expectedCwd = currentCwdRef.current;
+    try {
+      const context = await invoke<TerminalContext>("terminal_get_context", {
+        terminalId,
+      });
+      // A newer CWD event arrived while this request was in flight.
+      if (
+        expectedCwd !== currentCwdRef.current &&
+        context.cwd !== currentCwdRef.current
+      ) {
+        return;
+      }
+      currentCwdRef.current = context.cwd;
+      setCurrentCwd(context.cwd);
+      setGitBranch(context.gitBranch);
+    } catch (err) {
+      console.error(`[branch] context refresh error for ${terminalId}:`, err);
+    }
+  }, [terminalId]);
 
   useEffect(() => {
     if (!confirmClose) return;
@@ -422,12 +471,7 @@ export const TerminalPane = memo(function TerminalPane({
 
         // Carica il branch git all'avvio del terminale (primo mount + rehydrate).
         // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
-        invoke<string | null>("get_git_branch", { terminalId })
-          .then((b) => {
-            console.log(`[branch] mount fetch for ${terminalId}:`, b);
-            if (b) setGitBranch(b);
-          })
-          .catch((err) => console.error(`[branch] mount fetch error for ${terminalId}:`, err));
+        void refreshTerminalContext();
 
         if (shouldRehydrate) {
           rehydratingRef.current = true;
@@ -530,24 +574,21 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     })();
-  }, [terminalId, shell, cwd, agentId]);
+  }, [terminalId, shell, cwd, agentId, refreshTerminalContext]);
 
   // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
-    listen<string>("terminal-cwd-changed", (event) => {
-      if (event.payload === terminalId) {
+    listen<TerminalCwdChanged>("terminal-cwd-changed", (event) => {
+      if (event.payload.terminalId === terminalId) {
+        currentCwdRef.current = event.payload.cwd;
+        setCurrentCwd(event.payload.cwd);
         console.log(`[branch] cwd-changed event for ${terminalId}, re-fetching`);
-        invoke<string | null>("get_git_branch", { terminalId })
-          .then((b) => {
-            console.log(`[branch] cwd-changed fetch for ${terminalId}:`, b);
-            if (b) setGitBranch(b); else setGitBranch(null);
-          })
-          .catch((err) => console.error(`[branch] cwd-changed error for ${terminalId}:`, err));
+        void refreshTerminalContext();
       }
     }).then((fn) => { unlistenFn = fn; });
     return () => { unlistenFn?.(); };
-  }, [terminalId]);
+  }, [terminalId, refreshTerminalContext]);
 
   // 3. Active focus + backend active flag (skip heavy refresh when hidden in focus mode)
   useEffect(() => {
@@ -774,8 +815,16 @@ export const TerminalPane = memo(function TerminalPane({
   const displayTitle =
     customTitle ??
     (agentId
-      ? `${agentDisplayName(agentId)} — ${projectNameFromCwd(cwd)}`
-      : `${shell} — ${projectNameFromCwd(cwd)}`);
+      ? `${agentDisplayName(agentId)} — ${projectNameFromCwd(currentCwd)}`
+      : `${shell} — ${projectNameFromCwd(currentCwd)}`);
+
+  const titleBarMetrics = getTitleBarMetrics(terminalCount);
+  const titleBarStyle: React.CSSProperties = {
+    ...TITLE_BAR_STYLE,
+    height: titleBarMetrics.height,
+    minHeight: titleBarMetrics.height,
+    padding: titleBarMetrics.padding,
+  };
 
   const handleStartRename = useCallback(() => {
     setEditValue(displayTitle);
@@ -807,7 +856,7 @@ export const TerminalPane = memo(function TerminalPane({
       await invoke("terminal_reopen", {
         terminalId,
         shell,
-        cwd,
+        cwd: currentCwd,
       });
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;
@@ -815,7 +864,7 @@ export const TerminalPane = memo(function TerminalPane({
     } catch (err) {
       console.error("Errore reopen terminale:", err);
     }
-  }, [terminalId, shell, cwd]);
+  }, [terminalId, shell, currentCwd]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -893,17 +942,22 @@ export const TerminalPane = memo(function TerminalPane({
       onDrop={handleDrop}
     >
       {/* Title bar: workspace dot + name (left) | branch + buttons (right) */}
-      <div style={TITLE_BAR_STYLE}>
-        <div style={TITLE_BAR_LEFT}>
+      <div style={titleBarStyle}>
+        <div style={{ ...TITLE_BAR_LEFT, gap: titleBarMetrics.dotSize }}>
           <div
             style={{
               ...TITLE_BAR_DOT,
+              width: titleBarMetrics.dotSize,
+              height: titleBarMetrics.dotSize,
               background: workspaceColor,
             }}
           />
           {editing ? (
             <input
-              style={TITLE_BAR_RENAME_INPUT}
+              style={{
+                ...TITLE_BAR_RENAME_INPUT,
+                fontSize: titleBarMetrics.fontSize,
+              }}
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={handleRenameSubmit}
@@ -912,7 +966,7 @@ export const TerminalPane = memo(function TerminalPane({
             />
           ) : (
             <span
-              style={TITLE_BAR_NAME}
+              style={{ ...TITLE_BAR_NAME, fontSize: titleBarMetrics.fontSize }}
               onDoubleClick={handleStartRename}
             >
               {displayTitle}
@@ -922,10 +976,13 @@ export const TerminalPane = memo(function TerminalPane({
 
         <div style={TITLE_BAR_RIGHT}>
           {gitBranch && (
-            <span style={TITLE_BAR_BRANCH} title={gitBranch}>
+            <span
+              style={{ ...TITLE_BAR_BRANCH, fontSize: titleBarMetrics.fontSize }}
+              title={gitBranch}
+            >
               <svg
-                width={10}
-                height={10}
+                width={titleBarMetrics.iconSize}
+                height={titleBarMetrics.iconSize}
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -950,6 +1007,8 @@ export const TerminalPane = memo(function TerminalPane({
               title={isFocused ? "Esci da Focus (Esc)" : "Focus mode"}
               style={{
                 ...TOOL_BTN_BASE,
+                width: titleBarMetrics.buttonSize,
+                height: titleBarMetrics.buttonSize,
                 background: isFocused
                   ? "rgba(59,130,246,0.25)"
                   : "rgba(255,255,255,0.08)",
@@ -968,7 +1027,11 @@ export const TerminalPane = memo(function TerminalPane({
                 e.currentTarget.style.color = isFocused ? "#60a5fa" : "#a1a1aa";
               }}
             >
-              {isFocused ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              {isFocused ? (
+                <Minimize2 size={titleBarMetrics.iconSize} />
+              ) : (
+                <Maximize2 size={titleBarMetrics.iconSize} />
+              )}
             </button>
           )}
 
@@ -1004,6 +1067,8 @@ export const TerminalPane = memo(function TerminalPane({
                   title="Conferma chiusura"
                   style={{
                     ...TOOL_BTN_BASE,
+                    width: titleBarMetrics.buttonSize,
+                    height: titleBarMetrics.buttonSize,
                     background: "rgba(239,68,68,0.25)",
                     color: "#ef4444",
                   }}
@@ -1022,6 +1087,8 @@ export const TerminalPane = memo(function TerminalPane({
                   title="Annulla"
                   style={{
                     ...TOOL_BTN_BASE,
+                    width: titleBarMetrics.buttonSize,
+                    height: titleBarMetrics.buttonSize,
                     background: "rgba(255,255,255,0.08)",
                     color: "#a1a1aa",
                   }}
@@ -1034,7 +1101,7 @@ export const TerminalPane = memo(function TerminalPane({
                     e.currentTarget.style.color = "#a1a1aa";
                   }}
                 >
-                  <X size={12} />
+                  <X size={titleBarMetrics.iconSize} />
                 </button>
               </div>
             ) : (
@@ -1044,6 +1111,8 @@ export const TerminalPane = memo(function TerminalPane({
                 title="Chiudi terminale"
                 style={{
                   ...TOOL_BTN_BASE,
+                  width: titleBarMetrics.buttonSize,
+                  height: titleBarMetrics.buttonSize,
                   background: "rgba(239,68,68,0.2)",
                   color: "#ef4444",
                 }}
@@ -1054,7 +1123,7 @@ export const TerminalPane = memo(function TerminalPane({
                   e.currentTarget.style.background = "rgba(239,68,68,0.2)";
                 }}
               >
-                <X size={12} />
+                <X size={titleBarMetrics.iconSize} />
               </button>
             ))}
         </div>
