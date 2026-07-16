@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -527,6 +528,19 @@ export const TerminalPane = memo(function TerminalPane({
       }
     })();
   }, [terminalId, shell, cwd, agentId]);
+
+  // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    listen<string>("terminal-cwd-changed", (event) => {
+      if (event.payload === terminalId) {
+        invoke<string | null>("get_git_branch", { terminalId })
+          .then((b) => { if (b) setGitBranch(b); else setGitBranch(null); })
+          .catch(() => {});
+      }
+    }).then((fn) => { unlistenFn = fn; });
+    return () => { unlistenFn?.(); };
+  }, [terminalId]);
 
   // 3. Active focus + backend active flag (skip heavy refresh when hidden in focus mode)
   useEffect(() => {

@@ -37,7 +37,7 @@ pub async fn terminal_write(
     data: Vec<u8>,
 ) -> Result<(), String> {
     let manager = app.state::<TerminalManager>();
-    manager.write(&terminal_id, &data).await
+    manager.write(&app, &terminal_id, &data).await
 }
 
 #[tauri::command]

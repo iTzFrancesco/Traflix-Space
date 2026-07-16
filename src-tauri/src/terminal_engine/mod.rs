@@ -11,9 +11,10 @@ pub use frame::FrameSnapshot;
 pub use session::TerminalSession;
 
 use dashmap::DashMap;
+use std::sync::atomic::Ordering;
 use dashmap::mapref::entry::Entry;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -103,13 +104,20 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+    pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
         let session = self
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
-        session.write(data)
+        session.write(data)?;
+
+        // If the CWD was updated by a cd command detection, notify the frontend.
+        if session.cwd_changed.swap(false, Ordering::Acquire) {
+            let _ = app.emit("terminal-cwd-changed", id);
+        }
+
+        Ok(())
     }
 
     pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {

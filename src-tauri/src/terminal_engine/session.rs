@@ -25,6 +25,9 @@ pub struct TerminalSession {
     pub exit_code: Option<i32>,
     pub reader_stop: Arc<AtomicBool>,
     pub exit_emitted: Arc<AtomicBool>,
+    /// Set to true when resolve_and_update_cwd updates the CWD.
+    /// Read+reset by TerminalManager::write to emit cwd-changed event.
+    pub cwd_changed: AtomicBool,
     /// Accumulates printable characters from keystroke writes to detect
     /// `cd` / `chdir` commands on Enter (\r). Each write() call typically
     /// contains one character for typed input. Reset on \r or escape seqs.
@@ -49,6 +52,7 @@ impl TerminalSession {
             exit_code: None,
             reader_stop: Arc::new(AtomicBool::new(false)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
+            cwd_changed: AtomicBool::new(false),
             cd_buffer: Mutex::new(String::new()),
         }
     }
@@ -254,7 +258,7 @@ impl TerminalSession {
                 let after = &text[cd_start..];
                 let path_str = Self::extract_cd_path_from(after);
                 if let Some(p) = path_str {
-                    Self::resolve_and_update_cwd(&self.cwd, p);
+                    Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
                     return;
                 }
             }
@@ -280,7 +284,7 @@ impl TerminalSession {
                     if !trimmed.is_empty() {
                         if let Some(p) = Self::extract_cd_path_from(&trimmed) {
                             drop(buf);
-                            Self::resolve_and_update_cwd(&self.cwd, p);
+                            Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, p);
                             return;
                         }
                     }
@@ -320,8 +324,10 @@ impl TerminalSession {
     }
 
     /// Resolve a path string (absolute or relative to cwd) and update cwd.
+    /// Sets cwd_changed to true if the update succeeds.
     fn resolve_and_update_cwd(
         cwd_mutex: &std::sync::Mutex<String>,
+        cwd_changed: &AtomicBool,
         path_str: &str,
     ) {
         let current_cwd = match cwd_mutex.lock() {
@@ -342,6 +348,7 @@ impl TerminalSession {
         if let Ok(canonical) = new_path.canonicalize() {
             if let Ok(mut cwd_guard) = cwd_mutex.lock() {
                 *cwd_guard = canonical.to_string_lossy().to_string();
+                cwd_changed.store(true, Ordering::Release);
             }
         }
     }
