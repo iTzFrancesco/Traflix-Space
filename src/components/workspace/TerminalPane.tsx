@@ -139,7 +139,7 @@ const CONTAINER_STYLE: React.CSSProperties = {
   overflow: "hidden",
 };
 
-const TITLE_BAR_HEIGHT = 32;
+const TITLE_BAR_HEIGHT = 28;
 
 const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
@@ -909,7 +909,6 @@ export const TerminalPane = memo(function TerminalPane({
             <span
               style={TITLE_BAR_NAME}
               onDoubleClick={handleStartRename}
-              title={displayTitle}
             >
               {displayTitle}
             </span>

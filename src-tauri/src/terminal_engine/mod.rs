@@ -318,44 +318,47 @@ impl TerminalManager {
 
         info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
 
-        let output = tokio::process::Command::new("git")
-            .args(["-C", &cwd, "branch", "--show-current"])
-            .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .output()
-            .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::process::Command::new("git")
+                .args(["-C", &cwd, "branch", "--show-current"])
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .output(),
+        )
+        .await;
 
-        match output {
-            Ok(out) if out.status.success() => {
-                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                info!(
-                    terminal_id = %id,
-                    cwd = %cwd,
-                    branch = %branch,
-                    "get_git_branch: success"
-                );
-                Ok(if branch.is_empty() { None } else { Some(branch) })
+        let output = match result {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                info!(terminal_id = %id, cwd = %cwd, error = %e, "get_git_branch: spawn error");
+                return Ok(None);
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                info!(
-                    terminal_id = %id,
-                    cwd = %cwd,
-                    git_exit = %out.status,
-                    git_stderr = %stderr,
-                    "get_git_branch: git failed"
-                );
-                Ok(None)
+            Err(_) => {
+                info!(terminal_id = %id, cwd = %cwd, "get_git_branch: timed out after 5s");
+                return Ok(None);
             }
-            Err(e) => {
-                info!(
-                    terminal_id = %id,
-                    cwd = %cwd,
-                    error = %e,
-                    "get_git_branch: command error"
-                );
-                Ok(None)
-            }
+        };
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            info!(
+                terminal_id = %id,
+                cwd = %cwd,
+                branch = %branch,
+                "get_git_branch: success"
+            );
+            Ok(if branch.is_empty() { None } else { Some(branch) })
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            info!(
+                terminal_id = %id,
+                cwd = %cwd,
+                git_exit = %output.status,
+                git_stderr = %stderr,
+                "get_git_branch: git failed"
+            );
+            Ok(None)
         }
     }
 

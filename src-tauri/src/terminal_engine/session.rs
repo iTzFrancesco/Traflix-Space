@@ -319,35 +319,59 @@ impl TerminalSession {
         }
     }
 
-    /// Extract the path from a string starting with `cd ` or `chdir `.
-    fn extract_cd_path_from(s: &str) -> Option<&str> {
-        let after = s
-            .strip_prefix("cd ")
-            .or_else(|| s.strip_prefix("chdir "))
-            .or_else(|| s.strip_prefix("CD "))
-            .or_else(|| s.strip_prefix("CHDIR "))?;
-        // Take up to \r or \n, trim trailing whitespace/control
-        let path = after
+    /// Extract the path from a string starting with a cd-like command.
+    /// Supports: `cd `, `chdir `, `CD `, `CHDIR `, `Set-Location `, `sl `.
+    fn extract_cd_path_from(s: &str) -> Option<String> {
+        // A terminal command must start with the cd-like verb. Searching inside
+        // the input would incorrectly treat e.g. `echo cd .\\project` as a
+        // directory change.
+        let prefixes = ["cd ", "chdir ", "CD ", "CHDIR ", "Set-Location ", "set-location ", "sl ", "SL "];
+
+        let command = s.trim_start_matches("\x1b[200~").trim_start();
+        let remainder = prefixes.iter().find_map(|prefix| command.strip_prefix(prefix))?;
+
+        // Take up to \r or \n. A clipboard paste is wrapped in bracketed
+        // paste markers, whose closing `ESC[201~` is not entirely control
+        // characters and would otherwise be treated as part of the path.
+        let line = remainder
             .split(|c: char| c == '\r' || c == '\n')
             .next()
             .unwrap_or("")
+            .trim_end();
+        let path = line
+            .strip_suffix("\x1b[201~")
+            .unwrap_or(line)
             .trim_end_matches(|c: char| c.is_control() || c.is_whitespace());
-        if path.is_empty() { None } else { Some(path) }
+
+        if path.is_empty() || path == "~" { None } else { Some(path.to_string()) }
     }
 
     /// Resolve a path string (absolute or relative to cwd) and update cwd.
     /// Strips surrounding single/double quotes (PowerShell syntax).
+    /// Handles Windows drive letters ("D:" → "D:\").
     /// Sets cwd_changed to true if the update succeeds.
     fn resolve_and_update_cwd(
         cwd_mutex: &std::sync::Mutex<String>,
         cwd_changed: &AtomicBool,
         path_str: &str,
     ) {
-        // Strip surrounding quotes: 'path' or "path"
-        let cleaned = path_str
-            .trim_start_matches(|c| c == '\'' || c == '"')
-            .trim_end_matches(|c| c == '\'' || c == '"')
-            .trim_end_matches(|c: char| c == '\\' || c == '/');
+        // Strip one matching pair of PowerShell quotes while keeping path
+        // separators intact (notably a drive root such as `C:\\`).
+        let trimmed = path_str.trim();
+        let cleaned = trimmed
+            .strip_prefix('\'')
+            .and_then(|path| path.strip_suffix('\''))
+            .or_else(|| trimmed.strip_prefix('"').and_then(|path| path.strip_suffix('"')))
+            .unwrap_or(trimmed);
+
+        // Detect Windows bare drive letter "D:" → make "D:\" absolute
+        let expanded = if cleaned.len() == 2 && cleaned.chars().nth(1) == Some(':') {
+            let mut d = cleaned.to_string();
+            d.push('\\');
+            d
+        } else {
+            cleaned.to_string()
+        };
 
         let current_cwd = match cwd_mutex.lock() {
             Ok(g) => g.clone(),
@@ -355,13 +379,13 @@ impl TerminalSession {
         };
         let current = std::path::PathBuf::from(&current_cwd);
 
-        let new_path = if std::path::Path::new(cleaned).is_absolute()
-            || cleaned.contains(":\\")
-            || cleaned.contains(":/")
+        let new_path = if std::path::Path::new(&expanded).is_absolute()
+            || expanded.contains(":\\")
+            || expanded.contains(":/")
         {
-            std::path::PathBuf::from(cleaned)
+            std::path::PathBuf::from(&expanded)
         } else {
-            current.join(cleaned)
+            current.join(&expanded)
         };
 
         match new_path.canonicalize() {
