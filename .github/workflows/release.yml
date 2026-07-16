@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.tag }}
+          ref: main
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,12 +112,8 @@ jobs:
 
       - run: npm install
 
-      - name: Apply Rust formatting
-        run: cargo fmt --all
-        working-directory: src-tauri
-
-      - name: Apply machine-fixable Clippy suggestions
-        run: cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
+      - name: Verify Rust formatting
+        run: cargo fmt --all --check
         working-directory: src-tauri
 
       - name: Verify strict Rust lint
