@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::terminal_engine::cell::Cell;
 use crate::terminal_engine::frame::FrameSnapshot;
-use crate::terminal_engine::TerminalManager;
+use crate::terminal_engine::{TerminalContext, TerminalManager};
 
 #[tauri::command]
 pub async fn terminal_spawn(
@@ -37,7 +37,7 @@ pub async fn terminal_write(
     data: Vec<u8>,
 ) -> Result<(), String> {
     let manager = app.state::<TerminalManager>();
-    manager.write(&terminal_id, &data).await
+    manager.write(&app, &terminal_id, &data).await
 }
 
 #[tauri::command]
@@ -114,4 +114,47 @@ pub async fn terminal_reopen(
     };
     manager.spawn(app.clone(), config).await?;
     Ok(())
+}
+
+/// Scrollback (~1000 lines) + visible screen as plain text for rehydrating
+/// xterm after a workspace remount while the backend PTY session stayed alive.
+#[tauri::command]
+pub async fn terminal_get_screen_text(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<String, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_screen_text(&terminal_id).await
+}
+
+/// Returns the git branch for the terminal's working directory.
+/// Returns null/None if not in a git repo.
+#[tauri::command]
+pub async fn get_git_branch(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<Option<String>, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_git_branch(&terminal_id).await
+}
+
+/// Returns the current directory and branch together for a terminal title bar.
+#[tauri::command]
+pub async fn terminal_get_context(
+    app: AppHandle,
+    terminal_id: String,
+) -> Result<TerminalContext, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.get_terminal_context(&terminal_id).await
+}
+
+/// Updates a terminal's tracked CWD from the prompt rendered by PowerShell.
+#[tauri::command]
+pub async fn terminal_sync_cwd(
+    app: AppHandle,
+    terminal_id: String,
+    cwd: String,
+) -> Result<TerminalContext, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.sync_terminal_cwd(&terminal_id, &cwd).await
 }

@@ -11,31 +11,60 @@ import { invokeWithTimeout } from "../../lib/timeout";
 // Module-level: mappa container → terminalId per drag&drop
 // e cache dei path ricevuti da Tauri drag-drop events.
 // ────────────────────────────────────────────────────────────
-const containerMap = new WeakMap<HTMLElement, string>();
+const containerMap = new Map<HTMLElement, string>();
 let tauriDragFilePaths: string[] | null = null;
 let tauriDragInitialized = false;
 
 function findTerminalIdAtPoint(x: number, y: number): string | null {
-  const el = document.elementFromPoint(x, y);
-  if (!el) return null;
-  // Risali nel DOM per trovare il container con data-terminal-id
-  let current: HTMLElement | null = el instanceof HTMLElement ? el : null;
-  while (current) {
-    const tid = current.dataset.terminalId;
-    if (tid) return tid;
-    current = current.parentElement;
+  // Tauri reports a PhysicalPosition, while the DOM expects CSS pixels.
+  // Prefer the DPI-adjusted point, then retain the raw fallback for webviews
+  // that already provide logical coordinates.
+  const scale = window.devicePixelRatio || 1;
+  const points = [[x / scale, y / scale], [x, y]];
+
+  for (const [pointX, pointY] of points) {
+    const el = document.elementFromPoint(pointX, pointY);
+    let current: HTMLElement | null = el instanceof HTMLElement ? el : null;
+    while (current) {
+      const tid = current.dataset.terminalId;
+      if (tid) return tid;
+      current = current.parentElement;
+    }
+
+    // Native drops may land on the xterm canvas rather than a DOM descendant
+    // visible to elementFromPoint. The registered container bounds are a
+    // reliable fallback and also work with multiple terminals.
+    for (const [container, tid] of containerMap) {
+      const rect = container.getBoundingClientRect();
+      if (
+        pointX >= rect.left && pointX <= rect.right &&
+        pointY >= rect.top && pointY <= rect.bottom
+      ) {
+        return tid;
+      }
+    }
   }
   return null;
+}
+
+function formatPathsForTerminal(paths: string[]): string {
+  // Quotes preserve a dropped Windows path as one shell argument when it
+  // contains spaces. Double quotes are accepted by PowerShell, cmd and common
+  // Unix shells used by the integrated terminal.
+  return paths.map((path) => `"${path}"`).join(" ");
 }
 
 async function writePathsToTerminal(paths: string[], x: number, y: number) {
   const tid = findTerminalIdAtPoint(x, y);
   if (!tid) return;
-  const text = paths.join(" ");
-  await invoke("terminal_write", {
-    terminalId: tid,
-    data: Array.from(new TextEncoder().encode(text)),
-  });
+  const text = formatPathsForTerminal(paths);
+  await invokeWithTimeout(
+    () => invoke("terminal_write", {
+      terminalId: tid,
+      data: Array.from(new TextEncoder().encode(text)),
+    }),
+    10000,
+  );
 }
 
 function ensureTauriDragListeners() {
@@ -276,7 +305,7 @@ export function useTerminalInput(
 
       // 1) Usa i path ricevuti dal core Tauri (tauri://drag-enter / tauri://drag-drop)
       if (tauriDragFilePaths && tauriDragFilePaths.length > 0) {
-        const text = tauriDragFilePaths.join(" ");
+        const text = formatPathsForTerminal(tauriDragFilePaths);
         tauriDragFilePaths = null; // consumato
         await invoke("terminal_write", {
           terminalId: tid,
@@ -288,7 +317,7 @@ export function useTerminalInput(
       // 2) Fallback: estrai path dall'evento DOM
       const paths = extractFilePathsFromDOM(e);
       if (paths && paths.length > 0) {
-        const text = paths.join(" ");
+        const text = formatPathsForTerminal(paths);
         await invoke("terminal_write", {
           terminalId: tid,
           data: Array.from(new TextEncoder().encode(text)),
@@ -308,6 +337,8 @@ export function useTerminalInput(
       container.removeEventListener("paste", handlePasteCapture, true);
       container.removeEventListener("dragover", handleDragOver);
       container.removeEventListener("drop", handleDrop);
+      delete container.dataset.terminalId;
+      containerMap.delete(container);
     };
-  }, [containerRef]);
+  }, [containerRef, terminalId, xtermRef]);
 }

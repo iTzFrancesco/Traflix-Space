@@ -14,7 +14,7 @@ use std::sync::{
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Manager, RunEvent,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -162,7 +162,21 @@ fn main() {
             terminal_engine::commands::terminal_set_active,
             terminal_engine::commands::terminal_get_snapshot,
             terminal_engine::commands::terminal_get_scrollback,
+            terminal_engine::commands::terminal_get_screen_text,
+            terminal_engine::commands::get_git_branch,
+            terminal_engine::commands::terminal_get_context,
+            terminal_engine::commands::terminal_sync_cwd,
         ])
-        .run(tauri::generate_context!())
-        .expect("Errore avvio Traflix Space");
+        .build(tauri::generate_context!())
+        .expect("Errore build Traflix Space")
+        .run(|app, event| {
+            // On real process exit (tray Quit, no-tray window close, OS kill),
+            // tear down every PTY/shell so no orphans accumulate.
+            if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+                let manager = app.state::<TerminalManager>();
+                tauri::async_runtime::block_on(async {
+                    manager.kill_all().await;
+                });
+            }
+        });
 }

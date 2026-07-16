@@ -75,9 +75,9 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[], onCloseTerm
           description: "Nuovo terminale",
         },
         {
-          key: "w",
-          ctrl: true,
+          key: "x",
           shift: true,
+          alt: true,
           handler: () => {
             const store = useTerminalStore.getState();
             const activeId = store.activeTerminalId;
@@ -85,7 +85,7 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[], onCloseTerm
               onCloseTerminalRef.current();
             }
           },
-          description: "Chiudi terminale attivo",
+          description: "Richiedi chiusura terminale attivo",
         },
       ];
 

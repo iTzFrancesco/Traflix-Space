@@ -5,6 +5,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useSkillStore } from "../../stores/skillStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { computeLayout } from "../../lib/presets";
 import { WorkspaceGrid } from "./WorkspaceGrid";
@@ -19,6 +20,11 @@ interface LoadedWorkspace {
   terminals: TerminalConfig[];
   createdAt: string;
   updatedAt: string;
+}
+
+interface TerminalCloseRequest {
+  terminalId: string;
+  token: number;
 }
 
 export function WorkspaceView() {
@@ -36,6 +42,7 @@ export function WorkspaceView() {
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
   );
+  const [closeRequest, setCloseRequest] = useState<TerminalCloseRequest | null>(null);
   const loadedMapRef = useRef(loadedMap);
   loadedMapRef.current = loadedMap;
   const loadingRef = useRef<Set<string>>(new Set());
@@ -52,6 +59,11 @@ export function WorkspaceView() {
   const activeLoaded = activeWorkspaceId
     ? loadedMap.get(activeWorkspaceId)
     : undefined;
+  // Derive the visible grid from the actual pane count. This also migrates
+  // workspaces saved with an older layout (notably the previous 2x2 for 3).
+  const activeLayout = activeLoaded
+    ? computeLayout(activeLoaded.terminals.length)
+    : null;
 
   const loadWorkspace = useCallback((id: string) => {
     if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
@@ -95,6 +107,24 @@ export function WorkspaceView() {
           terminalStore.setActiveTerminal(firstId);
         }
 
+        // Calculate eviction BEFORE setState — React may call updaters multiple
+        // times (StrictMode, concurrent rendering) so side effects don't belong
+        // inside the updater function. Read from refs, not from stale closure.
+        const newOrder = openOrderRef.current
+          .filter((k) => k !== id)
+          .concat(id);
+
+        const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
+        const toEvict = loadedMapRef.current.size >= MAX_OPEN_WORKSPACES
+          ? newOrder.find(
+              (k) => k !== currentActive && loadedMapRef.current.has(k),
+            )
+          : undefined;
+
+        if (toEvict) {
+          terminalStore.killWorkspaceTerminals(toEvict);
+        }
+
         setLoadedMap((prev) => {
           const next = new Map(prev);
           next.set(id, {
@@ -107,22 +137,13 @@ export function WorkspaceView() {
             updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
           });
 
-          openOrderRef.current = openOrderRef.current
-            .filter((k) => k !== id)
-            .concat(id);
+          openOrderRef.current = newOrder;
 
-          if (next.size > MAX_OPEN_WORKSPACES) {
-            const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
-            const toEvict = openOrderRef.current.find(
-              (k) => k !== currentActive && next.has(k),
+          if (toEvict) {
+            next.delete(toEvict);
+            openOrderRef.current = openOrderRef.current.filter(
+              (k) => k !== toEvict,
             );
-            if (toEvict) {
-              terminalStore.killWorkspaceTerminals(toEvict);
-              next.delete(toEvict);
-              openOrderRef.current = openOrderRef.current.filter(
-                (k) => k !== toEvict,
-              );
-            }
           }
 
           return next;
@@ -164,7 +185,8 @@ export function WorkspaceView() {
           5000,
         ).catch(() => {});
 
-        // 2. Rimuovi dal terminal store
+        // 2. Rimuovi dal terminal store (+ clear focus se necessario)
+        useSkillStore.getState().clearPendingDrop(terminalId);
         useTerminalStore.getState().removeTerminal(terminalId);
 
         // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione)
@@ -228,19 +250,22 @@ export function WorkspaceView() {
     useTerminalStore.getState().setActiveTerminal(id);
   }, []);
 
-  // Esponi handleCloseTerminal globalmente per la keyboard shortcut
-  const closeTerminalRef = useRef(handleCloseTerminal);
-  closeTerminalRef.current = handleCloseTerminal;
+  // La shortcut deve mostrare la conferma dentro al pane attivo, non chiudere
+  // direttamente il terminale saltando il flusso visuale del TerminalPane.
+  const closeRequestTokenRef = useRef(0);
+  const requestCloseTerminalRef = useRef(() => {
+    const activeId = useTerminalStore.getState().activeTerminalId;
+    if (!activeId) return;
+    setCloseRequest({
+      terminalId: activeId,
+      token: ++closeRequestTokenRef.current,
+    });
+  });
   useEffect(() => {
-    (window as any).__traflix_close_terminal = () => {
-      const store = useTerminalStore.getState();
-      const activeId = store.activeTerminalId;
-      if (activeId) {
-        closeTerminalRef.current(activeId);
-      }
-    };
+    (window as any).__traflix_request_close_terminal = () =>
+      requestCloseTerminalRef.current();
     return () => {
-      delete (window as any).__traflix_close_terminal;
+      delete (window as any).__traflix_request_close_terminal;
     };
   }, []);
 
@@ -370,7 +395,10 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica workspace attivo se non già in cache
+  // Carica workspace attivo se non già in cache.
+  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare
+  // il focus sul solo workspace attivo. Così se esci da una
+  // workspace in focus mode e ci torni, il focus è preservato.
   useEffect(() => {
     if (!activeWorkspaceId) return;
     if (!loadedMapRef.current.has(activeWorkspaceId)) {
@@ -381,18 +409,20 @@ export function WorkspaceView() {
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
     const allIds = new Set(workspaces.map((w) => w.id));
+    const toRemove = Array.from(loadedMapRef.current.keys()).filter(
+      (key) => !allIds.has(key),
+    );
+    if (toRemove.length === 0) return;
+
     const terminalStore = useTerminalStore.getState();
+    for (const key of toRemove) {
+      terminalStore.killWorkspaceTerminals(key);
+    }
+
     setLoadedMap((prev) => {
-      let changed = false;
       const next = new Map(prev);
-      for (const key of next.keys()) {
-        if (!allIds.has(key)) {
-          terminalStore.killWorkspaceTerminals(key);
-          next.delete(key);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
+      for (const key of toRemove) next.delete(key);
+      return next;
     });
   }, [workspaces]);
 
@@ -410,29 +440,29 @@ export function WorkspaceView() {
   if (!workspace && !activeWorkspaceId) {
     return (
       <>
-        <div className="flex flex-col items-center justify-center h-full gap-6 text-neutral-text-muted">
+        <div className="flex flex-col items-center justify-center h-full gap-8 px-8 text-neutral-text-muted">
           <TerminalSquare
-            size={64}
+            size={72}
             strokeWidth={1}
             className="text-primary/30"
           />
           <div className="text-center">
-            <h2 className="font-display font-bold text-xl text-neutral-text-dim mb-2">
+            <h2 className="font-display font-bold text-2xl text-neutral-text-dim mb-3 tracking-tight">
               Nessun Workspace Aperto
             </h2>
-            <p className="text-sm max-w-md mb-6">
+            <p className="text-[0.9375rem] max-w-md mb-8 leading-relaxed mx-auto">
               Seleziona un workspace dalla sidebar o creane uno nuovo per
               iniziare.
             </p>
             <button
               onClick={() => setWizardOpen(true)}
-              className="inline-flex items-center gap-2 px-6 py-3 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
+              className="inline-flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
                 boxShadow: "0 4px 16px rgba(232, 93, 4, 0.25)",
               }}
             >
-              <Plus size={16} />
+              <Plus size={18} />
               Nuovo Spazio
             </button>
           </div>
@@ -461,11 +491,12 @@ export function WorkspaceView() {
         {/* Header del workspace attivo */}
         <div
           style={{
-            padding: "12px 20px 8px",
+            padding: "16px 20px 12px",
             flexShrink: 0,
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "space-between",
+            gap: "16px",
           }}
         >
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -473,9 +504,10 @@ export function WorkspaceView() {
               style={{
                 fontFamily: "var(--font-display)",
                 fontWeight: 700,
-                fontSize: "16px",
+                fontSize: "17px",
                 color: "#f4f4f5",
                 letterSpacing: "-0.01em",
+                lineHeight: 1.3,
               }}
             >
               {activeLoaded.name}
@@ -483,12 +515,13 @@ export function WorkspaceView() {
             <p
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "#52525b",
-                marginTop: "2px",
+                fontSize: "12px",
+                color: "#71717a",
+                marginTop: "4px",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
+                lineHeight: 1.4,
               }}
             >
               {activeLoaded.rootPath}
@@ -509,9 +542,10 @@ export function WorkspaceView() {
             }}
           >
             <WorkspaceGrid
-              rows={activeLoaded.layout.rows}
-              cols={activeLoaded.layout.cols}
+              rows={activeLayout?.rows ?? 1}
+              cols={activeLayout?.cols ?? 1}
               terminals={activeLoaded.terminals}
+              closeRequest={closeRequest}
               onActivate={handleActivateTerminal}
               onCloseTerminal={handleCloseTerminal}
             />

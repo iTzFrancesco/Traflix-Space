@@ -10,9 +10,12 @@ pub use cell::{Cell, Color};
 pub use frame::FrameSnapshot;
 pub use session::TerminalSession;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -21,6 +24,25 @@ use crate::terminal_engine::scheduler::FrameScheduler;
 pub struct TerminalManager {
     pub sessions: DashMap<String, Arc<RwLock<TerminalSession>>>,
     scheduler: tokio::sync::Mutex<FrameScheduler>,
+    /// Currently focused terminal id (avoids write-locking every session on set_active).
+    active_id: tokio::sync::Mutex<Option<String>>,
+}
+
+/// Current terminal location and the branch resolved for that exact location.
+/// Keeping the two values together prevents the title bar from showing a branch
+/// that belongs to a previous directory after rapid `cd` commands.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalContext {
+    pub cwd: String,
+    pub git_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalCwdChanged {
+    terminal_id: String,
+    cwd: String,
 }
 
 impl Default for TerminalManager {
@@ -34,6 +56,7 @@ impl TerminalManager {
         Self {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
+            active_id: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -43,38 +66,44 @@ impl TerminalManager {
         config: crate::workspace::registry::TerminalConfig,
     ) -> Result<String, String> {
         let id = config.id.clone();
-        if self.sessions.contains_key(&id) {
-            info!(terminal_id = %id, "Terminal session already exists, reusing");
-            return Ok(id);
+
+        // Atomic check-or-insert to avoid dual-spawn races under concurrent IPC.
+        match self.sessions.entry(id.clone()) {
+            Entry::Occupied(_) => {
+                info!(terminal_id = %id, "Terminal session already exists, reusing");
+                return Ok(id);
+            }
+            Entry::Vacant(slot) => {
+                let shell = if config.shell.is_empty() {
+                    "powershell.exe".to_string()
+                } else {
+                    config.shell.clone()
+                };
+                let cwd_raw = if config.cwd.is_empty() {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| ".".to_string())
+                } else {
+                    config.cwd.clone()
+                };
+                // Strip Windows extended-length prefixes that break some shells.
+                let cwd = cwd_raw
+                    .trim_start_matches("\\\\?\\")
+                    .trim_start_matches("\\\\.\\")
+                    .to_string();
+
+                let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
+                slot.insert(Arc::new(RwLock::new(session)));
+                info!(terminal_id = %id, "Terminal session created");
+            }
         }
-        let shell = if config.shell.is_empty() {
-            "powershell.exe".to_string()
-        } else {
-            config.shell.clone()
-        };
-        let cwd_raw = if config.cwd.is_empty() {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        } else {
-            config.cwd.clone()
-        };
-        // Normalizza il path rimuovendo il prefisso \\\?\ (extended-length path di Windows)
-        // che std::env::current_dir() o std::fs::canonicalize() aggiungono automaticamente.
-        // Il prefisso \\\?\ causa problemi con alcuni comandi nelle shell spawnate.
-        let cwd = cwd_raw
-            .trim_start_matches("\\\\?\\")
-            .trim_start_matches("\\\\.\\")
-            .to_string();
 
-        let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
-
-        self.sessions
-            .insert(id.clone(), Arc::new(RwLock::new(session)));
-        info!(terminal_id = %id, "Terminal session created");
-
-        // Spawn the shell immediately so the PTY reader starts sending output
-        self.spawn_shell(&app, &id).await?;
+        // Spawn the shell immediately so the PTY reader starts sending output.
+        // If spawn fails, remove the empty session to avoid zombies in the map.
+        if let Err(e) = self.spawn_shell(&app, &id).await {
+            let _ = self.sessions.remove(&id);
+            return Err(e);
+        }
 
         Ok(id)
     }
@@ -93,13 +122,31 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+    pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
         let session = self
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
-        session.write(data)
+        session.write(data)?;
+
+        // If the CWD was updated by a cd command detection, notify the frontend.
+        if session.cwd_changed.swap(false, Ordering::Acquire) {
+            let cwd = session
+                .cwd
+                .lock()
+                .map(|cwd| cwd.clone())
+                .unwrap_or_default();
+            let _ = app.emit(
+                "terminal-cwd-changed",
+                TerminalCwdChanged {
+                    terminal_id: id.to_string(),
+                    cwd,
+                },
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -109,7 +156,6 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         session.resize(cols, rows)?;
-        info!(terminal_id = %id, cols, rows, "Terminal resized");
         Ok(())
     }
 
@@ -121,49 +167,95 @@ impl TerminalManager {
         let mut session = session.1.write().await;
         session.kill();
         self.scheduler.lock().await.stop(id);
+
+        let mut active = self.active_id.lock().await;
+        if active.as_deref() == Some(id) {
+            *active = None;
+        }
+
         info!(terminal_id = %id, "Terminal killed and removed");
         Ok(())
     }
 
+    /// Kill every live session — used on app exit so no ConPTY/shell orphans remain.
+    pub async fn kill_all(&self) {
+        let ids: Vec<String> = self.sessions.iter().map(|e| e.key().clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        info!(count = ids.len(), "Killing all terminal sessions on shutdown");
+        for id in ids {
+            if let Some((_, session)) = self.sessions.remove(&id) {
+                let mut session = session.write().await;
+                session.kill();
+            }
+            self.scheduler.lock().await.stop(&id);
+        }
+        *self.active_id.lock().await = None;
+        self.scheduler.lock().await.stop_all();
+    }
+
     pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
-        let mut active_id: Option<String> = None;
+        // No-op when already active (short lock).
+        {
+            let active = self.active_id.lock().await;
+            if active.as_deref() == id {
+                return Ok(());
+            }
+        }
 
-        // Fase 1: aggiorna flag active su tutte le sessioni
-        for entry in self.sessions.iter() {
-            let key = entry.key().clone();
-            let mut session = entry.value().write().await;
-            if Some(key.as_str()) == id {
+        // Snapshot previous id, then update flags without holding active_id
+        // across session write locks longer than needed.
+        let prev = {
+            let mut active = self.active_id.lock().await;
+            let prev = active.clone();
+            *active = id.map(|s| s.to_string());
+            prev
+        };
+
+        if let Some(ref prev_id) = prev {
+            if Some(prev_id.as_str()) != id {
+                if let Some(entry) = self.sessions.get(prev_id) {
+                    let mut session = entry.write().await;
+                    session.active = false;
+                }
+            }
+        }
+
+        if let Some(new_id) = id {
+            if let Some(entry) = self.sessions.get(new_id) {
+                let mut session = entry.write().await;
                 session.active = true;
-                active_id = Some(key);
-            } else {
-                session.active = false;
             }
-        }
-
-        // Fase 2: gestisci scheduler — colleziona Arc prima per evitare di tenere shard lock across await
-        let entries: Vec<(String, Arc<RwLock<TerminalSession>>)> = self
-            .sessions
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
-        for (key, session_arc) in &entries {
-            if Some(key.as_str()) == id {
-                self.scheduler
-                    .lock()
-                    .await
-                    .start(app.clone(), session_arc.clone(), key.clone())
-                    .await;
-            } else {
-                self.scheduler.lock().await.stop(key);
-            }
-        }
-
-        if let Some(ref aid) = active_id {
-            self.spawn_shell(app, aid).await?;
+            // Recovery path if spawn was missed.
+            self.spawn_shell(app, new_id).await?;
         }
 
         info!(terminal_id = ?id, "Active terminal set");
         Ok(())
+    }
+
+    /// Scrollback + visible screen as plain text for rehydrating xterm after
+    /// workspace switch (PTY keep-alive). Capped at ~1000 history lines.
+    ///
+    /// Needs a mutable parser lock so we can walk the vt100 scrollback viewport.
+    pub async fn get_screen_text(&self, id: &str) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+
+        let session = session.read().await;
+
+        let result = {
+            if let Ok(mut p) = session.parser.lock() {
+                p.rehydrate_text()
+            } else {
+                String::new()
+            }
+        };
+
+        Ok(result)
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
@@ -236,6 +328,130 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         Ok(session.grid.get_scrollback(offset, limit))
+    }
+
+    /// Returns the current git branch name for the terminal's working directory.
+    /// Runs `git -C <cwd> branch --show-current` and returns Some(branch) if
+    /// the directory is a git repository, or None otherwise.
+    /// Errors only if the terminal session doesn't exist.
+    pub async fn get_git_branch(&self, id: &str) -> Result<Option<String>, String> {
+        let cwd = self.get_terminal_cwd(id).await?;
+        self.get_git_branch_for_cwd(id, &cwd).await
+    }
+
+    /// Returns a CWD and its branch from the same backend snapshot.
+    pub async fn get_terminal_context(&self, id: &str) -> Result<TerminalContext, String> {
+        let cwd = self.get_terminal_cwd(id).await?;
+        let git_branch = self.get_git_branch_for_cwd(id, &cwd).await?;
+        Ok(TerminalContext { cwd, git_branch })
+    }
+
+    /// Synchronizes the tracked CWD with the shell prompt rendered in xterm.
+    /// This covers PowerShell tab completion, whose completed path never passes
+    /// back through the PTY input stream as literal keystrokes.
+    pub async fn sync_terminal_cwd(
+        &self,
+        id: &str,
+        cwd: &str,
+    ) -> Result<TerminalContext, String> {
+        let canonical = std::path::Path::new(cwd)
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve terminal CWD: {error}"))?;
+        if !canonical.is_dir() {
+            return Err("Terminal CWD is not a directory".to_string());
+        }
+        let normalized = canonical
+            .to_string_lossy()
+            .trim_start_matches("\\\\?\\")
+            .trim_start_matches("\\\\.\\")
+            .to_string();
+
+        {
+            let session = self
+                .sessions
+                .get(id)
+                .ok_or_else(|| format!("Terminal {} not found", id))?;
+            let session = session.read().await;
+            let mut current = session
+                .cwd
+                .lock()
+                .map_err(|_| format!("Terminal {} CWD lock poisoned", id))?;
+            if *current != normalized {
+                info!(terminal_id = %id, from = %current, to = %normalized, "Terminal CWD synchronized from PowerShell prompt");
+                *current = normalized.clone();
+            }
+        }
+
+        let git_branch = self.get_git_branch_for_cwd(id, &normalized).await?;
+        Ok(TerminalContext {
+            cwd: normalized,
+            git_branch,
+        })
+    }
+
+    async fn get_terminal_cwd(&self, id: &str) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        session
+            .cwd
+            .lock()
+            .map(|cwd| cwd.clone())
+            .map_err(|_| format!("Terminal {} CWD lock poisoned", id))
+    }
+
+    async fn get_git_branch_for_cwd(
+        &self,
+        id: &str,
+        cwd: &str,
+    ) -> Result<Option<String>, String> {
+
+        info!(terminal_id = %id, cwd = %cwd, "get_git_branch: checking");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::process::Command::new("git")
+                .args(["-C", &cwd, "branch", "--show-current"])
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .output(),
+        )
+        .await;
+
+        let output = match result {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                info!(terminal_id = %id, cwd = %cwd, error = %e, "get_git_branch: spawn error");
+                return Ok(None);
+            }
+            Err(_) => {
+                info!(terminal_id = %id, cwd = %cwd, "get_git_branch: timed out after 5s");
+                return Ok(None);
+            }
+        };
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            info!(
+                terminal_id = %id,
+                cwd = %cwd,
+                branch = %branch,
+                "get_git_branch: success"
+            );
+            Ok(if branch.is_empty() { None } else { Some(branch) })
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            info!(
+                terminal_id = %id,
+                cwd = %cwd,
+                git_exit = %output.status,
+                git_stderr = %stderr,
+                "get_git_branch: git failed"
+            );
+            Ok(None)
+        }
     }
 
     pub fn start_event_loop(&self, _app: AppHandle) {

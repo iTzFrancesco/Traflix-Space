@@ -1,14 +1,22 @@
 use crate::terminal_engine::frame::CursorPosition;
 use vt100::Parser;
 
+/// Max scrollback rows kept per session for workspace remount rehydrate.
+/// Matches xterm.js scrollback so frontend/backend stay aligned.
+pub const SCROLLBACK_LINES: usize = 1000;
+
 pub struct AnsiParser {
     parser: Parser,
+    cols: u16,
+    rows: u16,
 }
 
 impl AnsiParser {
     pub fn new(cols: u16, rows: u16) -> Self {
         Self {
-            parser: Parser::new(rows, cols, 0),
+            parser: Parser::new(rows, cols, SCROLLBACK_LINES),
+            cols,
+            rows,
         }
     }
 
@@ -16,8 +24,127 @@ impl AnsiParser {
         self.parser.process(data);
     }
 
+    /// Resize the terminal without wiping scrollback history.
+    /// Uses vt100 `set_size` instead of recreating the parser.
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        if self.cols == cols && self.rows == rows {
+            return;
+        }
+        self.parser.set_size(rows, cols);
+        self.cols = cols;
+        self.rows = rows;
+        // Pin view to the live screen (offset 0).
+        self.parser.set_scrollback(0);
+    }
+
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
+    }
+
+    /// Full dump of scrollback history + visible screen for xterm rehydrate.
+    ///
+    /// Important: vt100's `Screen::contents()` only returns the *current
+    /// viewport* (affected by `set_scrollback` offset), NOT the entire
+    /// history. We walk the scrollback offset from oldest → newest and
+    /// collect one top row per step, then append the live screen rows.
+    ///
+    /// Always leaves the view offset at 0 (live screen) when done.
+    /// Capped at [`SCROLLBACK_LINES`] + viewport rows.
+    pub fn rehydrate_text(&mut self) -> String {
+        // Always restore live viewport offset, even on early return / panic paths.
+        let result = self.rehydrate_text_inner();
+        self.parser.set_scrollback(0);
+        result
+    }
+
+    // Recover scrollback + viewport content for xterm rehydrate.
+    //
+    // The vt100 crate only exposes scrollback through its offset-based
+    // visible_rows(), not as a contiguous list. We walk the offset from
+    // max down to 1, capturing one scrollback row per step, then append
+    // the full viewport at offset 0.
+    //
+    // CRITICAL: max_off is clamped to self.rows because vt100's
+    // visible_rows() does `rows_len - scrollback_offset` which underflows
+    // when scrollback_len > rows_len (SCROLLBACK_LINES=1000 vs rows=24).
+    // This caps recovered history at rows lines but prevents a panic that
+    // would kill the entire rehydrate path.
+    fn rehydrate_text_inner(&mut self) -> String {
+        self.parser.set_scrollback(usize::MAX);
+        let mut max_off = self.parser.screen().scrollback();
+        // Clamp to rows to prevent underflow in vt100 visible_rows() when
+        // scrollback (1000) > visible rows (24). Without this clamp,
+        // rows_len - scrollback_offset overflows usize.
+        if max_off > self.rows as usize {
+            max_off = self.rows as usize;
+        }
+        let cols = self.cols;
+        let cap = SCROLLBACK_LINES.saturating_add(self.rows as usize);
+        let mut lines: Vec<String> =
+            Vec::with_capacity(cap.min(max_off + self.rows as usize + 1));
+
+        if max_off > 0 {
+            for off in (1..=max_off).rev() {
+                self.parser.set_scrollback(off);
+                if let Some(line) = self.parser.screen().rows_formatted(0, cols).next() {
+                    lines.push(String::from_utf8_lossy(&line).into_owned());
+                }
+            }
+        }
+
+        self.parser.set_scrollback(0);
+        for line in self.parser.screen().rows_formatted(0, cols) {
+            lines.push(String::from_utf8_lossy(&line).into_owned());
+        }
+
+        let start = lines.len().saturating_sub(cap);
+        let selected = &lines[start..];
+
+        let mut end = selected.len();
+        while end > 0 && strip_ansi(&selected[end - 1]).trim_end().is_empty() {
+            end -= 1;
+        }
+        if end == 0 {
+            return String::new();
+        }
+
+        let mut out = String::with_capacity(end * (cols as usize / 2 + 2));
+        for (i, line) in selected[..end].iter().enumerate() {
+            if i > 0 {
+                out.push('\r');
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+        out
+    }
+
+    /// Visible screen only (no scrollback) — lightweight helper.
+    #[allow(dead_code)]
+    pub fn screen_text(&self, rows: u16, cols: u16) -> String {
+        let screen = self.parser.screen();
+        let mut out = String::with_capacity((rows as usize + 1) * (cols as usize + 1));
+        for r in 0..rows {
+            let mut line = String::with_capacity(cols as usize);
+            for c in 0..cols {
+                if let Some(cell) = screen.cell(r, c) {
+                    let ch = cell.contents().chars().next().unwrap_or(' ');
+                    line.push(ch);
+                } else {
+                    line.push(' ');
+                }
+            }
+            let trimmed = line.trim_end();
+            out.push_str(trimmed);
+            if r + 1 < rows {
+                out.push('\r');
+                out.push('\n');
+            }
+        }
+        out
     }
 
     #[allow(dead_code)]
@@ -35,4 +162,21 @@ impl AnsiParser {
             Some(title.to_string())
         }
     }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if c >= '\x40' && c <= '\x7E' {
+                    break;
+                }
+            }
+        } else if c != '\x1b' {
+            out.push(c);
+        }
+    }
+    out
 }

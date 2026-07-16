@@ -19,7 +19,9 @@ impl GridBuffer {
             cols,
             rows,
             cells,
-            scrollback_limit: 10000,
+            // GridBuffer is not the primary history store (vt100 parser is).
+            // Keep a small limit to avoid dead weight if anyone still calls it.
+            scrollback_limit: 1000,
             cursor: CursorPosition { row: 0, col: 0 },
             title: String::new(),
         }
