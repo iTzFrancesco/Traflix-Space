@@ -164,6 +164,19 @@ function getTitleBarMetrics(terminalCount: number) {
   return { height: 28, padding: "0 10px", fontSize: 11, buttonSize: 22, iconSize: 12, dotSize: 8 };
 }
 
+/** Return the most recent standard PowerShell prompt path from xterm. */
+function powerShellPromptCwd(term: Terminal): string | null {
+  const buffer = term.buffer.active;
+  const lastLine = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY);
+  const firstLine = Math.max(0, lastLine - 4);
+  for (let lineIndex = lastLine; lineIndex >= firstLine; lineIndex--) {
+    const line = buffer.getLine(lineIndex)?.translateToString(true).trim();
+    const match = line?.match(/^PS\s+(.+)>$/i);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 interface TerminalContext {
   cwd: string;
   gitBranch: string | null;
@@ -357,6 +370,23 @@ export const TerminalPane = memo(function TerminalPane({
       setGitBranch(context.gitBranch);
     } catch (err) {
       console.error(`[branch] context refresh error for ${terminalId}:`, err);
+    }
+  }, [terminalId]);
+
+  const syncContextFromPowerShellPrompt = useCallback(async (term: Terminal) => {
+    const promptCwd = powerShellPromptCwd(term);
+    if (!promptCwd || promptCwd === currentCwdRef.current) return;
+
+    try {
+      const context = await invoke<TerminalContext>("terminal_sync_cwd", {
+        terminalId,
+        cwd: promptCwd,
+      });
+      currentCwdRef.current = context.cwd;
+      setCurrentCwd(context.cwd);
+      setGitBranch(context.gitBranch);
+    } catch (err) {
+      console.debug(`[branch] prompt CWD sync ignored for ${terminalId}:`, err);
     }
   }, [terminalId]);
 
@@ -690,6 +720,7 @@ export const TerminalPane = memo(function TerminalPane({
       const term = xtermRef.current;
       if (!term) return;
       term.write(new Uint8Array(data), () => {
+        void syncContextFromPowerShellPrompt(term);
         // xterm writes asynchronously. Scrolling before this callback uses the
         // previous baseY and leaves the viewport one or more chunks behind.
         // Check the current value so a user scroll during a large agent output
@@ -704,7 +735,7 @@ export const TerminalPane = memo(function TerminalPane({
       unsubOutputRef.current?.();
       unsubOutputRef.current = null;
     };
-  }, [terminalId]);
+  }, [terminalId, syncContextFromPowerShellPrompt]);
 
   // 4b. Exit
   useEffect(() => {

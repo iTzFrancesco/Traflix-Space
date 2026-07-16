@@ -346,6 +346,49 @@ impl TerminalManager {
         Ok(TerminalContext { cwd, git_branch })
     }
 
+    /// Synchronizes the tracked CWD with the shell prompt rendered in xterm.
+    /// This covers PowerShell tab completion, whose completed path never passes
+    /// back through the PTY input stream as literal keystrokes.
+    pub async fn sync_terminal_cwd(
+        &self,
+        id: &str,
+        cwd: &str,
+    ) -> Result<TerminalContext, String> {
+        let canonical = std::path::Path::new(cwd)
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve terminal CWD: {error}"))?;
+        if !canonical.is_dir() {
+            return Err("Terminal CWD is not a directory".to_string());
+        }
+        let normalized = canonical
+            .to_string_lossy()
+            .trim_start_matches("\\\\?\\")
+            .trim_start_matches("\\\\.\\")
+            .to_string();
+
+        {
+            let session = self
+                .sessions
+                .get(id)
+                .ok_or_else(|| format!("Terminal {} not found", id))?;
+            let session = session.read().await;
+            let mut current = session
+                .cwd
+                .lock()
+                .map_err(|_| format!("Terminal {} CWD lock poisoned", id))?;
+            if *current != normalized {
+                info!(terminal_id = %id, from = %current, to = %normalized, "Terminal CWD synchronized from PowerShell prompt");
+                *current = normalized.clone();
+            }
+        }
+
+        let git_branch = self.get_git_branch_for_cwd(id, &normalized).await?;
+        Ok(TerminalContext {
+            cwd: normalized,
+            git_branch,
+        })
+    }
+
     async fn get_terminal_cwd(&self, id: &str) -> Result<String, String> {
         let session = self
             .sessions

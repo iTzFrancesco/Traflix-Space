@@ -147,3 +147,14 @@ pub async fn terminal_get_context(
     let manager = app.state::<TerminalManager>();
     manager.get_terminal_context(&terminal_id).await
 }
+
+/// Updates a terminal's tracked CWD from the prompt rendered by PowerShell.
+#[tauri::command]
+pub async fn terminal_sync_cwd(
+    app: AppHandle,
+    terminal_id: String,
+    cwd: String,
+) -> Result<TerminalContext, String> {
+    let manager = app.state::<TerminalManager>();
+    manager.sync_terminal_cwd(&terminal_id, &cwd).await
+}
