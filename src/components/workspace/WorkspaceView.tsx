@@ -394,18 +394,20 @@ export function WorkspaceView() {
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
     const allIds = new Set(workspaces.map((w) => w.id));
+    const toRemove = Array.from(loadedMapRef.current.keys()).filter(
+      (key) => !allIds.has(key),
+    );
+    if (toRemove.length === 0) return;
+
     const terminalStore = useTerminalStore.getState();
+    for (const key of toRemove) {
+      terminalStore.killWorkspaceTerminals(key);
+    }
+
     setLoadedMap((prev) => {
-      let changed = false;
       const next = new Map(prev);
-      for (const key of next.keys()) {
-        if (!allIds.has(key)) {
-          terminalStore.killWorkspaceTerminals(key);
-          next.delete(key);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
+      for (const key of toRemove) next.delete(key);
+      return next;
     });
   }, [workspaces]);
 
