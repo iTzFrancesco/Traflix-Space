@@ -376,6 +376,15 @@ export const TerminalPane = memo(function TerminalPane({
                       }).catch(() => {});
                     });
                   }
+
+                  // Forza repaint xterm dopo reset()+write(): write() non
+                  // sempre triggera il rendering (specie dopo reset() su
+                  // terminale appena creato), e fitAddon.fit() è no-op se
+                  // le dimensioni non cambiano. refresh(0, rows-1) garantisce
+                  // che xterm ridisegni TUTTE le righe immediatamente.
+                  if (term.rows > 0) {
+                    term.refresh(0, term.rows - 1);
+                  }
                 }
               }
             }
