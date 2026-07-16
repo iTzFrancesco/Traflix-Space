@@ -10,7 +10,7 @@ use tracing::{error, info, warn};
 pub struct TerminalSession {
     pub id: String,
     pub shell: String,
-    pub cwd: String,
+    pub cwd: std::sync::Mutex<String>,
     pub pty: Option<Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send>>>>,
     pub master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     pub reader: Option<Arc<Mutex<Box<dyn std::io::Read + Send>>>>,
@@ -32,7 +32,7 @@ impl TerminalSession {
         Self {
             id,
             shell,
-            cwd,
+            cwd: std::sync::Mutex::new(cwd),
             pty: None,
             master: None,
             reader: None,
@@ -73,7 +73,7 @@ impl TerminalSession {
             })?;
 
         let mut cmd = CommandBuilder::new(&self.shell);
-        cmd.cwd(&self.cwd);
+        cmd.cwd(self.cwd.lock().unwrap().as_str());
         cmd.env("TERM", "xterm-256color");
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
@@ -231,10 +231,66 @@ impl TerminalSession {
         Ok(())
     }
 
+    /// Try to detect a `cd` / `chdir` command in the input data and update
+    /// the stored CWD accordingly.
+    /// Handles full commands arriving in one write (paste, agent commands, skill
+    /// drops). Individual keystroke typing won't match (each keystroke is a
+    /// separate write call), which is acceptable — `cd` detection is best-effort.
+    fn update_cwd_from_input(&self, data: &[u8]) {
+        let text = match std::str::from_utf8(data) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        // Find `cd ` or `chdir ` anywhere in the text, then extract the
+        // path up to the next \r, \n, or end of string.
+        // Bracketed paste markers (\x1b[200~ ... \x1b[201~) are ignored.
+        fn extract_path_after<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+            let start = s.find(prefix)?;
+            let after = &s[start + prefix.len()..];
+            let path = after
+                .split(|c: char| c == '\r' || c == '\n')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(|c: char| c.is_control() || c.is_whitespace());
+            if path.is_empty() { None } else { Some(path) }
+        }
+
+        let path_str = match extract_path_after(text, "cd ")
+            .or_else(|| extract_path_after(text, "chdir "))
+            .or_else(|| extract_path_after(text, "CD "))
+            .or_else(|| extract_path_after(text, "CHDIR "))
+        {
+            Some(p) => p,
+            None => return,
+        };
+
+        let current_cwd = self.cwd.lock().unwrap().clone();
+        let current = std::path::PathBuf::from(&current_cwd);
+        let new_path = if std::path::Path::new(path_str).is_absolute()
+                || path_str.contains(":\\")  // Windows drive letter
+                || path_str.contains(":/")
+            {
+                std::path::PathBuf::from(path_str)
+            } else {
+                current.join(path_str)
+            };
+
+            if let Ok(canonical) = new_path.canonicalize() {
+                if let Ok(mut cwd_guard) = self.cwd.lock() {
+                    *cwd_guard = canonical.to_string_lossy().to_string();
+                }
+            }
+    }
+
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
         if self.reader_stop.load(Ordering::Acquire) {
             return Err("Terminal is shutting down".to_string());
         }
+
+        // Track cd commands to update the stored CWD.
+        self.update_cwd_from_input(data);
+
         if let Some(ref writer) = self.writer {
             let mut writer = writer
                 .lock()

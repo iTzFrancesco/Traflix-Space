@@ -138,7 +138,7 @@ const CONTAINER_STYLE: React.CSSProperties = {
   overflow: "hidden",
 };
 
-const TITLE_BAR_HEIGHT = 28;
+const TITLE_BAR_HEIGHT = 32;
 
 const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
@@ -146,7 +146,7 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
   justifyContent: "space-between",
   height: TITLE_BAR_HEIGHT,
   minHeight: TITLE_BAR_HEIGHT,
-  padding: "0 8px",
+  padding: "0 10px",
   background: "rgba(255,255,255,0.03)",
   borderBottom: "1px solid rgba(255,255,255,0.06)",
   userSelect: "none",
@@ -156,7 +156,7 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
 const TITLE_BAR_LEFT: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: "6px",
+  gap: "10px",
   minWidth: 0,
   flex: 1,
 };
@@ -171,13 +171,14 @@ const TITLE_BAR_DOT: React.CSSProperties = {
 const TITLE_BAR_NAME: React.CSSProperties = {
   fontSize: 12,
   fontFamily: 'var(--font-mono)',
-  color: "rgba(255,255,255,0.75)",
+  color: "rgba(255,255,255,0.8)",
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
   cursor: "text",
   lineHeight: 1,
   minWidth: 0,
+  letterSpacing: "0.02em",
 };
 
 const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
@@ -211,10 +212,10 @@ const TITLE_BAR_BRANCH: React.CSSProperties = {
 const TITLE_BAR_RIGHT: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 4,
+  gap: 6,
   flexShrink: 0,
   marginLeft: "auto",
-  paddingLeft: 8,
+  paddingLeft: 12,
 };
 
 const TOOL_BTN_BASE: React.CSSProperties = {
@@ -418,6 +419,12 @@ export const TerminalPane = memo(function TerminalPane({
         });
         useTerminalStore.getState().markSpawned(terminalId);
 
+        // Carica il branch git all'avvio del terminale (primo mount + rehydrate).
+        // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
+        invoke<string | null>("get_git_branch", { terminalId })
+          .then((b) => { if (b) setGitBranch(b); })
+          .catch(() => {});
+
         if (shouldRehydrate) {
           rehydratingRef.current = true;
           try {
@@ -425,11 +432,6 @@ export const TerminalPane = memo(function TerminalPane({
               terminalId,
             });
             const termNow = xtermRef.current;
-                  // Carica il branch git dopo reidratazione.
-            // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
-            invoke<string | null>("get_git_branch", { terminalId })
-              .then((b) => { if (b) setGitBranch(b); })
-              .catch(() => {});
 
       if (text && text.trim().length > 0 && termNow) {
               // Chunk large dumps so multi-pane remount stays responsive.

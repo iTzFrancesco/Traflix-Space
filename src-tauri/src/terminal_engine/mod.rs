@@ -304,7 +304,8 @@ impl TerminalManager {
                 .get(id)
                 .ok_or_else(|| format!("Terminal {} not found", id))?;
             let session = session.read().await;
-            session.cwd.clone()
+            let cwd = session.cwd.lock().unwrap().clone();
+            cwd
         };
 
         let output = tokio::process::Command::new("git")
