@@ -25,6 +25,10 @@ pub struct TerminalSession {
     pub exit_code: Option<i32>,
     pub reader_stop: Arc<AtomicBool>,
     pub exit_emitted: Arc<AtomicBool>,
+    /// Accumulates printable characters from keystroke writes to detect
+    /// `cd` / `chdir` commands on Enter (\r). Each write() call typically
+    /// contains one character for typed input. Reset on \r or escape seqs.
+    cd_buffer: Mutex<String>,
 }
 
 impl TerminalSession {
@@ -45,6 +49,7 @@ impl TerminalSession {
             exit_code: None,
             reader_stop: Arc::new(AtomicBool::new(false)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
+            cd_buffer: Mutex::new(String::new()),
         }
     }
 
@@ -231,56 +236,114 @@ impl TerminalSession {
         Ok(())
     }
 
-    /// Try to detect a `cd` / `chdir` command in the input data and update
-    /// the stored CWD accordingly.
-    /// Handles full commands arriving in one write (paste, agent commands, skill
-    /// drops). Individual keystroke typing won't match (each keystroke is a
-    /// separate write call), which is acceptable — `cd` detection is best-effort.
+    /// Accumulate keystrokes and detect `cd` / `chdir` commands on Enter.
+    /// Individual keystrokes arrive character-by-character (separate write()
+    /// calls), so we buffer printable chars in cd_buffer.
+    /// Paste / agent writes (text.len() > 10) are checked inline for `cd <path>`.
     fn update_cwd_from_input(&self, data: &[u8]) {
         let text = match std::str::from_utf8(data) {
             Ok(t) => t,
             Err(_) => return,
         };
 
-        // Find `cd ` or `chdir ` anywhere in the text, then extract the
-        // path up to the next \r, \n, or end of string.
-        // Bracketed paste markers (\x1b[200~ ... \x1b[201~) are ignored.
-        fn extract_path_after<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-            let start = s.find(prefix)?;
-            let after = &s[start + prefix.len()..];
-            let path = after
-                .split(|c: char| c == '\r' || c == '\n')
-                .next()
-                .unwrap_or("")
-                .trim_end_matches(|c: char| c.is_control() || c.is_whitespace());
-            if path.is_empty() { None } else { Some(path) }
-        }
-
-        let path_str = match extract_path_after(text, "cd ")
-            .or_else(|| extract_path_after(text, "chdir "))
-            .or_else(|| extract_path_after(text, "CD "))
-            .or_else(|| extract_path_after(text, "CHDIR "))
-        {
-            Some(p) => p,
-            None => return,
-        };
-
-        let current_cwd = self.cwd.lock().unwrap().clone();
-        let current = std::path::PathBuf::from(&current_cwd);
-        let new_path = if std::path::Path::new(path_str).is_absolute()
-                || path_str.contains(":\\")  // Windows drive letter
-                || path_str.contains(":/")
-            {
-                std::path::PathBuf::from(path_str)
-            } else {
-                current.join(path_str)
-            };
-
-            if let Ok(canonical) = new_path.canonicalize() {
-                if let Ok(mut cwd_guard) = self.cwd.lock() {
-                    *cwd_guard = canonical.to_string_lossy().to_string();
+        // Check if this looks like a paste or agent command (multi-char write).
+        let is_paste = text.contains("\x1b[200~");
+        if is_paste || text.len() > 10 {
+            // Search for `cd <path>\r` or `chdir <path>\r` in the full text.
+            if let Some(cd_start) = text.find("cd ") {
+                let after = &text[cd_start..];
+                let path_str = Self::extract_cd_path_from(after);
+                if let Some(p) = path_str {
+                    Self::resolve_and_update_cwd(&self.cwd, p);
+                    return;
                 }
             }
+            // Not a cd command — clear buffer to avoid cross-talk with keystrokes.
+            if let Ok(mut buf) = self.cd_buffer.lock() {
+                buf.clear();
+            }
+            return;
+        }
+
+        // Keystroke-by-keystroke: accumulate into buffer.
+        let mut buf = match self.cd_buffer.lock() {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        for ch in text.chars() {
+            match ch {
+                '\r' | '\n' => {
+                    let line = buf.clone();
+                    let trimmed = line.trim().to_string();
+                    buf.clear();
+                    if !trimmed.is_empty() {
+                        if let Some(p) = Self::extract_cd_path_from(&trimmed) {
+                            drop(buf);
+                            Self::resolve_and_update_cwd(&self.cwd, p);
+                            return;
+                        }
+                    }
+                }
+                '\x08' | '\x7f' => {
+                    buf.pop();
+                }
+                '\x1b' => {
+                    // Escape sequence start — reset buffer
+                    buf.clear();
+                }
+                c if c.is_control() => {
+                    // Other control chars — reset buffer (safety)
+                    buf.clear();
+                }
+                c => {
+                    buf.push(c);
+                }
+            }
+        }
+    }
+
+    /// Extract the path from a string starting with `cd ` or `chdir `.
+    fn extract_cd_path_from(s: &str) -> Option<&str> {
+        let after = s
+            .strip_prefix("cd ")
+            .or_else(|| s.strip_prefix("chdir "))
+            .or_else(|| s.strip_prefix("CD "))
+            .or_else(|| s.strip_prefix("CHDIR "))?;
+        // Take up to \r or \n, trim trailing whitespace/control
+        let path = after
+            .split(|c: char| c == '\r' || c == '\n')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(|c: char| c.is_control() || c.is_whitespace());
+        if path.is_empty() { None } else { Some(path) }
+    }
+
+    /// Resolve a path string (absolute or relative to cwd) and update cwd.
+    fn resolve_and_update_cwd(
+        cwd_mutex: &std::sync::Mutex<String>,
+        path_str: &str,
+    ) {
+        let current_cwd = match cwd_mutex.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => return,
+        };
+        let current = std::path::PathBuf::from(&current_cwd);
+
+        let new_path = if std::path::Path::new(path_str).is_absolute()
+            || path_str.contains(":\\")
+            || path_str.contains(":/")
+        {
+            std::path::PathBuf::from(path_str)
+        } else {
+            current.join(path_str)
+        };
+
+        if let Ok(canonical) = new_path.canonicalize() {
+            if let Ok(mut cwd_guard) = cwd_mutex.lock() {
+                *cwd_guard = canonical.to_string_lossy().to_string();
+            }
+        }
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
