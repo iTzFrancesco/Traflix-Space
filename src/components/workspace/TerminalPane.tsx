@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useSkillStore } from "../../stores/skillStore";
 import { agentLaunchQueue } from "../../lib/agentLauncher";
 import {
@@ -12,7 +13,23 @@ import {
   subscribeTerminalOutput,
 } from "../../lib/terminalEvents";
 import { encodeForPty } from "../../lib/ptyWrite";
+import { getWorkspaceColor } from "../../lib/workspaceColors";
+import { AGENTS } from "../../lib/agents";
 import "xterm/css/xterm.css";
+
+/** Map agent id to a short display name for the title bar. */
+function agentDisplayName(agentId: string): string {
+  const found = AGENTS.find((a) => a.id === agentId);
+  return found?.name ?? agentId;
+}
+
+/** Extract project/folder name from a CWD path. */
+function projectNameFromCwd(cwd: string): string {
+  // Normalize backslashes for cross-platform consistency.
+  const normalized = cwd.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? cwd;
+}
 
 const STOCK_THEME = {
   background: "#0c0c0c",
@@ -55,8 +72,12 @@ interface TerminalPaneProps {
   onToggleFocus?: (id: string) => void;
 }
 
+// All pane styles gain display:flex + flexDirection:column so the title
+// bar (above) and xterm container (below) stack vertically.
 const ACTIVE_STYLE: React.CSSProperties = {
   position: "relative",
+  display: "flex",
+  flexDirection: "column",
   flex: 1,
   minWidth: 0,
   minHeight: 0,
@@ -69,6 +90,8 @@ const ACTIVE_STYLE: React.CSSProperties = {
 
 const FOCUSED_STYLE: React.CSSProperties = {
   position: "relative",
+  display: "flex",
+  flexDirection: "column",
   flex: 1,
   minWidth: 0,
   minHeight: 0,
@@ -81,6 +104,8 @@ const FOCUSED_STYLE: React.CSSProperties = {
 
 const INACTIVE_STYLE: React.CSSProperties = {
   position: "relative",
+  display: "flex",
+  flexDirection: "column",
   flex: 1,
   minWidth: 0,
   minHeight: 0,
@@ -94,6 +119,8 @@ const INACTIVE_STYLE: React.CSSProperties = {
 
 const EXITED_STYLE: React.CSSProperties = {
   position: "relative",
+  display: "flex",
+  flexDirection: "column",
   flex: 1,
   minWidth: 0,
   minHeight: 0,
@@ -105,26 +132,95 @@ const EXITED_STYLE: React.CSSProperties = {
 };
 
 const CONTAINER_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
+  flex: 1,
+  minHeight: 0,
   background: "#0c0c0c",
   overflow: "hidden",
 };
 
-const TOOLBAR_STYLE: React.CSSProperties = {
-  position: "absolute",
-  top: "8px",
-  right: "8px",
-  zIndex: 10,
+const TITLE_BAR_HEIGHT = 28;
+
+const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
-  gap: "6px",
   alignItems: "center",
+  justifyContent: "space-between",
+  height: TITLE_BAR_HEIGHT,
+  minHeight: TITLE_BAR_HEIGHT,
+  padding: "0 8px",
+  background: "rgba(255,255,255,0.03)",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
+  userSelect: "none",
+  overflow: "hidden",
+};
+
+const TITLE_BAR_LEFT: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  minWidth: 0,
+  flex: 1,
+};
+
+const TITLE_BAR_DOT: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: "50%",
+  flexShrink: 0,
+};
+
+const TITLE_BAR_NAME: React.CSSProperties = {
+  fontSize: 12,
+  fontFamily: 'var(--font-mono)',
+  color: "rgba(255,255,255,0.75)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  cursor: "text",
+  lineHeight: 1,
+  minWidth: 0,
+};
+
+const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
+  fontSize: 12,
+  fontFamily: 'var(--font-mono)',
+  color: "rgba(255,255,255,0.9)",
+  background: "rgba(0,0,0,0.4)",
+  border: "1px solid rgba(255,255,255,0.2)",
+  borderRadius: 4,
+  padding: "1px 4px",
+  outline: "none",
+  lineHeight: 1,
+  width: "100%",
+  minWidth: 0,
+};
+
+const TITLE_BAR_BRANCH: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
+  fontSize: 11,
+  fontFamily: 'var(--font-mono)',
+  color: "rgba(255,255,255,0.45)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  maxWidth: 180,
+  flexShrink: 0,
+};
+
+const TITLE_BAR_RIGHT: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
+  flexShrink: 0,
+  marginLeft: "auto",
+  paddingLeft: 8,
 };
 
 const TOOL_BTN_BASE: React.CSSProperties = {
-  width: "28px",
-  height: "28px",
-  borderRadius: "8px",
+  width: "22px",
+  height: "22px",
+  borderRadius: "6px",
   border: "none",
   cursor: "pointer",
   display: "flex",
@@ -207,6 +303,9 @@ export const TerminalPane = memo(function TerminalPane({
     return () => clearTimeout(timer);
   }, [hasExited, terminalId]);
 
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
   const [confirmClose, setConfirmClose] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -326,7 +425,13 @@ export const TerminalPane = memo(function TerminalPane({
               terminalId,
             });
             const termNow = xtermRef.current;
-            if (text && text.trim().length > 0 && termNow) {
+                  // Carica il branch git dopo reidratazione.
+            // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
+            invoke<string | null>("get_git_branch", { terminalId })
+              .then((b) => { if (b) setGitBranch(b); })
+              .catch(() => {});
+
+      if (text && text.trim().length > 0 && termNow) {
               // Chunk large dumps so multi-pane remount stays responsive.
               // Reset NON serve: xterm è appena stato creato (mount fresco),
               // buffer già pulito. reset() causa solo un frame nero extra.
@@ -631,6 +736,39 @@ export const TerminalPane = memo(function TerminalPane({
     [terminalId, onToggleFocus],
   );
 
+  // Titolo visualizzato: prima controlla se l'utente ha rinominato, poi deriva.
+  const customTitle = useTerminalStore((s) => s.terminalTitles[terminalId]);
+  const displayTitle =
+    customTitle ??
+    (agentId
+      ? `${agentDisplayName(agentId)} — ${projectNameFromCwd(cwd)}`
+      : `${shell} — ${projectNameFromCwd(cwd)}`);
+
+  const handleStartRename = useCallback(() => {
+    setEditValue(displayTitle);
+    setEditing(true);
+  }, [displayTitle]);
+
+  const handleRenameSubmit = useCallback(() => {
+    const trimmed = editValue.trim();
+    if (trimmed) {
+      useTerminalStore.getState().renameTerminal(terminalId, trimmed);
+    }
+    setEditing(false);
+  }, [editValue, terminalId]);
+
+  const handleRenameKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        handleRenameSubmit();
+      } else if (e.key === "Escape") {
+        setEditing(false);
+      }
+      e.stopPropagation();
+    },
+    [handleRenameSubmit],
+  );
+
   const handleRestart = useCallback(async () => {
     try {
       await invoke("terminal_reopen", {
@@ -721,12 +859,64 @@ export const TerminalPane = memo(function TerminalPane({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div ref={containerRef} style={CONTAINER_STYLE} />
+      {/* Title bar: workspace dot + name (left) | branch + buttons (right) */}
+      <div style={TITLE_BAR_STYLE}>
+        <div style={TITLE_BAR_LEFT}>
+          <div
+            style={{
+              ...TITLE_BAR_DOT,
+              background: (() => {
+                const ws = useWorkspaceStore.getState().workspaces;
+                const ts = useTerminalStore.getState().terminals[terminalId];
+                const idx = ws.findIndex((w) => w.id === ts?.workspaceId);
+                return getWorkspaceColor(idx >= 0 ? idx : 0);
+              })(),
+            }}
+          />
+          {editing ? (
+            <input
+              style={TITLE_BAR_RENAME_INPUT}
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={handleRenameSubmit}
+              onKeyDown={handleRenameKeyDown}
+              autoFocus
+            />
+          ) : (
+            <span
+              style={TITLE_BAR_NAME}
+              onDoubleClick={handleStartRename}
+              title={displayTitle}
+            >
+              {displayTitle}
+            </span>
+          )}
+        </div>
 
-      {/* Toolbar: Focus + Close */}
-      {!hasExited && (
-        <div style={TOOLBAR_STYLE}>
-          {onToggleFocus && (
+        <div style={TITLE_BAR_RIGHT}>
+          {gitBranch && (
+            <span style={TITLE_BAR_BRANCH} title={gitBranch}>
+              <svg
+                width={10}
+                height={10}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flexShrink: 0 }}
+              >
+                <line x1="6" y1="3" x2="6" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              {gitBranch}
+            </span>
+          )}
+
+          {!hasExited && onToggleFocus && (
             <button
               type="button"
               onClick={handleToggleFocus}
@@ -751,29 +941,29 @@ export const TerminalPane = memo(function TerminalPane({
                 e.currentTarget.style.color = isFocused ? "#60a5fa" : "#a1a1aa";
               }}
             >
-              {isFocused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {isFocused ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             </button>
           )}
 
-          {onClose &&
+          {!hasExited && onClose &&
             (confirmClose ? (
               <div
                 style={{
                   display: "flex",
-                  gap: "6px",
+                  gap: "4px",
                   alignItems: "center",
                   background: "rgba(12,12,12,0.96)",
-                  borderRadius: "10px",
-                  padding: "4px 6px",
+                  borderRadius: "8px",
+                  padding: "2px 4px",
                   border: "1px solid rgba(239,68,68,0.35)",
                   boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
                 }}
               >
                 <span
                   style={{
-                    fontSize: "12px",
+                    fontSize: "11px",
                     color: "#ef4444",
-                    padding: "0 6px",
+                    padding: "0 4px",
                     fontWeight: 600,
                     whiteSpace: "nowrap",
                     fontFamily: "var(--font-mono)",
@@ -817,7 +1007,7 @@ export const TerminalPane = memo(function TerminalPane({
                     e.currentTarget.style.color = "#a1a1aa";
                   }}
                 >
-                  <X size={14} />
+                  <X size={12} />
                 </button>
               </div>
             ) : (
@@ -837,11 +1027,13 @@ export const TerminalPane = memo(function TerminalPane({
                   e.currentTarget.style.background = "rgba(239,68,68,0.2)";
                 }}
               >
-                <X size={14} />
+                <X size={12} />
               </button>
             ))}
         </div>
-      )}
+      </div>
+
+      <div ref={containerRef} style={CONTAINER_STYLE} />
 
       {pendingNames.length > 0 && (
         <div
