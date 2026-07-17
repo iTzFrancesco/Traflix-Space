@@ -21,6 +21,29 @@ Windows-only Tauri 2.0 desktop app (React 19 + Rust). Agentic Development Enviro
 
 Tauri's own `beforeDevCommand` / `beforeBuildCommand` run these automatically.
 
+### Rust build cache
+
+Cargo is configured by [`.cargo/config.toml`](.cargo/config.toml) to write build
+artifacts to `D:\rust\target`. Do not override `CARGO_TARGET_DIR` to a path on
+the system drive. The project-local `src-tauri\target` is legacy cache and can
+be safely removed when not building.
+
+To clean Rust artifacts, run `cargo clean` from `src-tauri`; the configured
+target directory on `D:` is used automatically.
+
+#### Cache policy (mandatory)
+
+- **Keep `D:\rust` caches.** Do not delete, sweep, or recreate `D:\rust\target`,
+  `D:\rust\cargo`, `D:\rust\rustup`, or `D:\rust\tauri-cache` during routine
+  maintenance. They intentionally live on the secondary disk so future builds
+  can reuse downloaded dependencies and compiled artifacts.
+- **Keep the system disk clean.** When cleanup is explicitly requested, remove
+  only project-local/generated caches on `C:` (for example
+  `src-tauri\target`, `dist`, and temporary Vite output), after verifying the
+  path. Never remove the active Rust toolchain or shared registries blindly.
+- **Do not read `.env`.** This rule also applies while inspecting or cleaning
+  the repository.
+
 ## Architecture
 
 - **Frontend** (`src/`): React 19, Zustand 5 with `persist` (localStorage), xterm.js 5.3 (per-pane instances), Tailwind CSS v4 via PostCSS (`@tailwindcss/postcss` plugin), `@dnd-kit` for drag-and-drop, `framer-motion` for animations, `lucide-react` for icons
