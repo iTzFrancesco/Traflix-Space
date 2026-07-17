@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::registry::{WorkspaceConfig, WorkspaceRegistry};
 
@@ -42,23 +42,6 @@ pub async fn create_workspace(
     info!(name = %config.name, path = %config.root_path, "Creazione workspace");
 
     let registry = app.state::<WorkspaceRegistry>();
-
-    // Save local .traflix/workspace.json
-    let root = Path::new(&config.root_path);
-    let traflix_dir = root.join(".traflix");
-    std::fs::create_dir_all(&traflix_dir).map_err(|e| {
-        error!(%config.name, error = %e, "Errore creazione .traflix");
-        format!("Errore creazione .traflix: {}", e)
-    })?;
-
-    let local_config = serde_json::to_string_pretty(&config).map_err(|e| {
-        error!(%config.name, error = %e, "Errore serializzazione config");
-        format!("Errore serializzazione: {}", e)
-    })?;
-    std::fs::write(traflix_dir.join("workspace.json"), &local_config).map_err(|e| {
-        error!(%config.name, error = %e, "Errore scrittura workspace.json");
-        format!("Errore scrittura workspace.json: {}", e)
-    })?;
 
     // Save to global registry
     registry.insert(config.clone()).await;
@@ -106,17 +89,6 @@ pub async fn update_workspace(
 
     info!(%id, name = %config.name, "Aggiornamento workspace");
     let registry = app.state::<WorkspaceRegistry>();
-
-    // Update local .traflix/workspace.json
-    let root = Path::new(&config.root_path);
-    let local_config = serde_json::to_string_pretty(&config).map_err(|e| {
-        error!(%id, error = %e, "Errore serializzazione update");
-        format!("Errore serializzazione: {}", e)
-    })?;
-    std::fs::write(root.join(".traflix").join("workspace.json"), &local_config).map_err(|e| {
-        error!(%id, error = %e, "Errore update workspace.json");
-        format!("Errore scrittura workspace.json: {}", e)
-    })?;
 
     // Update global registry
     registry.insert(config.clone()).await;
