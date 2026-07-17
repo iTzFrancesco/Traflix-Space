@@ -407,8 +407,14 @@ impl TerminalManager {
         let mut git_command = tokio::process::Command::new("git");
         git_command
             .args(["-C", cwd, "branch", "--show-current"])
+            // This probe must never inherit an interactive terminal: it is a
+            // metadata lookup for the title bar, not a user-facing command.
+            .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
+            .stdout(std::process::Stdio::piped())
+            .env("GIT_PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "Never");
 
         // The release app is a Windows GUI process without a console. Without
         // CREATE_NO_WINDOW, every background `git` probe can create a visible
