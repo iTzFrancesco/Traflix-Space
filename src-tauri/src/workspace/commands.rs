@@ -43,7 +43,8 @@ pub async fn create_workspace(
 
     let registry = app.state::<WorkspaceRegistry>();
 
-    // Save to global registry
+    // Workspace metadata belongs exclusively to the app-data registry, never
+    // to the user's project directory.
     registry.insert(config.clone()).await;
     registry.save().await?;
 
@@ -90,7 +91,7 @@ pub async fn update_workspace(
     info!(%id, name = %config.name, "Aggiornamento workspace");
     let registry = app.state::<WorkspaceRegistry>();
 
-    // Update global registry
+    // Keep the project directory untouched; update only the app-data registry.
     registry.insert(config.clone()).await;
     registry.save().await?;
 
