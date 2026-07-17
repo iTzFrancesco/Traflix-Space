@@ -194,6 +194,25 @@ function powerShellPrompt(term: Terminal) {
   return findCurrentPowerShellPrompt(lines);
 }
 
+function hasReturnedShellPrompt(term: Terminal, shell: string): boolean {
+  if (isPowerShell(shell)) return powerShellPrompt(term) !== null;
+
+  const buffer = term.buffer.active;
+  const lastLine = buffer.getLine(
+    Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY),
+  );
+  const text = lastLine?.translateToString(true).trimEnd() ?? "";
+  const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
+
+  if (/^(?:cmd)(?:\.exe)?$/i.test(executable)) {
+    return /^[A-Za-z]:[\\/].*>$/.test(text);
+  }
+  if (/^(?:bash|zsh|sh)(?:\.exe)?$/i.test(executable)) {
+    return /(?:\$|#)\s*$/.test(text);
+  }
+  return false;
+}
+
 function sameWindowsPath(left: string, right: string): boolean {
   const normalize = (value: string) =>
     value.replace(/^\\\\[?.]\\/, "").replace(/[\\/]+$/, "").toLowerCase();
@@ -352,6 +371,10 @@ function fitAndResizePty(
   if (term.buffer.active.baseY > 0 || scrollPositionRef.current.followsOutput) {
     captureScrollPosition(term, autoScrollRef, scrollPositionRef);
   }
+  if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
+    autoScrollRef.current = true;
+    scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+  }
   const positionBeforeFit = scrollPositionRef.current;
   try {
     fitAddon.fit();
@@ -396,6 +419,8 @@ export const TerminalPane = memo(function TerminalPane({
   const spawnedRef = useRef(false);
   /** True while backend history is being written into xterm — drop live output to avoid wipe/race. */
   const rehydratingRef = useRef(false);
+  /** PTY bytes received after the backend snapshot; replayed after rehydrate. */
+  const queuedRehydrateOutputRef = useRef<Uint8Array[]>([]);
   const unsubOutputRef = useRef<(() => void) | null>(null);
   const unsubExitRef = useRef<(() => void) | null>(null);
   const terminalIdRef = useRef(terminalId);
@@ -463,10 +488,14 @@ export const TerminalPane = memo(function TerminalPane({
     const prompt = powerShellPrompt(term);
     if (!prompt) {
       atPowerShellPromptRef.current = false;
+      if (hasReturnedShellPrompt(term, shell)) {
+        useTerminalStore.getState().setTerminalRunning(terminalId, false);
+      }
       return;
     }
     if (atPowerShellPromptRef.current) return;
     atPowerShellPromptRef.current = true;
+    useTerminalStore.getState().setTerminalRunning(terminalId, false);
     const requestId = ++contextRequestRef.current;
 
     try {
@@ -483,7 +512,7 @@ export const TerminalPane = memo(function TerminalPane({
     } catch (err) {
       console.debug(`[branch] prompt CWD sync ignored for ${terminalId}:`, err);
     }
-  }, [terminalId]);
+  }, [terminalId, shell]);
 
   useEffect(() => {
     if (!confirmClose) return;
@@ -546,6 +575,9 @@ export const TerminalPane = memo(function TerminalPane({
       const store = useTerminalStore.getState();
       const termState = store.terminals[tid];
       if (termState && termState.exitCode !== null) return;
+      if (data.includes("\r") || data.includes("\n")) {
+        store.setTerminalRunning(tid, true);
+      }
       const write = invoke("terminal_write", {
         terminalId: tid,
         data: encodeForPty(data),
@@ -581,6 +613,17 @@ export const TerminalPane = memo(function TerminalPane({
         // user navigation and must win over the queued restore.
         programmaticScrollTargetRef.current = null;
       }
+      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) {
+        autoScrollRef.current = true;
+        scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+        restoreScrollPosition(
+          term,
+          autoScrollRef,
+          scrollPositionRef,
+          programmaticScrollTargetRef,
+        );
+        return;
+      }
       // xterm emits scroll events while it appends output. Those are not user
       // navigation: treating them as such makes follow mode flap during a
       // streaming agent response. A real wheel/scrollbar/keyboard gesture is
@@ -601,6 +644,7 @@ export const TerminalPane = memo(function TerminalPane({
       });
     };
     const onWheel = (event: WheelEvent) => {
+      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       userScrollIntentRef.current = true;
       // Stop a queued output callback from snapping back before the browser
       // applies this upward wheel movement.
@@ -614,6 +658,7 @@ export const TerminalPane = memo(function TerminalPane({
       scheduleUserScrollCapture();
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       if (!["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       userScrollIntentRef.current = true;
       if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
@@ -622,6 +667,7 @@ export const TerminalPane = memo(function TerminalPane({
       scheduleUserScrollCapture();
     };
     const onPointerDown = (event: PointerEvent) => {
+      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       const viewport = term.element?.querySelector<HTMLElement>(".xterm-viewport");
       if (!viewport) return;
       const rect = viewport.getBoundingClientRect();
@@ -706,6 +752,14 @@ export const TerminalPane = memo(function TerminalPane({
               terminalId,
             });
             const termNow = xtermRef.current;
+            const replayQueuedOutput = async () => {
+              while (queuedRehydrateOutputRef.current.length > 0) {
+                const next = queuedRehydrateOutputRef.current.shift();
+                const currentTerm = xtermRef.current;
+                if (!next || !currentTerm) return;
+                await new Promise<void>((resolve) => currentTerm.write(next, resolve));
+              }
+            };
 
       if (text && text.trim().length > 0 && termNow) {
               // Chunk large dumps so multi-pane remount stays responsive.
@@ -736,6 +790,11 @@ export const TerminalPane = memo(function TerminalPane({
                 });
               }
               if (xtermRef.current) {
+                await replayQueuedOutput();
+                if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
+                  autoScrollRef.current = true;
+                  scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+                }
                 restoreScrollPosition(
                   xtermRef.current,
                   autoScrollRef,
@@ -785,6 +844,39 @@ export const TerminalPane = memo(function TerminalPane({
                   }
                 }
               }
+            } else if (termNow) {
+              await replayQueuedOutput();
+              if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
+                autoScrollRef.current = true;
+                scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+                restoreScrollPosition(
+                  termNow,
+                  autoScrollRef,
+                  scrollPositionRef,
+                  programmaticScrollTargetRef,
+                );
+              }
+            }
+            await replayQueuedOutput();
+            // Snapshot and queued data are now both rendered. Switch the
+            // stream back to the normal writer before any further awaits so
+            // subsequent PTY output cannot remain stranded in the queue.
+            rehydratingRef.current = false;
+            if (xtermRef.current) {
+              await syncContextFromPowerShellPrompt(xtermRef.current);
+            }
+            if (
+              xtermRef.current &&
+              useTerminalStore.getState().terminals[terminalId]?.isRunning
+            ) {
+              autoScrollRef.current = true;
+              scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+              restoreScrollPosition(
+                xtermRef.current,
+                autoScrollRef,
+                scrollPositionRef,
+                programmaticScrollTargetRef,
+              );
             }
           } catch {
             // Command unavailable — live stream only.
@@ -919,8 +1011,13 @@ export const TerminalPane = memo(function TerminalPane({
     unsubOutputRef.current?.();
     unsubOutputRef.current = subscribeTerminalOutput(terminalId, ({ data }) => {
       // While rehydrate runs, backend history is authoritative — applying live
-      // chunks mid-reset would race and corrupt the buffer.
-      if (rehydratingRef.current) return;
+      // chunks mid-reset would race and corrupt the buffer. Keep them and
+      // replay them after the snapshot so a working agent never loses output.
+      if (rehydratingRef.current) {
+        const chunk = new Uint8Array(data);
+        queuedRehydrateOutputRef.current.push(chunk);
+        return;
+      }
       const term = xtermRef.current;
       if (!term) return;
       pendingOutputWritesRef.current++;
@@ -931,7 +1028,8 @@ export const TerminalPane = memo(function TerminalPane({
         // previous baseY and leaves the viewport one or more chunks behind.
         // Check the current value so a user scroll during a large agent output
         // is respected instead of being pulled back to the bottom.
-        if (autoScrollRef.current) {
+        const isRunning = useTerminalStore.getState().terminals[terminalId]?.isRunning;
+        if (isRunning || autoScrollRef.current) {
           scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
           restoreScrollPosition(
             term,

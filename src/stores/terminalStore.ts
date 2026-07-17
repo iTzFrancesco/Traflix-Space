@@ -15,6 +15,8 @@ export interface TerminalState {
   spawned: boolean;
   exitCode: number | null;
   agentLaunched: boolean;
+  /** True from command submission until the shell renders its next prompt. */
+  isRunning: boolean;
   /** Last viewport intent, retained while a workspace unmounts its xterm panes. */
   scrollPosition: TerminalScrollPosition;
 }
@@ -64,6 +66,7 @@ interface TerminalStore {
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
   markAgentLaunched: (id: string) => void;
+  setTerminalRunning: (id: string, isRunning: boolean) => void;
   saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
 }
@@ -98,6 +101,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             spawned: false,
             exitCode: null,
             agentLaunched: false,
+            isRunning: false,
             scrollPosition: { followsOutput: true, offsetFromBottom: 0 },
           },
         },
@@ -236,6 +240,18 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       if (!t || t.agentLaunched) return state;
       return {
         terminals: { ...state.terminals, [id]: { ...t, agentLaunched: true } },
+      };
+    }),
+
+  setTerminalRunning: (id, isRunning) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t || t.isRunning === isRunning) return state;
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: { ...t, isRunning },
+        },
       };
     }),
 
