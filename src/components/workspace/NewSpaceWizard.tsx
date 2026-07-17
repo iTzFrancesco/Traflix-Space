@@ -35,10 +35,10 @@ const DISPLAY_AGENTS = AGENTS;
 
 const agentIcons: Record<string, typeof Bot> = {
   opencode: Terminal,
-  gemini: Bot,
+  "anti-gravity": Bot,
   claude: Bot,
   codex: Bot,
-  "anti-gravity": Bot,
+  pi: Bot,
 };
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
@@ -107,6 +107,17 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     return next;
   }
 
+  function supportedAgentCounts(
+    counts: Record<string, number>,
+  ): Record<string, number> {
+    const supportedIds = new Set(AGENTS.map((agent) => agent.id));
+    return Object.fromEntries(
+      Object.entries(counts).filter(
+        ([agentId, count]) => supportedIds.has(agentId) && count > 0,
+      ),
+    );
+  }
+
   function updateCount(delta: number) {
     setTerminalCount((prev) => {
       const next = Math.max(1, Math.min(8, prev + delta));
@@ -145,13 +156,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     setPresetSourceId(preset.id);
     setFolderPath(preset.folderPath);
     setTerminalCount(preset.terminalCount);
-    setAgentCounts(preset.agentCounts);
+    setAgentCounts(supportedAgentCounts(preset.agentCounts));
     setStep(4);
   }
 
   function handleSavePreset() {
     const name = workspaceName || "Senza nome";
     const now = new Date().toISOString();
+    const supportedCounts = supportedAgentCounts(agentCounts);
 
     if (presetSourceId) {
       // Aggiorna il preset esistente
@@ -159,7 +171,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         name,
         folderPath,
         terminalCount,
-        agentCounts,
+        agentCounts: supportedCounts,
       });
       addToast({ type: "success", message: `Preset "${name}" aggiornato` });
     } else {
@@ -169,7 +181,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         name,
         folderPath,
         terminalCount,
-        agentCounts,
+        agentCounts: supportedCounts,
         createdAt: now,
       });
       addToast({ type: "success", message: `Preset "${name}" salvato` });
@@ -178,12 +190,13 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   function handleSaveAsNewPreset() {
     const name = workspaceName || "Senza nome";
+    const supportedCounts = supportedAgentCounts(agentCounts);
     addPreset({
       id: crypto.randomUUID(),
       name,
       folderPath,
       terminalCount,
-      agentCounts,
+      agentCounts: supportedCounts,
       createdAt: new Date().toISOString(),
     });
     addToast({ type: "success", message: `Nuovo preset "${name}" salvato` });
@@ -226,7 +239,9 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     setCreating(true);
     try {
       const ids: (string | null)[] = [];
-      for (const [agentId, count] of Object.entries(agentCounts)) {
+      for (const [agentId, count] of Object.entries(
+        supportedAgentCounts(agentCounts),
+      )) {
         for (let i = 0; i < count; i++) ids.push(agentId);
       }
       while (ids.length < terminalCount) ids.push(null);
@@ -382,9 +397,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
                 <div className="grid grid-cols-2 gap-4">
                   {presets.map((preset) => {
-                    const agentTotal = Object.values(
-                      preset.agentCounts,
-                    ).reduce((a, b) => a + b, 0);
+                    // Build per-agent summary in AGENTS order
+                    const agentSummary = AGENTS
+                      .map((a) => {
+                        const count = preset.agentCounts[a.id];
+                        return count && count > 0 ? `${a.name} x${count}` : null;
+                      })
+                      .filter(Boolean)
+                      .join(" · ");
                     return (
                       <div
                         key={preset.id}
@@ -403,10 +423,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                               <span className="font-medium tabular-nums">
                                 {preset.terminalCount} terminali
                               </span>
-                              <span className="opacity-30">&middot;</span>
-                              <span className="font-medium tabular-nums">
-                                {agentTotal} agenti
-                              </span>
+                              {agentSummary ? (
+                                <>
+                                  <span className="opacity-30">&middot;</span>
+                                  <span className="font-medium truncate max-w-[180px]">
+                                    {agentSummary}
+                                  </span>
+                                </>
+                              ) : null}
                             </div>
                           </div>
                           <button
@@ -645,13 +669,12 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
             {assignedCount > 0 && (
               <div className="flex flex-wrap gap-3 justify-center">
-                {Object.entries(agentCounts).map(([aid, count]) => {
-                  if (count <= 0) return null;
-                  const agent = AGENTS.find((a) => a.id === aid);
-                  if (!agent) return null;
+                {AGENTS.map((agent) => {
+                  const count = agentCounts[agent.id];
+                  if (!count || count <= 0) return null;
                   return (
                     <span
-                      key={aid}
+                      key={agent.id}
                       className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-base font-medium"
                       style={{
                         backgroundColor: `${agent.color}15`,

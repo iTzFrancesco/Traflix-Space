@@ -12,15 +12,6 @@ export interface AgentDefinition {
 
 export const AGENTS: AgentDefinition[] = [
   {
-    id: "gemini",
-    name: "Gemini",
-    description: "Agente AI Google Gemini",
-    command: "gemini",
-    args: [],
-    icon: "Bot",
-    color: "#4285F4",
-  },
-  {
     id: "opencode",
     name: "OpenCode",
     description: "Agente AI con TUI avanzata",
@@ -28,6 +19,15 @@ export const AGENTS: AgentDefinition[] = [
     args: [],
     icon: "Terminal",
     color: "#22c55e",
+  },
+  {
+    id: "anti-gravity",
+    name: "Anti-Gravity",
+    description: "Agente AGY anti-gravity",
+    command: "agy",
+    args: [],
+    icon: "Bot",
+    color: "#06b6d4",
   },
   {
     id: "claude",
@@ -46,15 +46,6 @@ export const AGENTS: AgentDefinition[] = [
     args: [],
     icon: "Bot",
     color: "#6b46c1",
-  },
-  {
-    id: "anti-gravity",
-    name: "Anti-Gravity",
-    description: "Agente AGY anti-gravity",
-    command: "agy",
-    args: [],
-    icon: "Bot",
-    color: "#06b6d4",
   },
   {
     id: "pi",
