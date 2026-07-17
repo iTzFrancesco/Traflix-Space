@@ -15,6 +15,14 @@ export interface TerminalState {
   spawned: boolean;
   exitCode: number | null;
   agentLaunched: boolean;
+  /** Last viewport intent, retained while a workspace unmounts its xterm panes. */
+  scrollPosition: TerminalScrollPosition;
+}
+
+export interface TerminalScrollPosition {
+  followsOutput: boolean;
+  /** Number of buffer rows between the viewport and the live bottom. */
+  offsetFromBottom: number;
 }
 
 export interface TerminalConfig {
@@ -56,6 +64,7 @@ interface TerminalStore {
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
   markAgentLaunched: (id: string) => void;
+  saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
 }
 
@@ -89,6 +98,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             spawned: false,
             exitCode: null,
             agentLaunched: false,
+            scrollPosition: { followsOutput: true, offsetFromBottom: 0 },
           },
         },
       };
@@ -226,6 +236,23 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       if (!t || t.agentLaunched) return state;
       return {
         terminals: { ...state.terminals, [id]: { ...t, agentLaunched: true } },
+      };
+    }),
+
+  saveScrollPosition: (id, position) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t) return state;
+      const previous = t.scrollPosition;
+      if (
+        previous.followsOutput === position.followsOutput &&
+        previous.offsetFromBottom === position.offsetFromBottom
+      ) return state;
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: { ...t, scrollPosition: position },
+        },
       };
     }),
 
