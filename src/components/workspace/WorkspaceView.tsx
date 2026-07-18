@@ -440,13 +440,12 @@ export function WorkspaceView() {
   if (!workspace && !activeWorkspaceId) {
     return (
       <>
-        <div className="flex flex-col items-center justify-center h-full gap-8 px-8 text-neutral-text-muted">
-          <TerminalSquare
-            size={72}
-            strokeWidth={1}
-            className="text-primary/30"
-          />
-          <div className="text-center">
+        <div className="flex h-full items-center justify-center px-8 text-neutral-text-muted">
+          <div className="surface-card flex max-w-xl flex-col items-center px-12 py-14 text-center">
+            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+              <TerminalSquare size={32} strokeWidth={1.5} className="text-primary" />
+            </div>
+            <div>
             <h2 className="font-display font-bold text-2xl text-neutral-text-dim mb-3 tracking-tight">
               Nessun Workspace Aperto
             </h2>
@@ -465,6 +464,7 @@ export function WorkspaceView() {
               <Plus size={18} />
               Nuovo Spazio
             </button>
+            </div>
           </div>
         </div>
         <NewSpaceWizard
@@ -491,12 +491,13 @@ export function WorkspaceView() {
         {/* Header del workspace attivo */}
         <div
           style={{
-            padding: "16px 20px 12px",
+            padding: "18px 20px 14px",
             flexShrink: 0,
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "space-between",
             gap: "16px",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
           }}
         >
           <div style={{ minWidth: 0, flex: 1 }}>

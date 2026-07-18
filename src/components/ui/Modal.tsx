@@ -43,15 +43,15 @@ export function Modal({ open, onClose, title, children, width = "max-w-2xl" }: M
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ type: "spring", stiffness: 400, damping: 35 }}
-            className={`flex flex-col w-full ${width} mx-4 rounded-2xl border shadow-2xl`}
+            className={`flex flex-col w-full ${width} mx-5 rounded-[var(--radius-surface)] border shadow-2xl`}
             style={{
               backgroundColor: "#111113",
               borderColor: "rgba(255,255,255,0.06)",
-              maxHeight: "85vh",
+              maxHeight: "min(840px, calc(100vh - 48px))",
             }}
           >
             <div
-              className="flex items-center justify-between px-6 py-5 border-b rounded-t-2xl"
+              className="flex items-center justify-between px-7 py-5 border-b rounded-t-[var(--radius-surface)]"
               style={{ borderColor: "rgba(255,255,255,0.06)" }}
             >
               <h2 className="font-display font-bold text-lg text-neutral-text tracking-tight">
@@ -59,13 +59,13 @@ export function Modal({ open, onClose, title, children, width = "max-w-2xl" }: M
               </h2>
               <button
                 onClick={onClose}
-                className="flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/5 transition-colors"
+                className="ui-icon-button hover:bg-white/5"
                 title="Chiudi"
               >
                 <X size={18} className="text-neutral-text-muted" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto px-7 py-6">
               {children}
             </div>
           </motion.div>

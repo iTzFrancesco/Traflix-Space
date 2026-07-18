@@ -159,15 +159,15 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
 
 function getTitleBarMetrics(terminalCount: number) {
   if (terminalCount <= 1) {
-    return { height: 38, padding: "0 14px", fontSize: 13, buttonSize: 26, iconSize: 14, dotSize: 10 };
+    return { height: 42, padding: "0 14px", fontSize: 13, buttonSize: 32, iconSize: 16, dotSize: 10 };
   }
   if (terminalCount === 2) {
-    return { height: 34, padding: "0 12px", fontSize: 12, buttonSize: 24, iconSize: 13, dotSize: 9 };
+    return { height: 40, padding: "0 12px", fontSize: 12, buttonSize: 32, iconSize: 15, dotSize: 9 };
   }
   if (terminalCount <= 4) {
-    return { height: 31, padding: "0 11px", fontSize: 12, buttonSize: 23, iconSize: 12, dotSize: 8 };
+    return { height: 38, padding: "0 10px", fontSize: 12, buttonSize: 32, iconSize: 14, dotSize: 8 };
   }
-  return { height: 28, padding: "0 10px", fontSize: 11, buttonSize: 22, iconSize: 12, dotSize: 8 };
+  return { height: 36, padding: "0 9px", fontSize: 12, buttonSize: 30, iconSize: 14, dotSize: 7 };
 }
 
 /** Return the latest complete PowerShell prompt, including wrapped paths. */
@@ -294,16 +294,16 @@ const TITLE_BAR_BRANCH: React.CSSProperties = {
 const TITLE_BAR_RIGHT: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 6,
+  gap: 4,
   flexShrink: 0,
   marginLeft: "auto",
-  paddingLeft: 12,
+  paddingLeft: 8,
 };
 
 const TOOL_BTN_BASE: React.CSSProperties = {
-  width: "22px",
-  height: "22px",
-  borderRadius: "6px",
+  width: "30px",
+  height: "30px",
+  borderRadius: "8px",
   border: "none",
   cursor: "pointer",
   display: "flex",
@@ -1333,7 +1333,7 @@ export const TerminalPane = memo(function TerminalPane({
         </div>
 
         <div style={TITLE_BAR_RIGHT}>
-          {gitBranch && (
+          {gitBranch && terminalCount <= 4 && (
             <span
               style={{ ...TITLE_BAR_BRANCH, fontSize: titleBarMetrics.fontSize }}
               title={gitBranch}
@@ -1363,6 +1363,7 @@ export const TerminalPane = memo(function TerminalPane({
               type="button"
               onClick={handleToggleFocus}
               title={isFocused ? "Esci da Focus (Esc)" : "Focus mode"}
+              aria-label={isFocused ? "Esci dalla modalità focus" : "Attiva modalità focus"}
               style={{
                 ...TOOL_BTN_BASE,
                 width: titleBarMetrics.buttonSize,
@@ -1423,6 +1424,7 @@ export const TerminalPane = memo(function TerminalPane({
                   type="button"
                   onClick={handleConfirmClose}
                   title="Conferma chiusura"
+                  aria-label="Conferma chiusura terminale"
                   style={{
                     ...TOOL_BTN_BASE,
                     width: titleBarMetrics.buttonSize,
@@ -1443,6 +1445,7 @@ export const TerminalPane = memo(function TerminalPane({
                   type="button"
                   onClick={handleCancelClose}
                   title="Annulla"
+                  aria-label="Annulla chiusura terminale"
                   style={{
                     ...TOOL_BTN_BASE,
                     width: titleBarMetrics.buttonSize,
@@ -1467,6 +1470,7 @@ export const TerminalPane = memo(function TerminalPane({
                 type="button"
                 onClick={handleCloseClick}
                 title="Chiudi terminale"
+                aria-label="Chiudi terminale"
                 style={{
                   ...TOOL_BTN_BASE,
                   width: titleBarMetrics.buttonSize,
@@ -1513,7 +1517,16 @@ export const TerminalPane = memo(function TerminalPane({
             pointerEvents: "none",
           }}
         >
-          <span style={{ fontSize: "14px", lineHeight: 1 }}>🎯</span>
+          <span
+            aria-hidden="true"
+            style={{
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              background: "currentColor",
+              boxShadow: "0 0 8px currentColor",
+            }}
+          />
           <span>
             usa{" "}
             {pendingNames.length === 1
@@ -1530,14 +1543,14 @@ export const TerminalPane = memo(function TerminalPane({
           style={{
             position: "absolute",
             inset: 0,
-            background: "rgba(12,12,12,0.92)",
+            background: "rgba(12,12,12,0.84)",
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: "20px",
+            gap: "14px",
             zIndex: 20,
-            backdropFilter: "blur(4px)",
+            backdropFilter: "blur(8px)",
             padding: "24px",
           }}
         >
@@ -1558,7 +1571,7 @@ export const TerminalPane = memo(function TerminalPane({
           <span
             style={{
               fontFamily: "var(--font-mono)",
-              fontSize: "14px",
+              fontSize: "13px",
               color: "#ef4444",
               fontWeight: 500,
               opacity: 0.9,
@@ -1572,7 +1585,8 @@ export const TerminalPane = memo(function TerminalPane({
             type="button"
             onClick={handleRestart}
             style={{
-              padding: "12px 28px",
+              minHeight: "40px",
+              padding: "10px 20px",
               borderRadius: "10px",
               border: "1px solid rgba(232,93,4,0.4)",
               background: "rgba(232,93,4,0.12)",

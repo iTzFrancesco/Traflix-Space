@@ -34,8 +34,11 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
 
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
-          <AlertTriangle size={48} className="text-red-500/60" />
+        <div className="flex h-full items-center justify-center p-8 text-center">
+          <div className="surface-card flex max-w-lg flex-col items-center gap-4 px-10 py-10">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10 ring-1 ring-red-500/20">
+            <AlertTriangle size={26} className="text-red-400" />
+          </div>
           <div>
             <h2 className="font-display font-bold text-lg text-neutral-text-dim mb-1">
               Errore imprevisto
@@ -46,11 +49,12 @@ export class ErrorBoundary extends Component<Props, State> {
           </div>
           <button
             onClick={this.handleRetry}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-primary bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors"
+            className="flex min-h-10 items-center gap-2 px-4 py-2 text-sm font-medium text-primary bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors"
           >
             <RefreshCw size={14} />
             Riprova
           </button>
+          </div>
         </div>
       );
     }

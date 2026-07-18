@@ -33,6 +33,7 @@ export function WorkspaceGrid({
       ? focusedTerminalId
       : null;
   const isFocusMode = localFocusId !== null;
+  const isDense = terminals.length > 4;
 
   const stableOnActivate = useCallback(
     (id: string) => {
@@ -74,9 +75,9 @@ export function WorkspaceGrid({
 
   if (terminals.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center px-8">
-        <p className="text-sm text-neutral-text-muted leading-relaxed text-center">
-          Nessun terminale configurato.
+      <div className="flex flex-1 items-center justify-center px-8">
+        <p className="surface-card px-6 py-4 text-center text-sm leading-relaxed text-neutral-text-muted">
+          Nessun terminale configurato per questo workspace.
         </p>
       </div>
     );
@@ -87,8 +88,12 @@ export function WorkspaceGrid({
       style={{
         display: "grid",
         flex: 1,
-        gap: isFocusMode ? 0 : "16px",
-        padding: isFocusMode ? "8px 12px 12px" : "8px 16px 16px",
+        gap: isFocusMode ? 0 : isDense ? "12px" : "16px",
+        padding: isFocusMode
+          ? "8px 12px 12px"
+          : isDense
+            ? "12px"
+            : "12px 16px 16px",
         // Keep the same grid tracks so hidden panes stay mounted; the focused
         // pane is stretched via gridColumn/gridRow spanning all cells.
         gridTemplateColumns: isFocusMode

@@ -18,6 +18,15 @@
   --font-mono: "JetBrains Mono", monospace;
 
   --radius-pane: 12px;
+  --radius-control: 10px;
+  --radius-surface: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
 
   --spacing-sidebar: 360px;
 }
@@ -73,6 +82,27 @@ a:not(:disabled),
 *:focus-visible {
   outline: 2px solid rgba(232, 93, 4, 0.5);
   outline-offset: 2px;
+}
+
+/* Shared desktop-control language: calm surfaces, generous targets, clear states. */
+.surface-card {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
+  border: 1px solid var(--color-neutral-border);
+  border-radius: var(--radius-surface);
+}
+
+.ui-icon-button {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control);
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.ui-icon-button:active {
+  transform: scale(0.96);
 }
 
 /* xterm.js overrides */

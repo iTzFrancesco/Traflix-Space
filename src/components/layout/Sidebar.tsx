@@ -332,12 +332,12 @@ export function Sidebar() {
           />
         </div>
         {/* Top section - Collapse button + New workspace */}
-        <div className="flex items-center gap-4 px-5 pt-6 pb-4">
+        <div className="flex items-center gap-3 px-4 pt-5 pb-4">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={toggleSidebar}
-            className="p-3 rounded-xl transition-colors duration-200 shrink-0"
+            className="ui-icon-button shrink-0"
             style={{ color: "var(--color-neutral-text-muted)" }}
             onMouseEnter={(e) =>
               (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)")
@@ -354,7 +354,7 @@ export function Sidebar() {
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex-1 flex items-center justify-center gap-4 px-5 py-3.5 text-[1rem] font-semibold rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
               color: "var(--color-neutral-text-dim)",
@@ -369,15 +369,15 @@ export function Sidebar() {
               e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
             }}
           >
-            <Plus size={24} style={{ color: "var(--color-primary)" }} />
+            <Plus size={20} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
         </div>
 
         {/* Workspaces section */}
-        <div className="flex-1 overflow-y-auto px-5 pt-8 pb-6">
+        <div className="flex-1 overflow-y-auto px-4 pt-5 pb-5">
           {/* Section header */}
-          <div className="flex items-center gap-2 px-3 mb-6">
+          <div className="flex items-center px-2 pb-3 mb-3 border-b border-white/[0.06]">
             <span
               className="text-[0.8125rem] font-semibold uppercase tracking-[0.12em]"
               style={{
@@ -390,7 +390,7 @@ export function Sidebar() {
           </div>
 
           {/* Workspace list */}
-          <div className="space-y-4">
+          <div className="space-y-2">
             <AnimatePresence mode="popLayout">
               {workspaces.map((ws, index) => {
                 const color = getWorkspaceColor(index);
@@ -545,7 +545,7 @@ export function Sidebar() {
                             setActiveWorkspace(ws.id);
                           }
                         }}
-                        className="flex items-center gap-3.5 w-full px-5 py-5 rounded-xl transition-all duration-200 group cursor-pointer"
+                        className="surface-card relative flex items-center gap-3 w-full px-3 py-3 rounded-xl transition-all duration-200 group cursor-pointer"
                         style={{
                           backgroundColor: isActive
                             ? "rgba(255,255,255,0.06)"
@@ -564,51 +564,53 @@ export function Sidebar() {
                       >
                         {/* Colored square icon */}
                         <div
-                          className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"
+                          className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"
                           style={{ backgroundColor: `${color}18` }}
                         >
                           <div
-                            className="w-5 h-5 rounded"
+                            className="w-4 h-4 rounded"
                             style={{ backgroundColor: color }}
                           />
                         </div>
 
-                        {/* Workspace name */}
-                        <span
-                          className={`truncate text-[1rem] flex-1 text-left ${
-                            isActive ? "font-semibold" : ""
-                          }`}
-                          style={{
-                            color: isActive
-                              ? "var(--color-neutral-text)"
-                              : "var(--color-neutral-text-dim)",
-                          }}
-                        >
-                          {ws.name}
-                        </span>
-
-                        {/* Terminal count badge */}
-                        {terminalCount > 0 && (
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          {/* Workspace name */}
                           <span
-                            className="text-[0.8125rem] font-mono font-medium px-3 py-1 rounded-lg shrink-0 transition-opacity duration-200"
+                            className={`truncate text-[0.9375rem] text-left ${
+                              isActive ? "font-semibold" : ""
+                            }`}
                             style={{
-                              backgroundColor: `${color}15`,
-                              color: color,
+                              color: isActive
+                                ? "var(--color-neutral-text)"
+                                : "var(--color-neutral-text-dim)",
                             }}
                           >
-                            {terminalCount}
+                            {ws.name}
                           </span>
-                        )}
+
+                          {/* Terminal count badge */}
+                          {terminalCount > 0 && (
+                            <span
+                              className="text-xs font-mono font-medium px-2.5 py-1 rounded-md shrink-0 transition-opacity duration-200"
+                              style={{
+                                backgroundColor: `${color}15`,
+                                color: color,
+                              }}
+                            >
+                              {terminalCount}
+                            </span>
+                          )}
+                        </div>
 
                         {/* Action buttons - visible on hover */}
-                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                        <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-lg border border-white/[0.06] bg-neutral-elevated/95 p-1 opacity-0 shadow-lg group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-200">
                           {/* Rename button */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               startRename(ws.id, ws.name);
                             }}
-                            className="p-2.5 rounded-xl transition-colors"
+                            className="ui-icon-button w-9 h-9 rounded-lg"
                             style={{ color: "var(--color-neutral-text-muted)" }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.backgroundColor =
@@ -632,7 +634,7 @@ export function Sidebar() {
                               e.stopPropagation();
                               setConfirmDeleteId(ws.id);
                             }}
-                            className="p-2.5 rounded-xl transition-colors"
+                            className="ui-icon-button w-9 h-9 rounded-lg"
                             style={{ color: "var(--color-neutral-text-muted)" }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.backgroundColor =

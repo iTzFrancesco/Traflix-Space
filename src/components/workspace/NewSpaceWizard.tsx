@@ -320,29 +320,32 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       title="Nuovo Spazio di Lavoro"
       width="max-w-3xl"
     >
-      <div className="space-y-8">
+      <div className="space-y-6">
         {/* Step indicator */}
-        <div className="text-center">
-          <p className="text-sm font-semibold text-orange-400 uppercase tracking-[0.2em] mb-4">
-            {STEPS[step - 1]}
+        <div className="surface-card p-4">
+          <p className="text-xs font-semibold text-primary uppercase tracking-[0.16em] mb-3">
+            Passo {step} di {STEPS.length}
           </p>
-          <div className="flex items-center justify-center gap-3">
-            {STEPS.map((_, i) => (
-              <div key={i} className="flex items-center gap-3">
+          <div className="grid grid-cols-4 gap-2">
+            {STEPS.map((stepName, i) => {
+              const isCurrent = step === i + 1;
+              const isComplete = step > i + 1;
+              return (
+              <div key={stepName} className="flex min-w-0 items-center gap-2">
                 <div
-                  className={`h-3 rounded-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${
-                    step > i + 1
-                      ? "w-6 bg-primary shadow-[0_0_16px_rgba(232,93,4,0.3)]"
-                      : step === i + 1
-                        ? "w-8 bg-primary shadow-[0_0_20px_rgba(232,93,4,0.4)]"
-                        : "w-3 bg-white/[0.1]"
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all duration-300 ${
+                    isCurrent || isComplete
+                      ? "bg-primary text-white shadow-[0_0_16px_rgba(232,93,4,0.22)]"
+                      : "bg-white/[0.07] text-neutral-text-muted"
                   }`}
-                />
-                {i < STEPS.length - 1 && (
-                  <div className="w-6 h-px bg-white/[0.06]" />
-                )}
+                >
+                  {i + 1}
+                </div>
+                <span className={`truncate text-xs font-medium ${isCurrent ? "text-neutral-text" : "text-neutral-text-muted"}`}>
+                  {stepName}
+                </span>
               </div>
-            ))}
+            )})}
           </div>
         </div>
 
@@ -350,14 +353,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         {step === 1 && (
           <div className="space-y-5">
             {/* Path attuale + Sfoglia */}
-            <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-6 space-y-5">
+            <div className="surface-card p-6 space-y-5">
               <p className="text-base text-neutral-text-dim leading-relaxed">
                 Seleziona la cartella del progetto.
               </p>
 
               {/* Path display + Sfoglia button */}
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-white/[0.03] flex-1 min-w-0 border border-white/[0.06]">
+              <div className="flex items-stretch gap-3">
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-black/15 flex-1 min-w-0 border border-white/[0.06]">
                   <FolderOpen size={20} className="text-primary shrink-0" />
                   <span
                     className={`text-sm font-mono truncate ${
@@ -371,7 +374,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </div>
                 <button
                   onClick={handleSelectFolder}
-                  className="px-7 py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97] shrink-0"
+                  className="px-6 py-3 text-sm font-bold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97] shrink-0"
                   style={{
                     background: "linear-gradient(135deg, #e85d04, #ff7b00)",
                   }}
@@ -459,7 +462,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 2 — Conteggio */}
         {step === 2 && (
-          <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-8 space-y-8">
+          <div className="surface-card p-6 space-y-6">
             <p className="text-lg text-neutral-text-dim leading-relaxed">
               Quanti terminali vuoi aprire?
             </p>
@@ -519,7 +522,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 3 — Agenti */}
         {step === 3 && (
-          <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-8 space-y-6">
+          <div className="surface-card p-6 space-y-6">
             <div className="flex items-center justify-between">
               <p className="text-lg text-neutral-text-dim leading-relaxed">
                 Assegna agenti ai terminali.
@@ -626,7 +629,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 4 — Conferma */}
         {step === 4 && (
-          <div className="rounded-3xl bg-neutral-elevated border border-white/[0.06] p-8 space-y-8">
+          <div className="surface-card p-6 space-y-6">
             <p className="text-lg text-neutral-text-dim leading-relaxed">
               Conferma i dettagli del workspace.
             </p>
@@ -730,7 +733,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         )}
 
         {/* Navigation */}
-        <div className="flex items-center justify-between pt-2">
+        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#111113]/95 px-7 pt-4 pb-1 backdrop-blur">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
