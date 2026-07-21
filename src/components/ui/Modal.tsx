@@ -65,7 +65,7 @@ export function Modal({ open, onClose, title, children, width = "max-w-2xl" }: M
                 <X size={18} className="text-neutral-text-muted" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-7 py-6">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden px-7 py-6">
               {children}
             </div>
           </motion.div>

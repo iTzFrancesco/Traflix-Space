@@ -455,13 +455,13 @@ export function WorkspaceView() {
             </p>
             <button
               onClick={() => setWizardOpen(true)}
-              className="inline-flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
+              className="inline-flex items-center gap-3 px-9 py-4.5 text-base font-extrabold text-white rounded-2xl transition-all duration-300 hover:scale-[1.02] active:scale-[0.97] hover:shadow-[0_0_32px_rgba(232,93,4,0.4)]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                boxShadow: "0 4px 16px rgba(232, 93, 4, 0.25)",
+                boxShadow: "0 6px 20px rgba(232, 93, 4, 0.25)",
               }}
             >
-              <Plus size={18} />
+              <Plus size={20} strokeWidth={2.5} />
               Nuovo Spazio
             </button>
             </div>

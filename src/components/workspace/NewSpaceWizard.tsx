@@ -38,6 +38,8 @@ const agentIcons: Record<string, typeof Bot> = {
   "anti-gravity": Bot,
   claude: Bot,
   codex: Bot,
+  cmdc: Terminal,
+  freebuff: Bot,
   pi: Bot,
 };
 
@@ -351,19 +353,19 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 1 — Cartella */}
         {step === 1 && (
-          <div className="space-y-5">
+          <div className="space-y-7">
             {/* Path attuale + Sfoglia */}
-            <div className="surface-card p-6 space-y-5">
-              <p className="text-base text-neutral-text-dim leading-relaxed">
+            <div className="surface-card p-6 space-y-7">
+              <p className="text-base text-neutral-text-dim leading-relaxed mb-1">
                 Seleziona la cartella del progetto.
               </p>
 
               {/* Path display + Sfoglia button */}
-              <div className="flex items-stretch gap-3">
-                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-black/15 flex-1 min-w-0 border border-white/[0.06]">
-                  <FolderOpen size={20} className="text-primary shrink-0" />
+              <div className="flex items-stretch gap-4">
+                <div className="flex items-center gap-3 px-5 py-4 rounded-2xl bg-black/15 flex-1 min-w-0 border border-white/[0.06]">
+                  <FolderOpen size={22} className="text-primary shrink-0" />
                   <span
-                    className={`text-sm font-mono truncate ${
+                    className={`text-base font-mono truncate ${
                       folderPath
                         ? "text-neutral-text"
                         : "text-neutral-text-muted"
@@ -374,9 +376,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </div>
                 <button
                   onClick={handleSelectFolder}
-                  className="px-6 py-3 text-sm font-bold text-white rounded-xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] whitespace-nowrap active:scale-[0.97] shrink-0"
+                  className="px-9 py-4 text-base font-extrabold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(232,93,4,0.35)] whitespace-nowrap active:scale-[0.97] shrink-0"
                   style={{
                     background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                    boxShadow: "0 4px 12px rgba(232, 93, 4, 0.15)",
                   }}
                 >
                   Sfoglia
@@ -522,7 +525,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
         {/* Step 3 — Agenti */}
         {step === 3 && (
-          <div className="surface-card p-6 space-y-6">
+          <div className="surface-card p-5 space-y-5">
             <div className="flex items-center justify-between">
               <p className="text-lg text-neutral-text-dim leading-relaxed">
                 Assegna agenti ai terminali.
@@ -545,7 +548,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3.5">
               {DISPLAY_AGENTS.map((agent) => {
                 const count = agentCounts[agent.id] || 0;
                 return (
@@ -562,21 +565,17 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                         count > 0 ? `${agent.color}10` : "transparent",
                     }}
                   >
-                    <div className="p-6 space-y-4">
+                    <div className="p-4.5 space-y-3.5">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3.5">
                           <div
-                            className="w-12 h-12 rounded-xl flex items-center justify-center"
+                            className="w-11 h-12 rounded-xl flex items-center justify-center"
                             style={{ backgroundColor: `${agent.color}20` }}
                           >
-                            {agentIcons[agent.id] ? (
-                              <Bot size={24} style={{ color: agent.color }} />
-                            ) : (
-                              <Terminal
-                                size={24}
-                                style={{ color: agent.color }}
-                              />
-                            )}
+                            {(() => {
+                              const IconComponent = agentIcons[agent.id] || Terminal;
+                              return <IconComponent size={24} style={{ color: agent.color }} />;
+                            })()}
                           </div>
                           <span className="text-lg font-bold text-neutral-text">
                             {agent.name}
@@ -595,17 +594,17 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-center gap-4">
+                      <div className="flex items-center justify-center gap-3">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             decrementAgent(agent.id);
                           }}
                           disabled={count <= 0}
-                          className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                          className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                           aria-label={`Rimuovi ${agent.name}`}
                         >
-                          <Minus size={18} />
+                          <Minus size={16} />
                         </button>
                         <button
                           onClick={(e) => {
@@ -613,10 +612,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                             incrementAgent(agent.id);
                           }}
                           disabled={assignedCount >= terminalCount}
-                          className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
+                          className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] transition-all duration-200 disabled:opacity-15 active:scale-[0.92]"
                           aria-label={`Aggiungi ${agent.name}`}
                         >
-                          <Plus size={18} />
+                          <Plus size={16} />
                         </button>
                       </div>
                     </div>
@@ -733,13 +732,13 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         )}
 
         {/* Navigation */}
-        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#111113]/95 px-7 pt-4 pb-1 backdrop-blur">
+        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#111113]/95 px-7 pt-5 pb-2 backdrop-blur">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="flex items-center gap-3 px-6 py-4 text-lg text-neutral-text-muted rounded-2xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
+            className="flex items-center gap-3 px-8 py-4.5 text-lg font-bold text-neutral-text-muted rounded-2xl hover:bg-white/[0.05] hover:text-neutral-text transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
           >
-            <ChevronLeft size={20} />
+            <ChevronLeft size={22} />
             Indietro
           </button>
 
@@ -747,23 +746,25 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={() => setStep((s) => s + 1)}
               disabled={!canProceed()}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
+              className="flex items-center gap-3 px-11 py-4.5 text-lg font-extrabold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97] hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(232,93,4,0.35)]"
               style={{
                 background: canProceed()
                   ? "linear-gradient(135deg, #e85d04, #ff7b00)"
                   : "rgba(255,255,255,0.05)",
+                boxShadow: canProceed() ? "0 4px 12px rgba(232, 93, 4, 0.15)" : "none",
               }}
             >
               Avanti
-              <ChevronRight size={20} />
+              <ChevronRight size={22} />
             </button>
           ) : (
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
+              className="flex items-center gap-3 px-11 py-4.5 text-lg font-extrabold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97] hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(232,93,4,0.35)]"
               style={{
                 background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                boxShadow: "0 4px 12px rgba(232, 93, 4, 0.15)",
               }}
             >
               {creating ? (
@@ -773,7 +774,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 </>
               ) : (
                 <>
-                  <Sparkles size={20} />
+                  <Sparkles size={22} />
                   Crea
                 </>
               )}

@@ -351,25 +351,25 @@ export function Sidebar() {
           </motion.button>
 
           <motion.button
-            whileHover={{ scale: 1.01 }}
+            whileHover={{ scale: 1.02, y: -0.5 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => setWizardOpen(true)}
-            className="flex-1 flex items-center justify-center gap-3 px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200"
+            className="flex-1 flex items-center justify-center gap-3 px-5 py-3.5 text-base font-bold rounded-xl transition-all duration-300 shadow-sm hover:shadow-[0_0_16px_rgba(232,93,4,0.15)]"
             style={{
               backgroundColor: "rgba(255,255,255,0.04)",
-              color: "var(--color-neutral-text-dim)",
-              border: "1px solid rgba(255,255,255,0.06)",
+              color: "var(--color-neutral-text)",
+              border: "1px solid rgba(232,93,4,0.2)",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.07)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+              e.currentTarget.style.backgroundColor = "rgba(232,93,4,0.06)";
+              e.currentTarget.style.borderColor = "rgba(232,93,4,0.5)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.04)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+              e.currentTarget.style.borderColor = "rgba(232,93,4,0.2)";
             }}
           >
-            <Plus size={20} style={{ color: "var(--color-primary)" }} />
+            <Plus size={22} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
         </div>

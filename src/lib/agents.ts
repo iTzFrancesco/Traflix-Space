@@ -12,15 +12,6 @@ export interface AgentDefinition {
 
 export const AGENTS: AgentDefinition[] = [
   {
-    id: "opencode",
-    name: "OpenCode",
-    description: "Agente AI con TUI avanzata",
-    command: "opencode",
-    args: [],
-    icon: "Terminal",
-    color: "#22c55e",
-  },
-  {
     id: "anti-gravity",
     name: "Anti-Gravity",
     description: "Agente AGY anti-gravity",
@@ -48,6 +39,15 @@ export const AGENTS: AgentDefinition[] = [
     color: "#6b46c1",
   },
   {
+    id: "opencode",
+    name: "OpenCode",
+    description: "Agente AI con TUI avanzata",
+    command: "opencode",
+    args: [],
+    icon: "Terminal",
+    color: "#22c55e",
+  },
+  {
     id: "pi",
     name: "PI",
     description: "Agente AI PI",
@@ -55,5 +55,23 @@ export const AGENTS: AgentDefinition[] = [
     args: [],
     icon: "Bot",
     color: "#a855f7",
+  },
+  {
+    id: "cmdc",
+    name: "Command Code",
+    description: "Agente AI Command Code",
+    command: "cmdc",
+    args: [],
+    icon: "Terminal",
+    color: "#3a86ff",
+  },
+  {
+    id: "freebuff",
+    name: "Freebuff",
+    description: "Agente AI Freebuff",
+    command: "freebuff",
+    args: [],
+    icon: "Bot",
+    color: "#f72585",
   },
 ];
