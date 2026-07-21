@@ -452,17 +452,17 @@ export function WorkspaceView() {
             <p className="text-[0.9375rem] text-neutral-text-dim max-w-md mb-8 leading-relaxed mx-auto">
               Seleziona un workspace dalla sidebar o creane uno nuovo per iniziare ad operare con i terminali ed agenti.
             </p>
-            <button
+             <button
                onClick={() => setWizardOpen(true)}
-               className="inline-flex items-center gap-3 text-base font-extrabold rounded-2xl transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.02] active:scale-[0.97] hover:shadow-[0_0_24px_rgba(255,157,36,0.35)] cursor-pointer"
+               className="inline-flex items-center gap-2 text-sm font-bold rounded-xl transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.97] hover:shadow-[0_0_20px_rgba(255,157,36,0.25)] cursor-pointer"
                style={{
-                 padding: "14px 32px",
+                 padding: "10px 24px",
                  background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
                  color: "var(--color-neutral-bg)",
-                 boxShadow: "0 6px 18px rgba(255, 157, 36, 0.22)",
+                 boxShadow: "0 4px 12px rgba(255, 157, 36, 0.18)",
                }}
              >
-               <Plus size={20} strokeWidth={2.5} />
+               <Plus size={18} strokeWidth={2.2} />
                Nuovo Spazio
              </button>
             </div>
