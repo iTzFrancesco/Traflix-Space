@@ -441,24 +441,24 @@ export function WorkspaceView() {
     return (
       <>
         <div className="flex h-full items-center justify-center px-8 text-neutral-text-muted">
-          <div className="surface-card flex max-w-xl flex-col items-center px-12 py-14 text-center">
-            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+          <div className="panel flex max-w-xl flex-col items-center px-12 py-14 text-center shadow-2xl tab-slide-in">
+            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/25 transition-transform duration-200 hover:scale-105">
               <TerminalSquare size={32} strokeWidth={1.5} className="text-primary" />
             </div>
             <div>
-            <h2 className="font-display font-bold text-2xl text-neutral-text-dim mb-3 tracking-tight">
-              Nessun Workspace Aperto
+            <h2 className="font-display font-extrabold text-2xl text-neutral-text mb-3 tracking-tight">
+              Nessun Spazio Aperto
             </h2>
-            <p className="text-[0.9375rem] max-w-md mb-8 leading-relaxed mx-auto">
-              Seleziona un workspace dalla sidebar o creane uno nuovo per
-              iniziare.
+            <p className="text-[0.9375rem] text-neutral-text-dim max-w-md mb-8 leading-relaxed mx-auto">
+              Seleziona un workspace dalla sidebar o creane uno nuovo per iniziare ad operare con i terminali ed agenti.
             </p>
             <button
               onClick={() => setWizardOpen(true)}
-              className="inline-flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold text-white rounded-xl transition-all duration-200 active:scale-[0.97]"
+              className="inline-flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold rounded-xl transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.97]"
               style={{
-                background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                boxShadow: "0 4px 16px rgba(232, 93, 4, 0.25)",
+                background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
+                color: "var(--color-neutral-bg)",
+                boxShadow: "0 4px 14px rgba(255, 157, 36, 0.2)",
               }}
             >
               <Plus size={18} />
@@ -490,25 +490,26 @@ export function WorkspaceView() {
       >
         {/* Header del workspace attivo */}
         <div
+          className="bg-black/5 backdrop-blur-sm"
           style={{
-            padding: "18px 20px 14px",
+            padding: "16px 24px 14px",
             flexShrink: 0,
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "space-between",
             gap: "16px",
-            borderBottom: "1px solid rgba(255,255,255,0.06)",
+            borderBottom: "1px solid var(--color-neutral-border)",
           }}
         >
           <div style={{ minWidth: 0, flex: 1 }}>
             <h1
               style={{
                 fontFamily: "var(--font-display)",
-                fontWeight: 700,
-                fontSize: "17px",
-                color: "#f4f4f5",
-                letterSpacing: "-0.01em",
-                lineHeight: 1.3,
+                fontWeight: 800,
+                fontSize: "18px",
+                color: "var(--color-neutral-text)",
+                letterSpacing: "-0.02em",
+                lineHeight: 1.25,
               }}
             >
               {activeLoaded.name}
@@ -516,8 +517,8 @@ export function WorkspaceView() {
             <p
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: "12px",
-                color: "#71717a",
+                fontSize: "11px",
+                color: "var(--color-neutral-text-muted)",
                 marginTop: "4px",
                 overflow: "hidden",
                 textOverflow: "ellipsis",

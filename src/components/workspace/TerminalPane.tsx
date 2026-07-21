@@ -37,28 +37,28 @@ function projectNameFromCwd(cwd: string): string {
 }
 
 const STOCK_THEME = {
-  background: "#0c0c0c",
-  foreground: "#cccccc",
-  cursor: "#ffffff",
-  cursorAccent: "#0c0c0c",
-  selectionBackground: "rgba(255,255,255,0.3)",
-  selectionInactiveBackground: "rgba(255,255,255,0.15)",
-  black: "#0c0c0c",
-  red: "#cd3131",
-  green: "#0dbc79",
-  yellow: "#e5e510",
-  blue: "#2472c8",
-  magenta: "#bc3fbc",
-  cyan: "#11a8cd",
-  white: "#e5e5e5",
-  brightBlack: "#666666",
-  brightRed: "#f14c4c",
-  brightGreen: "#23d18b",
-  brightYellow: "#f5f543",
-  brightBlue: "#3b8eea",
-  brightMagenta: "#d670d6",
+  background: "#111211", // --canvas
+  foreground: "#f5f3ef", // --ink
+  cursor: "#ff9d24", // --accent
+  cursorAccent: "#111211",
+  selectionBackground: "rgba(255, 157, 36, 0.25)",
+  selectionInactiveBackground: "rgba(255, 157, 36, 0.12)",
+  black: "#111211",
+  red: "#ff626b", // --danger
+  green: "#55d89b", // --signal
+  yellow: "#ffae42", // --primary-light
+  blue: "#ff9d24",
+  magenta: "#ff6b21",
+  cyan: "#29b8db",
+  white: "#f5f3ef",
+  brightBlack: "#74716c",
+  brightRed: "#ff626b",
+  brightGreen: "#55d89b",
+  brightYellow: "#ffae42",
+  brightBlue: "#ff9d24",
+  brightMagenta: "#ff6b21",
   brightCyan: "#29b8db",
-  brightWhite: "#e5e5e5",
+  brightWhite: "#f5f3ef",
 };
 
 interface TerminalPaneProps {
@@ -81,7 +81,7 @@ interface TerminalPaneProps {
   onToggleFocus?: (id: string) => void;
 }
 
-// All pane styles gain display:flex + flexDirection:column so the title
+// Layout definitions for each terminal pane. The terminal pane consists of title
 // bar (above) and xterm container (below) stack vertically.
 const ACTIVE_STYLE: React.CSSProperties = {
   position: "relative",
@@ -90,11 +90,12 @@ const ACTIVE_STYLE: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
   minHeight: 0,
-  background: "#0c0c0c",
+  background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid #e85d04",
+  border: "1px solid var(--color-primary)",
   overflow: "hidden",
   isolation: "isolate",
+  boxShadow: "0 4px 20px rgba(255, 157, 36, 0.04)",
 };
 
 const FOCUSED_STYLE: React.CSSProperties = {
@@ -104,11 +105,12 @@ const FOCUSED_STYLE: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
   minHeight: 0,
-  background: "#0c0c0c",
+  background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid #3b82f6",
+  border: "1px solid var(--color-primary-strong)",
   overflow: "hidden",
   isolation: "isolate",
+  boxShadow: "0 4px 20px rgba(255, 107, 33, 0.05)",
 };
 
 const INACTIVE_STYLE: React.CSSProperties = {
@@ -118,9 +120,9 @@ const INACTIVE_STYLE: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
   minHeight: 0,
-  background: "#0c0c0c",
+  background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid rgba(255,255,255,0.10)",
+  border: "1px solid var(--color-neutral-border)",
   overflow: "hidden",
   cursor: "pointer",
   isolation: "isolate",
@@ -133,9 +135,9 @@ const EXITED_STYLE: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
   minHeight: 0,
-  background: "#0c0c0c",
+  background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid rgba(239,68,68,0.3)",
+  border: "1px solid rgba(255, 98, 107, 0.25)",
   overflow: "hidden",
   isolation: "isolate",
 };
@@ -143,7 +145,7 @@ const EXITED_STYLE: React.CSSProperties = {
 const CONTAINER_STYLE: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
-  background: "#0c0c0c",
+  background: "var(--color-neutral-bg)",
   overflow: "hidden",
 };
 
@@ -151,8 +153,8 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  background: "rgba(255,255,255,0.03)",
-  borderBottom: "1px solid rgba(255,255,255,0.06)",
+  background: "rgba(255, 255, 255, 0.015)",
+  borderBottom: "1px solid var(--color-neutral-border)",
   userSelect: "none",
   overflow: "hidden",
 };

@@ -20,10 +20,13 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex flex-col h-screen bg-neutral-bg">
-        <TitleBar />
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-          <Sidebar />
+      <div className="flex h-screen bg-neutral-bg app-canvas overflow-hidden">
+        {/* Full-height Sidebar on the left */}
+        <Sidebar />
+        
+        {/* Main column on the right containing TitleBar + Content */}
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <TitleBar />
           <main className="flex-1 min-h-0 overflow-hidden relative">
             <ErrorBoundary>
               <WorkspaceView />

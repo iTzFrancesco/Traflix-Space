@@ -476,8 +476,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                     onClick={() => setCount(n)}
                     className={`py-6 rounded-2xl text-center transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] ${
                       active
-                        ? "bg-primary text-white font-bold shadow-[0_0_32px_rgba(232,93,4,0.25)]"
-                        : "bg-white/[0.04] text-neutral-text-muted hover:bg-white/[0.08] hover:text-neutral-text-dim border border-white/[0.06]"
+                        ? "bg-primary text-neutral-bg font-extrabold shadow-[0_0_32px_rgba(255,157,36,0.18)]"
+                        : "bg-white/[0.02] text-neutral-text-muted hover:bg-white/[0.05] hover:text-neutral-text-dim border border-white/[0.06]"
                     }`}
                   >
                     <span className="block text-3xl font-bold font-display">
@@ -539,8 +539,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                   width: `${(assignedCount / terminalCount) * 100}%`,
                   background:
                     assignedCount === terminalCount
-                      ? "linear-gradient(90deg, #e85d04, #ff7b00)"
-                      : "linear-gradient(90deg, rgba(232,93,4,0.5), rgba(232,93,4,0.3))",
+                      ? "linear-gradient(90deg, var(--color-primary), var(--color-primary-strong))"
+                      : "linear-gradient(90deg, rgba(255,157,36,0.4), rgba(255,157,36,0.2))",
                 }}
               />
             </div>
@@ -698,10 +698,11 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                 <>
                   <button
                     onClick={handleSavePreset}
-                    className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
+                    className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98] cursor-pointer"
                     style={{
-                      background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                      boxShadow: "0 4px 20px rgba(232, 93, 4, 0.25)",
+                      background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
+                      color: "var(--color-neutral-bg)",
+                      boxShadow: "0 4px 20px rgba(255, 157, 36, 0.18)",
                     }}
                   >
                     <Save size={20} />
@@ -709,7 +710,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
                   </button>
                   <button
                     onClick={handleSaveAsNewPreset}
-                    className="flex items-center justify-center gap-3 w-full py-3 text-sm font-medium text-neutral-text-muted rounded-2xl border border-white/[0.06] hover:bg-white/[0.03] transition-all duration-200 active:scale-[0.98]"
+                    className="flex items-center justify-center gap-3 w-full py-3 text-sm font-medium text-neutral-text-muted rounded-2xl border border-white/[0.06] hover:bg-white/[0.03] transition-all duration-200 active:scale-[0.98] cursor-pointer"
                   >
                     <Save size={16} />
                     Salva come nuovo preset
@@ -718,10 +719,11 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               ) : (
                 <button
                   onClick={handleSavePreset}
-                  className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98]"
+                  className="flex items-center justify-center gap-3 w-full py-4 text-base font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98] cursor-pointer"
                   style={{
-                    background: "linear-gradient(135deg, #e85d04, #ff7b00)",
-                    boxShadow: "0 4px 20px rgba(232, 93, 4, 0.25)",
+                    background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
+                    color: "var(--color-neutral-bg)",
+                    boxShadow: "0 4px 20px rgba(255, 157, 36, 0.18)",
                   }}
                 >
                   <Save size={20} />
@@ -731,27 +733,28 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             </div>
           </div>
         )}
-
+ 
         {/* Navigation */}
-        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#111113]/95 px-7 pt-4 pb-1 backdrop-blur">
+        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#1a1b19]/95 px-7 pt-4 pb-1 backdrop-blur">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="flex items-center gap-3 px-6 py-4 text-lg text-neutral-text-muted rounded-2xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97]"
+            className="flex items-center gap-3 px-6 py-4 text-lg text-neutral-text-muted rounded-2xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97] cursor-pointer"
           >
             <ChevronLeft size={20} />
             Indietro
           </button>
-
+ 
           {step < 4 ? (
             <button
               onClick={() => setStep((s) => s + 1)}
               disabled={!canProceed()}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97]"
+              className="flex items-center gap-3 px-8 py-4 text-lg font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97] cursor-pointer"
               style={{
                 background: canProceed()
-                  ? "linear-gradient(135deg, #e85d04, #ff7b00)"
+                  ? "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))"
                   : "rgba(255,255,255,0.05)",
+                color: canProceed() ? "var(--color-neutral-bg)" : "var(--color-neutral-text-muted)",
               }}
             >
               Avanti
@@ -761,14 +764,15 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold text-white rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97]"
+              className="flex items-center gap-3 px-8 py-4 text-lg font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97] cursor-pointer"
               style={{
-                background: "linear-gradient(135deg, #e85d04, #ff7b00)",
+                background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
+                color: "var(--color-neutral-bg)",
               }}
             >
               {creating ? (
                 <>
-                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span className="w-5 h-5 border-2 border-neutral-bg/30 border-t-neutral-bg rounded-full animate-spin" />
                   Creazione...
                 </>
               ) : (
