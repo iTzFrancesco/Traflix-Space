@@ -45,14 +45,16 @@ export function Modal({ open, onClose, title, children, width = "max-w-2xl" }: M
             transition={{ type: "spring", stiffness: 400, damping: 35 }}
             className={`flex flex-col w-full ${width} mx-5 rounded-[var(--radius-surface)] border shadow-2xl`}
             style={{
-              backgroundColor: "#111113",
-              borderColor: "rgba(255,255,255,0.06)",
+              backgroundColor: "rgba(26, 27, 25, 0.9)",
+              backdropFilter: "blur(16px)",
+              WebkitBackdropFilter: "blur(16px)",
+              borderColor: "var(--color-neutral-border)",
               maxHeight: "min(840px, calc(100vh - 48px))",
             }}
           >
             <div
               className="flex items-center justify-between px-7 py-5 border-b rounded-t-[var(--radius-surface)]"
-              style={{ borderColor: "rgba(255,255,255,0.06)" }}
+              style={{ borderColor: "var(--color-neutral-border)" }}
             >
               <h2 className="font-display font-bold text-lg text-neutral-text tracking-tight">
                 {title}

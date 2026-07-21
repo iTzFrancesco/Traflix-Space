@@ -27,14 +27,14 @@ export const TerminalSnapshot = memo(function TerminalSnapshot({
     canvas.height = h;
 
     // Background
-    ctx.fillStyle = "#0c0c0c";
+    ctx.fillStyle = "#111211";
     ctx.fillRect(0, 0, w, h);
 
     // Title bar
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = "#1a1b19";
     ctx.fillRect(0, 0, w, 24);
-    ctx.fillStyle = "#888";
-    ctx.font = "11px 'Segoe UI', sans-serif";
+    ctx.fillStyle = "#74716c";
+    ctx.font = "11px 'Bahnschrift', sans-serif";
     ctx.fillText(title || "Terminal", 8, 16);
 
     // Cells
@@ -63,8 +63,8 @@ export const TerminalSnapshot = memo(function TerminalSnapshot({
       <div style={{
         width: "100%", height: "100%",
         display: "flex", alignItems: "center", justifyContent: "center",
-        color: "#555", fontSize: 13, fontFamily: "'Segoe UI', sans-serif",
-        background: "#0c0c0c",
+        color: "#74716c", fontSize: 13, fontFamily: "'Bahnschrift', sans-serif",
+        background: "#111211",
       }}>
         <span>{title || "Terminal"}</span>
       </div>

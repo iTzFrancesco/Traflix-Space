@@ -415,12 +415,16 @@ export function Sidebar() {
                     {isRenaming ? (
                       /* Inline rename mode */
                       <div
-                        className="flex items-center gap-3.5 px-5 py-5 rounded-xl"
+                        className="relative flex items-center gap-3.5 px-5 py-5 rounded-xl border"
                         style={{
-                          backgroundColor: "rgba(255,255,255,0.06)",
-                          borderLeft: `4px solid ${color}`,
+                          backgroundColor: "rgba(255,255,255,0.025)",
+                          borderColor: `${color}20`,
                         }}
                       >
+                        <span
+                          className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[2px] rounded-r"
+                          style={{ backgroundColor: color }}
+                        />
                         <div
                           className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
                           style={{ backgroundColor: `${color}18` }}
@@ -475,12 +479,15 @@ export function Sidebar() {
                     ) : isDeleting ? (
                       /* Delete confirmation mode */
                       <div
-                        className="flex items-center gap-3.5 px-5 py-5 rounded-xl"
+                        className="relative flex items-center gap-3.5 px-5 py-5 rounded-xl border"
                         style={{
-                          backgroundColor: "rgba(239,68,68,0.08)",
-                          borderLeft: `4px solid #ef4444`,
+                          backgroundColor: "rgba(239,68,68,0.035)",
+                          borderColor: "rgba(239, 68, 68, 0.2)",
                         }}
                       >
+                        <span
+                          className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[2px] rounded-r bg-red-500"
+                        />
                         {/* Spacer invisibile per matchare l'altezza dell'icona workspace (48px) */}
                         <div className="w-0 h-12 shrink-0" aria-hidden="true" />
                         <span
@@ -545,23 +552,35 @@ export function Sidebar() {
                             setActiveWorkspace(ws.id);
                           }
                         }}
-                        className="surface-card relative flex items-center gap-3 w-full px-3 py-3 rounded-xl transition-all duration-200 group cursor-pointer"
+                        className="surface-card relative flex items-center gap-3 w-full px-3 py-3 rounded-xl transition-all duration-200 group cursor-pointer border"
                         style={{
                           backgroundColor: isActive
-                            ? "rgba(255,255,255,0.06)"
+                            ? "rgba(255,255,255,0.035)"
                             : "transparent",
-                          borderLeft: `4px solid ${isActive ? color : "transparent"}`,
+                          borderColor: isActive
+                            ? `${color}25`
+                            : "var(--color-neutral-border)",
                         }}
                         onMouseEnter={(e) => {
-                          if (!isActive)
+                          if (!isActive) {
                             e.currentTarget.style.backgroundColor =
-                              "rgba(255,255,255,0.03)";
+                              "rgba(255,255,255,0.025)";
+                            e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
+                          }
                         }}
                         onMouseLeave={(e) => {
-                          if (!isActive)
+                          if (!isActive) {
                             e.currentTarget.style.backgroundColor = "transparent";
+                            e.currentTarget.style.borderColor = "var(--color-neutral-border)";
+                          }
                         }}
                       >
+                        {isActive && (
+                          <span
+                            className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[2px] rounded-r transition-all duration-200"
+                            style={{ backgroundColor: color }}
+                          />
+                        )}
                         {/* Colored square icon */}
                         <div
                           className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105"

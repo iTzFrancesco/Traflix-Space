@@ -1,20 +1,28 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #e85d04;
-  --color-primary-light: #ff7b00;
-  --color-neutral-bg: #0a0a0a;
-  --color-neutral-surface: #111113;
-  --color-neutral-elevated: #18181b;
-  --color-neutral-darkest: #050505;
-  --color-neutral-text: #f4f4f5;
-  --color-neutral-text-dim: #d4d4d8;
-  --color-neutral-text-muted: #71717a;
-  --color-neutral-border: rgba(255, 255, 255, 0.06);
-  --color-neutral-border-light: rgba(255, 255, 255, 0.03);
+  /* Warm organic palette from Traflix-Voice */
+  --color-primary: #ff9d24; /* --accent */
+  --color-primary-light: #ffb84d;
+  --color-primary-strong: #ff6b21; /* --accent-strong */
+  --color-signal: #55d89b; /* --signal */
+  --color-danger: #ff626b; /* --danger */
+  
+  --color-neutral-bg: #111211; /* --canvas */
+  --color-neutral-surface: #1a1b19; /* --panel */
+  --color-neutral-elevated: #22231f; /* --panel-raised */
+  --color-neutral-darkest: #0d0e0d;
+  
+  --color-neutral-text: #f5f3ef; /* --ink */
+  --color-neutral-text-dim: #aaa7a1; /* --muted */
+  --color-neutral-text-muted: #74716c; /* --quiet */
+  
+  --color-neutral-border: rgba(255, 255, 255, 0.09); /* --line */
+  --color-neutral-border-light: rgba(255, 255, 255, 0.045);
 
-  --font-display: "Syne", sans-serif;
-  --font-body: "Poppins", sans-serif;
+  /* Unified professional typography from Traflix-Voice */
+  --font-display: "Bahnschrift", "Aptos", "Segoe UI", sans-serif;
+  --font-body: "Bahnschrift", "Aptos", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 
   --radius-pane: 12px;
@@ -39,6 +47,7 @@
 
 body {
   font-family: var(--font-body);
+  font-size: 14px;
   background-color: var(--color-neutral-bg);
   color: var(--color-neutral-text);
   overflow: hidden;
@@ -49,46 +58,92 @@ body {
   height: 100vh;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
+/* Premium scrollbar from Voice */
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
 }
 
-::-webkit-scrollbar-track {
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 99px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+*::-webkit-scrollbar-track {
   background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-/* Cursor mano su tutti gli elementi interattivi */
+/* Cursor pointer for interactive items */
 button:not(:disabled),
 a:not(:disabled),
 [role="button"]:not(:disabled) {
   cursor: pointer;
 }
 
-/* Animated selection glow */
+/* Selection glow */
 ::selection {
-  background: rgba(232, 93, 4, 0.3);
+  background: rgba(255, 157, 36, 0.25);
+  color: var(--color-neutral-text);
 }
 
-/* Focus ring */
+/* Custom focus indicator */
 *:focus-visible {
-  outline: 2px solid rgba(232, 93, 4, 0.5);
-  outline-offset: 2px;
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
 }
 
-/* Shared desktop-control language: calm surfaces, generous targets, clear states. */
+/* Voice App Canvas Background Radial Gradients */
+.app-canvas {
+  background:
+    radial-gradient(500px 320px at 100% 0%, rgba(255, 125, 25, 0.08), transparent 65%),
+    radial-gradient(280px 240px at 18% 100%, rgba(85, 216, 155, 0.035), transparent 75%),
+    var(--color-neutral-bg);
+}
+
+/* Voice Premium Utility Classes */
+.eyebrow {
+  color: var(--color-primary);
+  font-size: 0.67rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.page-title {
+  color: var(--color-neutral-text);
+  font-size: 1.75rem;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  font-weight: 750;
+}
+
+.panel {
+  background: rgba(26, 27, 25, 0.86);
+  border: 1px solid var(--color-neutral-border);
+  border-radius: 18px;
+  backdrop-filter: blur(12px);
+}
+
+.panel-subtle {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--color-neutral-border-light);
+  border-radius: 14px;
+}
+
 .surface-card {
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--color-neutral-border);
   border-radius: var(--radius-surface);
+  transition: background-color 160ms ease, border-color 160ms ease;
 }
 
 .ui-icon-button {
@@ -99,17 +154,50 @@ a:not(:disabled),
   justify-content: center;
   border-radius: var(--radius-control);
   transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+  color: var(--color-neutral-text-dim);
+}
+
+.ui-icon-button:hover {
+  background-color: rgba(255, 255, 255, 0.055);
+  color: var(--color-neutral-text);
 }
 
 .ui-icon-button:active {
   transform: scale(0.96);
 }
 
+/* Animations */
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes statusSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.status-icon--pulse {
+  animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+.status-icon--spin {
+  animation: statusSpin 1s linear infinite;
+}
+
+.tab-slide-in {
+  animation: slideIn 0.28s ease-out;
+}
+
 /* xterm.js overrides */
 .xterm {
   height: 100%;
   width: 100%;
-  padding: 6px 8px;
+  padding: 8px 12px;
 }
 
 .xterm .xterm-screen {
@@ -118,5 +206,5 @@ a:not(:disabled),
 
 .xterm-viewport {
   scrollbar-width: thin;
-  scrollbar-color: #555 transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
