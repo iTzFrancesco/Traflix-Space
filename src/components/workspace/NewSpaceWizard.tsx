@@ -734,11 +734,11 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
         )}
  
         {/* Navigation */}
-        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#1a1b19]/95 px-7 pt-4 pb-1 backdrop-blur">
+        <div className="sticky bottom-0 -mx-7 flex items-center justify-between border-t border-white/[0.06] bg-[#1a1b19]/95 px-7 pt-5 pb-2 backdrop-blur">
           <button
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="flex items-center gap-3 px-6 py-4 text-lg text-neutral-text-muted rounded-2xl hover:bg-white/[0.04] transition-all duration-200 disabled:opacity-20 active:scale-[0.97] cursor-pointer"
+            className="flex items-center gap-3 px-8 py-4 text-lg font-bold text-neutral-text-muted rounded-2xl hover:bg-white/[0.05] hover:text-neutral-text transition-all duration-200 disabled:opacity-20 active:scale-[0.97] cursor-pointer"
           >
             <ChevronLeft size={22} />
             Indietro
@@ -748,7 +748,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={() => setStep((s) => s + 1)}
               disabled={!canProceed()}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97] cursor-pointer"
+              className="flex items-center gap-3 px-11 py-4 text-lg font-extrabold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-30 active:scale-[0.97] hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(255,157,36,0.35)] cursor-pointer"
               style={{
                 background: canProceed()
                   ? "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))"
@@ -763,7 +763,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="flex items-center gap-3 px-8 py-4 text-lg font-bold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97] cursor-pointer"
+              className="flex items-center gap-3 px-11 py-4 text-lg font-extrabold rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] disabled:opacity-40 active:scale-[0.97] hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(255,157,36,0.35)] cursor-pointer"
               style={{
                 background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
                 color: "var(--color-neutral-bg)",

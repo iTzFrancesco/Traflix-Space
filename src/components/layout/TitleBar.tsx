@@ -23,7 +23,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative flex items-center h-12 bg-black/15 border-b select-none backdrop-blur-sm"
+      className="relative flex items-center h-12 bg-[#1a1b19] border-b select-none"
       style={{ borderColor: "var(--color-neutral-border)" }}
     >
       <div
@@ -34,7 +34,7 @@ export function TitleBar() {
         <span className="font-display font-extrabold text-xs text-primary tracking-[0.12em] uppercase whitespace-nowrap">
           Traflix Space
         </span>
-        <span className="text-[10px] font-mono text-white/35 font-bold">
+        <span className="text-[11px] font-sans font-semibold text-[#74716c]/80 tracking-wide select-none">
           v{APP_VERSION}
         </span>
       </div>
