@@ -46,6 +46,7 @@ interface TerminalStore {
    *  UI should check this first, then fall back to derived title. */
   terminalTitles: Record<string, string>;
   draggedTerminalId: string | null;
+  dragHoveredTerminalId: string | null;
 
   addTerminal: (config: {
     id: string;
@@ -71,6 +72,7 @@ interface TerminalStore {
   saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
   setDraggedTerminalId: (id: string | null) => void;
+  setDragHoveredTerminalId: (id: string | null) => void;
 }
 
 /** Best-effort backend PTY kill — never throws into the store. */
@@ -86,8 +88,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   focusedTerminalId: null,
   terminalTitles: {},
   draggedTerminalId: null,
+  dragHoveredTerminalId: null,
 
   setDraggedTerminalId: (id) => set({ draggedTerminalId: id }),
+  setDragHoveredTerminalId: (id) => set({ dragHoveredTerminalId: id }),
 
   addTerminal: (config) =>
     set((state) => {

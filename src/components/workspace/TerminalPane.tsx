@@ -486,8 +486,9 @@ export const TerminalPane = memo(function TerminalPane({
     (s) => s.terminals[terminalId]?.isRunning ?? false,
   );
   const [isAlerting, setIsAlerting] = useState(false);
-  const [isDragOverThis, setIsDragOverThis] = useState(false);
   const draggedTerminalId = useTerminalStore((s) => s.draggedTerminalId);
+  const dragHoveredTerminalId = useTerminalStore((s) => s.dragHoveredTerminalId);
+  const isDragHovered = dragHoveredTerminalId === terminalId;
 
   const [agentCompleted, setAgentCompleted] = useState(false);
   const [agentRunningStarted, setAgentRunningStarted] = useState(false);
@@ -1412,25 +1413,11 @@ export const TerminalPane = memo(function TerminalPane({
       {/* Full-pane drag overlay for reordering */}
       {draggedTerminalId !== null && draggedTerminalId !== terminalId && (
         <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
+          onPointerEnter={() => {
+            useTerminalStore.getState().setDragHoveredTerminalId(terminalId);
           }}
-          onDragEnter={(e) => {
-            e.preventDefault();
-            setIsDragOverThis(true);
-          }}
-          onDragLeave={(e) => {
-            e.preventDefault();
-            setIsDragOverThis(false);
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            setIsDragOverThis(false);
-            if (onReorder) {
-              onReorder(draggedTerminalId, terminalId);
-            }
-            useTerminalStore.getState().setDraggedTerminalId(null);
+          onPointerLeave={() => {
+            useTerminalStore.getState().setDragHoveredTerminalId(null);
           }}
           style={{
             position: "absolute",
@@ -1440,14 +1427,14 @@ export const TerminalPane = memo(function TerminalPane({
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: isDragOverThis ? "rgba(18, 18, 18, 0.9)" : "rgba(18, 18, 18, 0.45)",
-            border: isDragOverThis ? "2px dashed var(--color-primary)" : "2px dashed rgba(255, 255, 255, 0.12)",
+            background: isDragHovered ? "rgba(18, 18, 18, 0.92)" : "rgba(18, 18, 18, 0.45)",
+            border: isDragHovered ? "2px dashed var(--color-primary)" : "2px dashed rgba(255, 255, 255, 0.12)",
             borderRadius: "var(--radius-pane)",
-            backdropFilter: isDragOverThis ? "blur(4px)" : "none",
+            backdropFilter: isDragHovered ? "blur(4px)" : "none",
             transition: "all 0.2s ease-in-out",
           }}
         >
-          {isDragOverThis && (
+          {isDragHovered && (
             <div
               style={{
                 display: "flex",
@@ -1516,16 +1503,47 @@ export const TerminalPane = memo(function TerminalPane({
         {/* Centered larger drag handle button */}
         {!hasExited && terminalCount > 1 && (
           <div
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData("application/x-traflix-terminal-id", terminalId);
-              e.dataTransfer.effectAllowed = "move";
-              useTerminalStore.getState().setDraggedTerminalId(terminalId);
-              e.currentTarget.parentElement?.parentElement?.style.setProperty("opacity", "0.35");
-            }}
-            onDragEnd={(e) => {
-              useTerminalStore.getState().setDraggedTerminalId(null);
-              e.currentTarget.parentElement?.parentElement?.style.removeProperty("opacity");
+            onPointerDown={(e) => {
+              e.preventDefault();
+              
+              // Set the active dragged terminal globally
+              const store = useTerminalStore.getState();
+              store.setDraggedTerminalId(terminalId);
+              
+              // Fade the dragged pane slightly so they know it is being moved
+              const paneEl = e.currentTarget.parentElement?.parentElement;
+              if (paneEl) {
+                paneEl.style.setProperty("opacity", "0.35");
+              }
+              
+              const handlePointerMove = (moveEvent: PointerEvent) => {
+                moveEvent.preventDefault();
+              };
+              
+              const handlePointerUp = (upEvent: PointerEvent) => {
+                upEvent.preventDefault();
+                
+                const latestStore = useTerminalStore.getState();
+                const targetId = latestStore.dragHoveredTerminalId;
+                
+                if (targetId && targetId !== terminalId && onReorder) {
+                  onReorder(terminalId, targetId);
+                }
+                
+                // Reset global states
+                latestStore.setDraggedTerminalId(null);
+                latestStore.setDragHoveredTerminalId(null);
+                
+                if (paneEl) {
+                  paneEl.style.removeProperty("opacity");
+                }
+                
+                window.removeEventListener("pointermove", handlePointerMove);
+                window.removeEventListener("pointerup", handlePointerUp);
+              };
+              
+              window.addEventListener("pointermove", handlePointerMove);
+              window.addEventListener("pointerup", handlePointerUp);
             }}
             title="Trascina la barra al centro per spostare il terminale"
             aria-label="Trascina la barra al centro per spostare il terminale"
