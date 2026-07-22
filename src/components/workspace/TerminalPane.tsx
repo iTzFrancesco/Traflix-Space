@@ -3,7 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Maximize2, Minimize2, X, GripVertical } from "lucide-react";
+import { Maximize2, Minimize2, X, GripHorizontal } from "lucide-react";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import {
   useTerminalStore,
@@ -485,18 +485,29 @@ export const TerminalPane = memo(function TerminalPane({
   const isRunning = useTerminalStore(
     (s) => s.terminals[terminalId]?.isRunning ?? false,
   );
-  const wasRunningRef = useRef(isRunning);
   const [isAlerting, setIsAlerting] = useState(false);
+  const [isDragOverThis, setIsDragOverThis] = useState(false);
+  const draggedTerminalId = useTerminalStore((s) => s.draggedTerminalId);
 
+  const [agentCompleted, setAgentCompleted] = useState(false);
+  const [agentRunningStarted, setAgentRunningStarted] = useState(false);
+
+  // Set agentRunningStarted to true when we detect the agent actually starts running
   useEffect(() => {
-    if (wasRunningRef.current && !isRunning) {
-      if (agentId) {
-        setIsAlerting(true);
-        playCompletionSound();
-      }
+    if (agentId && isRunning && !agentCompleted) {
+      setAgentRunningStarted(true);
     }
-    wasRunningRef.current = isRunning;
-  }, [isRunning, agentId]);
+  }, [isRunning, agentId, agentCompleted]);
+
+  // Trigger alert and chime only when the agent transitions from running to stopped
+  useEffect(() => {
+    if (agentId && agentRunningStarted && !isRunning && !agentCompleted) {
+      setIsAlerting(true);
+      playCompletionSound();
+      setAgentCompleted(true);
+      setAgentRunningStarted(false);
+    }
+  }, [isRunning, agentId, agentRunningStarted, agentCompleted]);
 
   useEffect(() => {
     if (isActive && isAlerting) {
@@ -1245,6 +1256,7 @@ export const TerminalPane = memo(function TerminalPane({
     height: titleBarMetrics.height,
     minHeight: titleBarMetrics.height,
     padding: titleBarMetrics.padding,
+    position: "relative",
   };
 
   const handleStartRename = useCallback(() => {
@@ -1282,6 +1294,8 @@ export const TerminalPane = memo(function TerminalPane({
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;
       xtermRef.current?.reset();
+      setAgentCompleted(false);
+      setAgentRunningStarted(false);
     } catch (err) {
       console.error("Errore reopen terminale:", err);
     }
@@ -1394,6 +1408,78 @@ export const TerminalPane = memo(function TerminalPane({
           animation: terminalAlertPulse 1.5s infinite ease-in-out !important;
         }
       `}</style>
+
+      {/* Full-pane drag overlay for reordering */}
+      {draggedTerminalId !== null && draggedTerminalId !== terminalId && (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+          }}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            setIsDragOverThis(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            setIsDragOverThis(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragOverThis(false);
+            if (onReorder) {
+              onReorder(draggedTerminalId, terminalId);
+            }
+            useTerminalStore.getState().setDraggedTerminalId(null);
+          }}
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 100,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            background: isDragOverThis ? "rgba(18, 18, 18, 0.9)" : "rgba(18, 18, 18, 0.45)",
+            border: isDragOverThis ? "2px dashed var(--color-primary)" : "2px dashed rgba(255, 255, 255, 0.12)",
+            borderRadius: "var(--radius-pane)",
+            backdropFilter: isDragOverThis ? "blur(4px)" : "none",
+            transition: "all 0.2s ease-in-out",
+          }}
+        >
+          {isDragOverThis && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "8px",
+                color: "var(--color-primary)",
+                fontFamily: "var(--font-display)",
+                fontWeight: 700,
+                fontSize: "14px",
+                textShadow: "0 0 10px rgba(232, 93, 4, 0.4)",
+              }}
+            >
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="animate-bounce"
+              >
+                <path d="M12 5v14" />
+                <path d="m19 12-7 7-7-7" />
+              </svg>
+              <span>Rilascia per spostare</span>
+            </div>
+          )}
+        </div>
+      )}
       {/* Title bar: workspace dot + name (left) | branch + buttons (right) */}
       <div style={titleBarStyle}>
         <div style={{ ...TITLE_BAR_LEFT, gap: titleBarMetrics.dotSize }}>
@@ -1425,45 +1511,58 @@ export const TerminalPane = memo(function TerminalPane({
               {displayTitle}
             </span>
           )}
-
-          {!hasExited && terminalCount > 1 && (
-            <div
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData("application/x-traflix-terminal-id", terminalId);
-                e.dataTransfer.effectAllowed = "move";
-                e.currentTarget.style.opacity = "0.4";
-              }}
-              onDragEnd={(e) => {
-                e.currentTarget.style.opacity = "";
-              }}
-              title="Trascina per riordinare i terminali"
-              aria-label="Trascina per riordinare i terminali"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: titleBarMetrics.buttonSize,
-                height: titleBarMetrics.buttonSize,
-                borderRadius: "8px",
-                cursor: "grab",
-                color: "rgba(255,255,255,0.4)",
-                transition: "background 0.15s ease, color 0.15s ease",
-                flexShrink: 0,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                e.currentTarget.style.color = "var(--color-primary)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "";
-                e.currentTarget.style.color = "rgba(255,255,255,0.4)";
-              }}
-            >
-              <GripVertical size={titleBarMetrics.iconSize} />
-            </div>
-          )}
         </div>
+
+        {/* Centered larger drag handle button */}
+        {!hasExited && terminalCount > 1 && (
+          <div
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData("application/x-traflix-terminal-id", terminalId);
+              e.dataTransfer.effectAllowed = "move";
+              useTerminalStore.getState().setDraggedTerminalId(terminalId);
+              e.currentTarget.parentElement?.parentElement?.style.setProperty("opacity", "0.35");
+            }}
+            onDragEnd={(e) => {
+              useTerminalStore.getState().setDraggedTerminalId(null);
+              e.currentTarget.parentElement?.parentElement?.style.removeProperty("opacity");
+            }}
+            title="Trascina la barra al centro per spostare il terminale"
+            aria-label="Trascina la barra al centro per spostare il terminale"
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "48px",
+              height: "24px",
+              borderRadius: "6px",
+              cursor: "grab",
+              color: "rgba(255,255,255,0.35)",
+              backgroundColor: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.06)",
+              transition: "all 0.15s ease",
+              zIndex: 10,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.07)";
+              e.currentTarget.style.borderColor = "var(--color-primary)";
+              e.currentTarget.style.color = "var(--color-primary)";
+              e.currentTarget.style.boxShadow = "0 0 10px rgba(232,93,4,0.2)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.02)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+              e.currentTarget.style.color = "rgba(255,255,255,0.35)";
+              e.currentTarget.style.boxShadow = "none";
+            }}
+          >
+            <GripHorizontal size={18} />
+          </div>
+        )}
 
         <div style={TITLE_BAR_RIGHT}>
           {gitBranch && terminalCount <= 4 && (

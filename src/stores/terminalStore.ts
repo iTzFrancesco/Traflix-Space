@@ -45,6 +45,7 @@ interface TerminalStore {
    *  Key = terminal id, value = custom title.
    *  UI should check this first, then fall back to derived title. */
   terminalTitles: Record<string, string>;
+  draggedTerminalId: string | null;
 
   addTerminal: (config: {
     id: string;
@@ -69,6 +70,7 @@ interface TerminalStore {
   setTerminalRunning: (id: string, isRunning: boolean) => void;
   saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
+  setDraggedTerminalId: (id: string | null) => void;
 }
 
 /** Best-effort backend PTY kill — never throws into the store. */
@@ -83,6 +85,9 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   activeTerminalId: null,
   focusedTerminalId: null,
   terminalTitles: {},
+  draggedTerminalId: null,
+
+  setDraggedTerminalId: (id) => set({ draggedTerminalId: id }),
 
   addTerminal: (config) =>
     set((state) => {
