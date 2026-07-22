@@ -1469,7 +1469,13 @@ export const TerminalPane = memo(function TerminalPane({
       )}
       {/* Title bar: workspace dot + name (left) | branch + buttons (right) */}
       <div style={titleBarStyle}>
-        <div style={{ ...TITLE_BAR_LEFT, gap: titleBarMetrics.dotSize }}>
+        <div
+          style={{
+            ...TITLE_BAR_LEFT,
+            gap: titleBarMetrics.dotSize,
+            maxWidth: terminalCount > 1 ? "calc(50% - 32px)" : undefined,
+          }}
+        >
           <div
             style={{
               ...TITLE_BAR_DOT,
