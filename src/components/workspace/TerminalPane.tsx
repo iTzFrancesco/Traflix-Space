@@ -3,7 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { Maximize2, Minimize2, X, GripVertical } from "lucide-react";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import {
   useTerminalStore,
@@ -79,6 +79,7 @@ interface TerminalPaneProps {
   onActivate: (id: string) => void;
   onClose?: (id: string) => void;
   onToggleFocus?: (id: string) => void;
+  onReorder?: (draggedId: string, targetId: string) => void;
 }
 
 // Layout definitions for each terminal pane. The terminal pane consists of title
@@ -400,6 +401,43 @@ function fitAndResizePty(
   }
 }
 
+function playCompletionSound() {
+  try {
+    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const now = ctx.currentTime;
+    
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(880, now); // A5
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.15, now + 0.05);
+    gain1.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+    
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.4);
+    
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(659.25, now + 0.12); // E5
+    gain2.gain.setValueAtTime(0, now + 0.12);
+    gain2.gain.linearRampToValueAtTime(0.15, now + 0.17);
+    gain2.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+    
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.12);
+    osc2.stop(now + 0.6);
+  } catch (err) {
+    console.warn("Could not play notification sound:", err);
+  }
+}
+
 export const TerminalPane = memo(function TerminalPane({
   terminalId,
   shell,
@@ -414,6 +452,7 @@ export const TerminalPane = memo(function TerminalPane({
   onActivate,
   onClose,
   onToggleFocus,
+  onReorder,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -442,6 +481,28 @@ export const TerminalPane = memo(function TerminalPane({
     (s) => s.terminals[terminalId]?.exitCode ?? null,
   );
   const hasExited = exitCode !== null;
+
+  const isRunning = useTerminalStore(
+    (s) => s.terminals[terminalId]?.isRunning ?? false,
+  );
+  const wasRunningRef = useRef(isRunning);
+  const [isAlerting, setIsAlerting] = useState(false);
+
+  useEffect(() => {
+    if (wasRunningRef.current && !isRunning) {
+      if (agentId) {
+        setIsAlerting(true);
+        playCompletionSound();
+      }
+    }
+    wasRunningRef.current = isRunning;
+  }, [isRunning, agentId]);
+
+  useEffect(() => {
+    if (isActive && isAlerting) {
+      setIsAlerting(false);
+    }
+  }, [isActive, isAlerting]);
 
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -1228,7 +1289,11 @@ export const TerminalPane = memo(function TerminalPane({
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    if (e.dataTransfer.types.includes("application/x-traflix-terminal-id")) {
+      e.dataTransfer.dropEffect = "move";
+    } else {
+      e.dataTransfer.dropEffect = "copy";
+    }
   }, []);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -1249,6 +1314,14 @@ export const TerminalPane = memo(function TerminalPane({
       setIsDragOver(false);
       dragCounterRef.current = 0;
       try {
+        const draggedTerminalId = e.dataTransfer.getData("application/x-traflix-terminal-id");
+        if (draggedTerminalId) {
+          if (draggedTerminalId !== terminalId && onReorder) {
+            onReorder(draggedTerminalId, terminalId);
+          }
+          return;
+        }
+
         const raw = e.dataTransfer.getData("application/json");
         if (raw) {
           const data = JSON.parse(raw);
@@ -1273,7 +1346,7 @@ export const TerminalPane = memo(function TerminalPane({
         // ignore
       }
     },
-    [terminalId],
+    [terminalId, onReorder],
   );
 
   const outerStyle = hasExited
@@ -1294,6 +1367,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   return (
     <div
+      className={isAlerting ? "terminal-alert-pulse" : undefined}
       style={{ ...outerStyle, ...dragOverlayStyle }}
       tabIndex={-1}
       onDragOver={handleDragOver}
@@ -1301,6 +1375,25 @@ export const TerminalPane = memo(function TerminalPane({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <style>{`
+        @keyframes terminalAlertPulse {
+          0% {
+            border-color: var(--color-primary) !important;
+            box-shadow: 0 0 12px rgba(232, 93, 4, 0.45), inset 0 0 6px rgba(232, 93, 4, 0.2) !important;
+          }
+          50% {
+            border-color: var(--color-neutral-border) !important;
+            box-shadow: 0 0 0px transparent, inset 0 0 0px transparent !important;
+          }
+          100% {
+            border-color: var(--color-primary) !important;
+            box-shadow: 0 0 12px rgba(232, 93, 4, 0.45), inset 0 0 6px rgba(232, 93, 4, 0.2) !important;
+          }
+        }
+        .terminal-alert-pulse {
+          animation: terminalAlertPulse 1.5s infinite ease-in-out !important;
+        }
+      `}</style>
       {/* Title bar: workspace dot + name (left) | branch + buttons (right) */}
       <div style={titleBarStyle}>
         <div style={{ ...TITLE_BAR_LEFT, gap: titleBarMetrics.dotSize }}>
@@ -1331,6 +1424,44 @@ export const TerminalPane = memo(function TerminalPane({
             >
               {displayTitle}
             </span>
+          )}
+
+          {!hasExited && terminalCount > 1 && (
+            <div
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData("application/x-traflix-terminal-id", terminalId);
+                e.dataTransfer.effectAllowed = "move";
+                e.currentTarget.style.opacity = "0.4";
+              }}
+              onDragEnd={(e) => {
+                e.currentTarget.style.opacity = "";
+              }}
+              title="Trascina per riordinare i terminali"
+              aria-label="Trascina per riordinare i terminali"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: titleBarMetrics.buttonSize,
+                height: titleBarMetrics.buttonSize,
+                borderRadius: "8px",
+                cursor: "grab",
+                color: "rgba(255,255,255,0.4)",
+                transition: "background 0.15s ease, color 0.15s ease",
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                e.currentTarget.style.color = "var(--color-primary)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "";
+                e.currentTarget.style.color = "rgba(255,255,255,0.4)";
+              }}
+            >
+              <GripVertical size={titleBarMetrics.iconSize} />
+            </div>
           )}
         </div>
 

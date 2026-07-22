@@ -10,6 +10,7 @@ interface WorkspaceGridProps {
   closeRequest?: { terminalId: string; token: number } | null;
   onActivate: (id: string) => void;
   onCloseTerminal?: (id: string) => void;
+  onReorderTerminals?: (draggedId: string, targetId: string) => void;
 }
 
 export function WorkspaceGrid({
@@ -19,6 +20,7 @@ export function WorkspaceGrid({
   closeRequest,
   onActivate,
   onCloseTerminal,
+  onReorderTerminals,
 }: WorkspaceGridProps) {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const focusedTerminalId = useTerminalStore((s) => s.focusedTerminalId);
@@ -165,6 +167,7 @@ export function WorkspaceGrid({
               onActivate={stableOnActivate}
               onClose={onCloseTerminal}
               onToggleFocus={stableOnToggleFocus}
+              onReorder={onReorderTerminals}
             />
           </div>
         );

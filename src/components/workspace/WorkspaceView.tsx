@@ -250,6 +250,70 @@ export function WorkspaceView() {
     useTerminalStore.getState().setActiveTerminal(id);
   }, []);
 
+  const handleReorderTerminals = useCallback(
+    (draggedId: string, targetId: string) => {
+      const workspaceId = activeWorkspaceId;
+      if (!workspaceId) return;
+
+      if (draggedId === targetId) return;
+
+      closeQueueRef.current = closeQueueRef.current
+        .then(async () => {
+          if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return;
+
+          const currentWs = loadedMapRef.current.get(workspaceId);
+          if (!currentWs) return;
+
+          const currentTerminals = workspaceTerminalsRef.current;
+          const draggedIndex = currentTerminals.findIndex((t) => t.id === draggedId);
+          const targetIndex = currentTerminals.findIndex((t) => t.id === targetId);
+
+          if (draggedIndex === -1 || targetIndex === -1) return;
+
+          const newTerminals = [...currentTerminals];
+          const [dragged] = newTerminals.splice(draggedIndex, 1);
+          newTerminals.splice(targetIndex, 0, dragged);
+
+          workspaceTerminalsRef.current = newTerminals;
+
+          const updatedConfig = {
+            id: workspaceId,
+            name: currentWs.name,
+            rootPath: currentWs.rootPath,
+            layout: currentWs.layout,
+            terminals: newTerminals,
+            createdAt: currentWs.createdAt,
+            updatedAt: new Date().toISOString(),
+          };
+
+          try {
+            await invokeWithTimeout(
+              () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
+              10000,
+            );
+          } catch (err) {
+            console.error("Errore aggiornamento workspace dopo riordino:", err);
+          }
+
+          setLoadedMap((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(workspaceId);
+            if (existing) {
+              next.set(workspaceId, {
+                ...existing,
+                terminals: newTerminals,
+              });
+            }
+            return new Map(next);
+          });
+        })
+        .catch((err) => {
+          console.error("Reorder queue error:", err);
+        });
+    },
+    [activeWorkspaceId],
+  );
+
   // La shortcut deve mostrare la conferma dentro al pane attivo, non chiudere
   // direttamente il terminale saltando il flusso visuale del TerminalPane.
   const closeRequestTokenRef = useRef(0);
@@ -551,6 +615,7 @@ export function WorkspaceView() {
               closeRequest={closeRequest}
               onActivate={handleActivateTerminal}
               onCloseTerminal={handleCloseTerminal}
+              onReorderTerminals={handleReorderTerminals}
             />
           </div>
         </div>
