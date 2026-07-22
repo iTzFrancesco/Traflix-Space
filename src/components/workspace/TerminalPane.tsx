@@ -1417,7 +1417,10 @@ export const TerminalPane = memo(function TerminalPane({
             useTerminalStore.getState().setDragHoveredTerminalId(terminalId);
           }}
           onPointerLeave={() => {
-            useTerminalStore.getState().setDragHoveredTerminalId(null);
+            const state = useTerminalStore.getState();
+            if (state.dragHoveredTerminalId === terminalId) {
+              state.setDragHoveredTerminalId(null);
+            }
           }}
           style={{
             position: "absolute",
