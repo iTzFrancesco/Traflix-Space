@@ -172,6 +172,34 @@ a:not(:disabled),
   50% { opacity: 0.45; }
 }
 
+@keyframes agentAttentionPulse {
+  0%, 100% {
+    outline: 1px solid rgba(255, 157, 36, 0.35);
+    outline-offset: 0;
+  }
+  50% {
+    outline: 3px solid rgba(255, 157, 36, 0.9);
+    outline-offset: 3px;
+  }
+}
+
+.agent-attention-pulse {
+  border-color: var(--color-primary) !important;
+  animation: agentAttentionPulse 1.25s ease-in-out infinite;
+  z-index: 3;
+}
+
+.agent-attention-badge {
+  animation: statusPulse 1.25s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-attention-pulse,
+  .agent-attention-badge {
+    animation: none;
+  }
+}
+
 @keyframes statusSpin {
   to { transform: rotate(360deg); }
 }

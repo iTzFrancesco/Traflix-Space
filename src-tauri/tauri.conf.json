@@ -37,6 +37,9 @@
       "../icons/128x128@2x.png",
       "../icons/icon.ico"
     ],
+    "resources": {
+      "../scripts/agent-notifications/*": "agent-notifications/"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"

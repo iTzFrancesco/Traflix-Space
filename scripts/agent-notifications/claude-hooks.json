@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Path\\To\\traflix-agent-event.ps1\" -Provider claude -Kind turn_completed"
+          }
+        ]
+      }
+    ]
+  }
+}

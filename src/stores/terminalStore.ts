@@ -3,6 +3,9 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { shallow } from "zustand/shallow";
 import { invoke } from "@tauri-apps/api/core";
 import { useSkillStore } from "./skillStore";
+import type { AgentTurnCompleted } from "../components/terminal/types";
+
+export type AgentStatus = "idle" | "working" | "completed";
 
 export interface TerminalState {
   id: string;
@@ -15,6 +18,9 @@ export interface TerminalState {
   spawned: boolean;
   exitCode: number | null;
   agentLaunched: boolean;
+  agentStatus: AgentStatus;
+  agentAttentionRequired: boolean;
+  lastAgentCompletion: AgentTurnCompleted | null;
   /** Last viewport intent, retained while a workspace unmounts its xterm panes. */
   scrollPosition: TerminalScrollPosition;
 }
@@ -66,6 +72,13 @@ interface TerminalStore {
   markSpawned: (id: string) => void;
   markExited: (id: string, exitCode: number) => void;
   markAgentLaunched: (id: string) => void;
+  markAgentInput: (id: string) => void;
+  markAgentTurnCompleted: (
+    id: string,
+    event: AgentTurnCompleted,
+    attentionRequired: boolean,
+  ) => void;
+  clearAgentAttention: (id: string) => void;
   saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
   setDraggedTerminalId: (id: string | null) => void;
@@ -107,6 +120,9 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             spawned: false,
             exitCode: null,
             agentLaunched: false,
+            agentStatus: "idle",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
             scrollPosition: { followsOutput: true, offsetFromBottom: 0 },
           },
         },
@@ -220,7 +236,12 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       return {
         terminals: {
           ...state.terminals,
-          [id]: { ...t, spawned: true, exitCode: null },
+          [id]: {
+            ...t,
+            spawned: true,
+            exitCode: null,
+            agentAttentionRequired: false,
+          },
         },
       };
     }),
@@ -232,7 +253,14 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       return {
         terminals: {
           ...state.terminals,
-          [id]: { ...t, exitCode, spawned: false },
+          [id]: {
+            ...t,
+            exitCode,
+            spawned: false,
+            agentStatus: "idle",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
+          },
         },
         focusedTerminalId:
           state.focusedTerminalId === id ? null : state.focusedTerminalId,
@@ -244,7 +272,68 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const t = state.terminals[id];
       if (!t || t.agentLaunched) return state;
       return {
-        terminals: { ...state.terminals, [id]: { ...t, agentLaunched: true } },
+        terminals: {
+          ...state.terminals,
+          [id]: {
+            ...t,
+            agentLaunched: true,
+            agentStatus: "working",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
+          },
+        },
+      };
+    }),
+
+  markAgentInput: (id) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t || !t.agentLaunched) return state;
+      if (t.agentStatus === "working" && t.lastAgentCompletion === null) {
+        return state;
+      }
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: {
+            ...t,
+            agentStatus: "working",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
+          },
+        },
+      };
+    }),
+
+  markAgentTurnCompleted: (id, event, attentionRequired) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t) return state;
+      if (t.lastAgentCompletion?.eventId && t.lastAgentCompletion.eventId === event.eventId) {
+        return state;
+      }
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: {
+            ...t,
+            agentStatus: "completed",
+            agentAttentionRequired: attentionRequired,
+            lastAgentCompletion: event,
+          },
+        },
+      };
+    }),
+
+  clearAgentAttention: (id) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (!t || !t.agentAttentionRequired) return state;
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: { ...t, agentAttentionRequired: false },
+        },
       };
     }),
 

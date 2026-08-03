@@ -122,6 +122,10 @@ impl TerminalManager {
         Ok(())
     }
 
+    pub fn has_session(&self, id: &str) -> bool {
+        self.sessions.contains_key(id)
+    }
+
     pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
         let session = self
             .sessions

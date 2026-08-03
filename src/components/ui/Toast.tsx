@@ -37,6 +37,18 @@ export function ToastContainer() {
             >
               <Icon size={18} className="shrink-0 mt-0.5" />
               <p className="flex-1 text-sm text-neutral-text leading-relaxed">{toast.message}</p>
+              {toast.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    toast.action?.onClick();
+                    removeToast(toast.id);
+                  }}
+                  className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-primary hover:bg-white/10"
+                >
+                  {toast.action.label}
+                </button>
+              )}
               <button
                 onClick={() => removeToast(toast.id)}
                 className="ui-icon-button h-9 w-9 shrink-0 text-neutral-text-muted hover:text-neutral-text"

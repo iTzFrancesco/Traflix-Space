@@ -48,3 +48,16 @@ export interface TerminalExited {
   terminalId: string;
   exitCode: number;
 }
+
+export interface AgentTurnCompleted {
+  protocol: number;
+  provider: string;
+  kind: "turn_completed";
+  terminalId: string;
+  eventId?: string | null;
+  workspaceId?: string | null;
+  providerSessionId?: string | null;
+  providerTurnId?: string | null;
+  cwd?: string | null;
+  occurredAt?: string | null;
+}

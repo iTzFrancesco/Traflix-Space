@@ -7,13 +7,19 @@
  * one xterm write per frame.
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { TerminalExited, TerminalOutput } from "../components/terminal/types";
+import type {
+  AgentTurnCompleted,
+  TerminalExited,
+  TerminalOutput,
+} from "../components/terminal/types";
 
 type OutputHandler = (payload: TerminalOutput) => void;
 type ExitHandler = (payload: TerminalExited) => void;
+type AgentCompletionHandler = (payload: AgentTurnCompleted) => void;
 
 const outputHandlers = new Map<string, Set<OutputHandler>>();
 const exitHandlers = new Map<string, Set<ExitHandler>>();
+const agentCompletionHandlers = new Set<AgentCompletionHandler>();
 
 /** Pending raw chunks waiting for the next animation frame flush. */
 const pendingChunks = new Map<string, Uint8Array[]>();
@@ -23,6 +29,8 @@ let outputUnlisten: UnlistenFn | null = null;
 let exitUnlisten: UnlistenFn | null = null;
 let outputSetup: Promise<void> | null = null;
 let exitSetup: Promise<void> | null = null;
+let agentCompletionUnlisten: UnlistenFn | null = null;
+let agentCompletionSetup: Promise<void> | null = null;
 
 function mergeChunks(chunks: Uint8Array[]): number[] {
   let total = 0;
@@ -143,6 +151,37 @@ async function ensureExitListener() {
   await exitSetup;
 }
 
+async function ensureAgentCompletionListener() {
+  if (agentCompletionUnlisten) return;
+  if (agentCompletionSetup) {
+    await agentCompletionSetup;
+    return;
+  }
+
+  agentCompletionSetup = listen<AgentTurnCompleted>(
+    "agent-turn-completed",
+    (event) => {
+      for (const handler of agentCompletionHandlers) {
+        try {
+          handler(event.payload);
+        } catch (err) {
+          console.error("agent-turn-completed handler error:", err);
+        }
+      }
+    },
+  )
+    .then((unlisten) => {
+      agentCompletionUnlisten = unlisten;
+    })
+    .catch((err) => {
+      console.error("Failed to subscribe agent-turn-completed:", err);
+    })
+    .finally(() => {
+      agentCompletionSetup = null;
+    });
+  await agentCompletionSetup;
+}
+
 /** Subscribe to batched output for a single terminal. Returns unsubscribe fn. */
 export function subscribeTerminalOutput(
   terminalId: string,
@@ -190,5 +229,17 @@ export function subscribeTerminalExit(
     if (current.size === 0) {
       exitHandlers.delete(terminalId);
     }
+  };
+}
+
+/** Subscribe to normalized completion events from agent hooks/plugins. */
+export function subscribeAgentTurnCompleted(
+  handler: AgentCompletionHandler,
+): () => void {
+  agentCompletionHandlers.add(handler);
+  void ensureAgentCompletionListener();
+
+  return () => {
+    agentCompletionHandlers.delete(handler);
   };
 }

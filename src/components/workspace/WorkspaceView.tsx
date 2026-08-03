@@ -256,6 +256,7 @@ export function WorkspaceView() {
   }, [activeWorkspaceId]);
 
   const handleActivateTerminal = useCallback((id: string) => {
+    useTerminalStore.getState().clearAgentAttention(id);
     useTerminalStore.getState().setActiveTerminal(id);
   }, []);
 

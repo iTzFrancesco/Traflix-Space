@@ -6,6 +6,7 @@ import { writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { downloadDir } from "@tauri-apps/api/path";
 import { Terminal } from "xterm";
 import { invokeWithTimeout } from "../../lib/timeout";
+import { useTerminalStore } from "../../stores/terminalStore";
 
 // ────────────────────────────────────────────────────────────
 // Module-level: mappa container → terminalId per drag&drop
@@ -58,6 +59,7 @@ async function writePathsToTerminal(paths: string[], x: number, y: number) {
   const tid = findTerminalIdAtPoint(x, y);
   if (!tid) return;
   const text = formatPathsForTerminal(paths);
+  useTerminalStore.getState().markAgentInput(tid);
   await invokeWithTimeout(
     () => invoke("terminal_write", {
       terminalId: tid,
@@ -266,6 +268,7 @@ export function useTerminalInput(
       //    bash readline, vim, nano, ecc.) trattano il paste come blocco
       //    unico invece di eseguire ogni riga come comando separato.
       if (pastedText) {
+        useTerminalStore.getState().markAgentInput(tid);
         const normalized = pastedText
           .replace(/\r\n/g, "\n")
           .replace(/\r/g, "\n");
@@ -307,6 +310,7 @@ export function useTerminalInput(
       if (tauriDragFilePaths && tauriDragFilePaths.length > 0) {
         const text = formatPathsForTerminal(tauriDragFilePaths);
         tauriDragFilePaths = null; // consumato
+        useTerminalStore.getState().markAgentInput(tid);
         await invoke("terminal_write", {
           terminalId: tid,
           data: Array.from(new TextEncoder().encode(text)),
@@ -318,6 +322,7 @@ export function useTerminalInput(
       const paths = extractFilePathsFromDOM(e);
       if (paths && paths.length > 0) {
         const text = formatPathsForTerminal(paths);
+        useTerminalStore.getState().markAgentInput(tid);
         await invoke("terminal_write", {
           terminalId: tid,
           data: Array.from(new TextEncoder().encode(text)),

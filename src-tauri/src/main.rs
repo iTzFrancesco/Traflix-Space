@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod agent_events;
 mod settings;
 mod skills;
 mod terminal_engine;
@@ -57,6 +58,12 @@ fn main() {
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
+            app.manage(agent_events::AgentEventRegistry::default());
+
+            // Agent hooks/plugins forward normalized turn-complete events to
+            // this local Windows named pipe. The listener is best-effort and
+            // never participates in the agent's execution path.
+            agent_events::start_listener(app.handle().clone());
 
             // Avvia skills watcher
             skills::watcher::start_skills_watcher(app.handle().clone());

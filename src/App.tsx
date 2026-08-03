@@ -4,6 +4,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TitleBar } from "./components/layout/TitleBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
+import { AgentCompletionListener } from "./components/agent/AgentCompletionListener";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
@@ -34,6 +35,7 @@ function App() {
               <WorkspaceView />
             </ErrorBoundary>
           </main>
+          <AgentCompletionListener />
         </div>
       </div>
       <ToastContainer />

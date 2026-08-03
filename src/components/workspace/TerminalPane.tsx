@@ -3,7 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Maximize2, Minimize2, X, GripHorizontal } from "lucide-react";
+import { CheckCircle2, Maximize2, Minimize2, X, GripHorizontal } from "lucide-react";
 import { useTerminalInput } from "../terminal/useTerminalInput";
 import {
   useTerminalStore,
@@ -562,6 +562,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (!tid) return;
       const termState = useTerminalStore.getState().terminals[tid];
       if (termState && termState.exitCode !== null) return;
+      useTerminalStore.getState().markAgentInput(tid);
       const write = invoke("terminal_write", {
         terminalId: tid,
         data: encodeForPty(data),
@@ -1065,6 +1066,7 @@ export const TerminalPane = memo(function TerminalPane({
     const el = containerRef.current?.parentElement;
     if (!el) return;
     const handleMouseDown = () => {
+      useTerminalStore.getState().clearAgentAttention(terminalId);
       if (!isActiveRef.current) {
         onActivate(terminalId);
       }
@@ -1105,6 +1107,12 @@ export const TerminalPane = memo(function TerminalPane({
   const customTitle = useTerminalStore((s) => s.terminalTitles[terminalId]);
   const terminalWorkspaceId = useTerminalStore(
     (s) => s.terminals[terminalId]?.workspaceId,
+  );
+  const agentStatus = useTerminalStore(
+    (s) => s.terminals[terminalId]?.agentStatus ?? "idle",
+  );
+  const agentAttentionRequired = useTerminalStore(
+    (s) => s.terminals[terminalId]?.agentAttentionRequired ?? false,
   );
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const workspaceIndex = workspaces.findIndex(
@@ -1207,6 +1215,7 @@ export const TerminalPane = memo(function TerminalPane({
         if (raw) {
           const data = JSON.parse(raw);
           if (data.type === "skill" && data.name) {
+            useTerminalStore.getState().markAgentInput(terminalId);
             useSkillStore.getState().addPendingDrop(terminalId, data.name);
             return;
           }
@@ -1218,6 +1227,7 @@ export const TerminalPane = memo(function TerminalPane({
             (s) => s.name.toLowerCase() === text.trim().toLowerCase(),
           );
           if (matchedSkill) {
+            useTerminalStore.getState().markAgentInput(terminalId);
             useSkillStore
               .getState()
               .addPendingDrop(terminalId, matchedSkill.name);
@@ -1245,11 +1255,20 @@ export const TerminalPane = memo(function TerminalPane({
           "inset 0 0 0 1px var(--color-primary), 0 0 16px rgba(232,93,4,0.15)",
       }
     : {};
+  const attentionClass =
+    agentAttentionRequired && !hasExited ? "agent-attention-pulse" : undefined;
 
   return (
     <div
       data-terminal-pane-id={terminalId}
-      style={{ ...outerStyle, ...dragOverlayStyle }}
+      className={attentionClass}
+      style={{
+        ...outerStyle,
+        ...(agentAttentionRequired && !hasExited
+          ? { borderColor: "var(--color-primary)" }
+          : {}),
+        ...dragOverlayStyle,
+      }}
       tabIndex={-1}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
@@ -1465,6 +1484,20 @@ export const TerminalPane = memo(function TerminalPane({
         )}
 
         <div style={TITLE_BAR_RIGHT}>
+          {agentStatus === "completed" && (
+            <span
+              title="L'agente ha completato l'ultimo turno"
+              aria-label="Turno agente completato"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                color: "var(--color-signal)",
+                marginRight: "4px",
+              }}
+            >
+              <CheckCircle2 size={titleBarMetrics.iconSize} />
+            </span>
+          )}
           {gitBranch && terminalCount <= 4 && (
             <span
               style={{ ...TITLE_BAR_BRANCH, fontSize: titleBarMetrics.fontSize }}

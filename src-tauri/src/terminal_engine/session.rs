@@ -1,10 +1,12 @@
+use crate::agent_events::{AGENT_EVENT_PIPE_NAME, AGENT_EVENT_PROTOCOL};
 use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
 
 pub struct TerminalSession {
@@ -84,6 +86,15 @@ impl TerminalSession {
         let mut cmd = CommandBuilder::new(&self.shell);
         cmd.cwd(self.cwd.lock().unwrap().as_str());
         cmd.env("TERM", "xterm-256color");
+        cmd.env("TRAFLIX_TERMINAL_ID", &self.id);
+        cmd.env("TRAFLIX_AGENT_EVENT_PIPE", AGENT_EVENT_PIPE_NAME);
+        cmd.env(
+            "TRAFLIX_AGENT_EVENT_PROTOCOL",
+            AGENT_EVENT_PROTOCOL.to_string(),
+        );
+        if let Some(bridge_path) = resolve_agent_bridge_path(&app) {
+            cmd.env("TRAFLIX_AGENT_EVENT_BRIDGE", bridge_path);
+        }
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
             error!("Failed to spawn shell: {}", e);
@@ -542,4 +553,22 @@ impl TerminalSession {
 
         info!(terminal_id = %self.id, "Terminal session cleaned up");
     }
+}
+
+fn resolve_agent_bridge_path(app: &AppHandle) -> Option<PathBuf> {
+    let configured = std::env::var_os("TRAFLIX_AGENT_EVENT_BRIDGE").map(PathBuf::from);
+    let resource = app.path().resource_dir().ok().map(|path| {
+        path.join("agent-notifications")
+            .join("traflix-agent-event.ps1")
+    });
+    let development = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("scripts")
+        .join("agent-notifications")
+        .join("traflix-agent-event.ps1");
+
+    [configured, resource, Some(development)]
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
 }

@@ -1,0 +1,12 @@
+# Merge this into the user-level %CODEX_HOME%/config.toml.
+# Codex appends its JSON event as the final argument.
+notify = [
+  "powershell.exe",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "C:\\Path\\To\\traflix-agent-event.ps1",
+  "-Provider",
+  "codex"
+]

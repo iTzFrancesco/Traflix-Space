@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   Plus,
   Pencil,
@@ -7,6 +7,7 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
+  Bell,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
@@ -25,6 +26,7 @@ export function Sidebar() {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
+  const terminals = useTerminalStore((s) => s.terminals);
   const isCollapsed = useUIStore((s) => s.isCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const activeModal = useUIStore((s) => s.activeModal);
@@ -46,6 +48,15 @@ export function Sidebar() {
   const dragStartWidth = useRef(0);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
+  const pendingByWorkspace = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const terminal of Object.values(terminals)) {
+      if (terminal.agentAttentionRequired) {
+        counts[terminal.workspaceId] = (counts[terminal.workspaceId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [terminals]);
 
   // Apri il wizard quando il keyboard shortcut (Ctrl+N) imposta activeModal
   useEffect(() => {
@@ -246,6 +257,7 @@ export function Sidebar() {
             {workspaces.map((ws, index) => {
               const color = getWorkspaceColor(index);
               const isActive = activeWorkspaceId === ws.id;
+              const pendingCount = pendingByWorkspace[ws.id] ?? 0;
 
               return (
                 <motion.button
@@ -278,6 +290,19 @@ export function Sidebar() {
                         : `0 0 0 0px var(--color-neutral-surface), 0 0 0 0px ${color}`,
                     }}
                   />
+                  {pendingCount > 0 && (
+                    <span
+                      className="agent-attention-badge absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border text-[10px] font-bold"
+                      aria-label={`${pendingCount} terminal${pendingCount === 1 ? "e" : "i"} in attesa`}
+                      style={{
+                        backgroundColor: "var(--color-primary)",
+                        borderColor: "var(--color-neutral-surface)",
+                        color: "var(--color-neutral-bg)",
+                      }}
+                    >
+                      {pendingCount}
+                    </span>
+                  )}
                 </motion.button>
               );
             })}
@@ -396,6 +421,7 @@ export function Sidebar() {
                 const color = getWorkspaceColor(index);
                 const isActive = activeWorkspaceId === ws.id;
                 const terminalCount = ws.terminalCount;
+                const pendingCount = pendingByWorkspace[ws.id] ?? 0;
                 const isRenaming = renamingId === ws.id;
                 const isDeleting = confirmDeleteId === ws.id;
 
@@ -617,6 +643,19 @@ export function Sidebar() {
                               }}
                             >
                               {terminalCount}
+                            </span>
+                          )}
+                          {pendingCount > 0 && (
+                            <span
+                              className="agent-attention-badge inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-mono font-bold shrink-0"
+                              title={`${pendingCount} terminal${pendingCount === 1 ? "e" : "i"} in attesa`}
+                              style={{
+                                backgroundColor: "rgba(255,157,36,0.16)",
+                                color: "var(--color-primary-light)",
+                              }}
+                            >
+                              <Bell size={12} aria-hidden="true" />
+                              {pendingCount}
                             </span>
                           )}
                         </div>
