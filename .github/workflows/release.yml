@@ -14,6 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: D:/rust/target
 
 jobs:
   check-rust:
@@ -33,7 +34,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
+            D:/rust/target
           key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-release-
       - uses: actions/setup-node@v4
@@ -55,13 +56,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Verify release version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = [regex]::Match(
+            (Get-Content src-tauri/Cargo.toml -Raw),
+            '(?m)^version\s*=\s*"([^"]+)"'
+          ).Groups[1].Value
+
+          $versions = @($packageVersion, $tauriVersion, $cargoVersion)
+          if ($versions | Where-Object { $_ -ne $tagVersion }) {
+            throw "Release tag v$tagVersion does not match project versions: package=$packageVersion, tauri=$tauriVersion, cargo=$cargoVersion"
+          }
+          Write-Host "Release version verified: v$tagVersion"
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
+            D:/rust/target
           key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-release-
       - uses: actions/setup-node@v4
@@ -72,6 +91,6 @@ jobs:
       - run: npm run tauri build
       - uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/release/bundle/msi/*.msi
+          files: D:/rust/target/release/bundle/msi/*.msi
           generate_release_notes: true
           fail_on_unmatched_files: true
