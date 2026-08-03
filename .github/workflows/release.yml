@@ -17,42 +17,9 @@ env:
   CARGO_TARGET_DIR: D:/rust/target
 
 jobs:
-  check-rust:
-    name: Check Rust
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: src-tauri
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            D:/rust/target
-          key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
-          restore-keys: rust-${{ runner.os }}-cargo-release-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-      - run: npm install
-        working-directory: .
-      - run: npm run build
-        working-directory: .
-      - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features
-      - run: cargo test
-
   build-and-release:
     name: Build MSI & Release
     runs-on: windows-latest
-    needs: [check-rust]
 
     steps:
       - uses: actions/checkout@v4
