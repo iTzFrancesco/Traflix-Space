@@ -2,6 +2,7 @@
 
 mod agent;
 mod agent_events;
+mod project;
 mod settings;
 mod skills;
 mod terminal_engine;
@@ -58,6 +59,7 @@ fn main() {
             app.manage(agent::AgentRegistry::new());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
+            app.manage(project::watcher::ProjectWatcherRegistry::default());
             app.manage(agent_events::AgentEventRegistry::default());
 
             // Agent hooks/plugins forward normalized turn-complete events to
@@ -157,6 +159,18 @@ fn main() {
             workspace::commands::select_folder,
             workspace::commands::navigate_folder,
             workspace::commands::get_default_workspace_path,
+            project::commands::project_list_directory,
+            project::commands::project_git_status,
+            project::commands::project_git_diff,
+            project::commands::project_git_stage,
+            project::commands::project_git_unstage,
+            project::commands::project_git_discard,
+            project::commands::project_git_commit,
+            project::commands::project_git_sync,
+            project::commands::project_open_file,
+            project::commands::project_read_file,
+            project::commands::project_watch_workspace,
+            project::commands::project_unwatch_workspace,
             skills::commands::list_skills,
             agent::commands::list_agents,
             settings::commands::get_settings,

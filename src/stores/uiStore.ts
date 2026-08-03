@@ -39,7 +39,7 @@ export const useUIStore = create<UIStore>()(
 
       /* Right panel */
       rightPanelOpen: false,
-      rightPanelWidth: 360,
+      rightPanelWidth: 420,
       rightPanelActiveView: null,
 
       toggleSidebar: () =>

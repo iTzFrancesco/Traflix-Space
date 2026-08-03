@@ -1,4 +1,6 @@
+pub mod agent_events;
 pub mod agent;
+pub mod project;
 pub mod settings;
 pub mod skills;
 pub mod terminal_engine;
