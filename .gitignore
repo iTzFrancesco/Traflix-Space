@@ -8,11 +8,13 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+.wayfinder
 
 # OS
 .DS_Store
@@ -24,5 +26,11 @@ Thumbs.db
 
 # Runtime
 .traflix/
+
+# Downloaded agent repositories
+codex/
+opencode/
+pi/
+warp/
 
 src-tauri/icons/
