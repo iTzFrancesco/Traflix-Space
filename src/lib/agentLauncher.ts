@@ -24,7 +24,6 @@ class AgentLaunchQueue {
       if (agent) {
         const cmd = `${agent.command} ${agent.args.join(" ")}\r\n`;
         const encoder = new TextEncoder();
-        useTerminalStore.getState().setTerminalRunning(terminalId, true);
         await invoke("terminal_write", {
           terminalId,
           data: Array.from(encoder.encode(cmd)),

@@ -238,10 +238,11 @@ impl TerminalManager {
         Ok(())
     }
 
-    /// Scrollback + visible screen as plain text for rehydrating xterm after
-    /// workspace switch (PTY keep-alive). Capped at ~1000 history lines.
+    /// Visible screen as plain text for rehydrating xterm after a workspace
+    /// switch (PTY keep-alive). Scrollback history is intentionally excluded
+    /// so a cleared terminal does not repopulate old output on remount.
     ///
-    /// Needs a mutable parser lock so we can walk the vt100 scrollback viewport.
+    /// Needs a mutable parser lock so we can walk the vt100 viewport.
     pub async fn get_screen_text(&self, id: &str) -> Result<String, String> {
         let session = self
             .sessions
@@ -252,7 +253,7 @@ impl TerminalManager {
 
         let result = {
             if let Ok(mut p) = session.parser.lock() {
-                p.rehydrate_text()
+                p.screen_text_for_rehydrate()
             } else {
                 String::new()
             }

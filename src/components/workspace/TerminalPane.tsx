@@ -197,25 +197,6 @@ function powerShellPrompt(term: Terminal) {
   return findCurrentPowerShellPrompt(lines);
 }
 
-function hasReturnedShellPrompt(term: Terminal, shell: string): boolean {
-  if (isPowerShell(shell)) return powerShellPrompt(term) !== null;
-
-  const buffer = term.buffer.active;
-  const lastLine = buffer.getLine(
-    Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY),
-  );
-  const text = lastLine?.translateToString(true).trimEnd() ?? "";
-  const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
-
-  if (/^(?:cmd)(?:\.exe)?$/i.test(executable)) {
-    return /^[A-Za-z]:[\\/].*>$/.test(text);
-  }
-  if (/^(?:bash|zsh|sh)(?:\.exe)?$/i.test(executable)) {
-    return /(?:\$|#)\s*$/.test(text);
-  }
-  return false;
-}
-
 function sameWindowsPath(left: string, right: string): boolean {
   const normalize = (value: string) =>
     value.replace(/^\\\\[?.]\\/, "").replace(/[\\/]+$/, "").toLowerCase();
@@ -374,10 +355,6 @@ function fitAndResizePty(
   if (term.buffer.active.baseY > 0 || scrollPositionRef.current.followsOutput) {
     captureScrollPosition(term, autoScrollRef, scrollPositionRef);
   }
-  if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
-    autoScrollRef.current = true;
-    scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-  }
   const positionBeforeFit = scrollPositionRef.current;
   try {
     fitAddon.fit();
@@ -398,43 +375,6 @@ function fitAndResizePty(
       cols: term.cols,
       rows: term.rows,
     }).catch(() => {});
-  }
-}
-
-function playCompletionSound() {
-  try {
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContext) return;
-    const ctx = new AudioContext();
-    const now = ctx.currentTime;
-    
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.type = "sine";
-    osc1.frequency.setValueAtTime(880, now); // A5
-    gain1.gain.setValueAtTime(0, now);
-    gain1.gain.linearRampToValueAtTime(0.15, now + 0.05);
-    gain1.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
-    
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.4);
-    
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = "sine";
-    osc2.frequency.setValueAtTime(659.25, now + 0.12); // E5
-    gain2.gain.setValueAtTime(0, now + 0.12);
-    gain2.gain.linearRampToValueAtTime(0.15, now + 0.17);
-    gain2.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
-    
-    osc2.connect(gain2);
-    gain2.connect(ctx.destination);
-    osc2.start(now + 0.12);
-    osc2.stop(now + 0.6);
-  } catch (err) {
-    console.warn("Could not play notification sound:", err);
   }
 }
 
@@ -482,39 +422,16 @@ export const TerminalPane = memo(function TerminalPane({
   );
   const hasExited = exitCode !== null;
 
-  const isRunning = useTerminalStore(
-    (s) => s.terminals[terminalId]?.isRunning ?? false,
-  );
-  const [isAlerting, setIsAlerting] = useState(false);
   const draggedTerminalId = useTerminalStore((s) => s.draggedTerminalId);
   const dragHoveredTerminalId = useTerminalStore((s) => s.dragHoveredTerminalId);
   const isDragHovered = dragHoveredTerminalId === terminalId;
-
-  const [agentCompleted, setAgentCompleted] = useState(false);
-  const [agentRunningStarted, setAgentRunningStarted] = useState(false);
-
-  // Set agentRunningStarted to true when we detect the agent actually starts running
-  useEffect(() => {
-    if (agentId && isRunning && !agentCompleted) {
-      setAgentRunningStarted(true);
-    }
-  }, [isRunning, agentId, agentCompleted]);
-
-  // Trigger alert and chime only when the agent transitions from running to stopped
-  useEffect(() => {
-    if (agentId && agentRunningStarted && !isRunning && !agentCompleted) {
-      setIsAlerting(true);
-      playCompletionSound();
-      setAgentCompleted(true);
-      setAgentRunningStarted(false);
-    }
-  }, [isRunning, agentId, agentRunningStarted, agentCompleted]);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    if (isActive && isAlerting) {
-      setIsAlerting(false);
-    }
-  }, [isActive, isAlerting]);
+    return () => {
+      dragCleanupRef.current?.();
+    };
+  }, []);
 
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -563,14 +480,10 @@ export const TerminalPane = memo(function TerminalPane({
     const prompt = powerShellPrompt(term);
     if (!prompt) {
       atPowerShellPromptRef.current = false;
-      if (hasReturnedShellPrompt(term, shell)) {
-        useTerminalStore.getState().setTerminalRunning(terminalId, false);
-      }
       return;
     }
     if (atPowerShellPromptRef.current) return;
     atPowerShellPromptRef.current = true;
-    useTerminalStore.getState().setTerminalRunning(terminalId, false);
     const requestId = ++contextRequestRef.current;
 
     try {
@@ -647,12 +560,8 @@ export const TerminalPane = memo(function TerminalPane({
       atPowerShellPromptRef.current = false;
       const tid = terminalIdRef.current;
       if (!tid) return;
-      const store = useTerminalStore.getState();
-      const termState = store.terminals[tid];
+      const termState = useTerminalStore.getState().terminals[tid];
       if (termState && termState.exitCode !== null) return;
-      if (data.includes("\r") || data.includes("\n")) {
-        store.setTerminalRunning(tid, true);
-      }
       const write = invoke("terminal_write", {
         terminalId: tid,
         data: encodeForPty(data),
@@ -688,17 +597,6 @@ export const TerminalPane = memo(function TerminalPane({
         // user navigation and must win over the queued restore.
         programmaticScrollTargetRef.current = null;
       }
-      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) {
-        autoScrollRef.current = true;
-        scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-        restoreScrollPosition(
-          term,
-          autoScrollRef,
-          scrollPositionRef,
-          programmaticScrollTargetRef,
-        );
-        return;
-      }
       // xterm emits scroll events while it appends output. Those are not user
       // navigation: treating them as such makes follow mode flap during a
       // streaming agent response. A real wheel/scrollbar/keyboard gesture is
@@ -719,7 +617,6 @@ export const TerminalPane = memo(function TerminalPane({
       });
     };
     const onWheel = (event: WheelEvent) => {
-      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       userScrollIntentRef.current = true;
       // Stop a queued output callback from snapping back before the browser
       // applies this upward wheel movement.
@@ -733,7 +630,6 @@ export const TerminalPane = memo(function TerminalPane({
       scheduleUserScrollCapture();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       if (!["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       userScrollIntentRef.current = true;
       if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
@@ -742,7 +638,6 @@ export const TerminalPane = memo(function TerminalPane({
       scheduleUserScrollCapture();
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (useTerminalStore.getState().terminals[terminalIdRef.current]?.isRunning) return;
       const viewport = term.element?.querySelector<HTMLElement>(".xterm-viewport");
       if (!viewport) return;
       const rect = viewport.getBoundingClientRect();
@@ -837,9 +732,10 @@ export const TerminalPane = memo(function TerminalPane({
             };
 
       if (text && text.trim().length > 0 && termNow) {
+              // Reset before rehydrating the live screen so a cleared
+              // terminal stays cleared and no stale frames leak through.
+              termNow.reset();
               // Chunk large dumps so multi-pane remount stays responsive.
-              // Reset NON serve: xterm è appena stato creato (mount fresco),
-              // buffer già pulito. reset() causa solo un frame nero extra.
               const CHUNK = 16_384;
               if (text.length <= CHUNK) {
                 await new Promise<void>((resolve) => termNow.write(text, resolve));
@@ -866,10 +762,6 @@ export const TerminalPane = memo(function TerminalPane({
               }
               if (xtermRef.current) {
                 await replayQueuedOutput();
-                if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
-                  autoScrollRef.current = true;
-                  scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-                }
                 restoreScrollPosition(
                   xtermRef.current,
                   autoScrollRef,
@@ -921,16 +813,6 @@ export const TerminalPane = memo(function TerminalPane({
               }
             } else if (termNow) {
               await replayQueuedOutput();
-              if (useTerminalStore.getState().terminals[terminalId]?.isRunning) {
-                autoScrollRef.current = true;
-                scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-                restoreScrollPosition(
-                  termNow,
-                  autoScrollRef,
-                  scrollPositionRef,
-                  programmaticScrollTargetRef,
-                );
-              }
             }
             await replayQueuedOutput();
             // Snapshot and queued data are now both rendered. Switch the
@@ -939,19 +821,6 @@ export const TerminalPane = memo(function TerminalPane({
             rehydratingRef.current = false;
             if (xtermRef.current) {
               await syncContextFromPowerShellPrompt(xtermRef.current);
-            }
-            if (
-              xtermRef.current &&
-              useTerminalStore.getState().terminals[terminalId]?.isRunning
-            ) {
-              autoScrollRef.current = true;
-              scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-              restoreScrollPosition(
-                xtermRef.current,
-                autoScrollRef,
-                scrollPositionRef,
-                programmaticScrollTargetRef,
-              );
             }
           } catch {
             // Command unavailable — live stream only.
@@ -1103,8 +972,7 @@ export const TerminalPane = memo(function TerminalPane({
         // previous baseY and leaves the viewport one or more chunks behind.
         // Check the current value so a user scroll during a large agent output
         // is respected instead of being pulled back to the bottom.
-        const isRunning = useTerminalStore.getState().terminals[terminalId]?.isRunning;
-        if (isRunning || autoScrollRef.current) {
+        if (autoScrollRef.current) {
           scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
           restoreScrollPosition(
             term,
@@ -1295,8 +1163,6 @@ export const TerminalPane = memo(function TerminalPane({
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;
       xtermRef.current?.reset();
-      setAgentCompleted(false);
-      setAgentRunningStarted(false);
     } catch (err) {
       console.error("Errore reopen terminale:", err);
     }
@@ -1382,7 +1248,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   return (
     <div
-      className={isAlerting ? "terminal-alert-pulse" : undefined}
+      data-terminal-pane-id={terminalId}
       style={{ ...outerStyle, ...dragOverlayStyle }}
       tabIndex={-1}
       onDragOver={handleDragOver}
@@ -1390,26 +1256,6 @@ export const TerminalPane = memo(function TerminalPane({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <style>{`
-        @keyframes terminalAlertPulse {
-          0% {
-            border-color: var(--color-primary) !important;
-            box-shadow: 0 0 12px rgba(232, 93, 4, 0.45), inset 0 0 6px rgba(232, 93, 4, 0.2) !important;
-          }
-          50% {
-            border-color: var(--color-neutral-border) !important;
-            box-shadow: 0 0 0px transparent, inset 0 0 0px transparent !important;
-          }
-          100% {
-            border-color: var(--color-primary) !important;
-            box-shadow: 0 0 12px rgba(232, 93, 4, 0.45), inset 0 0 6px rgba(232, 93, 4, 0.2) !important;
-          }
-        }
-        .terminal-alert-pulse {
-          animation: terminalAlertPulse 1.5s infinite ease-in-out !important;
-        }
-      `}</style>
-
       {/* Full-pane drag overlay for reordering */}
       {draggedTerminalId !== null && draggedTerminalId !== terminalId && (
         <div
@@ -1513,46 +1359,73 @@ export const TerminalPane = memo(function TerminalPane({
         {!hasExited && terminalCount > 1 && (
           <div
             onPointerDown={(e) => {
+              if (dragCleanupRef.current) return;
               e.preventDefault();
-              
-              // Set the active dragged terminal globally
+
+              const pointerId = e.pointerId;
               const store = useTerminalStore.getState();
               store.setDraggedTerminalId(terminalId);
-              
-              // Fade the dragged pane slightly so they know it is being moved
+
               const paneEl = e.currentTarget.parentElement?.parentElement;
               if (paneEl) {
                 paneEl.style.setProperty("opacity", "0.35");
               }
-              
-              const handlePointerMove = (moveEvent: PointerEvent) => {
-                moveEvent.preventDefault();
-              };
-              
-              const handlePointerUp = (upEvent: PointerEvent) => {
-                upEvent.preventDefault();
-                
+
+              const resolveDragTarget = (clientX: number, clientY: number) => {
+                const element = document.elementFromPoint(clientX, clientY);
+                const pane = element?.closest<HTMLElement>("[data-terminal-pane-id]");
+                const targetId = pane?.dataset.terminalPaneId ?? null;
                 const latestStore = useTerminalStore.getState();
-                const targetId = latestStore.dragHoveredTerminalId;
-                
-                if (targetId && targetId !== terminalId && onReorder) {
-                  onReorder(terminalId, targetId);
-                }
-                
-                // Reset global states
+                latestStore.setDragHoveredTerminalId(
+                  targetId && targetId !== terminalId ? targetId : null,
+                );
+              };
+
+              const cleanup = () => {
+                if (dragCleanupRef.current !== cleanup) return;
+                dragCleanupRef.current = null;
+                const latestStore = useTerminalStore.getState();
                 latestStore.setDraggedTerminalId(null);
                 latestStore.setDragHoveredTerminalId(null);
-                
                 if (paneEl) {
                   paneEl.style.removeProperty("opacity");
                 }
-                
                 window.removeEventListener("pointermove", handlePointerMove);
                 window.removeEventListener("pointerup", handlePointerUp);
+                window.removeEventListener("pointercancel", handlePointerCancel);
+                window.removeEventListener("blur", handleWindowBlur);
               };
-              
+
+              const handlePointerMove = (moveEvent: PointerEvent) => {
+                if (moveEvent.pointerId !== pointerId) return;
+                moveEvent.preventDefault();
+                resolveDragTarget(moveEvent.clientX, moveEvent.clientY);
+              };
+
+              const handlePointerUp = (upEvent: PointerEvent) => {
+                if (upEvent.pointerId !== pointerId) return;
+                upEvent.preventDefault();
+                resolveDragTarget(upEvent.clientX, upEvent.clientY);
+                const latestStore = useTerminalStore.getState();
+                const targetId = latestStore.dragHoveredTerminalId;
+
+                if (targetId && targetId !== terminalId && onReorder) {
+                  onReorder(terminalId, targetId);
+                }
+                cleanup();
+              };
+
+              const handlePointerCancel = (cancelEvent: PointerEvent) => {
+                if (cancelEvent.pointerId === pointerId) cleanup();
+              };
+
+              const handleWindowBlur = () => cleanup();
+
+              dragCleanupRef.current = cleanup;
               window.addEventListener("pointermove", handlePointerMove);
               window.addEventListener("pointerup", handlePointerUp);
+              window.addEventListener("pointercancel", handlePointerCancel);
+              window.addEventListener("blur", handleWindowBlur);
             }}
             title="Trascina la barra al centro per spostare il terminale"
             aria-label="Trascina la barra al centro per spostare il terminale"
