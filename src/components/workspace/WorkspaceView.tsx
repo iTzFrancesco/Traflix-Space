@@ -8,6 +8,7 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { useSkillStore } from "../../stores/skillStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { computeLayout } from "../../lib/presets";
+import { swapItemsById } from "../../lib/terminalOrdering";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -49,8 +50,13 @@ export function WorkspaceView() {
   const openOrderRef = useRef<string[]>([]);
   // Coda di serializzazione per la chiusura terminali — previene race condition
   const closeQueueRef = useRef<Promise<void>>(Promise.resolve());
-  // Ref sincrono della lista terminali (aggiornato subito, non dopo re-render)
-  const workspaceTerminalsRef = useRef<TerminalConfig[]>([]);
+  // Ref sincrono della lista terminali (aggiornato subito, non dopo re-render).
+  // The workspace id prevents a fast workspace switch from reusing the old
+  // workspace's order for a reorder/add/close operation.
+  const workspaceTerminalsRef = useRef<{
+    workspaceId: string | null;
+    terminals: TerminalConfig[];
+  }>({ workspaceId: null, terminals: [] });
 
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === s.activeWorkspaceId),
@@ -189,35 +195,38 @@ export function WorkspaceView() {
         useSkillStore.getState().clearPendingDrop(terminalId);
         useTerminalStore.getState().removeTerminal(terminalId);
 
-        // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione)
-        //    NON da loadedMapRef.current, che potrebbe essere stale
-        const currentTerminals = workspaceTerminalsRef.current;
+        const currentWs = loadedMapRef.current.get(workspaceId);
+        if (!currentWs) return;
+
+        // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione), usando
+        // la configurazione corrente come fallback dopo un cambio workspace.
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : currentWs.terminals;
         const newTerminals = currentTerminals.filter((t) => t.id !== terminalId);
         const newLayout = computeLayout(newTerminals.length);
 
         // Aggiorna il ref sincrono IMMEDIATAMENTE (prima di await)
-        workspaceTerminalsRef.current = newTerminals;
+        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
         // 4. Aggiorna backend
-        const currentWs = loadedMapRef.current.get(workspaceId);
-        if (currentWs) {
-          const updatedConfig = {
-            id: workspaceId,
-            name: currentWs.name,
-            rootPath: currentWs.rootPath,
-            layout: newLayout,
-            terminals: newTerminals,
-            createdAt: currentWs.createdAt,
-            updatedAt: new Date().toISOString(),
-          };
-          try {
-            await invokeWithTimeout(
-              () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
-              10000,
-            );
-          } catch (err) {
-            console.error("Errore aggiornamento workspace:", err);
-          }
+        const updatedConfig = {
+          id: workspaceId,
+          name: currentWs.name,
+          rootPath: currentWs.rootPath,
+          layout: newLayout,
+          terminals: newTerminals,
+          createdAt: currentWs.createdAt,
+          updatedAt: new Date().toISOString(),
+        };
+        try {
+          await invokeWithTimeout(
+            () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
+            10000,
+          );
+        } catch (err) {
+          console.error("Errore aggiornamento workspace:", err);
         }
 
         // 5. Aggiorna loadedMap
@@ -264,17 +273,14 @@ export function WorkspaceView() {
           const currentWs = loadedMapRef.current.get(workspaceId);
           if (!currentWs) return;
 
-          const currentTerminals = workspaceTerminalsRef.current;
-          const draggedIndex = currentTerminals.findIndex((t) => t.id === draggedId);
-          const targetIndex = currentTerminals.findIndex((t) => t.id === targetId);
+          const currentTerminals =
+            workspaceTerminalsRef.current.workspaceId === workspaceId
+              ? workspaceTerminalsRef.current.terminals
+              : currentWs.terminals;
+          const newTerminals = swapItemsById(currentTerminals, draggedId, targetId);
+          if (newTerminals === currentTerminals) return;
 
-          if (draggedIndex === -1 || targetIndex === -1) return;
-
-          const newTerminals = [...currentTerminals];
-          const [dragged] = newTerminals.splice(draggedIndex, 1);
-          newTerminals.splice(targetIndex, 0, dragged);
-
-          workspaceTerminalsRef.current = newTerminals;
+          workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
           const updatedConfig = {
             id: workspaceId,
@@ -348,7 +354,10 @@ export function WorkspaceView() {
         if (!currentWs) return;
 
         // Limite massimo 8 terminali per workspace
-        const currentTerminals = workspaceTerminalsRef.current;
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : currentWs.terminals;
         if (currentTerminals.length >= MAX_TERMINALS_PER_WORKSPACE) {
           addToastRef.current({
             type: "info",
@@ -398,7 +407,7 @@ export function WorkspaceView() {
         // 3. Aggiungi alla lista e ricalcola layout (ref sincrono)
         const newTerminals = [...currentTerminals, newTerminal];
         const newLayout = computeLayout(newTerminals.length);
-        workspaceTerminalsRef.current = newTerminals;
+        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
         // 4. Aggiorna backend
         try {
@@ -495,7 +504,10 @@ export function WorkspaceView() {
     if (activeWorkspaceId) {
       const loaded = loadedMap.get(activeWorkspaceId);
       if (loaded) {
-        workspaceTerminalsRef.current = loaded.terminals;
+        workspaceTerminalsRef.current = {
+          workspaceId: activeWorkspaceId,
+          terminals: loaded.terminals,
+        };
       }
     }
   }, [loadedMap, activeWorkspaceId]);
