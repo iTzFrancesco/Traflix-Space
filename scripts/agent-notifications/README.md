@@ -23,6 +23,9 @@ The notification path logs each stage without recording the agent payload:
 
 - OpenCode: `~/.config/opencode/traflix-notify.log`
 - Pi: `~/.pi/agent/traflix-notify.log`
+- Cline: `~/.cline/traflix-notify.log`
+- Anti-Gravity: `~/.gemini/antigravity-cli/traflix-notify.log`
+- Freebuff: `~/.config/manicode/traflix-notify.log`
 - PowerShell bridge: `%TEMP%\traflix-agent-event-bridge.log`
 - Traflix backend: Rust tracing output with `RUST_LOG=traflix_space=info,warn`
 - Traflix frontend: browser/WebView console entries prefixed with
@@ -49,10 +52,12 @@ repo checkout, and:
 |-------|----------------|-------|
 | Codex | `~/.codex/config.toml` → `notify` | Replaces the single `notify` command (Codex allows one). A backup is saved to `config.toml.traflix.bak`. |
 | OpenCode | `~/.config/opencode/plugin/opencode-traflix-plugin.ts` | Auto-loaded from the plugin dir. If your OpenCode version does not pick it up, add the path to the `plugin`/`plugins` array in `opencode.json` / `opencode.v2.json`. |
+| Cline | `~/.cline/hooks/TaskComplete.ps1` | Cline’s native `TaskComplete` file hook. It returns an empty hook result and forwards only task/workspace IDs. |
+| Anti-Gravity | `.agents/hooks.json` + `anti-gravity-traflix-hook.ps1` | AGY’s native `Stop` lifecycle hook. It ignores cancellation/error stops and forwards idle completions. |
 | Pi | `~/.pi/agent/extensions/traflix-notify.ts` | Pi auto-discovers `extensions/*.ts`. |
 
 Run it again after every reinstall/update of Traflix (the bridge path can move).
-It preserves an existing Codex `notify` command and adds the Claude hook while
+It preserves an existing Codex `notify` command and adds the Cline hook while
 installing/updating the OpenCode and Pi adapter files.
 
 ## Smoke test
@@ -77,7 +82,7 @@ Run the Windows contract/integration suite from the repository root:
 npm run test:agent-notifications
 ```
 
-It checks the Codex, Claude, OpenCode, and Pi lifecycle adapters, then sends
+It checks the Codex, Claude, OpenCode, Pi, Cline, and Anti-Gravity lifecycle adapters, then sends
 synthetic completion payloads through a real named pipe for every configured
 agent (`anti-gravity`, `claude`, `codex`, `opencode`, `pi`, `cmdc`, and
 `freebuff`). It never reads `.env` and never starts an agent process.
@@ -122,10 +127,13 @@ Merge the `Notification` block from [`claude-hooks.json`](./claude-hooks.json)
 into the desired Claude settings or plugin hook file. The `idle_prompt`
 notification is side-effect-only and cannot block Claude.
 
-The current Traflix agent registry also contains Cline, Anti-Gravity, and
-Freebuff, but no native completion adapter is provided for those agents yet.
-The common bridge can receive events from them once their own hook mechanism is
-wired to `traflix-agent-event.ps1`.
+Freebuff is wired in its source tree at `codebuff/cli/src/utils/sdk-event-handlers.ts`:
+the Freebuff-only root `finish` event starts the bridge process. A rebuilt
+Freebuff binary is required before the installed binary can use that change.
+
+The current Traflix agent registry also contains Claude, Cline, Anti-Gravity,
+and Freebuff. Claude is left unchanged here because it is not available in the
+current environment.
 
 ## Manual smoke event
 

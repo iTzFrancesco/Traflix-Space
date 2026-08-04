@@ -49,6 +49,16 @@ $adapterContracts = @(
         Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '{ detached: false', 'notification start provider=', 'bridge process started', 'bridge process exited', 'bridge spawn failed')
         Forbidden = @('{ detached: true', 'child.unref()')
     }
+    @{
+        Name = "Cline"
+        Path = Join-Path $scriptRoot "cline-traflix-hook.ps1"
+        Required = @("TaskComplete", "hookName", "-Provider 'cline'", "-Kind 'turn_completed'", "TRAFLIX_AGENT_EVENT_PIPE", "EncodedCommand", "notification start", "notification bridge process exited", "notification bridge spawn failed")
+    }
+    @{
+        Name = "Anti-Gravity"
+        Path = Join-Path $scriptRoot "anti-gravity-traflix-hook.ps1"
+        Required = @("terminationReason", "fullyIdle", "-Provider 'anti-gravity'", "-Kind 'turn_completed'", "TRAFLIX_AGENT_EVENT_PIPE", "EncodedCommand", "notification start", "notification bridge process exited", "notification bridge spawn failed")
+    }
 )
 
 foreach ($contract in $adapterContracts) {
@@ -70,7 +80,7 @@ foreach ($contract in $adapterContracts) {
 $uiContracts = @(
     @{ Name = "focus-aware bridge"; Path = $bridgePath; Required = @("Get-FocusedTraflixPipe", "GetForegroundWindow", "route=focused-pipe", "route=owner-pipe") },
     @{ Name = "Traflix overlay"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", "projectName", "Apri", "Continua") },
-    @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
+    @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "getCurrentWebviewWindow().isFocused()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] focus resolved", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
     @{ Name = "Space event log"; Path = Join-Path $scriptRoot "..\..\src\lib\terminalEvents.ts"; Required = @("[agent-notification] received from Space") },
     @{ Name = "overlay event log"; Path = Join-Path $scriptRoot "..\..\src\lib\agentNotificationOverlay.ts"; Required = @("[agent-notification] overlay start", "[agent-notification] overlay event dispatched") },
     @{ Name = "Rust event log"; Path = Join-Path $scriptRoot "..\..\src-tauri\src\agent_events.rs"; Required = @("Agent event received from named pipe", "Agent notification parsed", "Agent notification ignored as duplicate", "Agent notification forwarded to frontend") },
@@ -88,7 +98,7 @@ foreach ($contract in $uiContracts) {
 $setupContract = @{
     Name = "adapter installer"
     Path = Join-Path $scriptRoot "install-adapters.ps1"
-    Required = @("Install-ClaudeAdapter", "Install-CodexAdapter", "opencode-traflix-plugin.ts", "pi-traflix-extension.ts", '$backupPath = "$settingsPath.traflix.bak"')
+    Required = @("Install-ClaudeAdapter", "Install-CodexAdapter", "opencode-traflix-plugin.ts", "pi-traflix-extension.ts", "cline-traflix-hook.ps1", '$backupPath = "$settingsPath.traflix.bak"')
 }
 $setupContent = if (Test-Path -LiteralPath $setupContract.Path) { Get-Content -Raw -LiteralPath $setupContract.Path } else { "" }
 Assert-True (Test-Path -LiteralPath $setupContract.Path) "$($setupContract.Name) file is missing"
@@ -96,6 +106,18 @@ foreach ($required in $setupContract.Required) {
     Assert-Contains $setupContent $required $setupContract.Name
 }
 Write-Host "[setup] $($setupContract.Name)"
+
+$agyContract = @{
+    Name = "Anti-Gravity project hook"
+    Path = Join-Path $scriptRoot "..\..\.agents\hooks.json"
+    Required = @("traflix-notification", "Stop", "anti-gravity-traflix-hook.ps1")
+}
+$agyContent = if (Test-Path -LiteralPath $agyContract.Path) { Get-Content -Raw -LiteralPath $agyContract.Path } else { "" }
+Assert-True (Test-Path -LiteralPath $agyContract.Path) "$($agyContract.Name) file is missing"
+foreach ($required in $agyContract.Required) {
+    Assert-Contains $agyContent $required $agyContract.Name
+}
+Write-Host "[setup] $($agyContract.Name)"
 
 $bridgeContract = @{
     Name = "bridge logging"
