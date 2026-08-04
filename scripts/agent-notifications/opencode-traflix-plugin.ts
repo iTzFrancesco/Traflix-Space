@@ -36,7 +36,6 @@ function cleanWindowsPath(p: string): string {
 function resolveBridge(): string | null {
   const fromEnv = process.env.TRAFLIX_AGENT_EVENT_BRIDGE
   const candidates = [
-    "C:\\Users\\Francesco\\OneDrive\\Documenti\\developer\\GitHub\\Traflix-Space\\scripts\\agent-notifications\\traflix-agent-event.ps1",
     ...(fromEnv && fromEnv.trim() ? [cleanWindowsPath(fromEnv.trim())] : []),
     "C:\\Program Files\\Traflix Space\\agent-notifications\\traflix-agent-event.ps1",
     path.join(
@@ -93,9 +92,13 @@ function forward(event: unknown): void {
       "-Payload",
       JSON.stringify(event),
     ],
-    { detached: true, stdio: "ignore", windowsHide: true },
+    // Keep the PowerShell process attached to the agent runtime. On Windows,
+    // detached + unref can terminate before it connects to the named pipe.
+    { detached: false, stdio: "ignore", windowsHide: true },
   )
-  child.unref()
+  child.on("error", (error) => {
+    log(`bridge spawn failed: ${error.message}`)
+  })
 }
 
 export const TraflixOpenCodePlugin: Plugin = async () => {

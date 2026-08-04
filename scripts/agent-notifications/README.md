@@ -34,6 +34,8 @@ repo checkout, and:
 | Pi | `~/.pi/agent/extensions/traflix-notify.ts` | Pi auto-discovers `extensions/*.ts`. |
 
 Run it again after every reinstall/update of Traflix (the bridge path can move).
+It preserves an existing Codex `notify` command and adds the Claude hook while
+installing/updating the OpenCode and Pi adapter files.
 
 ## Smoke test
 
@@ -87,7 +89,8 @@ the external `notify` command.
 
 Install [`opencode-traflix-plugin.ts`](./opencode-traflix-plugin.ts) in an
 OpenCode plugin directory. It forwards only a real `busy/retry -> idle`
-transition (the initial idle state is ignored) and runs detached.
+transition (the initial idle state is ignored). The short-lived PowerShell
+bridge stays attached long enough to connect to the Windows named pipe.
 
 ## Pi
 
@@ -100,6 +103,11 @@ retry/compaction/follow-up work.
 Merge the `Notification` block from [`claude-hooks.json`](./claude-hooks.json)
 into the desired Claude settings or plugin hook file. The `idle_prompt`
 notification is side-effect-only and cannot block Claude.
+
+The current Traflix agent registry also contains Cline, Anti-Gravity, and
+Freebuff, but no native completion adapter is provided for those agents yet.
+The common bridge can receive events from them once their own hook mechanism is
+wired to `traflix-agent-event.ps1`.
 
 ## Manual smoke event
 

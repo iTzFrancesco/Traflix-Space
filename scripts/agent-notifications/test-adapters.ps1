@@ -19,6 +19,11 @@ function Assert-Contains {
     Assert-True ($Text.Contains($Needle)) "$Name must contain '$Needle'"
 }
 
+function Assert-NotContains {
+    param([string]$Text, [string]$Needle, [string]$Name)
+    Assert-True (-not $Text.Contains($Needle)) "$Name must not contain '$Needle'"
+}
+
 Write-Host "== Traflix agent notification adapter suite =="
 
 $adapterContracts = @(
@@ -35,12 +40,14 @@ $adapterContracts = @(
     @{
         Name = "OpenCode"
         Path = Join-Path $scriptRoot "opencode-traflix-plugin.ts"
-        Required = @("session.status", 'status === "busy" || status === "retry"', 'status !== "idle"', 'eventId:', 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '"opencode"')
+        Required = @("session.status", 'status === "busy" || status === "retry"', 'status !== "idle"', 'eventId:', 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '"opencode"', '{ detached: false', 'bridge spawn failed')
+        Forbidden = @('{ detached: true', 'child.unref()')
     }
     @{
         Name = "Pi"
         Path = Join-Path $scriptRoot "pi-traflix-extension.ts"
-        Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"')
+        Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '{ detached: false', 'bridge spawn failed')
+        Forbidden = @('{ detached: true', 'child.unref()')
     }
 )
 
@@ -51,6 +58,11 @@ foreach ($contract in $adapterContracts) {
     Assert-True (Test-Path -LiteralPath $contract.Path) "$($contract.Name) adapter file is missing"
     foreach ($required in $contract.Required) {
         Assert-Contains $content $required $contract.Name
+    }
+    if ($null -ne $contract.Forbidden) {
+        foreach ($forbidden in $contract.Forbidden) {
+            Assert-NotContains $content $forbidden $contract.Name
+        }
     }
     Write-Host "[contract] $($contract.Name)"
 }
@@ -68,6 +80,18 @@ foreach ($contract in $uiContracts) {
     }
     Write-Host "[ui] $($contract.Name)"
 }
+
+$setupContract = @{
+    Name = "adapter installer"
+    Path = Join-Path $scriptRoot "install-adapters.ps1"
+    Required = @("Install-ClaudeAdapter", "Install-CodexAdapter", "opencode-traflix-plugin.ts", "pi-traflix-extension.ts", '$backupPath = "$settingsPath.traflix.bak"')
+}
+$setupContent = if (Test-Path -LiteralPath $setupContract.Path) { Get-Content -Raw -LiteralPath $setupContract.Path } else { "" }
+Assert-True (Test-Path -LiteralPath $setupContract.Path) "$($setupContract.Name) file is missing"
+foreach ($required in $setupContract.Required) {
+    Assert-Contains $setupContent $required $setupContract.Name
+}
+Write-Host "[setup] $($setupContract.Name)"
 
 function Test-BridgeProvider {
     param([string]$Provider)
@@ -170,6 +194,17 @@ foreach ($provider in @("anti-gravity", "claude", "codex", "opencode", "pi", "cm
     Test-BridgeProvider $provider
 }
 Test-BridgeFanout
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $node) {
+    $failures.Add("node is required for the adapter process integration test")
+} else {
+    $processTest = Join-Path $scriptRoot "test-adapter-process.mjs"
+    & $node.Source $processTest
+    if ($LASTEXITCODE -ne 0) {
+        $failures.Add("adapter child process integration test failed")
+    }
+}
 
 if ($failures.Count -gt 0) {
     Write-Host "`nFAILED ($($failures.Count))" -ForegroundColor Red
