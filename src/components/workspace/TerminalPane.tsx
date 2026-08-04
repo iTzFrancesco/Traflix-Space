@@ -312,6 +312,79 @@ function captureScrollPosition(
   scrollPositionRef.current = { followsOutput, offsetFromBottom };
 }
 
+interface TerminalViewportAnchor {
+  approximateY: number;
+  lineOffset: number;
+  text: string;
+}
+
+/** Capture readable content so a column/row reflow can find the same line. */
+function captureViewportAnchor(term: Terminal): TerminalViewportAnchor | null {
+  const buffer = term.buffer.active;
+  if (buffer.type !== "normal" || buffer.baseY === 0) return null;
+
+  const maxOffset = Math.min(term.rows, buffer.length - buffer.viewportY);
+  for (let lineOffset = 0; lineOffset < maxOffset; lineOffset += 1) {
+    const text = buffer
+      .getLine(buffer.viewportY + lineOffset)
+      ?.translateToString(true)
+      .trim();
+    if (text && text.length >= 4) {
+      return {
+        approximateY: buffer.viewportY,
+        lineOffset,
+        // Keep matching cheap while retaining enough context to avoid most
+        // duplicate prompt/blank-line matches.
+        text: text.slice(0, 160),
+      };
+    }
+  }
+  return null;
+}
+
+/** Restore an anchor after xterm has reflowed its buffer. */
+function restoreViewportAnchor(
+  term: Terminal,
+  anchor: TerminalViewportAnchor | null,
+  programmaticScrollTargetRef: React.MutableRefObject<number | null>,
+): boolean {
+  if (!anchor || term.buffer.active.type !== "normal") return false;
+
+  const buffer = term.buffer.active;
+  const exactNeedle = anchor.text;
+  const partialNeedle = exactNeedle.length >= 12 ? exactNeedle.slice(0, 48) : exactNeedle;
+  let match = -1;
+  let matchKind = Number.POSITIVE_INFINITY;
+  let matchDistance = Number.POSITIVE_INFINITY;
+
+  for (let line = 0; line < buffer.length; line += 1) {
+    const text = buffer.getLine(line)?.translateToString(true).trim() ?? "";
+    const kind = text === exactNeedle
+      ? 0
+      : partialNeedle.length >= 4 && text.includes(partialNeedle)
+        ? 1
+        : Number.POSITIVE_INFINITY;
+    if (kind === Number.POSITIVE_INFINITY) continue;
+    const distance = Math.abs(line - anchor.approximateY);
+    if (kind < matchKind || (kind === matchKind && distance < matchDistance)) {
+      match = line;
+      matchKind = kind;
+      matchDistance = distance;
+    }
+  }
+
+  if (match < 0) return false;
+
+  const target = Math.max(
+    0,
+    Math.min(buffer.baseY, match - anchor.lineOffset),
+  );
+  programmaticScrollTargetRef.current = -1;
+  term.scrollToLine(target);
+  programmaticScrollTargetRef.current = term.buffer.active.viewportY;
+  return true;
+}
+
 function restoreScrollPosition(
   term: Terminal,
   autoScrollRef: React.MutableRefObject<boolean>,
@@ -395,6 +468,9 @@ function fitAndResizePty(
     captureScrollPosition(term, autoScrollRef, scrollPositionRef);
   }
   const positionBeforeFit = scrollPositionRef.current;
+  const viewportAnchor = positionBeforeFit.followsOutput
+    ? null
+    : captureViewportAnchor(term);
   try {
     fitAddon.fit();
   } catch {
@@ -414,9 +490,11 @@ function fitAndResizePty(
       programmaticScrollTargetRef,
     );
   } else if (term.buffer.active.baseY > 0) {
-    // Keep xterm's post-reflow viewport. Capture the resulting position for
-    // the next layout change/remount instead of overriding it with a stale
-    // offset measured before the resize.
+    // xterm normally keeps ydisp stable during reflow. If a focus transition
+    // changes both columns and rows, however, its row arithmetic can still
+    // land at the first line. Restore the visible content anchor in that
+    // case, then capture the new bottom-relative position for later remounts.
+    restoreViewportAnchor(term, viewportAnchor, programmaticScrollTargetRef);
     captureScrollPosition(term, autoScrollRef, scrollPositionRef);
   } else {
     // There is no scrollback yet. Preserve the reader intent until rehydrate
@@ -749,8 +827,10 @@ export const TerminalPane = memo(function TerminalPane({
           }
           return;
         }
-        // A different y arrived before the pending programmatic event: this is
-        // user navigation and must win over the queued restore.
+        // A different y can arrive after fit/scrollToLine because xterm emits
+        // internal viewport updates while layout settles. Only an explicit
+        // wheel/key/scrollbar intent is allowed to override the restore.
+        if (!userScrollIntentRef.current) return;
         programmaticScrollTargetRef.current = null;
       }
       // Every non-programmatic xterm scroll event is authoritative. Output
