@@ -16,6 +16,7 @@ interface ProjectStore {
   workspaces: Record<string, WorkspaceProjectState>;
   ensureWorkspace: (workspaceId: string) => void;
   listDirectory: (workspaceId: string, relativePath?: string) => Promise<void>;
+  loadSearchDirectories: (workspaceId: string, skipDirectoryNames: string[]) => Promise<void>;
   refreshGitStatus: (workspaceId: string) => Promise<void>;
   loadDiff: (workspaceId: string, path: string, side: DiffSide) => Promise<void>;
   clearDiff: (workspaceId: string) => void;
@@ -38,7 +39,9 @@ interface ProjectStore {
 
 const ROOT_PATH = "";
 const inflight = new Map<string, Promise<void>>();
+const searchInflight = new Map<string, Promise<void>>();
 const gitInflight = new Map<string, Promise<void>>();
+const gitRefreshQueued = new Set<string>();
 const diffRequests = new Map<string, number>();
 const previewRequests = new Map<string, number>();
 
@@ -206,6 +209,93 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     return promise;
   },
 
+  loadSearchDirectories: async (workspaceId, skipDirectoryNames) => {
+    get().ensureWorkspace(workspaceId);
+    const pending = searchInflight.get(workspaceId);
+    if (pending) return pending;
+
+    const promise = (async () => {
+      const skip = new Set(skipDirectoryNames.map((name) => name.toLowerCase()));
+      const scanned = new Map<string, ProjectDirectoryResponse>();
+      const queue: string[] = [];
+      const visited = new Set<string>();
+
+      const readDirectory = async (path: string): Promise<ProjectDirectoryResponse | null> => {
+        try {
+          return await invokeWithTimeout(
+            () =>
+              invoke<ProjectDirectoryResponse>("project_list_directory", {
+                workspaceId,
+                relativePath: path,
+              }),
+            10000,
+          );
+        } catch {
+          return null;
+        }
+      };
+
+      const rootResult = await readDirectory(ROOT_PATH);
+      if (!rootResult) return;
+      const rootPath = normalizeRelativePath(rootResult.relativePath);
+      scanned.set(rootPath, rootResult);
+      visited.add(rootPath);
+      for (const entry of rootResult.entries) {
+        if (entry.kind === "directory" && !entry.virtual && !skip.has(entry.name.toLowerCase())) {
+          queue.push(entry.path);
+        }
+      }
+
+      let cursor = 0;
+      const worker = async () => {
+        while (true) {
+          const path = queue[cursor++];
+          if (path === undefined || visited.has(path)) return;
+          visited.add(path);
+
+          const result = await readDirectory(path);
+          if (!result) continue;
+          const responsePath = normalizeRelativePath(result.relativePath);
+          scanned.set(responsePath, result);
+          for (const entry of result.entries) {
+            if (entry.kind === "directory" && !entry.virtual && !skip.has(entry.name.toLowerCase())) {
+              queue.push(entry.path);
+            }
+          }
+        }
+      };
+
+      const workerCount = Math.min(6, Math.max(1, queue.length));
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+      set((state) => {
+        const workspace = state.workspaces[workspaceId] ?? createWorkspaceState();
+        const directories = { ...workspace.directories };
+        for (const [path, result] of scanned) {
+          const existing = directories[path] ?? emptyDirectory(path === ROOT_PATH);
+          directories[path] = {
+            ...existing,
+            entries: result.entries,
+            loaded: true,
+            loading: false,
+            error: null,
+          };
+        }
+        return {
+          workspaces: {
+            ...state.workspaces,
+            [workspaceId]: { ...workspace, directories },
+          },
+        };
+      });
+    })().finally(() => {
+      searchInflight.delete(workspaceId);
+    });
+
+    searchInflight.set(workspaceId, promise);
+    return promise;
+  },
+
   handleFilesChanged: (workspaceId, event) => {
     get().ensureWorkspace(workspaceId);
     const workspace = get().workspaces[workspaceId] ?? createWorkspaceState();
@@ -243,13 +333,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     });
 
     for (const path of affected) void get().listDirectory(workspaceId, path);
-    if (event.gitMetadataChanged) void get().refreshGitStatus(workspaceId);
+    if (event.gitMetadataChanged || event.paths.length > 0) void get().refreshGitStatus(workspaceId);
   },
 
   refreshGitStatus: async (workspaceId) => {
     get().ensureWorkspace(workspaceId);
     const pending = gitInflight.get(workspaceId);
-    if (pending) return pending;
+    if (pending) {
+      gitRefreshQueued.add(workspaceId);
+      return pending;
+    }
 
     set((state) => {
       const workspace = state.workspaces[workspaceId] ?? createWorkspaceState();
@@ -298,6 +391,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       })
       .finally(() => {
         gitInflight.delete(workspaceId);
+        if (gitRefreshQueued.delete(workspaceId)) {
+          void get().refreshGitStatus(workspaceId);
+        }
       });
 
     gitInflight.set(workspaceId, promise);

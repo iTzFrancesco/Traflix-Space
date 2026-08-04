@@ -81,19 +81,6 @@ export function RightPanel() {
         >
           <PanelRightOpen size={17} />
         </button>
-        <div className="my-3 h-px w-6 bg-white/[0.07]" />
-        <button
-          type="button"
-          onClick={() => {
-            setActiveView("git");
-            if (!isOpen) togglePanel();
-          }}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-neutral-text-muted transition-colors hover:bg-white/[0.06] hover:text-neutral-text"
-          title="Apri Git changes"
-          aria-label="Apri Git changes"
-        >
-          <GitBranch size={15} />
-        </button>
       </aside>
     );
   }

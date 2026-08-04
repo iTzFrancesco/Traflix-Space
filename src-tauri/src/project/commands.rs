@@ -26,13 +26,17 @@ pub struct ProjectEntry {
 }
 
 const MAX_FILE_PREVIEW_BYTES: usize = 128 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFilePreview {
     workspace_id: String,
     path: String,
+    kind: String,
+    mime_type: Option<String>,
     content: String,
+    content_base64: Option<String>,
     binary: bool,
     truncated: bool,
     size: u64,
@@ -242,15 +246,38 @@ fn read_file_preview(
         .len();
     let mut file = std::fs::File::open(&file_path)
         .map_err(|error| format!("Impossibile leggere il file: {error}"))?;
-    let mut bytes = Vec::with_capacity(MAX_FILE_PREVIEW_BYTES + 1);
+    let image_extension = image_extension(&file_path);
+    let read_limit = if image_extension.is_some() {
+        MAX_IMAGE_PREVIEW_BYTES
+    } else {
+        MAX_FILE_PREVIEW_BYTES
+    };
+    let mut bytes = Vec::with_capacity(read_limit + 1);
     file.by_ref()
-        .take((MAX_FILE_PREVIEW_BYTES + 1) as u64)
+        .take((read_limit + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Impossibile leggere il file: {error}"))?;
-    let truncated = bytes.len() > MAX_FILE_PREVIEW_BYTES;
+    let truncated = bytes.len() > read_limit;
     if truncated {
-        bytes.truncate(MAX_FILE_PREVIEW_BYTES);
+        bytes.truncate(read_limit);
     }
+
+    if let Some(extension) = image_extension {
+        if let Some(mime_type) = image_mime_type(&extension, &bytes) {
+            return Ok(ProjectFilePreview {
+                workspace_id,
+                path: relative_path,
+                kind: if truncated { "binary" } else { "image" }.to_string(),
+                mime_type: (!truncated).then_some(mime_type.to_string()),
+                content: String::new(),
+                content_base64: (!truncated).then(|| encode_base64(&bytes)),
+                binary: true,
+                truncated,
+                size,
+            });
+        }
+    }
+
     let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
     let content = if binary {
         String::new()
@@ -261,11 +288,74 @@ fn read_file_preview(
     Ok(ProjectFilePreview {
         workspace_id,
         path: relative_path,
+        kind: if binary { "binary" } else { "text" }.to_string(),
+        mime_type: if binary {
+            None
+        } else {
+            Some("text/plain".to_string())
+        },
         content,
+        content_base64: None,
         binary,
         truncated,
         size,
     })
+}
+
+fn image_extension(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => Some(extension),
+        _ => None,
+    }
+}
+
+fn image_mime_type(extension: &str, bytes: &[u8]) -> Option<&'static str> {
+    let valid = match extension {
+        "png" => bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
+        "jpg" | "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "gif" => bytes.starts_with(b"GIF8"),
+        "webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+        "bmp" => bytes.starts_with(b"BM"),
+        "ico" => bytes.starts_with(&[0, 0, 1, 0]),
+        _ => false,
+    };
+    if !valid {
+        return None;
+    }
+    Some(match extension {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => unreachable!(),
+    })
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().saturating_add(2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0] as usize;
+        let second = chunk.get(1).copied().unwrap_or_default() as usize;
+        let third = chunk.get(2).copied().unwrap_or_default() as usize;
+        output.push(ALPHABET[first >> 2] as char);
+        output.push(ALPHABET[((first & 0x03) << 4) | (second >> 4)] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((second & 0x0f) << 2) | (third >> 6)] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[third & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    output
 }
 
 #[tauri::command]
@@ -364,6 +454,8 @@ mod tests {
         .expect("read preview fixture");
 
         assert_eq!(preview.content, "alpha\nbeta\n");
+        assert_eq!(preview.kind, "text");
+        assert!(preview.content_base64.is_none());
         assert!(!preview.binary);
         assert!(!preview.truncated);
         let _ = std::fs::remove_file(file_path);

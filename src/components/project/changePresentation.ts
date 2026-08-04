@@ -27,9 +27,36 @@ export function changeTone(change: ProjectGitChange): string {
   if (change.index === "renamed" || change.worktree === "renamed") {
     return "text-sky-200 bg-sky-400/[0.11] border-sky-300/25";
   }
-  return "text-primary bg-primary/[0.12] border-primary/25";
+  return "text-primary bg-primary/[0.18] border-primary/40";
 }
 
 export function changeDetail(change: ProjectGitChange): string {
   return `Index: ${change.index}; working tree: ${change.worktree}`;
+}
+
+function stateCode(state: ProjectGitChange["index"]): string {
+  switch (state) {
+    case "added":
+      return "A";
+    case "modified":
+      return "M";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "conflict":
+      return "!";
+    default:
+      return "";
+  }
+}
+
+export function changeStatusCode(change: ProjectGitChange, staged?: boolean): string {
+  if (staged !== undefined) {
+    if (change.untracked && !staged) return "U";
+    return stateCode(staged ? change.index : change.worktree) || (change.untracked ? "U" : "M");
+  }
+  if (change.index === "conflict" || change.worktree === "conflict") return "!";
+  if (change.untracked) return "U";
+  return stateCode(change.index) || stateCode(change.worktree) || "M";
 }

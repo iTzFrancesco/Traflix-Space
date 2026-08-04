@@ -21,7 +21,6 @@ interface ProjectDiffViewerProps {
   showSideToggle?: boolean;
   onStage?: () => void;
   onUnstage?: () => void;
-  onDiscard?: () => void;
 }
 
 function lineClass(line: string): string {
@@ -47,7 +46,6 @@ export function ProjectDiffViewer({
   onSideChange,
   onStage,
   onUnstage,
-  onDiscard,
 }: ProjectDiffViewerProps) {
   const lines = diff?.patch ? diff.patch.split("\n") : [];
 
@@ -122,16 +120,6 @@ export function ProjectDiffViewer({
               className="rounded-md border border-sky-300/20 bg-sky-300/[0.08] px-2 py-1 text-[0.58rem] font-semibold text-sky-200 transition-colors hover:bg-sky-300/[0.14] disabled:opacity-50"
             >
               Unstage
-            </button>
-          )}
-          {change.worktree !== "clean" && (
-            <button
-              type="button"
-              onClick={() => onDiscard?.()}
-              disabled={actionLoading}
-              className="rounded-md border border-red-300/20 bg-red-300/[0.07] px-2 py-1 text-[0.58rem] font-semibold text-red-200 transition-colors hover:bg-red-300/[0.13] disabled:opacity-50"
-            >
-              Scarta
             </button>
           )}
           {actionLoading && <LoaderCircle size={12} className="animate-spin text-primary" />}

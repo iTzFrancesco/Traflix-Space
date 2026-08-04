@@ -28,7 +28,10 @@ export interface ProjectDirectoryResponse {
 export interface ProjectFilePreview {
   workspaceId: string;
   path: string;
+  kind?: "text" | "image" | "binary";
+  mimeType?: string | null;
   content: string;
+  contentBase64?: string | null;
   binary: boolean;
   truncated: boolean;
   size: number;

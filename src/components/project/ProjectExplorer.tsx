@@ -1,32 +1,24 @@
-import { useEffect, useMemo } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   ChevronRight,
-  File,
-  FileCode2,
-  FileJson,
-  FileText,
   Folder,
   FolderOpen,
   GitBranch,
   LoaderCircle,
-  RefreshCw,
   Search,
 } from "lucide-react";
 import { useProjectStore } from "../../stores/projectStore";
-import { invokeWithTimeout } from "../../lib/timeout";
+import { useUIStore } from "../../stores/uiStore";
 import type {
   ProjectDirectoryState,
   ProjectEntry,
   ProjectEntryKind,
-  ProjectFilesChanged,
   ProjectGitChange,
 } from "../../project/types";
-import { changeDetail, changeStatusLabel, changeTone } from "./changePresentation";
-import { ProjectDiffViewer } from "./ProjectDiffViewer";
+import { changeDetail, changeStatusCode, changeTone } from "./changePresentation";
 import { ProjectFilePreview } from "./ProjectFilePreview";
+import { getFileIcon } from "./fileIcons";
 
 interface ProjectExplorerProps {
   workspaceId: string;
@@ -39,15 +31,15 @@ interface VisibleEntry {
   depth: number;
 }
 
-function fileIcon(name: string) {
-  const extension = name.split(".").pop()?.toLowerCase();
-  if (["ts", "tsx", "js", "jsx", "rs", "css", "html", "py"].includes(extension ?? "")) {
-    return FileCode2;
-  }
-  if (["json", "toml", "yaml", "yml"].includes(extension ?? "")) return FileJson;
-  if (["md", "txt", "log"].includes(extension ?? "")) return FileText;
-  return File;
-}
+const SEARCH_SKIP_DIRECTORIES = new Set([
+  ".git",
+  ".cache",
+  ".turbo",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target",
+]);
 
 function compactPath(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -120,7 +112,7 @@ function collectVisibleEntries(
     if (!hasSearchMatch(entry, query) && !childMatches) continue;
 
     result.push({ entry, depth });
-    if (entry.kind === "directory" && childDirectory?.expanded) {
+    if (entry.kind === "directory" && childDirectory && (childDirectory.expanded || Boolean(query))) {
       result.push(...nestedEntries);
     }
   }
@@ -131,24 +123,25 @@ function EntryIcon({ kind, name, expanded }: { kind: ProjectEntryKind; name: str
   if (kind === "directory") {
     return expanded ? <FolderOpen size={15} strokeWidth={1.7} /> : <Folder size={15} strokeWidth={1.7} />;
   }
-  const Icon = fileIcon(name);
+  const Icon = getFileIcon(name);
   return <Icon size={15} strokeWidth={1.7} />;
 }
 
 export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: ProjectExplorerProps) {
   const workspaceState = useProjectStore((state) => state.workspaces[workspaceId]);
-  const ensureWorkspace = useProjectStore((state) => state.ensureWorkspace);
-  const listDirectory = useProjectStore((state) => state.listDirectory);
+  const loadSearchDirectories = useProjectStore((state) => state.loadSearchDirectories);
+  const isFilesView = useUIStore(
+    (state) => !state.rightPanelActiveView || state.rightPanelActiveView === "files",
+  );
   const toggleDirectory = useProjectStore((state) => state.toggleDirectory);
   const refreshDirectory = useProjectStore((state) => state.refreshDirectory);
-  const refreshGitStatus = useProjectStore((state) => state.refreshGitStatus);
-  const loadDiff = useProjectStore((state) => state.loadDiff);
   const clearDiff = useProjectStore((state) => state.clearDiff);
   const loadFilePreview = useProjectStore((state) => state.loadFilePreview);
   const clearPreview = useProjectStore((state) => state.clearPreview);
-  const handleFilesChanged = useProjectStore((state) => state.handleFilesChanged);
   const selectPath = useProjectStore((state) => state.selectPath);
   const setSearchQuery = useProjectStore((state) => state.setSearchQuery);
+  const searchScanRef = useRef<{ workspaceId: string; promise: Promise<void> } | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   const directories = workspaceState?.directories ?? {};
   const root = directories[""];
@@ -156,9 +149,6 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
   const gitStatus = workspaceState?.gitStatus;
   const gitLoading = workspaceState?.gitLoading ?? false;
   const gitError = workspaceState?.gitError;
-  const diff = workspaceState?.diff ?? null;
-  const diffLoading = workspaceState?.diffLoading ?? false;
-  const diffError = workspaceState?.diffError ?? null;
   const preview = workspaceState?.preview ?? null;
   const previewLoading = workspaceState?.previewLoading ?? false;
   const previewError = workspaceState?.previewError ?? null;
@@ -171,47 +161,7 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
     [changes, directories, normalizedQuery],
   );
 
-  useEffect(() => {
-    ensureWorkspace(workspaceId);
-    void listDirectory(workspaceId, "");
-    void refreshGitStatus(workspaceId);
-  }, [ensureWorkspace, listDirectory, refreshGitStatus, workspaceId, rootPath]);
-
-  useEffect(() => {
-    let disposed = false;
-    const listener = listen<ProjectFilesChanged>("project-files-changed", (event) => {
-      if (event.payload.workspaceId === workspaceId) {
-        handleFilesChanged(workspaceId, event.payload);
-      }
-    });
-
-    void invokeWithTimeout(
-      () => invoke("project_watch_workspace", { workspaceId }),
-      10000,
-    ).catch(() => undefined);
-
-    void listener
-      .then((unlisten) => {
-        if (disposed) unlisten();
-      })
-      .catch(() => undefined);
-    return () => {
-      disposed = true;
-      void listener
-        .then((unlisten) => unlisten())
-        .catch(() => undefined);
-      void invokeWithTimeout(
-        () => invoke("project_unwatch_workspace", { workspaceId }),
-        10000,
-      ).catch(() => undefined);
-    };
-  }, [handleFilesChanged, workspaceId]);
-
   const selectedPath = workspaceState?.selectedPath;
-  const refreshWorkspace = () => {
-    void refreshDirectory(workspaceId, "");
-    void refreshGitStatus(workspaceId);
-  };
   const selectEntry = (entry: ProjectEntry) => {
     if (entry.kind === "directory") {
       toggleDirectory(workspaceId, entry.path);
@@ -220,18 +170,53 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
       clearPreview(workspaceId);
       return;
     }
+    if (selectedPath === entry.path) {
+      clearDiff(workspaceId);
+      void loadFilePreview(workspaceId, entry.path);
+      return;
+    }
     selectPath(workspaceId, entry.path);
   };
 
   useEffect(() => {
-    if (!selectedPath) return;
-    const change = changesByPath.get(selectedPath);
-    if (change) {
-      void loadDiff(workspaceId, selectedPath, change.worktree !== "clean" ? "worktree" : "staged");
+    if (!isFilesView || !selectedPath) return;
+    clearDiff(workspaceId);
+    void loadFilePreview(workspaceId, selectedPath);
+  }, [clearDiff, isFilesView, loadFilePreview, revision, selectedPath, workspaceId]);
+
+  useEffect(() => {
+    if (!isFilesView || !normalizedQuery) {
+      setSearchLoading(false);
       return;
     }
-    void loadFilePreview(workspaceId, selectedPath);
-  }, [changesByPath, loadDiff, loadFilePreview, revision, selectedPath, workspaceId]);
+
+    let active = true;
+    setSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      const cachedScan = searchScanRef.current;
+      const promise =
+        cachedScan?.workspaceId === workspaceId
+          ? cachedScan.promise
+          : loadSearchDirectories(workspaceId, [...SEARCH_SKIP_DIRECTORIES]);
+      if (!cachedScan || cachedScan.workspaceId !== workspaceId) {
+        searchScanRef.current = { workspaceId, promise };
+      }
+      void promise.then(
+        () => {
+          if (active) setSearchLoading(false);
+        },
+        () => {
+          if (active) setSearchLoading(false);
+        },
+      );
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [isFilesView, loadSearchDirectories, normalizedQuery, workspaceId]);
+
+  const displayedEntries = normalizedQuery && searchLoading ? [] : visibleEntries;
   const repositoryLabel =
     gitStatus?.repositoryState === "repository"
       ? gitStatus.branch || "detached"
@@ -243,61 +228,46 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="border-b border-white/[0.06] px-4 pb-3 pt-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="eyebrow text-[0.58rem]">Files</p>
-            <h2 className="mt-1 truncate text-[0.95rem] font-bold text-neutral-text">{workspaceName}</h2>
-            <p className="mt-1 truncate font-mono text-[0.62rem] text-neutral-text-muted" title={rootPath}>
-              {compactPath(rootPath)}
-            </p>
-            <div className="mt-2 flex min-w-0 items-center gap-2 text-[0.62rem] text-neutral-text-muted">
-              <GitBranch size={12} className={gitStatus?.repositoryState === "repository" ? "text-sky-300" : ""} />
-              <span className="truncate">{repositoryLabel}</span>
-              {gitStatus?.repositoryState === "repository" && changes.length > 0 && (
-                <span className="shrink-0 rounded-full border border-primary/25 bg-primary/[0.10] px-1.5 py-0.5 text-[0.55rem] font-semibold text-primary">
-                  {changes.length} {changes.length === 1 ? "modifica" : "modifiche"}
-                </span>
-              )}
-              {gitStatus?.repositoryState === "repository" &&
-                (gitStatus.ahead > 0 || gitStatus.behind > 0) && (
-                  <span
-                    className="shrink-0 font-mono text-[0.55rem] text-neutral-text-muted"
-                    title={gitStatus.upstream ? `Upstream: ${gitStatus.upstream}` : "Branch non allineato"}
-                  >
-                    {gitStatus.ahead > 0 ? `↑${gitStatus.ahead}` : ""}
-                    {gitStatus.ahead > 0 && gitStatus.behind > 0 ? " " : ""}
-                    {gitStatus.behind > 0 ? `↓${gitStatus.behind}` : ""}
-                  </span>
-                )}
-              {gitLoading && <LoaderCircle size={11} className="shrink-0 animate-spin text-primary" />}
-            </div>
+      <div className="relative border-b border-white/[0.06] px-4 pb-3 pt-4">
+        <div className="min-w-0 pr-9 text-center">
+          <h2 className="truncate text-[1rem] font-bold leading-tight text-neutral-text">{workspaceName}</h2>
+          <p className="mt-1 truncate font-mono text-[0.6rem] text-neutral-text-muted" title={rootPath}>
+            {compactPath(rootPath)}
+          </p>
+          <div className="mt-2 flex min-w-0 items-center justify-center gap-2 text-[0.6rem] text-neutral-text-muted">
+            <GitBranch size={12} className={gitStatus?.repositoryState === "repository" ? "text-sky-300" : ""} />
+            <span className="truncate">{repositoryLabel}</span>
+            {gitStatus?.repositoryState === "repository" && changes.length > 0 && (
+              <span className="shrink-0 rounded-full border border-primary/25 bg-primary/[0.10] px-1.5 py-0.5 text-[0.55rem] font-semibold text-primary">
+                {changes.length}
+              </span>
+            )}
+            {gitStatus?.repositoryState === "repository" && (gitStatus.ahead > 0 || gitStatus.behind > 0) && (
+              <span
+                className="shrink-0 font-mono text-[0.55rem] text-neutral-text-muted"
+                title={gitStatus.upstream ? `Upstream: ${gitStatus.upstream}` : "Branch non allineato"}
+              >
+                {gitStatus.ahead > 0 ? `↑${gitStatus.ahead}` : ""}
+                {gitStatus.ahead > 0 && gitStatus.behind > 0 ? " " : ""}
+                {gitStatus.behind > 0 ? `↓${gitStatus.behind}` : ""}
+              </span>
+            )}
+            {gitLoading && <LoaderCircle size={11} className="shrink-0 animate-spin text-primary" />}
           </div>
-          <button
-            type="button"
-            onClick={refreshWorkspace}
-            className="ui-icon-button h-8 w-8 shrink-0"
-            title="Aggiorna file"
-            aria-label="Aggiorna file"
-          >
-            <RefreshCw size={14} className={root?.loading ? "animate-spin" : ""} />
-          </button>
         </div>
-
-        <label className="mt-3 flex h-9 items-center gap-2 rounded-lg border border-white/[0.09] bg-black/20 px-2.5 text-neutral-text-muted focus-within:border-primary/70">
+        <label className="mt-4 flex h-10 items-center gap-2 rounded-lg border border-white/[0.09] bg-black/20 px-3 text-neutral-text-muted focus-within:border-primary/70">
           <Search size={14} />
           <input
             value={searchQuery}
             onChange={(event) => setSearchQuery(workspaceId, event.target.value)}
-            placeholder="Filtra file"
-            className="min-w-0 flex-1 bg-transparent text-xs text-neutral-text outline-none placeholder:text-neutral-text-muted"
-            aria-label="Filtra file"
+            placeholder="Cerca file"
+            className="min-w-0 flex-1 bg-transparent text-[0.72rem] text-neutral-text outline-none placeholder:text-neutral-text-muted"
+            aria-label="Cerca file"
           />
           <span className="rounded border border-white/[0.08] px-1.5 py-0.5 font-mono text-[0.55rem] text-neutral-text-muted">
             /
           </span>
         </label>
-
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
@@ -330,7 +300,14 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
           </div>
         )}
 
-        {root?.loaded && visibleEntries.length === 0 && !root.error && (
+        {searchLoading && (
+          <div className="flex items-center gap-2 px-3 py-5 text-[0.72rem] text-neutral-text-muted">
+            <LoaderCircle size={14} className="animate-spin text-primary" />
+            Ricerca file…
+          </div>
+        )}
+
+        {root?.loaded && displayedEntries.length === 0 && !root.error && !searchLoading && (
           <div className="mx-2 rounded-lg border border-dashed border-white/[0.08] px-4 py-8 text-center">
             <Folder size={24} className="mx-auto mb-3 text-neutral-text-muted" strokeWidth={1.4} />
             <p className="text-xs font-semibold text-neutral-text">
@@ -343,7 +320,7 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
         )}
 
         <div className="space-y-0.5">
-          {visibleEntries.map(({ entry, depth }) => {
+          {displayedEntries.map(({ entry, depth }) => {
             const directory = entry.kind === "directory" ? directories[entry.path] : undefined;
             const isSelected = selectedPath === entry.path;
             const isDirectory = entry.kind === "directory";
@@ -355,18 +332,6 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
                 type="button"
                 key={entry.path}
                 onClick={() => selectEntry(entry)}
-                onDoubleClick={() => {
-                  if (entry.kind === "file") {
-                    void invokeWithTimeout(
-                      () =>
-                        invoke("project_open_file", {
-                          workspaceId,
-                          relativePath: entry.path,
-                        }),
-                      10000,
-                    ).catch(() => undefined);
-                  }
-                }}
                 className={`group flex h-8 w-full items-center gap-1.5 rounded-md pr-2 text-left text-xs transition-colors ${
                   isSelected
                     ? "bg-primary/[0.13] text-neutral-text ring-1 ring-inset ring-primary/30"
@@ -422,7 +387,7 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
                       className={`shrink-0 rounded border px-1 py-0.5 font-mono text-[0.55rem] font-bold leading-none ${changeTone(change)}`}
                       title={changeDetail(change)}
                     >
-                      {changeStatusLabel(change)}
+                      {changeStatusCode(change)}
                     </span>
                   );
                 })()}
@@ -432,22 +397,7 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
         </div>
       </div>
 
-      {(diff || diffLoading || diffError) && (
-        <ProjectDiffViewer
-          diff={diff}
-          loading={diffLoading}
-          error={diffError}
-          change={null}
-          readOnly
-          showSideToggle={false}
-          onClose={() => clearDiff(workspaceId)}
-          onSideChange={(side) => {
-            if (selectedPath) void loadDiff(workspaceId, selectedPath, side);
-          }}
-        />
-      )}
-
-      {!diff && !diffLoading && !diffError && (preview || previewLoading || previewError) && (
+      {(preview || previewLoading || previewError) && (
         <ProjectFilePreview
           preview={preview}
           loading={previewLoading}
