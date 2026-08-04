@@ -38,7 +38,7 @@ const agentIcons: Record<string, typeof Bot> = {
   "anti-gravity": Bot,
   claude: Bot,
   codex: Bot,
-  cmdc: Terminal,
+  cline: Bot,
   freebuff: Bot,
   pi: Bot,
 };
