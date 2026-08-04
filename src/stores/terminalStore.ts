@@ -328,11 +328,21 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   clearAgentAttention: (id) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t || !t.agentAttentionRequired) return state;
+      if (
+        !t ||
+        (!t.agentAttentionRequired && t.agentStatus !== "completed")
+      ) {
+        return state;
+      }
       return {
         terminals: {
           ...state.terminals,
-          [id]: { ...t, agentAttentionRequired: false },
+          [id]: {
+            ...t,
+            agentStatus: "idle",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
+          },
         },
       };
     }),

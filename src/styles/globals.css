@@ -172,6 +172,11 @@ a:not(:disabled),
   50% { opacity: 0.45; }
 }
 
+@keyframes overlay-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
 @keyframes agentAttentionPulse {
   0%, 100% {
     outline: 1px solid rgba(255, 157, 36, 0.35);

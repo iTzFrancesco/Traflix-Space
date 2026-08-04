@@ -1,0 +1,180 @@
+[CmdletBinding()]
+param()
+
+# Adapter contract suite. It does not launch any real agent or read secrets:
+# it verifies the provider-specific lifecycle seams and exercises the shared
+# bridge over a real Windows named pipe for every agent configured by Traflix.
+$ErrorActionPreference = "Stop"
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$bridgePath = Join-Path $scriptRoot "traflix-agent-event.ps1"
+$failures = [System.Collections.Generic.List[string]]::new()
+
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { $failures.Add($Message) }
+}
+
+function Assert-Contains {
+    param([string]$Text, [string]$Needle, [string]$Name)
+    Assert-True ($Text.Contains($Needle)) "$Name must contain '$Needle'"
+}
+
+Write-Host "== Traflix agent notification adapter suite =="
+
+$adapterContracts = @(
+    @{
+        Name = "Codex"
+        Path = Join-Path $scriptRoot "codex-config.toml.example"
+        Required = @("notify", "traflix-agent-event.ps1", "-Provider", "codex")
+    }
+    @{
+        Name = "Claude"
+        Path = Join-Path $scriptRoot "claude-hooks.json"
+        Required = @('"Notification"', "idle_prompt", "-Provider claude")
+    }
+    @{
+        Name = "OpenCode"
+        Path = Join-Path $scriptRoot "opencode-traflix-plugin.ts"
+        Required = @("session.status", 'status === "busy" || status === "retry"', 'status !== "idle"', 'eventId:', 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '"opencode"')
+    }
+    @{
+        Name = "Pi"
+        Path = Join-Path $scriptRoot "pi-traflix-extension.ts"
+        Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"')
+    }
+)
+
+foreach ($contract in $adapterContracts) {
+    $content = if (Test-Path -LiteralPath $contract.Path) {
+        Get-Content -Raw -LiteralPath $contract.Path
+    } else { "" }
+    Assert-True (Test-Path -LiteralPath $contract.Path) "$($contract.Name) adapter file is missing"
+    foreach ($required in $contract.Required) {
+        Assert-Contains $content $required $contract.Name
+    }
+    Write-Host "[contract] $($contract.Name)"
+}
+
+$uiContracts = @(
+    @{ Name = "Traflix overlay"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", "projectName", "Apri", "Continua") },
+    @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay") },
+    @{ Name = "overlay window"; Path = Join-Path $scriptRoot "..\..\src-tauri\tauri.conf.json"; Required = @('"label": "agent-notification"', '"alwaysOnTop": true', '"visible": false') }
+)
+foreach ($contract in $uiContracts) {
+    $content = if (Test-Path -LiteralPath $contract.Path) { Get-Content -Raw -LiteralPath $contract.Path } else { "" }
+    Assert-True (Test-Path -LiteralPath $contract.Path) "$($contract.Name) file is missing"
+    foreach ($required in $contract.Required) {
+        Assert-Contains $content $required $contract.Name
+    }
+    Write-Host "[ui] $($contract.Name)"
+}
+
+function Test-BridgeProvider {
+    param([string]$Provider)
+
+    $pipeLeaf = "traflix-agent-test-$([guid]::NewGuid().ToString('N'))"
+    $terminalId = "adapter-test-$Provider"
+    $pipeName = "\\.\pipe\$pipeLeaf"
+    $payload = @{ type = "agent-turn-complete"; providerSessionId = "session-$Provider"; providerTurnId = "turn-$Provider" } |
+        ConvertTo-Json -Compress
+    $server = [System.IO.Pipes.NamedPipeServerStream]::new(
+        $pipeLeaf,
+        [System.IO.Pipes.PipeDirection]::In,
+        1,
+        [System.IO.Pipes.PipeTransmissionMode]::Byte,
+        [System.IO.Pipes.PipeOptions]::Asynchronous
+    )
+
+    $escapedBridge = $bridgePath.Replace("'", "''")
+    $escapedPayload = $payload.Replace("'", "''")
+    $command = "& '$escapedBridge' -Provider '$Provider' -Kind 'turn_completed' -PipeName '$pipeName' -TerminalId '$terminalId' -Payload '$escapedPayload'"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $process = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
+    )
+
+    try {
+        if (-not $server.WaitForConnectionAsync().Wait(4000)) {
+            throw "bridge did not connect to the named pipe"
+        }
+        $reader = [System.IO.StreamReader]::new($server, [Text.Encoding]::UTF8)
+        $line = $reader.ReadLine()
+        if (-not $process.WaitForExit(5000)) {
+            throw "bridge process did not exit"
+        }
+        Assert-True ($process.ExitCode -eq 0) "$Provider bridge exited with $($process.ExitCode)"
+        $event = $line | ConvertFrom-Json
+        Assert-True ($event.protocol -eq 1) "$Provider protocol must be 1"
+        Assert-True ($event.provider -eq $Provider) "$Provider must be preserved by bridge"
+        Assert-True ($event.kind -eq "turn_completed") "$Provider kind must be turn_completed"
+        Assert-True ($event.terminalId -eq $terminalId) "$Provider terminal id must be preserved"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($event.eventId)) "$Provider event id must be generated"
+        Write-Host "[bridge] $Provider"
+    } catch {
+        $failures.Add("$Provider bridge: $($_.Exception.Message)")
+    } finally {
+        if ($process -and -not $process.HasExited) { $process.Kill() }
+        $server.Dispose()
+    }
+}
+
+function Test-BridgeFanout {
+    $pipeA = "traflix-agent-fanout-a-$([guid]::NewGuid().ToString('N'))"
+    $pipeB = "traflix-agent-fanout-b-$([guid]::NewGuid().ToString('N'))"
+    $terminalId = "adapter-test-fanout"
+    $payload = @{ type = "agent-turn-complete"; providerSessionId = "session-fanout"; providerTurnId = "turn-fanout" } |
+        ConvertTo-Json -Compress
+    $servers = @(
+        [System.IO.Pipes.NamedPipeServerStream]::new($pipeA, [System.IO.Pipes.PipeDirection]::In, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous),
+        [System.IO.Pipes.NamedPipeServerStream]::new($pipeB, [System.IO.Pipes.PipeDirection]::In, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+    )
+    $escapedBridge = $bridgePath.Replace("'", "''")
+    $escapedPayload = $payload.Replace("'", "''")
+    $pipeNameA = "\\.\pipe\$pipeA"
+    $command = "& '$escapedBridge' -Provider 'codex' -Kind 'turn_completed' -PipeName '$pipeNameA' -PipeAlternates '$pipeB' -TerminalId '$terminalId' -Payload '$escapedPayload'"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $waitTasks = @($servers | ForEach-Object { $_.WaitForConnectionAsync() })
+    $process = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
+    )
+
+    try {
+        $lines = [System.Collections.Generic.List[string]]::new()
+        for ($index = 0; $index -lt $waitTasks.Count; $index++) {
+            if (-not $waitTasks[$index].Wait(4000)) {
+                $failedPipe = if ($index -eq 0) { $pipeA } else { $pipeB }
+                throw "bridge did not connect to fanout pipe $index ($failedPipe)"
+            }
+            $reader = [System.IO.StreamReader]::new($servers[$index], [Text.Encoding]::UTF8)
+            $lines.Add($reader.ReadLine())
+        }
+        if (-not $process.WaitForExit(5000)) { throw "fanout bridge process did not exit" }
+        foreach ($line in $lines) {
+            $event = $line | ConvertFrom-Json
+            Assert-True ($event.provider -eq "codex") "fanout provider must be preserved"
+            Assert-True ($event.terminalId -eq $terminalId) "fanout terminal id must be preserved"
+        }
+        Write-Host "[bridge-fanout] DEV + release destinations"
+    } catch {
+        $failures.Add("bridge fanout: $($_.Exception.Message)")
+    } finally {
+        if ($process -and -not $process.HasExited) { $process.Kill() }
+        $servers | ForEach-Object { $_.Dispose() }
+    }
+}
+
+# Includes providers without a checked-in adapter implementation: the common
+# bridge contract is provider-agnostic, so these agents can be wired to it by
+# their native hook/notification mechanism without changing Traflix itself.
+foreach ($provider in @("anti-gravity", "claude", "codex", "opencode", "pi", "cmdc", "freebuff")) {
+    Test-BridgeProvider $provider
+}
+Test-BridgeFanout
+
+if ($failures.Count -gt 0) {
+    Write-Host "`nFAILED ($($failures.Count))" -ForegroundColor Red
+    $failures | ForEach-Object { Write-Host " - $_" -ForegroundColor Red }
+    exit 1
+}
+
+Write-Host "`nPASS: all provider contracts and bridge paths verified." -ForegroundColor Green

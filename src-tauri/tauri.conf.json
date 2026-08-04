@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Traflix Space",
-  "version": "1.5.9",
+  "version": "1.6.0",
   "identifier": "com.traflix.space",
   "build": {
     "frontendDist": "../dist",
@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Traflix Space",
         "width": 1400,
         "height": 900,
@@ -22,6 +23,28 @@
         "transparent": false,
         "theme": "Dark",
         "dragDropEnabled": true
+      },
+      {
+        "label": "agent-notification",
+        "title": "Traflix Space",
+        "width": 480,
+        "height": 126,
+        "minWidth": 480,
+        "minHeight": 126,
+        "maxWidth": 480,
+        "maxHeight": 126,
+        "center": false,
+        "visible": false,
+        "focus": false,
+        "focusable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "visibleOnAllWorkspaces": true,
+        "url": "index.html?agent-notification"
       }
     ],
     "security": {

@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AGENTS } from "./agents";
+import { AGENTS, type AgentDefinition } from "./agents";
 import { useTerminalStore } from "../stores/terminalStore";
+
+function shellFamily(shell: string): string {
+  const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
+  if (/^(?:powershell|pwsh)(?:\.exe)?$/i.test(executable)) return "powershell";
+  if (/^cmd(?:\.exe)?$/i.test(executable)) return "cmd";
+  return "powershell";
+}
+
+function resolveAgentCommand(agent: AgentDefinition, shell: string): string {
+  return agent.commandByShell?.[shellFamily(shell)] ?? agent.command;
+}
 
 class AgentLaunchQueue {
   private queue: Array<{ terminalId: string; agentId: string }> = [];
@@ -21,8 +32,9 @@ class AgentLaunchQueue {
     this.active++;
     try {
       const agent = AGENTS.find((a) => a.id === agentId);
-      if (agent) {
-        const cmd = `${agent.command} ${agent.args.join(" ")}\r\n`;
+      const terminal = useTerminalStore.getState().terminals[terminalId];
+      if (agent && terminal) {
+        const cmd = `${resolveAgentCommand(agent, terminal.shell)} ${agent.args.join(" ")}\r\n`;
         const encoder = new TextEncoder();
         await invoke("terminal_write", {
           terminalId,

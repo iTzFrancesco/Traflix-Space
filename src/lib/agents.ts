@@ -8,6 +8,8 @@ export interface AgentDefinition {
   args: string[];
   icon: string;
   color: string;
+  /** Comando alternativo per shell specifica (chiave = famiglia shell, es. "cmd"). */
+  commandByShell?: Record<string, string>;
 }
 
 export const AGENTS: AgentDefinition[] = [
@@ -57,13 +59,14 @@ export const AGENTS: AgentDefinition[] = [
     color: "#a855f7",
   },
   {
-    id: "cmdc",
-    name: "Command Code",
-    description: "Agente AI Command Code",
-    command: "cmdc",
+    id: "cline",
+    name: "Cline",
+    description: "Agente AI Cline",
+    command: "cline",
     args: [],
-    icon: "Terminal",
-    color: "#3a86ff",
+    icon: "Bot",
+    color: "#6366f1",
+    commandByShell: { cmd: "Cline" },
   },
   {
     id: "freebuff",

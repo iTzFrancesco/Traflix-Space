@@ -1,15 +1,79 @@
-import { spawn } from "node:child_process";
-import type { Plugin } from "@opencode-ai/plugin";
+import { spawn } from "node:child_process"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import type { Plugin } from "@opencode-ai/plugin"
 
 /**
- * Add this file to an OpenCode plugin directory. The bridge path is supplied
- * explicitly so Traflix never edits the user's OpenCode configuration.
+ * OpenCode plugin that forwards the `session.status: idle` (busy -> idle)
+ * transition to Traflix Space via the traflix-agent-event.ps1 bridge.
+ *
+ * Resilient by design:
+ *  - bridge path is resolved at event time (env + install-location fallback);
+ *  - a log (~/.config/opencode/traflix-notify.log) makes failures visible.
  */
-const bridgePath = process.env.TRAFLIX_AGENT_EVENT_BRIDGE;
-const activeSessions = new Set<string>();
 
-function forward(event: unknown) {
-  if (!bridgePath) return;
+function logFile(): string {
+  return path.join(os.homedir(), ".config", "opencode", "traflix-notify.log")
+}
+function log(msg: string): void {
+  try {
+    fs.appendFileSync(logFile(), `[${new Date().toISOString()}] ${msg}\n`)
+  } catch {
+    // best-effort
+  }
+}
+
+function cleanWindowsPath(p: string): string {
+  // Windows extended-length prefixes break `powershell -File`. Normalize them:
+  //   \\?\C:\...          -> C:\...
+  //   \\?\UNC\server\...  -> \\server\...
+  if (p.startsWith("\\\\?\\UNC\\")) return `\\\\${p.slice(8)}`
+  if (p.startsWith("\\\\?\\")) return p.slice(4)
+  return p
+}
+
+function resolveBridge(): string | null {
+  const fromEnv = process.env.TRAFLIX_AGENT_EVENT_BRIDGE
+  const candidates = [
+    "C:\\Users\\Francesco\\OneDrive\\Documenti\\developer\\GitHub\\Traflix-Space\\scripts\\agent-notifications\\traflix-agent-event.ps1",
+    ...(fromEnv && fromEnv.trim() ? [cleanWindowsPath(fromEnv.trim())] : []),
+    "C:\\Program Files\\Traflix Space\\agent-notifications\\traflix-agent-event.ps1",
+    path.join(
+      os.homedir(),
+      "AppData",
+      "Local",
+      "Programs",
+      "Traflix Space",
+      "agent-notifications",
+      "traflix-agent-event.ps1",
+    ),
+  ]
+  const compatible = (candidate: string) => {
+    try {
+      return fs.readFileSync(candidate, "utf8").includes("PipeAlternates")
+    } catch {
+      return false
+    }
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && compatible(candidate)) return cleanWindowsPath(candidate)
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return cleanWindowsPath(candidate)
+  }
+  return null
+}
+
+function forward(event: unknown): void {
+  const bridge = resolveBridge()
+  const terminalId = process.env.TRAFLIX_TERMINAL_ID
+  const pipe = process.env.TRAFLIX_AGENT_EVENT_PIPE
+  log(
+    `session idle -> bridge=${bridge ? "yes" : "NO"} terminal=${terminalId ? "yes" : "NO"} pipe=${pipe ? "yes" : "NO"}`,
+  )
+  if (!bridge || !terminalId || !pipe) return
+
   const child = spawn(
     "powershell.exe",
     [
@@ -17,44 +81,60 @@ function forward(event: unknown) {
       "-ExecutionPolicy",
       "Bypass",
       "-File",
-      bridgePath,
+      bridge,
       "-Provider",
       "opencode",
       "-Kind",
       "turn_completed",
+      "-PipeName",
+      pipe,
+      "-TerminalId",
+      terminalId,
       "-Payload",
       JSON.stringify(event),
     ],
     { detached: true, stdio: "ignore", windowsHide: true },
-  );
-  child.unref();
+  )
+  child.unref()
 }
 
-export const TraflixOpenCodePlugin: Plugin = async () => ({
-  event: async ({ event }) => {
-    if (event.type !== "session.status") return;
-    const properties = event.properties as {
-      sessionID?: string;
-      status?: { type?: string };
-    };
-    const sessionID = properties.sessionID;
-    const status = properties.status?.type;
-    if (!sessionID || !status) return;
+export const TraflixOpenCodePlugin: Plugin = async () => {
+  log("plugin loaded; registering session.status listener")
+  const activeSessions = new Set<string>()
+  return {
+    event: async ({ event }) => {
+      if (event.type !== "session.status") return
+      const properties = event.properties as {
+        sessionID?: string
+        status?: { type?: string }
+      }
+      const sessionID = properties.sessionID
+      const status = properties.status?.type
+      if (!sessionID || !status) return
 
-    if (status === "busy") {
-      activeSessions.add(sessionID);
-      return;
-    }
-    if (status !== "idle") return;
-    if (!activeSessions.delete(sessionID)) return;
+      // `retry` is still part of the same in-flight turn. Keep the session
+      // armed so a later retry -> idle transition produces exactly one
+      // completion notification.
+      if (status === "busy" || status === "retry") {
+        activeSessions.add(sessionID)
+        return
+      }
+      if (status !== "idle") return
+      if (!activeSessions.delete(sessionID)) return
 
-    // Keep the provider session id at the top level for the generic bridge.
-    forward({
-      type: event.type,
-      sessionID,
-      status: properties.status,
-    });
-  },
-});
+      log(`idle transition for session ${sessionID}`)
+      forward({
+        type: event.type,
+        sessionID,
+        providerSessionId: sessionID,
+        // OpenCode exposes the session id but not a stable turn id here. The
+        // bridge must therefore receive a fresh id for every idle transition;
+        // otherwise its dedupe registry treats turn 2+ as duplicates of turn 1.
+        eventId: `opencode/${sessionID}/${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        status: properties.status,
+      })
+    },
+  }
+}
 
-export default TraflixOpenCodePlugin;
+export default TraflixOpenCodePlugin

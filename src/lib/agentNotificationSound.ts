@@ -1,7 +1,7 @@
 let audioContext: AudioContext | null = null;
 let lastPlayedAt = 0;
 
-/** Plays a short, unobtrusive two-note chime for an unfocused agent turn. */
+/** Plays a short, clearly audible three-note chime for an unfocused agent turn. */
 export function playAgentCompletionChime() {
   if (typeof window === "undefined") return;
 
@@ -25,20 +25,21 @@ export function playAgentCompletionChime() {
       const start = context.currentTime + 0.015;
       const master = context.createGain();
       master.gain.setValueAtTime(0.0001, start);
-      master.gain.exponentialRampToValueAtTime(0.16, start + 0.025);
-      master.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
+      master.gain.exponentialRampToValueAtTime(0.72, start + 0.025);
+      master.gain.exponentialRampToValueAtTime(0.0001, start + 0.58);
       master.connect(context.destination);
 
       for (const [frequency, offset, duration] of [
-        [659.25, 0, 0.18],
-        [783.99, 0.08, 0.28],
+        [523.25, 0, 0.2],
+        [659.25, 0.09, 0.22],
+        [783.99, 0.18, 0.34],
       ] as const) {
         const oscillator = context.createOscillator();
         const gain = context.createGain();
         oscillator.type = "sine";
         oscillator.frequency.setValueAtTime(frequency, start + offset);
         gain.gain.setValueAtTime(0.0001, start + offset);
-        gain.gain.exponentialRampToValueAtTime(0.5, start + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(1.0, start + offset + 0.02);
         gain.gain.exponentialRampToValueAtTime(
           0.0001,
           start + offset + duration,

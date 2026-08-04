@@ -292,7 +292,7 @@ export function Sidebar() {
                   />
                   {pendingCount > 0 && (
                     <span
-                      className="agent-attention-badge absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border text-[10px] font-bold"
+                      className="agent-attention-badge absolute -right-1.5 -top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border text-xs font-bold"
                       aria-label={`${pendingCount} terminal${pendingCount === 1 ? "e" : "i"} in attesa`}
                       style={{
                         backgroundColor: "var(--color-primary)",
@@ -647,14 +647,14 @@ export function Sidebar() {
                           )}
                           {pendingCount > 0 && (
                             <span
-                              className="agent-attention-badge inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-mono font-bold shrink-0"
+                              className="agent-attention-badge inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[13px] font-mono font-bold shrink-0"
                               title={`${pendingCount} terminal${pendingCount === 1 ? "e" : "i"} in attesa`}
                               style={{
                                 backgroundColor: "rgba(255,157,36,0.16)",
                                 color: "var(--color-primary-light)",
                               }}
                             >
-                              <Bell size={12} aria-hidden="true" />
+                              <Bell size={14} aria-hidden="true" />
                               {pendingCount}
                             </span>
                           )}

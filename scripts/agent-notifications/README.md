@@ -6,10 +6,67 @@ Traflix Space listens on the Windows named pipe configured in
 - `TRAFLIX_TERMINAL_ID`
 - `TRAFLIX_AGENT_EVENT_PIPE`
 - `TRAFLIX_AGENT_EVENT_PROTOCOL=1`
+- `TRAFLIX_AGENT_EVENT_BRIDGE` (absolute path to the bridge)
+- `TRAFLIX_WORKSPACE_ID` (owning workspace, since the workspace_id fix)
 
 The bridge is [`traflix-agent-event.ps1`](./traflix-agent-event.ps1). It is
-best-effort: if Traflix is closed or the pipe is unavailable, it exits without
-blocking or changing the agent result.
+best-effort: if Traflix is closed or a pipe is unavailable, it exits without
+blocking or changing the agent result. A real Traflix terminal event is sent
+to both the configured pipe and the other DEV/release pipe, so two local
+Traflix instances can observe the same completion.
+
+## Automatic setup (recommended)
+
+[`install-adapters.ps1`](./install-adapters.ps1) wires the bridge into the
+config folders of the agents in one, idempotent run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-notifications\install-adapters.ps1
+```
+
+It detects the installed bridge (`C:\Program Files\Traflix Space\...`) or a
+repo checkout, and:
+
+| Agent | Install target | Notes |
+|-------|----------------|-------|
+| Codex | `~/.codex/config.toml` → `notify` | Replaces the single `notify` command (Codex allows one). A backup is saved to `config.toml.traflix.bak`. |
+| OpenCode | `~/.config/opencode/plugin/opencode-traflix-plugin.ts` | Auto-loaded from the plugin dir. If your OpenCode version does not pick it up, add the path to the `plugin`/`plugins` array in `opencode.json` / `opencode.v2.json`. |
+| Pi | `~/.pi/agent/extensions/traflix-notify.ts` | Pi auto-discovers `extensions/*.ts`. |
+
+Run it again after every reinstall/update of Traflix (the bridge path can move).
+
+## Smoke test
+
+From a terminal opened inside Traflix Space (so the environment carries
+`TRAFLIX_TERMINAL_ID`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\agent-notifications\smoke-test.ps1
+```
+
+If the toast appears, the pipe → Rust → frontend chain works and the agent in
+question only needs its adapter installed/restarted. If it does not appear,
+Traflix's own event chain is at fault (check the Rust logs:
+`RUST_LOG=traflix_space=info,warn`).
+
+## Adapter test suite
+
+Run the Windows contract/integration suite from the repository root:
+
+```powershell
+npm run test:agent-notifications
+```
+
+It checks the Codex, Claude, OpenCode, and Pi lifecycle adapters, then sends
+synthetic completion payloads through a real named pipe for every configured
+agent (`anti-gravity`, `claude`, `codex`, `opencode`, `pi`, `cmdc`, and
+`freebuff`). It never reads `.env` and never starts an agent process.
+
+Attention-required completions use Traflix's own always-on-top overlay window;
+they remain visible when the main window is unfocused or the desktop is in
+front. A focused terminal plays only the completion chime. No native Windows
+notification is used. Restart the Tauri DEV app after changing the window
+configuration so the overlay window is created.
 
 ## Setup rules
 

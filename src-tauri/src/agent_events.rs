@@ -7,7 +7,17 @@ use tracing::{info, warn};
 use crate::terminal_engine::TerminalManager;
 
 pub const AGENT_EVENT_PROTOCOL: u8 = 1;
-pub const AGENT_EVENT_PIPE_NAME: &str = r"\\.\pipe\traflix-space-agent-events";
+
+/// Named pipe for agent turn events. Dev (debug) builds use a separate pipe
+/// name so a dev server can receive notifications even while the installed
+/// (release) app is running in the tray and owns the release pipe.
+pub fn agent_event_pipe_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        r"\\.\pipe\traflix-space-agent-events-dev"
+    } else {
+        r"\\.\pipe\traflix-space-agent-events"
+    }
+}
 const MAX_EVENT_BYTES: usize = 32 * 1024;
 const MAX_DEDUPE_ENTRIES: usize = 4096;
 
@@ -108,10 +118,27 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let mut server = ServerOptions::new()
+    // Try to own the pipe as the first instance. If another Traflix instance
+    // already owns it, fall back to a co-listener so the server can still
+    // receive events instead of silently dying. A dev build uses its own pipe
+    // name, so it never conflicts with the installed app.
+    let mut server = match ServerOptions::new()
         .first_pipe_instance(true)
-        .create(AGENT_EVENT_PIPE_NAME)?;
-    info!(pipe = AGENT_EVENT_PIPE_NAME, "Agent event named pipe ready");
+        .create(agent_event_pipe_name())
+    {
+        Ok(s) => {
+            info!(pipe = agent_event_pipe_name(), "Agent event named pipe ready (owner)");
+            s
+        }
+        Err(e) if pipe_busy(&e) => {
+            warn!(
+                pipe = agent_event_pipe_name(),
+                "Agent event pipe already owned by another Traflix instance; running as co-listener"
+            );
+            ServerOptions::new().create(agent_event_pipe_name())?
+        }
+        Err(e) => return Err(e),
+    };
 
     loop {
         server.connect().await?;
@@ -119,7 +146,7 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
 
         // Create the next instance before processing this short-lived client.
         // This avoids a connection race when several agents finish together.
-        server = ServerOptions::new().create(AGENT_EVENT_PIPE_NAME)?;
+        server = ServerOptions::new().create(agent_event_pipe_name())?;
 
         let client_app = app.clone();
         let registry = client_app.state::<AgentEventRegistry>().inner().clone();
@@ -138,6 +165,12 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
             }
         });
     }
+}
+
+#[cfg(windows)]
+fn pipe_busy(error: &std::io::Error) -> bool {
+    // ERROR_PIPE_BUSY = 231 (another instance owns the first pipe instance).
+    error.raw_os_error() == Some(231)
 }
 
 fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
@@ -160,16 +193,19 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
         return;
     }
 
-    let manager = app.state::<TerminalManager>();
-    if !manager.has_session(&event.terminal_id) {
-        warn!(terminal_id = %event.terminal_id, "Agent event ignored for unknown terminal");
-        return;
-    }
-
     if let Some(key) = event.dedupe_key() {
         if !registry.accept_once(key) {
             return;
         }
+    }
+
+    let manager = app.state::<TerminalManager>();
+    let terminal_known = manager.has_session(&event.terminal_id);
+    if !terminal_known {
+        // The bridge deliberately fans out to DEV and release. The other
+        // instance does not own this PTY, but it still needs the event so its
+        // Traflix overlay can notify the user above the desktop.
+        warn!(terminal_id = %event.terminal_id, "Agent event received for a terminal owned by another Traflix instance");
     }
 
     info!(

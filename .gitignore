@@ -27,10 +27,21 @@ Thumbs.db
 # Runtime
 .traflix/
 
-# Downloaded agent repositories
-codex/
-opencode/
-pi/
-warp/
+# Downloaded agent repositories / worktrees
+# Keep every provider checkout outside the Traflix repository history.
+/agents/
+/agent-repos/
+/agent-worktrees/
+/anti-gravity/
+/claude/
+/cline/
+/codebuff/
+/codex/
+/cmdc/
+/freebuff/
+/gemini/
+/opencode/
+/pi/
+/warp/
 
 src-tauri/icons/

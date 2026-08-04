@@ -6,10 +6,27 @@ import { TitleBar } from "./components/layout/TitleBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { RightPanel } from "./components/layout/RightPanel";
 import { AgentCompletionListener } from "./components/agent/AgentCompletionListener";
+import { AgentNotificationOverlay } from "./components/agent/AgentNotificationOverlay";
+import { ProjectWorkspaceSync } from "./components/project/ProjectWorkspaceSync";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+
+function isAgentNotificationWindow(): boolean {
+  try {
+    return getCurrentWebviewWindow().label === "agent-notification";
+  } catch {
+    // Vite browser preview has no Tauri window metadata; it is always the
+    // normal application surface.
+    return false;
+  }
+}
 
 function App() {
+  if (isAgentNotificationWindow()) {
+    return <AgentNotificationOverlay />;
+  }
+
   useKeyboardShortcuts(undefined, () => {
     const fn = (window as any).__traflix_request_close_terminal;
     if (typeof fn === "function") fn();
@@ -40,6 +57,7 @@ function App() {
           <RightPanel />
         </div>
       </div>
+      <ProjectWorkspaceSync />
       <AgentCompletionListener />
       <ToastContainer />
     </ErrorBoundary>
