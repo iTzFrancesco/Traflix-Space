@@ -15,6 +15,22 @@ blocking or changing the agent result. A real Traflix terminal event is sent
 to both the configured pipe and the other DEV/release pipe, so two local
 Traflix instances can observe the same completion.
 
+## Notification logs
+
+The notification path logs each stage without recording the agent payload:
+
+- OpenCode: `~/.config/opencode/traflix-notify.log`
+- Pi: `~/.pi/agent/traflix-notify.log`
+- PowerShell bridge: `%TEMP%\traflix-agent-event-bridge.log`
+- Traflix backend: Rust tracing output with `RUST_LOG=traflix_space=info,warn`
+- Traflix frontend: browser/WebView console entries prefixed with
+  `[agent-notification]`
+
+Use the `eventId` printed in the adapter, bridge, Rust, and frontend logs to
+follow one notification end to end. The logs cover adapter start, bridge
+process start/exit, pipe send, Rust validation/deduplication, frontend receipt,
+and toast/overlay routing.
+
 ## Automatic setup (recommended)
 
 [`install-adapters.ps1`](./install-adapters.ps1) wires the bridge into the

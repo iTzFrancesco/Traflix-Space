@@ -189,6 +189,11 @@ async function ensureAgentCompletionListener() {
   agentCompletionSetup = listen<AgentTurnCompleted>(
     "agent-turn-completed",
     (event) => {
+      console.info("[agent-notification] received from Space", {
+        provider: event.payload.provider,
+        terminalId: event.payload.terminalId,
+        eventId: event.payload.eventId ?? "-",
+      });
       for (const handler of agentCompletionHandlers) {
         try {
           handler(event.payload);

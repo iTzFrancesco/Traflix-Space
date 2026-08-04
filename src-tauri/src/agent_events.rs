@@ -155,6 +155,7 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
             let mut reader = BufReader::new(connected);
             match reader.read_line(&mut line).await {
                 Ok(bytes) if bytes > 0 && bytes <= MAX_EVENT_BYTES => {
+                    info!(bytes, "Agent event received from named pipe");
                     handle_payload(&client_app, &registry, line.trim());
                 }
                 Ok(bytes) if bytes > MAX_EVENT_BYTES => {
@@ -182,6 +183,14 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
         }
     };
 
+    info!(
+        provider = %event.provider,
+        kind = %event.kind,
+        terminal_id = %event.terminal_id,
+        event_id = event.event_id.as_deref().unwrap_or("-"),
+        "Agent notification parsed"
+    );
+
     if event.protocol != AGENT_EVENT_PROTOCOL
         || event.kind != "turn_completed"
         || event.provider.trim().is_empty()
@@ -195,6 +204,12 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
 
     if let Some(key) = event.dedupe_key() {
         if !registry.accept_once(key) {
+            info!(
+                provider = %event.provider,
+                terminal_id = %event.terminal_id,
+                event_id = event.event_id.as_deref().unwrap_or("-"),
+                "Agent notification ignored as duplicate"
+            );
             return;
         }
     }
@@ -211,9 +226,13 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
     info!(
         terminal_id = %event.terminal_id,
         provider = %event.provider,
-        "Agent turn completed"
+        event_id = event.event_id.as_deref().unwrap_or("-"),
+        "Agent notification accepted"
     );
-    let _ = app.emit("agent-turn-completed", event);
+    match app.emit("agent-turn-completed", event) {
+        Ok(()) => info!("Agent notification forwarded to frontend"),
+        Err(error) => warn!(%error, "Agent notification could not reach frontend"),
+    }
 }
 
 #[cfg(test)]

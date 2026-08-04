@@ -26,6 +26,11 @@ const OVERLAY_MARGIN = 24;
 export async function showAgentNotificationOverlay(
   payload: AgentNotificationPayload,
 ): Promise<void> {
+  console.info("[agent-notification] overlay start", {
+    provider: payload.provider,
+    terminalId: payload.terminalId,
+    eventId: payload.event.eventId ?? "-",
+  });
   try {
     const overlay = await WebviewWindow.getByLabel(AGENT_NOTIFICATION_WINDOW);
     if (!overlay) {
@@ -64,6 +69,10 @@ export async function showAgentNotificationOverlay(
       }
       await emitTo(AGENT_NOTIFICATION_WINDOW, AGENT_NOTIFICATION_SHOW_EVENT, payload);
     }
+    console.info("[agent-notification] overlay event dispatched", {
+      terminalId: payload.terminalId,
+      eventId: payload.event.eventId ?? "-",
+    });
   } catch (error) {
     console.warn("Traflix agent overlay unavailable:", error);
   }

@@ -53,6 +53,15 @@ function handleCompletion(event: AgentTurnCompleted) {
   const isCompletionInActiveWorkspace =
     completionWorkspaceId !== null &&
     completionWorkspaceId === activeWorkspaceId;
+  console.info("[agent-notification] handling completion", {
+    provider: event.provider,
+    terminalId: event.terminalId,
+    eventId: event.eventId ?? "-",
+    workspaceId: completionWorkspaceId,
+    appHasFocus,
+    isCompletionInActiveWorkspace,
+    terminalKnown: Boolean(terminal),
+  });
   // Completion state is always marked as requiring attention. The visual
   // indicator must remain available in every focus/workspace combination until
   // explicitly cleared.
@@ -72,7 +81,12 @@ function handleCompletion(event: AgentTurnCompleted) {
   // the sound and the terminal/workspace attention indicator. Completions in
   // another workspace use the in-app toast, while completions received while
   // Traflix is unfocused use the external overlay.
-  if (appHasFocus && isCompletionInActiveWorkspace) return;
+  if (appHasFocus && isCompletionInActiveWorkspace) {
+    console.info("[agent-notification] local attention only", {
+      terminalId: event.terminalId,
+    });
+    return;
+  }
 
   const workspaceId = completionWorkspaceId;
   const terminalTitle =
@@ -81,6 +95,10 @@ function handleCompletion(event: AgentTurnCompleted) {
   const projectName = projectNameForEvent(event, terminal);
 
   if (appHasFocus) {
+    console.info("[agent-notification] showing in-app toast", {
+      terminalId: event.terminalId,
+      workspaceId,
+    });
     useToastStore.getState().addToast({
       type: "success",
       message: `${agentName} ha completato il turno in ${terminalTitle}`,
@@ -101,6 +119,10 @@ function handleCompletion(event: AgentTurnCompleted) {
         : {}),
     });
   } else {
+    console.info("[agent-notification] showing external overlay", {
+      terminalId: event.terminalId,
+      workspaceId,
+    });
     void showAgentNotificationOverlay({
       message: `${agentName} ha completato il turno`,
       provider: agentName,

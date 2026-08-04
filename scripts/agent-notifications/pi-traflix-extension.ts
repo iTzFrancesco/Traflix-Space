@@ -36,6 +36,11 @@ function cleanWindowsPath(p: string): string {
   return p
 }
 
+function createEventId(terminalId: string | undefined): string {
+  const terminal = terminalId ?? "unknown-terminal"
+  return `pi/${terminal}/${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 function resolveBridge(): string | null {
   const fromEnv = process.env.TRAFLIX_AGENT_EVENT_BRIDGE
   const candidates = [
@@ -72,9 +77,10 @@ function forward(provider: string): void {
   const terminalId = process.env.TRAFLIX_TERMINAL_ID
   const pipe = process.env.TRAFLIX_AGENT_EVENT_PIPE
   const workspaceId = process.env.TRAFLIX_WORKSPACE_ID
+  const eventId = createEventId(terminalId)
 
   log(
-    `agent_settled -> bridge=${bridge ? "yes" : "NO"} terminal=${terminalId ? "yes" : "NO"} pipe=${pipe ? "yes" : "NO"} workspace=${workspaceId ? "yes" : "no"}`,
+    `notification start provider=${provider} eventId=${eventId} bridge=${bridge ? "yes" : "NO"} terminal=${terminalId ? "yes" : "NO"} pipe=${pipe ? "yes" : "NO"} workspace=${workspaceId ? "yes" : "no"}`,
   )
 
   if (!bridge || !terminalId || !pipe) return
@@ -96,16 +102,22 @@ function forward(provider: string): void {
       "-TerminalId",
       terminalId,
       "-Payload",
-      JSON.stringify({ type: "agent_settled" }),
+      JSON.stringify({ type: "agent_settled", eventId }),
     ],
     // Keep the PowerShell process attached to the agent runtime. On Windows,
     // detached + unref can terminate before it connects to the named pipe.
     { detached: false, stdio: "ignore", windowsHide: true },
   )
-  child.on("error", (error) => {
-    log(`bridge spawn failed: ${error.message}`)
+  child.once("spawn", () => {
+    log(`bridge process started provider=${provider} eventId=${eventId} pid=${child.pid ?? "unknown"}`)
   })
-  log(`bridge spawned: ${bridge}`)
+  child.once("exit", (code, signal) => {
+    log(`bridge process exited provider=${provider} eventId=${eventId} code=${code ?? "unknown"} signal=${signal ?? "none"}`)
+  })
+  child.on("error", (error) => {
+    log(`bridge spawn failed provider=${provider} eventId=${eventId}: ${error.message}`)
+  })
+  log(`bridge spawned provider=${provider} eventId=${eventId} path=${bridge}`)
 }
 
 export default function traFlixPiExtension(pi: ExtensionAPI): void {

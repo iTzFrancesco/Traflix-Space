@@ -40,13 +40,13 @@ $adapterContracts = @(
     @{
         Name = "OpenCode"
         Path = Join-Path $scriptRoot "opencode-traflix-plugin.ts"
-        Required = @("session.status", 'status === "busy" || status === "retry"', 'status !== "idle"', 'eventId:', 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '"opencode"', '{ detached: false', 'bridge spawn failed')
+        Required = @("session.status", 'status === "busy" || status === "retry"', 'status !== "idle"', 'eventId:', 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '"opencode"', '{ detached: false', 'notification start provider=opencode', 'bridge process started', 'bridge process exited', 'bridge spawn failed')
         Forbidden = @('{ detached: true', 'child.unref()')
     }
     @{
         Name = "Pi"
         Path = Join-Path $scriptRoot "pi-traflix-extension.ts"
-        Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '{ detached: false', 'bridge spawn failed')
+        Required = @("agent_settled", '"pi"', "TRAFLIX_TERMINAL_ID", 'PipeAlternates', '"-PipeName"', '"-TerminalId"', '{ detached: false', 'notification start provider=', 'bridge process started', 'bridge process exited', 'bridge spawn failed')
         Forbidden = @('{ detached: true', 'child.unref()')
     }
 )
@@ -69,7 +69,10 @@ foreach ($contract in $adapterContracts) {
 
 $uiContracts = @(
     @{ Name = "Traflix overlay"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", "projectName", "Apri", "Continua") },
-    @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay") },
+    @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
+    @{ Name = "Space event log"; Path = Join-Path $scriptRoot "..\..\src\lib\terminalEvents.ts"; Required = @("[agent-notification] received from Space") },
+    @{ Name = "overlay event log"; Path = Join-Path $scriptRoot "..\..\src\lib\agentNotificationOverlay.ts"; Required = @("[agent-notification] overlay start", "[agent-notification] overlay event dispatched") },
+    @{ Name = "Rust event log"; Path = Join-Path $scriptRoot "..\..\src-tauri\src\agent_events.rs"; Required = @("Agent event received from named pipe", "Agent notification parsed", "Agent notification ignored as duplicate", "Agent notification forwarded to frontend") },
     @{ Name = "overlay window"; Path = Join-Path $scriptRoot "..\..\src-tauri\tauri.conf.json"; Required = @('"label": "agent-notification"', '"alwaysOnTop": true', '"visible": false') }
 )
 foreach ($contract in $uiContracts) {
@@ -92,6 +95,18 @@ foreach ($required in $setupContract.Required) {
     Assert-Contains $setupContent $required $setupContract.Name
 }
 Write-Host "[setup] $($setupContract.Name)"
+
+$bridgeContract = @{
+    Name = "bridge logging"
+    Path = $bridgePath
+    Required = @("notification start", "notification normalized", "notification sent", "notification send failed", "notification skipped")
+}
+$bridgeContent = if (Test-Path -LiteralPath $bridgeContract.Path) { Get-Content -Raw -LiteralPath $bridgeContract.Path } else { "" }
+Assert-True (Test-Path -LiteralPath $bridgeContract.Path) "$($bridgeContract.Name) file is missing"
+foreach ($required in $bridgeContract.Required) {
+    Assert-Contains $bridgeContent $required $bridgeContract.Name
+}
+Write-Host "[bridge-log] $($bridgeContract.Name)"
 
 function Test-BridgeProvider {
     param([string]$Provider)

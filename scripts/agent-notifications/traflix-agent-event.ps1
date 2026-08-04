@@ -20,16 +20,28 @@ function Write-BridgeLog {
     } catch { }
 }
 
+Write-BridgeLog ("notification start provider={0} kind={1} terminal={2} pipe={3}" -f $Provider, $Kind, $TerminalId, $PipeName)
+
 if ([string]::IsNullOrWhiteSpace($Payload) -and [Console]::IsInputRedirected) {
     try { $Payload = [Console]::In.ReadToEnd() } catch { $Payload = "" }
 }
 
-if ([string]::IsNullOrWhiteSpace($Payload) -or
-    [string]::IsNullOrWhiteSpace($TerminalId)) {
+if ([string]::IsNullOrWhiteSpace($Payload)) {
+    Write-BridgeLog "notification skipped reason=missing-payload"
     exit 0
 }
 
-try { $source = $Payload | ConvertFrom-Json } catch { exit 0 }
+if ([string]::IsNullOrWhiteSpace($TerminalId)) {
+    Write-BridgeLog "notification skipped reason=missing-terminal-id"
+    exit 0
+}
+
+try {
+    $source = $Payload | ConvertFrom-Json
+} catch {
+    Write-BridgeLog "notification skipped reason=invalid-json"
+    exit 0
+}
 
 function Get-SourceValue {
     param(
@@ -138,8 +150,11 @@ if (-not [string]::IsNullOrWhiteSpace($PipeAlternates)) {
 foreach ($alternatePipe in $alternatePipes) {
     Add-PipeLeaf $alternatePipe
 }
-Write-BridgeLog ("provider={0} terminal={1} destinations={2}" -f $Provider, $TerminalId, ($pipeLeaves -join ","))
-if ($pipeLeaves.Count -eq 0) { exit 0 }
+Write-BridgeLog ("notification normalized provider={0} kind={1} terminal={2} eventId={3} destinations={4}" -f $Provider, $Kind, $TerminalId, $eventId, ($pipeLeaves -join ","))
+if ($pipeLeaves.Count -eq 0) {
+    Write-BridgeLog "notification skipped reason=no-pipe-destination"
+    exit 0
+}
 
 foreach ($pipeLeaf in $pipeLeaves) {
     $client = $null
@@ -153,7 +168,7 @@ foreach ($pipeLeaf in $pipeLeaves) {
         )
         $client.Connect(750)
         if (-not $client.IsConnected) {
-            Write-BridgeLog ("not-connected pipe={0}" -f $pipeLeaf)
+            Write-BridgeLog ("notification send failed provider={0} terminal={1} eventId={2} pipe={3} reason=not-connected" -f $Provider, $TerminalId, $eventId, $pipeLeaf)
             continue
         }
 
@@ -163,9 +178,9 @@ foreach ($pipeLeaf in $pipeLeaves) {
         )
         $writer.WriteLine($json)
         $writer.Flush()
-        Write-BridgeLog ("connected pipe={0}" -f $pipeLeaf)
+        Write-BridgeLog ("notification sent provider={0} terminal={1} eventId={2} pipe={3}" -f $Provider, $TerminalId, $eventId, $pipeLeaf)
     } catch {
-        Write-BridgeLog ("error pipe={0} message={1}" -f $pipeLeaf, $_.Exception.Message)
+        Write-BridgeLog ("notification send failed provider={0} terminal={1} eventId={2} pipe={3} message={4}" -f $Provider, $TerminalId, $eventId, $pipeLeaf, $_.Exception.Message)
         # Notification delivery is deliberately invisible to the agent.
     } finally {
         if ($null -ne $writer) { $writer.Dispose() }

@@ -33,6 +33,14 @@ function cleanWindowsPath(p: string): string {
   return p
 }
 
+function eventIdFor(event: unknown): string {
+  if (typeof event !== "object" || event === null || !("eventId" in event)) {
+    return "unknown"
+  }
+  const value = event.eventId
+  return typeof value === "string" && value.length > 0 ? value : "unknown"
+}
+
 function resolveBridge(): string | null {
   const fromEnv = process.env.TRAFLIX_AGENT_EVENT_BRIDGE
   const candidates = [
@@ -68,8 +76,9 @@ function forward(event: unknown): void {
   const bridge = resolveBridge()
   const terminalId = process.env.TRAFLIX_TERMINAL_ID
   const pipe = process.env.TRAFLIX_AGENT_EVENT_PIPE
+  const eventId = eventIdFor(event)
   log(
-    `session idle -> bridge=${bridge ? "yes" : "NO"} terminal=${terminalId ? "yes" : "NO"} pipe=${pipe ? "yes" : "NO"}`,
+    `notification start provider=opencode eventId=${eventId} bridge=${bridge ? "yes" : "NO"} terminal=${terminalId ? "yes" : "NO"} pipe=${pipe ? "yes" : "NO"}`,
   )
   if (!bridge || !terminalId || !pipe) return
 
@@ -96,8 +105,14 @@ function forward(event: unknown): void {
     // detached + unref can terminate before it connects to the named pipe.
     { detached: false, stdio: "ignore", windowsHide: true },
   )
+  child.once("spawn", () => {
+    log(`bridge process started provider=opencode eventId=${eventId} pid=${child.pid ?? "unknown"}`)
+  })
+  child.once("exit", (code, signal) => {
+    log(`bridge process exited provider=opencode eventId=${eventId} code=${code ?? "unknown"} signal=${signal ?? "none"}`)
+  })
   child.on("error", (error) => {
-    log(`bridge spawn failed: ${error.message}`)
+    log(`bridge spawn failed provider=opencode eventId=${eventId}: ${error.message}`)
   })
 }
 
