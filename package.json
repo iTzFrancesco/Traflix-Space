@@ -1,12 +1,13 @@
 {
   "name": "traflix-space",
   "private": true,
-  "version": "1.5.9",
+  "version": "1.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:agent-notifications": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\agent-notifications\\test-adapters.ps1",
     "tauri": "tauri",
     "build:clean": "tauri build && cargo sweep --stale",
     "version:patch": "node scripts/bump-version.js patch",
