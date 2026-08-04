@@ -13,8 +13,9 @@ pub async fn terminal_spawn(
     terminal_id: String,
     shell: String,
     cwd: String,
-    _cols: u16,
-    _rows: u16,
+    cols: u16,
+    rows: u16,
+    workspace_id: Option<String>,
 ) -> Result<(), String> {
     info!(%terminal_id, "terminal_spawn called");
     let manager = app.state::<TerminalManager>();
@@ -25,8 +26,9 @@ pub async fn terminal_spawn(
         command: None,
         cwd,
         title: "Terminal".to_string(),
+        workspace_id,
     };
-    manager.spawn(app.clone(), config).await?;
+    manager.spawn(app.clone(), config, cols, rows).await?;
     Ok(())
 }
 
@@ -93,6 +95,9 @@ pub async fn terminal_reopen(
     terminal_id: String,
     shell: String,
     cwd: String,
+    cols: u16,
+    rows: u16,
+    workspace_id: Option<String>,
 ) -> Result<(), String> {
     info!(%terminal_id, "terminal_reopen called");
     let manager = app.state::<TerminalManager>();
@@ -111,20 +116,21 @@ pub async fn terminal_reopen(
         command: None,
         cwd,
         title: "Terminal".to_string(),
+        workspace_id,
     };
-    manager.spawn(app.clone(), config).await?;
+    manager.spawn(app.clone(), config, cols, rows).await?;
     Ok(())
 }
 
-/// Scrollback (~1000 lines) + visible screen as plain text for rehydrating
-/// xterm after a workspace remount while the backend PTY session stayed alive.
+/// Visible screen, parser modes, geometry, and output watermark for rehydrating
+/// xterm after a workspace remount while the backend session stays available.
 #[tauri::command]
 pub async fn terminal_get_screen_text(
     app: AppHandle,
     terminal_id: String,
-) -> Result<String, String> {
+) -> Result<crate::terminal_engine::TerminalRehydrateState, String> {
     let manager = app.state::<TerminalManager>();
-    manager.get_screen_text(&terminal_id).await
+    manager.get_state_for_rehydrate(&terminal_id).await
 }
 
 /// Returns the git branch for the terminal's working directory.

@@ -387,6 +387,7 @@ export function WorkspaceView() {
                 cwd: newTerminal.cwd,
                 cols: 80,
                 rows: 24,
+                workspaceId,
               }),
             10000,
           );
@@ -404,6 +405,10 @@ export function WorkspaceView() {
           title: newTerminal.title,
           agent: null,
         });
+        // The PTY was spawned before React mounted TerminalPane. Mark it as
+        // live so the first pane mount rehydrates the prompt/state instead of
+        // assuming it is a brand-new stream whose initial output was missed.
+        useTerminalStore.getState().markSpawned(newId);
 
         // 3. Aggiungi alla lista e ricalcola layout (ref sincrono)
         const newTerminals = [...currentTerminals, newTerminal];

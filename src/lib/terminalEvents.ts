@@ -22,8 +22,14 @@ const exitHandlers = new Map<string, Set<ExitHandler>>();
 const agentCompletionHandlers = new Set<AgentCompletionHandler>();
 
 /** Pending raw chunks waiting for the next animation frame flush. */
-const pendingChunks = new Map<string, Uint8Array[]>();
+interface PendingOutputChunk {
+  sequence: number;
+  data: Uint8Array;
+}
+
+const pendingChunks = new Map<string, PendingOutputChunk[]>();
 const flushScheduled = new Map<string, boolean>();
+const MAX_OUTPUT_BYTES_PER_FRAME = 32 * 1024;
 
 let outputUnlisten: UnlistenFn | null = null;
 let exitUnlisten: UnlistenFn | null = null;
@@ -32,15 +38,15 @@ let exitSetup: Promise<void> | null = null;
 let agentCompletionUnlisten: UnlistenFn | null = null;
 let agentCompletionSetup: Promise<void> | null = null;
 
-function mergeChunks(chunks: Uint8Array[]): number[] {
+function mergeChunks(chunks: PendingOutputChunk[]): number[] {
   let total = 0;
-  for (const c of chunks) total += c.length;
+  for (const c of chunks) total += c.data.length;
   // Build number[] once for TerminalOutput / xterm write path.
   const out = new Array<number>(total);
   let offset = 0;
   for (const c of chunks) {
-    for (let i = 0; i < c.length; i++) {
-      out[offset++] = c[i];
+    for (let i = 0; i < c.data.length; i++) {
+      out[offset++] = c.data[i];
     }
   }
   return out;
@@ -50,27 +56,54 @@ function flushOutput(terminalId: string) {
   flushScheduled.set(terminalId, false);
   const chunks = pendingChunks.get(terminalId);
   if (!chunks || chunks.length === 0) return;
-  pendingChunks.set(terminalId, []);
+
+  // Keep each animation frame responsive when several PTYs stream at once.
+  // Consume whole chunks in order; never discard or reorder ANSI bytes.
+  let batchBytes = 0;
+  let batchEnd = 0;
+  while (batchEnd < chunks.length) {
+    const nextSize = chunks[batchEnd].data.length;
+    if (batchEnd > 0 && batchBytes + nextSize > MAX_OUTPUT_BYTES_PER_FRAME) {
+      break;
+    }
+    batchBytes += nextSize;
+    batchEnd++;
+  }
+  const batch = chunks.splice(0, batchEnd);
 
   const handlers = outputHandlers.get(terminalId);
-  if (!handlers || handlers.size === 0) return;
-
-  // Single chunk fast-path avoids an extra merge allocation.
-  const data =
-    chunks.length === 1
-      ? Array.from(chunks[0])
-      : mergeChunks(chunks);
-  const payload: TerminalOutput = { terminalId, data };
-  for (const handler of handlers) {
-    try {
-      handler(payload);
-    } catch (err) {
-      console.error("terminal-output handler error:", err);
+  if (handlers && handlers.size > 0) {
+    // Single chunk fast-path avoids an extra merge allocation.
+    const data =
+      batch.length === 1
+        ? Array.from(batch[0].data)
+        : mergeChunks(batch);
+    const payload: TerminalOutput = {
+      terminalId,
+      data,
+      sequence: batch[batch.length - 1].sequence,
+      chunks: batch,
+    };
+    for (const handler of handlers) {
+      try {
+        handler(payload);
+      } catch (err) {
+        console.error("terminal-output handler error:", err);
+      }
     }
+  }
+
+  if (chunks.length > 0 && !flushScheduled.get(terminalId)) {
+    flushScheduled.set(terminalId, true);
+    requestAnimationFrame(() => flushOutput(terminalId));
   }
 }
 
-function enqueueOutput(terminalId: string, data: number[] | Uint8Array) {
+function enqueueOutput(
+  terminalId: string,
+  data: number[] | Uint8Array,
+  sequence: number,
+) {
   // No subscribers (e.g. mid-remount): drop — rehydrate will restore from backend.
   if (!outputHandlers.has(terminalId)) return;
 
@@ -82,16 +115,11 @@ function enqueueOutput(terminalId: string, data: number[] | Uint8Array) {
     list = [];
     pendingChunks.set(terminalId, list);
   }
-  list.push(bytes);
+  list.push({ sequence, data: bytes });
 
-  // Cap pending burst per terminal (~256KB) to avoid unbounded RAM if the
-  // renderer stalls under heavy multi-pane output.
-  let pendingBytes = 0;
-  for (const c of list) pendingBytes += c.length;
-  while (pendingBytes > 262_144 && list.length > 1) {
-    const dropped = list.shift()!;
-    pendingBytes -= dropped.length;
-  }
+  // PTY output is an unframed ANSI byte stream. Never drop an old chunk here:
+  // it can contain half of an escape sequence or an incremental TUI repaint.
+  // Losing it leaves diff-based TUIs such as Cline permanently corrupted.
 
   if (!flushScheduled.get(terminalId)) {
     flushScheduled.set(terminalId, true);
@@ -106,9 +134,9 @@ async function ensureOutputListener() {
     return;
   }
   outputSetup = listen<TerminalOutput>("terminal-output", (event) => {
-    const { terminalId, data } = event.payload;
+    const { terminalId, data, sequence } = event.payload;
     if (!outputHandlers.has(terminalId)) return;
-    enqueueOutput(terminalId, data);
+    enqueueOutput(terminalId, data, sequence);
   })
     .then((unlisten) => {
       outputUnlisten = unlisten;

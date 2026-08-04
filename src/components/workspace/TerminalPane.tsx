@@ -20,6 +20,8 @@ import { encodeForPty } from "../../lib/ptyWrite";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
 import { AGENTS } from "../../lib/agents";
 import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
+import { invokeWithTimeout } from "../../lib/timeout";
+import type { TerminalRehydrateState } from "../terminal/types";
 import "xterm/css/xterm.css";
 
 /** Map agent id to a short display name for the title bar. */
@@ -342,6 +344,42 @@ function restoreScrollPosition(
   captureScrollPosition(term, autoScrollRef, scrollPositionRef);
 }
 
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function isTerminalExitedError(error: unknown): boolean {
+  return String(error).toLowerCase().includes("terminal-exited");
+}
+
+/** Measure the mounted pane before taking a backend snapshot or resizing a PTY. */
+async function syncMeasuredPtySize(
+  term: Terminal,
+  fitAddon: FitAddon,
+  terminalId: string,
+  skipHiddenPane: boolean,
+  resizeStateRef: React.MutableRefObject<PtyResizeState>,
+) {
+  if (skipHiddenPane) return;
+
+  // The workspace grid has just mounted. Two frames let the grid tracks and
+  // the xterm canvas settle before FitAddon reads its cell dimensions.
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
+  if (!term.element?.isConnected) return;
+  const rect = term.element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  try {
+    fitAddon.fit();
+  } catch {
+    return;
+  }
+  if (term.cols <= 0 || term.rows <= 0) return;
+
+  await enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows);
+}
+
 function fitAndResizePty(
   term: Terminal,
   fitAddon: FitAddon,
@@ -349,6 +387,7 @@ function fitAndResizePty(
   autoScrollRef: React.MutableRefObject<boolean>,
   scrollPositionRef: React.MutableRefObject<TerminalScrollPosition>,
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
+  resizeStateRef: React.MutableRefObject<PtyResizeState>,
 ) {
   // xterm can emit internal scroll events while parsing output. Snapshot the
   // live viewport just before reflow so a resize never restores stale state.
@@ -370,12 +409,65 @@ function fitAndResizePty(
     programmaticScrollTargetRef,
   );
   if (term.cols > 0 && term.rows > 0) {
-    invoke("terminal_resize", {
-      terminalId,
-      cols: term.cols,
-      rows: term.rows,
-    }).catch(() => {});
+    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows).catch(() => {});
   }
+}
+
+interface PtyResizeState {
+  pending: {
+    cols: number;
+    rows: number;
+    waiters: Array<{
+      resolve: () => void;
+      reject: (error: unknown) => void;
+    }>;
+  } | null;
+  flushing: boolean;
+}
+
+/** Serialize PTY resizes and keep only the newest pending geometry. */
+function enqueuePtyResize(
+  stateRef: React.MutableRefObject<PtyResizeState>,
+  terminalId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const state = stateRef.current;
+  const promise = new Promise<void>((resolve, reject) => {
+    const waiters = state.pending?.waiters ?? [];
+    state.pending = {
+      cols,
+      rows,
+      waiters: [...waiters, { resolve, reject }],
+    };
+  });
+  if (state.flushing) return promise;
+
+  state.flushing = true;
+  void (async () => {
+    try {
+      while (state.pending) {
+        const next = state.pending;
+        state.pending = null;
+        try {
+          await invokeWithTimeout(
+            () => invoke("terminal_resize", {
+              terminalId,
+              cols: next.cols,
+              rows: next.rows,
+            }),
+            10000,
+          );
+          for (const waiter of next.waiters) waiter.resolve();
+        } catch (error) {
+          for (const waiter of next.waiters) waiter.reject(error);
+        }
+      }
+    } finally {
+      state.flushing = false;
+    }
+  })();
+  return promise;
 }
 
 export const TerminalPane = memo(function TerminalPane({
@@ -400,8 +492,13 @@ export const TerminalPane = memo(function TerminalPane({
   const spawnedRef = useRef(false);
   /** True while backend history is being written into xterm — drop live output to avoid wipe/race. */
   const rehydratingRef = useRef(false);
-  /** PTY bytes received after the backend snapshot; replayed after rehydrate. */
-  const queuedRehydrateOutputRef = useRef<Uint8Array[]>([]);
+  /** PTY chunks received around the backend snapshot; replayed after filtering. */
+  const queuedRehydrateOutputRef = useRef<Array<{
+    sequence: number;
+    data: Uint8Array;
+  }>>([]);
+  /** Snapshot watermark; chunks at or below it are already in the snapshot. */
+  const rehydrateWatermarkRef = useRef<number | null>(null);
   const unsubOutputRef = useRef<(() => void) | null>(null);
   const unsubExitRef = useRef<(() => void) | null>(null);
   const terminalIdRef = useRef(terminalId);
@@ -411,9 +508,12 @@ export const TerminalPane = memo(function TerminalPane({
     followsOutput: true,
     offsetFromBottom: 0,
   });
-  const pendingOutputWritesRef = useRef(0);
   const userScrollIntentRef = useRef(false);
   const programmaticScrollTargetRef = useRef<number | null>(null);
+  const ptyResizeStateRef = useRef<PtyResizeState>({
+    pending: null,
+    flushing: false,
+  });
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
@@ -598,13 +698,9 @@ export const TerminalPane = memo(function TerminalPane({
         // user navigation and must win over the queued restore.
         programmaticScrollTargetRef.current = null;
       }
-      // xterm emits scroll events while it appends output. Those are not user
-      // navigation: treating them as such makes follow mode flap during a
-      // streaming agent response. A real wheel/scrollbar/keyboard gesture is
-      // explicitly marked below and remains authoritative.
-      if (pendingOutputWritesRef.current > 0 && !userScrollIntentRef.current) {
-        return;
-      }
+      // Every non-programmatic xterm scroll event is authoritative. Output
+      // can change baseY while a reader is in history, and ignoring these
+      // events while writes are pending loses the real viewport under load.
       captureScrollPosition(term, autoScrollRef, scrollPositionRef);
       userScrollIntentRef.current = false;
     });
@@ -627,6 +723,20 @@ export const TerminalPane = memo(function TerminalPane({
           followsOutput: false,
           offsetFromBottom: Math.max(1, scrollPositionRef.current.offsetFromBottom),
         };
+      }
+      // Applications using the alternate buffer/mouse reporting own the
+      // regular wheel event. Shift+wheel is the standard terminal-emulator
+      // escape hatch: keep the agent's mouse interaction intact while still
+      // allowing the user to inspect xterm scrollback when it exists.
+      if (event.shiftKey && term.buffer.active.type === "normal") {
+        event.preventDefault();
+        event.stopPropagation();
+        const magnitude = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? Math.abs(event.deltaY)
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? Math.abs(event.deltaY) * term.rows
+            : Math.max(1, Math.round(Math.abs(event.deltaY) / 20));
+        term.scrollLines(Math.max(1, magnitude) * (event.deltaY < 0 ? -1 : 1));
       }
       scheduleUserScrollCapture();
     };
@@ -654,7 +764,7 @@ export const TerminalPane = memo(function TerminalPane({
       };
     };
     const container = containerRef.current;
-    container?.addEventListener("wheel", onWheel, { passive: true, capture: true });
+    container?.addEventListener("wheel", onWheel, { passive: false, capture: true });
     container?.addEventListener("keydown", onKeyDown, { capture: true });
     container?.addEventListener("pointerdown", onPointerDown, { capture: true });
 
@@ -694,12 +804,62 @@ export const TerminalPane = memo(function TerminalPane({
     if (t && t.exitCode !== null) return;
     spawnedRef.current = true;
 
-    // Rehydrate only when this FE entry was already live (workspace remount /
-    // keep-alive). Skip on first open so we don't reset() a fresh stream.
-    const shouldRehydrate = !!t?.spawned;
+    // Always take a backend snapshot. On first open the shell can emit its
+    // prompt before the React event listener is attached; treating the
+    // parser as authoritative closes that initial-output race too.
+    // Set this before any await: terminal_spawn and terminal_resize can
+    // trigger output from a live TUI while the new xterm is still empty.
+    rehydratingRef.current = true;
+    rehydrateWatermarkRef.current = null;
 
     const cols = Math.max(term.cols, 80);
     const rows = Math.max(term.rows, 24);
+    let spawnSucceeded = false;
+    const replayQueuedOutput = async () => {
+      while (queuedRehydrateOutputRef.current.length > 0) {
+        const next = queuedRehydrateOutputRef.current.shift();
+        const currentTerm = xtermRef.current;
+        if (!next || !currentTerm) return;
+        const watermark = rehydrateWatermarkRef.current;
+        if (watermark !== null && next.sequence <= watermark) continue;
+        await new Promise<void>((resolve) => currentTerm.write(next.data, resolve));
+      }
+    };
+    const restoreSnapshot = async () => {
+      const rehydrateState = await invoke<TerminalRehydrateState>("terminal_get_screen_text", {
+        terminalId,
+      });
+      rehydrateWatermarkRef.current = rehydrateState.outputSequence;
+      const termNow = xtermRef.current;
+      if (!termNow) return;
+
+      // The backend stream contains a complete formatted state, including
+      // cursor, attributes, alternate screen, and input modes. Reset is safe
+      // even for a blank screen.
+      termNow.reset();
+      if (
+        rehydrateState.cols > 0 &&
+        rehydrateState.rows > 0 &&
+        (termNow.cols !== rehydrateState.cols || termNow.rows !== rehydrateState.rows)
+      ) {
+        termNow.resize(rehydrateState.cols, rehydrateState.rows);
+      }
+      if (rehydrateState.state.length > 0) {
+        await new Promise<void>((resolve) =>
+          termNow.write(new Uint8Array(rehydrateState.state), resolve),
+        );
+      }
+      await replayQueuedOutput();
+      restoreScrollPosition(
+        termNow,
+        autoScrollRef,
+        scrollPositionRef,
+        programmaticScrollTargetRef,
+      );
+      if (termNow.rows > 0) {
+        termNow.refresh(0, termNow.rows - 1);
+      }
+    };
 
     (async () => {
       try {
@@ -709,132 +869,64 @@ export const TerminalPane = memo(function TerminalPane({
           cwd,
           cols,
           rows,
+          workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
         });
+        spawnSucceeded = true;
         useTerminalStore.getState().markSpawned(terminalId);
 
         // Carica il branch git all'avvio del terminale (primo mount + rehydrate).
         // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
         void refreshTerminalContext();
 
-        if (shouldRehydrate) {
-          rehydratingRef.current = true;
-          try {
-            const text = await invoke<string>("terminal_get_screen_text", {
-              terminalId,
-            });
-            const termNow = xtermRef.current;
-            const replayQueuedOutput = async () => {
-              while (queuedRehydrateOutputRef.current.length > 0) {
-                const next = queuedRehydrateOutputRef.current.shift();
-                const currentTerm = xtermRef.current;
-                if (!next || !currentTerm) return;
-                await new Promise<void>((resolve) => currentTerm.write(next, resolve));
-              }
-            };
-
-      if (text && text.trim().length > 0 && termNow) {
-              // Reset before rehydrating the live screen so a cleared
-              // terminal stays cleared and no stale frames leak through.
-              termNow.reset();
-              // Chunk large dumps so multi-pane remount stays responsive.
-              const CHUNK = 16_384;
-              if (text.length <= CHUNK) {
-                await new Promise<void>((resolve) => termNow.write(text, resolve));
-              } else {
-                await new Promise<void>((resolve) => {
-                  let offset = 0;
-                  const pump = () => {
-                    if (!xtermRef.current) {
-                      resolve();
-                      return;
-                    }
-                    const end = Math.min(offset + CHUNK, text.length);
-                    xtermRef.current.write(text.slice(offset, end), () => {
-                      offset = end;
-                      if (offset >= text.length) {
-                        resolve();
-                      } else {
-                        requestAnimationFrame(pump);
-                      }
-                    });
-                  };
-                  requestAnimationFrame(pump);
-                });
-              }
-              if (xtermRef.current) {
-                await replayQueuedOutput();
-                restoreScrollPosition(
-                  xtermRef.current,
-                  autoScrollRef,
-                  scrollPositionRef,
-                  programmaticScrollTargetRef,
-                );
-                const fitAddon = fitAddonRef.current;
-                if (fitAddon) {
-                  fitAndResizePty(
-                    xtermRef.current,
-                    fitAddon,
-                    terminalId,
-                    autoScrollRef,
-                    scrollPositionRef,
-                    programmaticScrollTargetRef,
-                  );
-
-                  // Solo per TUI agent: resize toggle (cols-1 → cols) per
-                  // triggerare repaint completo nel processo figlio.
-                  // Un cols/rows identico viene scartato dal backend
-                  // (early-return in session.rs::resize) quindi non arriva
-                  // alcun segnale di ridimensionamento. PowerShell / cmd
-                  // non necessitano di questo toggle.
-                  const term = xtermRef.current;
-                  if (agentId && term.cols > 1 && term.rows > 0) {
-                    invoke("terminal_resize", {
-                      terminalId,
-                      cols: term.cols - 1,
-                      rows: term.rows,
-                    }).catch(() => {});
-                    requestAnimationFrame(() => {
-                      invoke("terminal_resize", {
-                        terminalId,
-                        cols: term.cols,
-                        rows: term.rows,
-                      }).catch(() => {});
-                    });
-                  }
-
-                  // Forza repaint xterm dopo reset()+write(): write() non
-                  // sempre triggera il rendering (specie dopo reset() su
-                  // terminale appena creato), e fitAddon.fit() è no-op se
-                  // le dimensioni non cambiano. refresh(0, rows-1) garantisce
-                  // che xterm ridisegni TUTTE le righe immediatamente.
-                  if (term.rows > 0) {
-                    term.refresh(0, term.rows - 1);
-                  }
-                }
-              }
-            } else if (termNow) {
-              await replayQueuedOutput();
+        try {
+            const fitAddon = fitAddonRef.current;
+            if (fitAddon) {
+              await syncMeasuredPtySize(
+                term,
+                fitAddon,
+                terminalId,
+                focusModeActive && !isFocused,
+                ptyResizeStateRef,
+              );
             }
-            await replayQueuedOutput();
-            // Snapshot and queued data are now both rendered. Switch the
-            // stream back to the normal writer before any further awaits so
-            // subsequent PTY output cannot remain stranded in the queue.
+            await restoreSnapshot();
+            // The snapshot and every queued post-snapshot chunk are rendered.
+            // Stop intercepting output before the context lookup below; that
+            // lookup is unrelated and must never strand new PTY bytes.
             rehydratingRef.current = false;
             if (xtermRef.current) {
               await syncContextFromPowerShellPrompt(xtermRef.current);
             }
           } catch {
-            // Command unavailable — live stream only.
+            // If snapshot/resize fails, never discard live output captured
+            // while the backend was being queried.
+            await replayQueuedOutput();
           } finally {
             rehydratingRef.current = false;
+            rehydrateWatermarkRef.current = null;
           }
+      } catch (error) {
+        if (isTerminalExitedError(error)) {
+          // The backend keeps the dead parser so the last screen can still be
+          // displayed even when the pane was unmounted at exit time.
+          rehydratingRef.current = true;
+          rehydrateWatermarkRef.current = null;
+          try {
+            await restoreSnapshot();
+          } catch {
+            await replayQueuedOutput();
+          }
+          useTerminalStore.getState().markExited(terminalId, 0);
+          rehydratingRef.current = false;
+        } else {
+          await replayQueuedOutput();
         }
-      } catch {
         spawnedRef.current = false;
         rehydratingRef.current = false;
+        rehydrateWatermarkRef.current = null;
       }
 
-      if (agentId) {
+      if (agentId && spawnSucceeded) {
         const store = useTerminalStore.getState();
         const terminal = store.terminals[terminalId];
         if (!terminal?.agentLaunched) {
@@ -884,6 +976,7 @@ export const TerminalPane = memo(function TerminalPane({
           autoScrollRef,
           scrollPositionRef,
           programmaticScrollTargetRef,
+          ptyResizeStateRef,
         );
         if (isActive || isFocused) {
           term.focus();
@@ -920,6 +1013,7 @@ export const TerminalPane = memo(function TerminalPane({
           autoScrollRef,
           scrollPositionRef,
           programmaticScrollTargetRef,
+          ptyResizeStateRef,
         );
         if (isFocused || isActive) term.focus();
       });
@@ -946,6 +1040,7 @@ export const TerminalPane = memo(function TerminalPane({
           autoScrollRef,
           scrollPositionRef,
           programmaticScrollTargetRef,
+          ptyResizeStateRef,
         );
       });
     });
@@ -954,20 +1049,27 @@ export const TerminalPane = memo(function TerminalPane({
   // 4a. Output — shared bus + rAF batch (already coalesced in terminalEvents)
   useEffect(() => {
     unsubOutputRef.current?.();
-    unsubOutputRef.current = subscribeTerminalOutput(terminalId, ({ data }) => {
+    unsubOutputRef.current = subscribeTerminalOutput(terminalId, (payload) => {
       // While rehydrate runs, backend history is authoritative — applying live
       // chunks mid-reset would race and corrupt the buffer. Keep them and
       // replay them after the snapshot so a working agent never loses output.
       if (rehydratingRef.current) {
-        const chunk = new Uint8Array(data);
-        queuedRehydrateOutputRef.current.push(chunk);
+        const chunks = payload.chunks ?? [{
+          sequence: payload.sequence,
+          data: new Uint8Array(payload.data),
+        }];
+        const watermark = rehydrateWatermarkRef.current;
+        for (const chunk of chunks) {
+          if (watermark === null || chunk.sequence > watermark) {
+            queuedRehydrateOutputRef.current.push(chunk);
+          }
+        }
         return;
       }
+      const { data } = payload;
       const term = xtermRef.current;
       if (!term) return;
-      pendingOutputWritesRef.current++;
       term.write(new Uint8Array(data), () => {
-        pendingOutputWritesRef.current = Math.max(0, pendingOutputWritesRef.current - 1);
         void syncContextFromPowerShellPrompt(term);
         // xterm writes asynchronously. Scrolling before this callback uses the
         // previous baseY and leaves the viewport one or more chunks behind.
@@ -975,12 +1077,14 @@ export const TerminalPane = memo(function TerminalPane({
         // is respected instead of being pulled back to the bottom.
         if (autoScrollRef.current) {
           scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
-          restoreScrollPosition(
-            term,
-            autoScrollRef,
-            scrollPositionRef,
-            programmaticScrollTargetRef,
-          );
+          if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
+            restoreScrollPosition(
+              term,
+              autoScrollRef,
+              scrollPositionRef,
+              programmaticScrollTargetRef,
+            );
+          }
         } else {
           // Output changes baseY while a reader stays at an older line. Record
           // the new relative offset so a later resize/remount returns here.
@@ -1023,6 +1127,7 @@ export const TerminalPane = memo(function TerminalPane({
         autoScrollRef,
         scrollPositionRef,
         programmaticScrollTargetRef,
+        ptyResizeStateRef,
       );
     };
 
@@ -1167,6 +1272,9 @@ export const TerminalPane = memo(function TerminalPane({
         terminalId,
         shell,
         cwd: currentCwd,
+        cols: xtermRef.current?.cols ?? 80,
+        rows: xtermRef.current?.rows ?? 24,
+        workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
       });
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;
@@ -1484,7 +1592,7 @@ export const TerminalPane = memo(function TerminalPane({
         )}
 
         <div style={TITLE_BAR_RIGHT}>
-          {agentStatus === "completed" && (
+          {agentStatus === "completed" && agentAttentionRequired && (
             <span
               title="L'agente ha completato l'ultimo turno"
               aria-label="Turno agente completato"

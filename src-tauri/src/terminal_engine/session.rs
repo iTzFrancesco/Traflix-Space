@@ -1,10 +1,10 @@
-use crate::agent_events::{AGENT_EVENT_PIPE_NAME, AGENT_EVENT_PROTOCOL};
+use crate::agent_events::{agent_event_pipe_name, AGENT_EVENT_PROTOCOL};
 use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
@@ -23,10 +23,18 @@ pub struct TerminalSession {
     pub active: bool,
     #[allow(dead_code)]
     pub agent_id: Option<String>,
+    /// Owning workspace, if known. Injected into the PTY environment so the
+    /// agent-event bridge reports the correct TRAFLIX_WORKSPACE_ID.
+    pub workspace_id: Option<String>,
     #[allow(dead_code)]
     pub exit_code: Option<i32>,
     pub reader_stop: Arc<AtomicBool>,
     pub exit_emitted: Arc<AtomicBool>,
+    /// True only while the child process is alive. The session remains in the
+    /// manager after a natural exit so the frontend can display its output,
+    /// therefore `pty.is_some()` alone is not a valid liveness check.
+    pub process_alive: Arc<AtomicBool>,
+    pub output_sequence: Arc<AtomicU64>,
     /// Set to true when resolve_and_update_cwd updates the CWD.
     /// Read+reset by TerminalManager::write to emit cwd-changed event.
     pub cwd_changed: AtomicBool,
@@ -51,9 +59,12 @@ impl TerminalSession {
             parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
+            workspace_id: None,
             exit_code: None,
             reader_stop: Arc::new(AtomicBool::new(false)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
+            process_alive: Arc::new(AtomicBool::new(false)),
+            output_sequence: Arc::new(AtomicU64::new(0)),
             cwd_changed: AtomicBool::new(false),
             cd_buffer: Mutex::new(String::new()),
         }
@@ -68,6 +79,7 @@ impl TerminalSession {
         // (normally sessions are removed from the map; reopen creates fresh ones).
         self.reader_stop.store(false, Ordering::Relaxed);
         self.exit_emitted.store(false, Ordering::Relaxed);
+        self.output_sequence.store(0, Ordering::Release);
 
         let pty_system = portable_pty::native_pty_system();
 
@@ -87,13 +99,27 @@ impl TerminalSession {
         cmd.cwd(self.cwd.lock().unwrap().as_str());
         cmd.env("TERM", "xterm-256color");
         cmd.env("TRAFLIX_TERMINAL_ID", &self.id);
-        cmd.env("TRAFLIX_AGENT_EVENT_PIPE", AGENT_EVENT_PIPE_NAME);
+        cmd.env("TRAFLIX_AGENT_EVENT_PIPE", agent_event_pipe_name());
         cmd.env(
             "TRAFLIX_AGENT_EVENT_PROTOCOL",
             AGENT_EVENT_PROTOCOL.to_string(),
         );
         if let Some(bridge_path) = resolve_agent_bridge_path(&app) {
-            cmd.env("TRAFLIX_AGENT_EVENT_BRIDGE", bridge_path);
+            let bridge_str = bridge_path.to_string_lossy().to_string();
+            // Strip the Windows extended-length prefix (\\?\ and \\?\UNC\)
+            // that resource_dir() may produce, otherwise `powershell -File`
+            // cannot invoke the bridge.
+            let clean = if let Some(rest) = bridge_str.strip_prefix(r"\\?\UNC\") {
+                format!("\\\\{}", rest)
+            } else if let Some(rest) = bridge_str.strip_prefix(r"\\?\") {
+                rest.to_string()
+            } else {
+                bridge_str
+            };
+            cmd.env("TRAFLIX_AGENT_EVENT_BRIDGE", clean);
+        }
+        if let Some(workspace_id) = &self.workspace_id {
+            cmd.env("TRAFLIX_WORKSPACE_ID", workspace_id);
         }
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
@@ -119,6 +145,7 @@ impl TerminalSession {
         self.master = Some(Arc::new(Mutex::new(pair.master)));
         self.reader = Some(Arc::new(Mutex::new(reader)));
         self.writer = Some(Arc::new(Mutex::new(writer)));
+        self.process_alive.store(true, Ordering::Release);
 
         let app_reader = app.clone();
         let app_watch = app.clone();
@@ -128,6 +155,8 @@ impl TerminalSession {
         let id: Arc<str> = Arc::from(self.id.as_str());
         let stop = self.reader_stop.clone();
         let exit_emitted_reader = self.exit_emitted.clone();
+        let process_alive_reader = self.process_alive.clone();
+        let output_sequence_reader = self.output_sequence.clone();
 
         // PTY reader thread — exits on stop flag, EOF, or after master is dropped.
         tokio::task::spawn_blocking(move || {
@@ -167,17 +196,25 @@ impl TerminalSession {
                 // Clone only the valid slice once for both parser + emit.
                 let data = buf[..n].to_vec();
 
-                if let Ok(mut p) = parser.lock() {
+                let sequence = if let Ok(mut p) = parser.lock() {
                     p.process(&data);
-                }
+                    output_sequence_reader.fetch_add(1, Ordering::AcqRel) + 1
+                } else {
+                    output_sequence_reader.fetch_add(1, Ordering::AcqRel) + 1
+                };
 
                 let _ = app_reader.emit(
                     "terminal-output",
                     TerminalOutput {
                         terminal_id: id.to_string(),
                         data,
+                        sequence,
                     },
                 );
+            }
+
+            if natural_exit {
+                process_alive_reader.store(false, Ordering::Release);
             }
 
             // Explicitly drop reader so the OS handle is released even if the
@@ -207,6 +244,7 @@ impl TerminalSession {
         let watch_stop = self.reader_stop.clone();
         let watch_child = child_arc;
         let exit_emitted_watch = self.exit_emitted.clone();
+        let process_alive_watch = self.process_alive.clone();
         tokio::task::spawn_blocking(move || loop {
             if watch_stop.load(Ordering::Acquire) {
                 return;
@@ -225,6 +263,7 @@ impl TerminalSession {
             };
 
             if exited {
+                process_alive_watch.store(false, Ordering::Release);
                 info!(terminal_id = %watch_id, "Child process exited (watch thread)");
                 if !watch_stop.load(Ordering::Acquire)
                     && exit_emitted_watch
@@ -515,6 +554,7 @@ impl TerminalSession {
     pub fn kill(&mut self) {
         // 1. Signal reader + watch threads (Acquire/Release pairing with loads).
         self.reader_stop.store(true, Ordering::Release);
+        self.process_alive.store(false, Ordering::Release);
 
         // 2. Suppress exit events for forced kills.
         self.exit_emitted.store(true, Ordering::Release);

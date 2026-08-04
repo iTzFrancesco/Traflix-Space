@@ -42,6 +42,16 @@ export interface FrameSnapshot {
 export interface TerminalOutput {
   terminalId: string;
   data: number[];
+  sequence: number;
+  /** Internal batch metadata retained so rehydrate can filter exact chunks. */
+  chunks?: Array<{ sequence: number; data: Uint8Array }>;
+}
+
+export interface TerminalRehydrateState {
+  state: number[];
+  outputSequence: number;
+  cols: number;
+  rows: number;
 }
 
 export interface TerminalExited {

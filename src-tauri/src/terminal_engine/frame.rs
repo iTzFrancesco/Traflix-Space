@@ -7,6 +7,19 @@ use crate::terminal_engine::cell::Cell;
 pub struct TerminalOutput {
     pub terminal_id: String,
     pub data: Vec<u8>,
+    /// Monotonic chunk number within this PTY lifetime. It lets a frontend
+    /// discard events already included in a rehydrate snapshot without
+    /// dropping output that arrived after the snapshot cutover.
+    pub sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalRehydrateState {
+    pub state: Vec<u8>,
+    pub output_sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ mod scheduler;
 mod session;
 
 pub use cell::{Cell, Color};
-pub use frame::FrameSnapshot;
+pub use frame::{FrameSnapshot, TerminalRehydrateState};
 pub use session::TerminalSession;
 
 use dashmap::mapref::entry::Entry;
@@ -64,37 +64,71 @@ impl TerminalManager {
         &self,
         app: AppHandle,
         config: crate::workspace::registry::TerminalConfig,
+        cols: u16,
+        rows: u16,
     ) -> Result<String, String> {
         let id = config.id.clone();
+        let initial_cols = cols.max(1);
+        let initial_rows = rows.max(1);
 
-        // Atomic check-or-insert to avoid dual-spawn races under concurrent IPC.
-        match self.sessions.entry(id.clone()) {
-            Entry::Occupied(_) => {
-                info!(terminal_id = %id, "Terminal session already exists, reusing");
-                return Ok(id);
+        // Reuse a live PTY. If it exited while the frontend was unmounted,
+        // report that state instead of silently replacing an agent session
+        // with a fresh shell; `terminal_reopen` is the explicit restart path.
+        loop {
+            if let Some(entry) = self.sessions.get(&id) {
+                let session = entry.value().clone();
+                drop(entry);
+                let session_state = session.read().await;
+                let process_alive = session_state.process_alive.load(Ordering::Acquire);
+                let spawn_in_progress = session_state.pty.is_none();
+                drop(session_state);
+
+                if process_alive || spawn_in_progress {
+                    info!(terminal_id = %id, "Terminal session already exists, reusing");
+                    // The existing PTY owns the live TUI geometry. The
+                    // frontend synchronizes the measured DOM size after
+                    // layout; resizing here would force a freshly mounted
+                    // xterm's default 80x24 onto a running TUI.
+                    return Ok(id);
+                }
+
+                info!(terminal_id = %id, "Terminal session already exited");
+                return Err(format!("terminal-exited: {}", id));
             }
-            Entry::Vacant(slot) => {
-                let shell = if config.shell.is_empty() {
-                    "powershell.exe".to_string()
-                } else {
-                    config.shell.clone()
-                };
-                let cwd_raw = if config.cwd.is_empty() {
-                    std::env::current_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|_| ".".to_string())
-                } else {
-                    config.cwd.clone()
-                };
-                // Strip Windows extended-length prefixes that break some shells.
-                let cwd = cwd_raw
-                    .trim_start_matches("\\\\?\\")
-                    .trim_start_matches("\\\\.\\")
-                    .to_string();
 
-                let session = TerminalSession::new(id.clone(), shell, cwd, 80, 24);
-                slot.insert(Arc::new(RwLock::new(session)));
-                info!(terminal_id = %id, "Terminal session created");
+            // Atomic check-or-insert. If another caller inserts between the
+            // lookup and this entry operation, loop and inspect its state.
+            match self.sessions.entry(id.clone()) {
+                Entry::Occupied(entry) => {
+                    drop(entry);
+                    continue;
+                }
+                Entry::Vacant(slot) => {
+                    let shell = if config.shell.is_empty() {
+                        "powershell.exe".to_string()
+                    } else {
+                        config.shell.clone()
+                    };
+                    let cwd_raw = if config.cwd.is_empty() {
+                        std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| ".".to_string())
+                    } else {
+                        config.cwd.clone()
+                    };
+                    // Strip Windows extended-length prefixes that break some shells.
+                    let cwd = cwd_raw
+                        .trim_start_matches("\\\\?\\")
+                        .trim_start_matches("\\\\.\\")
+                        .to_string();
+
+                    let mut session =
+                        TerminalSession::new(id.clone(), shell, cwd, initial_cols, initial_rows);
+                    session.workspace_id = config.workspace_id.clone();
+                    slot.insert(Arc::new(RwLock::new(session)));
+                    info!(terminal_id = %id, "Terminal session created");
+                    break;
+                }
             }
         }
 
@@ -242,12 +276,12 @@ impl TerminalManager {
         Ok(())
     }
 
-    /// Visible screen as plain text for rehydrating xterm after a workspace
-    /// switch (PTY keep-alive). Scrollback history is intentionally excluded
-    /// so a cleared terminal does not repopulate old output on remount.
-    ///
-    /// Needs a mutable parser lock so we can walk the vt100 viewport.
-    pub async fn get_screen_text(&self, id: &str) -> Result<String, String> {
+    /// Formatted visible screen + parser modes for rehydrating xterm after a
+    /// workspace switch while the PTY remains alive.
+    pub async fn get_state_for_rehydrate(
+        &self,
+        id: &str,
+    ) -> Result<TerminalRehydrateState, String> {
         let session = self
             .sessions
             .get(id)
@@ -255,15 +289,18 @@ impl TerminalManager {
 
         let session = session.read().await;
 
-        let result = {
-            if let Ok(mut p) = session.parser.lock() {
-                p.screen_text_for_rehydrate()
-            } else {
-                String::new()
-            }
-        };
-
-        Ok(result)
+        let mut parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let state = parser.state_for_rehydrate();
+        let output_sequence = session.output_sequence.load(Ordering::Acquire);
+        Ok(TerminalRehydrateState {
+            state,
+            output_sequence,
+            cols: session.grid.cols,
+            rows: session.grid.rows,
+        })
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {

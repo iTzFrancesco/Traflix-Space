@@ -34,6 +34,11 @@ pub struct TerminalConfig {
     pub command: Option<String>,
     pub cwd: String,
     pub title: String,
+    /// Owning workspace. Exposed to the PTY as TRAFLIX_WORKSPACE_ID so the
+    /// agent-event bridge can correlate completions with the right workspace.
+    /// `default` keeps older persisted workspaces.json files parseable.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 pub struct WorkspaceRegistry {
