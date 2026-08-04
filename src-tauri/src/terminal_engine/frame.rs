@@ -16,6 +16,9 @@ pub struct TerminalOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalRehydrateState {
+    /// Bounded scrollback + visible rows, formatted as terminal input. This
+    /// must be written before `state` so a remounted xterm regains its buffer.
+    pub history: Vec<u8>,
     pub state: Vec<u8>,
     pub output_sequence: u64,
     pub cols: u16,

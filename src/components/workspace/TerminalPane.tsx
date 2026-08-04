@@ -401,13 +401,30 @@ function fitAndResizePty(
     // Fit can throw if container has zero size (hidden pane).
     return;
   }
-  scrollPositionRef.current = positionBeforeFit;
-  restoreScrollPosition(
-    term,
-    autoScrollRef,
-    scrollPositionRef,
-    programmaticScrollTargetRef,
-  );
+  if (positionBeforeFit.followsOutput) {
+    // Following the live stream is the one case where an explicit bottom
+    // restore is correct. For a reader in history, xterm's buffer reflow
+    // already adjusts ydisp to keep the same content visible. Reapplying the
+    // old bottom-relative offset after reflow can clamp to line zero when a
+    // wider/taller layout reduces baseY.
+    restoreScrollPosition(
+      term,
+      autoScrollRef,
+      scrollPositionRef,
+      programmaticScrollTargetRef,
+    );
+  } else if (term.buffer.active.baseY > 0) {
+    // Keep xterm's post-reflow viewport. Capture the resulting position for
+    // the next layout change/remount instead of overriding it with a stale
+    // offset measured before the resize.
+    captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+  } else {
+    // There is no scrollback yet. Preserve the reader intent until rehydrate
+    // or output creates a scrollable buffer.
+    scrollPositionRef.current = positionBeforeFit;
+    autoScrollRef.current = false;
+    programmaticScrollTargetRef.current = null;
+  }
   if (term.cols > 0 && term.rows > 0) {
     void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows).catch(() => {});
   }
@@ -514,6 +531,13 @@ export const TerminalPane = memo(function TerminalPane({
     pending: null,
     flushing: false,
   });
+  const fitScheduleRef = useRef<{
+    raf: number | null;
+    remainingFrames: number;
+  }>({
+    raf: null,
+    remainingFrames: 0,
+  });
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
@@ -555,6 +579,37 @@ export const TerminalPane = memo(function TerminalPane({
   const currentCwdRef = useRef(cwd);
   const contextRequestRef = useRef(0);
   const atPowerShellPromptRef = useRef(false);
+
+  const scheduleFitAndResize = useCallback((waitFrames = 0) => {
+    const schedule = fitScheduleRef.current;
+    schedule.remainingFrames = Math.max(schedule.remainingFrames, waitFrames);
+    if (schedule.raf !== null) return;
+
+    const run = () => {
+      if (schedule.remainingFrames > 0) {
+        schedule.remainingFrames -= 1;
+        schedule.raf = requestAnimationFrame(run);
+        return;
+      }
+
+      schedule.raf = null;
+      const term = xtermRef.current;
+      const fitAddon = fitAddonRef.current;
+      if (!term || !fitAddon) return;
+      if (focusModeActive && !isFocused) return;
+      fitAndResizePty(
+        term,
+        fitAddon,
+        terminalId,
+        autoScrollRef,
+        scrollPositionRef,
+        programmaticScrollTargetRef,
+        ptyResizeStateRef,
+      );
+    };
+
+    schedule.raf = requestAnimationFrame(run);
+  }, [focusModeActive, isFocused, terminalId]);
 
   useEffect(() => {
     currentCwdRef.current = cwd;
@@ -788,6 +843,11 @@ export const TerminalPane = memo(function TerminalPane({
       container?.removeEventListener("wheel", onWheel, { capture: true });
       container?.removeEventListener("keydown", onKeyDown, { capture: true });
       container?.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      if (fitScheduleRef.current.raf !== null) {
+        cancelAnimationFrame(fitScheduleRef.current.raf);
+        fitScheduleRef.current.raf = null;
+        fitScheduleRef.current.remainingFrames = 0;
+      }
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -843,6 +903,11 @@ export const TerminalPane = memo(function TerminalPane({
         (termNow.cols !== rehydrateState.cols || termNow.rows !== rehydrateState.rows)
       ) {
         termNow.resize(rehydrateState.cols, rehydrateState.rows);
+      }
+      if (rehydrateState.history.length > 0) {
+        await new Promise<void>((resolve) =>
+          termNow.write(new Uint8Array(rehydrateState.history), resolve),
+        );
       }
       if (rehydrateState.state.length > 0) {
         await new Promise<void>((resolve) =>
@@ -961,23 +1026,14 @@ export const TerminalPane = memo(function TerminalPane({
   // 3. Active focus + backend active flag (skip heavy refresh when hidden in focus mode)
   useEffect(() => {
     const term = xtermRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!term || !fitAddon) return;
+    if (!term) return;
 
     // Hidden under another pane's focus mode — do not fit/resize to 0×0.
     if (focusModeActive && !isFocused) return;
 
     if (isActive || isFocused) {
       requestAnimationFrame(() => {
-        fitAndResizePty(
-          term,
-          fitAddon,
-          terminalId,
-          autoScrollRef,
-          scrollPositionRef,
-          programmaticScrollTargetRef,
-          ptyResizeStateRef,
-        );
+        scheduleFitAndResize();
         if (isActive || isFocused) {
           term.focus();
           term.clearSelection();
@@ -985,7 +1041,7 @@ export const TerminalPane = memo(function TerminalPane({
       });
       invoke("terminal_set_active", { terminalId }).catch(() => {});
     }
-  }, [isActive, isFocused, focusModeActive, terminalId]);
+  }, [isActive, isFocused, focusModeActive, terminalId, scheduleFitAndResize]);
 
   // 3b. Enter/exit focus mode — always re-fit the focused pane (or all when leaving)
   const wasFocusedRef = useRef(isFocused);
@@ -1000,25 +1056,13 @@ export const TerminalPane = memo(function TerminalPane({
     if (focusModeActive && !isFocused) return;
 
     const term = xtermRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!term || !fitAddon) return;
+    if (!term) return;
 
-    // Double rAF: wait for layout after grid CSS change.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        fitAndResizePty(
-          term,
-          fitAddon,
-          terminalId,
-          autoScrollRef,
-          scrollPositionRef,
-          programmaticScrollTargetRef,
-          ptyResizeStateRef,
-        );
-        if (isFocused || isActive) term.focus();
-      });
-    });
-  }, [isFocused, focusModeActive, isActive, terminalId]);
+    // Wait for layout after the grid CSS change. Calls from this effect,
+    // active/focused state and ResizeObserver are coalesced per pane.
+    scheduleFitAndResize(2);
+    if (isFocused || isActive) term.focus();
+  }, [isFocused, focusModeActive, isActive, terminalId, scheduleFitAndResize]);
 
   // When leaving global focus mode, non-focused panes become visible again → fit.
   const prevFocusModeRef = useRef(focusModeActive);
@@ -1027,24 +1071,8 @@ export const TerminalPane = memo(function TerminalPane({
     prevFocusModeRef.current = focusModeActive;
     if (!leftFocusMode) return;
 
-    const term = xtermRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!term || !fitAddon) return;
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        fitAndResizePty(
-          term,
-          fitAddon,
-          terminalId,
-          autoScrollRef,
-          scrollPositionRef,
-          programmaticScrollTargetRef,
-          ptyResizeStateRef,
-        );
-      });
-    });
-  }, [focusModeActive, terminalId]);
+    scheduleFitAndResize(2);
+  }, [focusModeActive, terminalId, scheduleFitAndResize]);
 
   // 4a. Output — shared bus + rAF batch (already coalesced in terminalEvents)
   useEffect(() => {
@@ -1117,18 +1145,7 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     const handleResize = () => {
       if (focusModeActive && !isFocused) return;
-      const term = xtermRef.current;
-      const fitAddon = fitAddonRef.current;
-      if (!term || !fitAddon) return;
-      fitAndResizePty(
-        term,
-        fitAddon,
-        terminalId,
-        autoScrollRef,
-        scrollPositionRef,
-        programmaticScrollTargetRef,
-        ptyResizeStateRef,
-      );
+      scheduleFitAndResize();
     };
 
     const container = containerRef.current;
@@ -1161,7 +1178,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (observerRaf !== null) cancelAnimationFrame(observerRaf);
       observer.disconnect();
     };
-  }, [terminalId, focusModeActive, isFocused]);
+  }, [terminalId, focusModeActive, isFocused, scheduleFitAndResize]);
 
   useTerminalInput(terminalId, containerRef, xtermRef);
 

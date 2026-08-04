@@ -48,6 +48,7 @@ export interface TerminalOutput {
 }
 
 export interface TerminalRehydrateState {
+  history: number[];
   state: number[];
   outputSequence: number;
   cols: number;

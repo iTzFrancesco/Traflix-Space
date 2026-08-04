@@ -276,8 +276,9 @@ impl TerminalManager {
         Ok(())
     }
 
-    /// Formatted visible screen + parser modes for rehydrating xterm after a
-    /// workspace switch while the PTY remains alive.
+    /// Formatted scrollback, visible screen, parser modes, geometry, and the
+    /// output watermark for rehydrating xterm after a workspace switch while
+    /// the PTY remains alive.
     pub async fn get_state_for_rehydrate(
         &self,
         id: &str,
@@ -293,9 +294,11 @@ impl TerminalManager {
             .parser
             .lock()
             .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let history = parser.scrollback_text_for_rehydrate();
         let state = parser.state_for_rehydrate();
         let output_sequence = session.output_sequence.load(Ordering::Acquire);
         Ok(TerminalRehydrateState {
+            history,
             state,
             output_sequence,
             cols: session.grid.cols,
