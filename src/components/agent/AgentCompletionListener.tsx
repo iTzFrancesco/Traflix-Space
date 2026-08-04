@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import { playAgentCompletionChime } from "../../lib/agentNotificationSound";
 import {
@@ -13,8 +13,11 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import type { AgentTurnCompleted } from "../terminal/types";
 
 const PROVIDER_NAMES: Record<string, string> = {
+  "anti-gravity": "Anti-Gravity",
   claude: "Claude",
+  cline: "Cline",
   codex: "Codex",
+  freebuff: "Freebuff",
   opencode: "OpenCode",
   pi: "Pi",
 };
@@ -43,10 +46,9 @@ function projectNameForEvent(
   return "Progetto corrente";
 }
 
-function handleCompletion(event: AgentTurnCompleted) {
+async function handleCompletion(event: AgentTurnCompleted) {
   const terminalStore = useTerminalStore.getState();
   const terminal = terminalStore.terminals[event.terminalId];
-  const appHasFocus = document.hasFocus();
 
   const completionWorkspaceId = terminal?.workspaceId ?? event.workspaceId ?? null;
   const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
@@ -58,7 +60,6 @@ function handleCompletion(event: AgentTurnCompleted) {
     terminalId: event.terminalId,
     eventId: event.eventId ?? "-",
     workspaceId: completionWorkspaceId,
-    appHasFocus,
     isCompletionInActiveWorkspace,
     terminalKnown: Boolean(terminal),
   });
@@ -76,6 +77,19 @@ function handleCompletion(event: AgentTurnCompleted) {
   }
   // The terminal/workspace attention indicator and sound are always emitted.
   playAgentCompletionChime();
+
+  let appHasFocus = document.hasFocus();
+  try {
+    // Native Tauri focus is reliable while xterm owns the focused element;
+    // document.hasFocus() can be false in that situation in WebView2.
+    appHasFocus = await getCurrentWebviewWindow().isFocused();
+  } catch {
+    // Browser preview and older runtimes fall back to the DOM signal.
+  }
+  console.info("[agent-notification] focus resolved", {
+    terminalId: event.terminalId,
+    appHasFocus,
+  });
 
   // A completion in the workspace currently visible to the user only needs
   // the sound and the terminal/workspace attention indicator. Completions in
