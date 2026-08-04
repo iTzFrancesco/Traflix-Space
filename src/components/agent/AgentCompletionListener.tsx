@@ -49,9 +49,13 @@ function handleCompletion(event: AgentTurnCompleted) {
   const appHasFocus = document.hasFocus();
 
   const completionWorkspaceId = terminal?.workspaceId ?? event.workspaceId ?? null;
+  const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+  const isCompletionInActiveWorkspace =
+    completionWorkspaceId !== null &&
+    completionWorkspaceId === activeWorkspaceId;
   // Completion state is always marked as requiring attention. The visual
-  // channel is gated below, but the terminal/workspace indicator must remain
-  // available in every focus/workspace combination until explicitly cleared.
+  // indicator must remain available in every focus/workspace combination until
+  // explicitly cleared.
   const attentionRequired = true;
 
   if (terminal) {
@@ -62,9 +66,13 @@ function handleCompletion(event: AgentTurnCompleted) {
     );
   }
   // The terminal/workspace attention indicator and sound are always emitted.
-  // While Traflix has focus use the in-app toast; only another app/desktop
-  // gets the external widget.
   playAgentCompletionChime();
+
+  // A completion in the workspace currently visible to the user only needs
+  // the sound and the terminal/workspace attention indicator. Completions in
+  // another workspace use the in-app toast, while completions received while
+  // Traflix is unfocused use the external overlay.
+  if (appHasFocus && isCompletionInActiveWorkspace) return;
 
   const workspaceId = completionWorkspaceId;
   const terminalTitle =
