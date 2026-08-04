@@ -110,45 +110,99 @@ $normalized = [ordered]@{
 $json = $normalized | ConvertTo-Json -Compress
 
 # A terminal can belong to the installed release while the user is looking at
-# the DEV instance (or the other way around). Fan out the same normalized event
-# to both Traflix pipes. A missing pipe is expected and remains best-effort.
+# the DEV instance (or the other way around). Route real desktop events to the
+# Traflix instance whose window is currently in the foreground. This prevents
+# the unfocused DEV/release co-listener from showing a duplicate overlay.
+# When no Traflix window is focused, keep the event with the terminal owner so
+# that the owner can show the external overlay above other applications.
 $pipeLeaves = [System.Collections.Generic.List[string]]::new()
-function Add-PipeLeaf {
+function Get-PipeLeaf {
     param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return }
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     $leaf = $Value
     if ($leaf.Contains("\")) {
         $leaf = $leaf.Substring($leaf.LastIndexOf("\") + 1)
     }
+    return $leaf
+}
+
+function Add-PipeLeaf {
+    param([string]$Value)
+    $leaf = Get-PipeLeaf $Value
+    if ([string]::IsNullOrWhiteSpace($leaf)) { return }
     if (-not [string]::IsNullOrWhiteSpace($leaf) -and -not $pipeLeaves.Contains($leaf)) {
         [void]$pipeLeaves.Add($leaf)
     }
 }
 
-Add-PipeLeaf $PipeName
-$alternatePipes = @()
-if (-not [string]::IsNullOrWhiteSpace($PipeAlternates)) {
-    $alternatePipes = $PipeAlternates -split '[,;]'
-} else {
-    $pipeLeafForFanout = $PipeName
-    if ($pipeLeafForFanout.Contains("\")) {
-        $pipeLeafForFanout = $pipeLeafForFanout.Substring($pipeLeafForFanout.LastIndexOf("\") + 1)
-    }
-    if ($pipeLeafForFanout -in @(
-        "traflix-space-agent-events",
-        "traflix-space-agent-events-dev"
-    )) {
-    # Only a real terminal event uses the configured Traflix pipe. Explicit
-    # custom pipes remain single-destination so adapter tests never touch a
-    # running desktop instance.
-        $alternatePipes = @(
-            "traflix-space-agent-events",
-            "traflix-space-agent-events-dev"
-        )
+function Get-FocusedTraflixPipe {
+    try {
+        if (-not ("TraflixAgentFocus.NativeMethods" -as [type])) {
+            Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+namespace TraflixAgentFocus {
+    public static class NativeMethods {
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     }
 }
-foreach ($alternatePipe in $alternatePipes) {
-    Add-PipeLeaf $alternatePipe
+"@
+        }
+
+        $window = [TraflixAgentFocus.NativeMethods]::GetForegroundWindow()
+        if ($window -eq [IntPtr]::Zero) { return $null }
+
+        [uint32]$foregroundProcessId = 0
+        [void][TraflixAgentFocus.NativeMethods]::GetWindowThreadProcessId(
+            $window,
+            [ref]$foregroundProcessId
+        )
+        if ($foregroundProcessId -eq 0) { return $null }
+
+        $process = Get-Process -Id $foregroundProcessId -ErrorAction Stop
+        if ($process.ProcessName -ine "traflix-space") { return $null }
+
+        $processPath = $process.Path
+        if ([string]::IsNullOrWhiteSpace($processPath)) { return $null }
+        if ($processPath -match "(?i)\\target\\debug\\traflix-space\.exe$") {
+            return "traflix-space-agent-events-dev"
+        }
+        return "traflix-space-agent-events"
+    } catch {
+        return $null
+    }
+}
+
+$pipeLeafForOwner = Get-PipeLeaf $PipeName
+$isRealTraflixPipe = $pipeLeafForOwner -in @(
+    "traflix-space-agent-events",
+    "traflix-space-agent-events-dev"
+)
+
+if ($isRealTraflixPipe) {
+    $focusedPipe = Get-FocusedTraflixPipe
+    if (-not [string]::IsNullOrWhiteSpace($focusedPipe)) {
+        Add-PipeLeaf $focusedPipe
+        Write-BridgeLog ("notification route=focused-pipe pipe={0}" -f $focusedPipe)
+    } else {
+        Add-PipeLeaf $PipeName
+        Write-BridgeLog ("notification route=owner-pipe pipe={0}" -f $pipeLeafForOwner)
+    }
+} else {
+    # Explicit custom pipes are used by the adapter tests and remain
+    # multi-destination so the bridge contract can be verified safely.
+    Add-PipeLeaf $PipeName
+    $alternatePipes = @()
+    if (-not [string]::IsNullOrWhiteSpace($PipeAlternates)) {
+        $alternatePipes = $PipeAlternates -split '[,;]'
+    }
+    foreach ($alternatePipe in $alternatePipes) {
+        Add-PipeLeaf $alternatePipe
+    }
 }
 Write-BridgeLog ("notification normalized provider={0} kind={1} terminal={2} eventId={3} destinations={4}" -f $Provider, $Kind, $TerminalId, $eventId, ($pipeLeaves -join ","))
 if ($pipeLeaves.Count -eq 0) {

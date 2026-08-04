@@ -68,6 +68,7 @@ foreach ($contract in $adapterContracts) {
 }
 
 $uiContracts = @(
+    @{ Name = "focus-aware bridge"; Path = $bridgePath; Required = @("Get-FocusedTraflixPipe", "GetForegroundWindow", "route=focused-pipe", "route=owner-pipe") },
     @{ Name = "Traflix overlay"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", "projectName", "Apri", "Continua") },
     @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
     @{ Name = "Space event log"; Path = Join-Path $scriptRoot "..\..\src\lib\terminalEvents.ts"; Required = @("[agent-notification] received from Space") },

@@ -11,9 +11,11 @@ Traflix Space listens on the Windows named pipe configured in
 
 The bridge is [`traflix-agent-event.ps1`](./traflix-agent-event.ps1). It is
 best-effort: if Traflix is closed or a pipe is unavailable, it exits without
-blocking or changing the agent result. A real Traflix terminal event is sent
-to both the configured pipe and the other DEV/release pipe, so two local
-Traflix instances can observe the same completion.
+blocking or changing the agent result. A real Traflix terminal event is routed
+to the Traflix instance whose window is currently in the foreground. If no
+Traflix window is focused, it stays on the pipe that owns the terminal so that
+instance can show the external overlay. This prevents duplicate overlays when
+DEV and the installed release run at the same time.
 
 ## Notification logs
 
