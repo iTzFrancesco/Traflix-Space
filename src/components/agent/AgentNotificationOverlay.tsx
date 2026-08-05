@@ -43,12 +43,32 @@ export function AgentNotificationOverlay() {
   };
 
   const openTerminal = async () => {
-    if (!notification?.canOpenTerminal) return;
-    await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT, {
-      workspaceId: notification.workspaceId,
-      terminalId: notification.terminalId,
-    });
-    close();
+    const currentNotification = notification;
+    if (!currentNotification?.canOpenTerminal) return;
+
+    try {
+      // Bring the hidden main window back even if the event listener is still
+      // starting up. The main webview will also focus itself after receiving
+      // the navigation event.
+      const mainWindow = await WebviewWindow.getByLabel("main");
+      try {
+        await mainWindow?.show();
+        await mainWindow?.setFocus();
+      } catch (error) {
+        // The event is still useful: the main webview performs the same
+        // best-effort focus after it receives it.
+        console.warn("Traflix main window focus failed before navigation:", error);
+      }
+      await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT, {
+        workspaceId: currentNotification.workspaceId,
+        terminalId: currentNotification.terminalId,
+      });
+      close();
+    } catch (error) {
+      // Keep the notification visible so a transient IPC/window failure is
+      // visible and the user can retry instead of losing the only action.
+      console.warn("Traflix terminal notification could not open main window:", error);
+    }
   };
 
   return (

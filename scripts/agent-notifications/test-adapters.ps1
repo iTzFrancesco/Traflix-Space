@@ -80,7 +80,9 @@ foreach ($contract in $adapterContracts) {
 $uiContracts = @(
     @{ Name = "focus-aware bridge"; Path = $bridgePath; Required = @("Get-FocusedTraflixPipe", "GetForegroundWindow", "route=focused-pipe", "route=owner-pipe") },
     @{ Name = "Traflix overlay"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", "projectName", "Apri", "Continua") },
+    @{ Name = "overlay open error path"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @('WebviewWindow.getByLabel("main")', "mainWindow?.show()", "mainWindow?.setFocus()", "if (!currentNotification?.canOpenTerminal) return;", 'await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT', "workspaceId: currentNotification.workspaceId", "terminalId: currentNotification.terminalId", "catch (error)", 'console.warn("Traflix terminal notification could not open main window:", error)'); Forbidden = @("terminal_write", "terminal_kill", "create_workspace", "update_workspace", "delete_workspace") },
     @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "getCurrentWebviewWindow().isFocused()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] focus resolved", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
+    @{ Name = "main notification receiver"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("[agent-notification] open requested", "const mainWindow = getCurrentWebviewWindow()", "await mainWindow.show()", "await mainWindow.setFocus()"); Forbidden = @('WebviewWindow.getByLabel("main")', "terminal_write", "terminal_kill", "create_workspace", "update_workspace", "delete_workspace") },
     @{ Name = "Space event log"; Path = Join-Path $scriptRoot "..\..\src\lib\terminalEvents.ts"; Required = @("[agent-notification] received from Space") },
     @{ Name = "overlay event log"; Path = Join-Path $scriptRoot "..\..\src\lib\agentNotificationOverlay.ts"; Required = @("[agent-notification] overlay start", "[agent-notification] overlay event dispatched") },
     @{ Name = "Rust event log"; Path = Join-Path $scriptRoot "..\..\src-tauri\src\agent_events.rs"; Required = @("Agent event received from named pipe", "Agent notification parsed", "Agent notification ignored as duplicate", "Agent notification forwarded to frontend") },
@@ -91,6 +93,11 @@ foreach ($contract in $uiContracts) {
     Assert-True (Test-Path -LiteralPath $contract.Path) "$($contract.Name) file is missing"
     foreach ($required in $contract.Required) {
         Assert-Contains $content $required $contract.Name
+    }
+    if ($null -ne $contract.Forbidden) {
+        foreach ($forbidden in $contract.Forbidden) {
+            Assert-NotContains $content $forbidden $contract.Name
+        }
     }
     Write-Host "[ui] $($contract.Name)"
 }

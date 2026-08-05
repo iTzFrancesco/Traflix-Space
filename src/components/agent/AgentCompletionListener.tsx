@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import { playAgentCompletionChime } from "../../lib/agentNotificationSound";
 import {
@@ -156,17 +156,24 @@ export function AgentCompletionListener() {
     let unlisten: UnlistenFn | undefined;
     const setup = listen<{ workspaceId?: string | null; terminalId: string }>(
       AGENT_NOTIFICATION_OPEN_EVENT,
-      (event) => {
+      async (event) => {
         const { workspaceId, terminalId } = event.payload;
+        console.info("[agent-notification] open requested", {
+          terminalId,
+          workspaceId: workspaceId ?? null,
+        });
         if (workspaceId) {
           useWorkspaceStore.getState().setActiveWorkspace(workspaceId);
         }
         useTerminalStore.getState().setActiveTerminal(terminalId);
         useTerminalStore.getState().clearAgentAttention(terminalId);
-        void WebviewWindow.getByLabel("main").then((window) => {
-          void window?.show();
-          void window?.setFocus();
-        });
+        const mainWindow = getCurrentWebviewWindow();
+        try {
+          await mainWindow.show();
+          await mainWindow.setFocus();
+        } catch (error) {
+          console.warn("[agent-notification] main window focus failed:", error);
+        }
       },
     ).then((cleanup) => {
       unlisten = cleanup;
