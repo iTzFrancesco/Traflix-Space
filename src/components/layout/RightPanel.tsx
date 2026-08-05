@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import {
+  Globe2,
   FolderTree,
   GitBranch,
   PanelRightClose,
@@ -11,8 +12,10 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ProjectGitChanges } from "../project/ProjectGitChanges";
 import { ProjectExplorer } from "../project/ProjectExplorer";
+import { BrowserPanel } from "../browser/BrowserPanel";
 
 const PANEL_SLOTS = [
+  { id: "browser", label: "Browser", icon: Globe2, available: true },
   { id: "files", label: "Files", icon: FolderTree, available: true },
   { id: "git", label: "Git changes", icon: GitBranch, available: true },
 ] as const;
@@ -32,6 +35,7 @@ export function RightPanel() {
   const panelRef = useRef<HTMLElement>(null);
   const showFiles = !activeView || activeView === "files";
   const showGitChanges = activeView === "git";
+  const showBrowser = activeView === "browser";
 
   useEffect(() => {
     if (activeWorkspaceId) clearSelection(activeWorkspaceId);
@@ -160,7 +164,11 @@ export function RightPanel() {
         })}
       </div>
 
-      {activeWorkspaceId && workspace ? (
+      {showBrowser ? (
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <BrowserPanel />
+        </div>
+      ) : activeWorkspaceId && workspace ? (
         <>
           <div className={showFiles ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
             <ProjectExplorer

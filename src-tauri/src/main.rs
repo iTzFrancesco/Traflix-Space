@@ -2,6 +2,7 @@
 
 mod agent;
 mod agent_events;
+mod browser;
 mod project;
 mod settings;
 mod skills;
@@ -175,6 +176,14 @@ fn main() {
             agent::commands::list_agents,
             settings::commands::get_settings,
             settings::commands::set_settings,
+            browser::browser_create,
+            browser::browser_navigate,
+            browser::browser_reload,
+            browser::browser_reset,
+            browser::browser_back,
+            browser::browser_forward,
+            browser::browser_get_url,
+            browser::browser_close,
             terminal_engine::commands::terminal_spawn,
             terminal_engine::commands::terminal_write,
             terminal_engine::commands::terminal_resize,

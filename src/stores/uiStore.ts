@@ -68,6 +68,7 @@ export const useUIStore = create<UIStore>()(
         isCollapsed: state.isCollapsed,
         rightPanelWidth: state.rightPanelWidth,
         rightPanelOpen: state.rightPanelOpen,
+        rightPanelActiveView: state.rightPanelActiveView,
       }),
     },
   ),
