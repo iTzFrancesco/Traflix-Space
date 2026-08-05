@@ -169,8 +169,13 @@ export function AgentCompletionListener() {
         useTerminalStore.getState().clearAgentAttention(terminalId);
         const mainWindow = getCurrentWebviewWindow();
         try {
+          await mainWindow.unminimize();
           await mainWindow.show();
           await mainWindow.setFocus();
+          console.info("[agent-notification] main window opened", {
+            terminalId,
+            workspaceId: workspaceId ?? null,
+          });
         } catch (error) {
           console.warn("[agent-notification] main window focus failed:", error);
         }

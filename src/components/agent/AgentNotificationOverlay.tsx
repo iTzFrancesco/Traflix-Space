@@ -52,6 +52,7 @@ export function AgentNotificationOverlay() {
       // the navigation event.
       const mainWindow = await WebviewWindow.getByLabel("main");
       try {
+        await mainWindow?.unminimize();
         await mainWindow?.show();
         await mainWindow?.setFocus();
       } catch (error) {
@@ -62,6 +63,10 @@ export function AgentNotificationOverlay() {
       await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT, {
         workspaceId: currentNotification.workspaceId,
         terminalId: currentNotification.terminalId,
+      });
+      console.info("[agent-notification] open event dispatched", {
+        terminalId: currentNotification.terminalId,
+        workspaceId: currentNotification.workspaceId ?? null,
       });
       close();
     } catch (error) {
