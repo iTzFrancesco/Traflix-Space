@@ -109,12 +109,11 @@ $normalized = [ordered]@{
 }
 $json = $normalized | ConvertTo-Json -Compress
 
-# A terminal can belong to the installed release while the user is looking at
-# the DEV instance (or the other way around). Route real desktop events to the
-# Traflix instance whose window is currently in the foreground. This prevents
-# the unfocused DEV/release co-listener from showing a duplicate overlay.
-# When no Traflix window is focused, keep the event with the terminal owner so
-# that the owner can show the external overlay above other applications.
+# The environment variables are stamped onto each Traflix-managed PTY. The
+# configured pipe is therefore the source of truth for the instance that owns
+# the terminal. Always route real desktop events to that owner: routing by the
+# currently focused DEV/release window can deliver the notification to an
+# instance that has no real PTY to reopen.
 $pipeLeaves = [System.Collections.Generic.List[string]]::new()
 function Get-PipeLeaf {
     param([string]$Value)
@@ -135,48 +134,6 @@ function Add-PipeLeaf {
     }
 }
 
-function Get-FocusedTraflixPipe {
-    try {
-        if (-not ("TraflixAgentFocus.NativeMethods" -as [type])) {
-            Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-namespace TraflixAgentFocus {
-    public static class NativeMethods {
-        [DllImport("user32.dll")]
-        public static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll")]
-        public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-    }
-}
-"@
-        }
-
-        $window = [TraflixAgentFocus.NativeMethods]::GetForegroundWindow()
-        if ($window -eq [IntPtr]::Zero) { return $null }
-
-        [uint32]$foregroundProcessId = 0
-        [void][TraflixAgentFocus.NativeMethods]::GetWindowThreadProcessId(
-            $window,
-            [ref]$foregroundProcessId
-        )
-        if ($foregroundProcessId -eq 0) { return $null }
-
-        $process = Get-Process -Id $foregroundProcessId -ErrorAction Stop
-        if ($process.ProcessName -ine "traflix-space") { return $null }
-
-        $processPath = $process.Path
-        if ([string]::IsNullOrWhiteSpace($processPath)) { return $null }
-        if ($processPath -match "(?i)\\target\\debug\\traflix-space\.exe$") {
-            return "traflix-space-agent-events-dev"
-        }
-        return "traflix-space-agent-events"
-    } catch {
-        return $null
-    }
-}
-
 $pipeLeafForOwner = Get-PipeLeaf $PipeName
 $isRealTraflixPipe = $pipeLeafForOwner -in @(
     "traflix-space-agent-events",
@@ -184,14 +141,8 @@ $isRealTraflixPipe = $pipeLeafForOwner -in @(
 )
 
 if ($isRealTraflixPipe) {
-    $focusedPipe = Get-FocusedTraflixPipe
-    if (-not [string]::IsNullOrWhiteSpace($focusedPipe)) {
-        Add-PipeLeaf $focusedPipe
-        Write-BridgeLog ("notification route=focused-pipe pipe={0}" -f $focusedPipe)
-    } else {
-        Add-PipeLeaf $PipeName
-        Write-BridgeLog ("notification route=owner-pipe pipe={0}" -f $pipeLeafForOwner)
-    }
+    Add-PipeLeaf $PipeName
+    Write-BridgeLog ("notification route=owner-pipe pipe={0}" -f $pipeLeafForOwner)
 } else {
     # Explicit custom pipes are used by the adapter tests and remain
     # multi-destination so the bridge contract can be verified safely.

@@ -11,11 +11,10 @@ Traflix Space listens on the Windows named pipe configured in
 
 The bridge is [`traflix-agent-event.ps1`](./traflix-agent-event.ps1). It is
 best-effort: if Traflix is closed or a pipe is unavailable, it exits without
-blocking or changing the agent result. A real Traflix terminal event is routed
-to the Traflix instance whose window is currently in the foreground. If no
-Traflix window is focused, it stays on the pipe that owns the terminal so that
-instance can show the external overlay. This prevents duplicate overlays when
-DEV and the installed release run at the same time.
+blocking or changing the agent result. A real Traflix terminal event is always
+routed to the pipe that owns the terminal. This is required when DEV and the
+installed release run at the same time: the notification and its “Continua”
+action must stay with the instance that owns the real PTY.
 
 ## Notification logs
 
@@ -59,6 +58,13 @@ repo checkout, and:
 Run it again after every reinstall/update of Traflix (the bridge path can move).
 It preserves an existing Codex `notify` command and adds the Cline hook while
 installing/updating the OpenCode and Pi adapter files.
+
+After changing the bridge itself, restart/reinstall Traflix so the packaged
+copy under `C:\Program Files\Traflix Space\agent-notifications\` is updated.
+For a DEV-only check, start the DEV app with
+`TRAFLIX_AGENT_EVENT_BRIDGE` pointing to this repository's
+`scripts\agent-notifications\traflix-agent-event.ps1`, then restart the agent
+process so it inherits the new path.
 
 ## Smoke test
 
