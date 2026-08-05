@@ -67,19 +67,33 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     let mut name: Option<String> = None;
     let mut desc: Option<String> = None;
 
-    for line in yaml_block.lines() {
-        let line = line.trim();
-        if let Some(val) = line
-            .strip_prefix("name:")
-            .map(|v| v.trim().trim_matches('"').to_string())
-        {
-            name = Some(val);
-        } else if let Some(val) = line
-            .strip_prefix("description:")
-            .map(|v| v.trim().trim_matches('"').to_string())
-        {
-            desc = Some(val);
+    let lines: Vec<&str> = yaml_block.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index].trim();
+        if let Some(val) = line.strip_prefix("name:") {
+            name = Some(val.trim().trim_matches(['"', '\'']).to_string());
+        } else if let Some(val) = line.strip_prefix("description:") {
+            let value = val.trim();
+            if value.starts_with('|') || value.starts_with('>') {
+                // YAML block descriptions are common in local skills. Keep
+                // them compact because the frontend only needs a short card
+                // preview, not the complete SKILL.md body.
+                let mut parts = Vec::new();
+                index += 1;
+                while index < lines.len() {
+                    let continuation = lines[index].trim();
+                    if !continuation.is_empty() {
+                        parts.push(continuation);
+                    }
+                    index += 1;
+                }
+                desc = Some(parts.join(" "));
+                break;
+            }
+            desc = Some(value.trim_matches(['"', '\'']).to_string());
         }
+        index += 1;
     }
 
     name.map(|n| (n, desc.unwrap_or_default()))
@@ -142,7 +156,12 @@ pub fn scan_skills() -> Vec<SkillInfo> {
     }
 
     // Ordine alfabetico per nome
-    skills.sort_by_key(|a| a.name.to_lowercase());
+    skills.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.to_lowercase().cmp(&b.id.to_lowercase()))
+    });
 
     skills
 }

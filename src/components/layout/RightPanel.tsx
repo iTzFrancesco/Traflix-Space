@@ -5,6 +5,7 @@ import {
   GitBranch,
   PanelRightClose,
   PanelRightOpen,
+  Sparkles,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useUIStore } from "../../stores/uiStore";
@@ -12,12 +13,14 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ProjectGitChanges } from "../project/ProjectGitChanges";
 import { ProjectExplorer } from "../project/ProjectExplorer";
+import { SkillsModule } from "../skills/SkillsModule";
 import { BrowserPanel } from "../browser/BrowserPanel";
 
 const PANEL_SLOTS = [
   { id: "browser", label: "Browser", icon: Globe2, available: true },
   { id: "files", label: "Files", icon: FolderTree, available: true },
   { id: "git", label: "Git changes", icon: GitBranch, available: true },
+  { id: "skills", label: "Skills", icon: Sparkles, available: true },
 ] as const;
 
 export function RightPanel() {
@@ -35,6 +38,7 @@ export function RightPanel() {
   const panelRef = useRef<HTMLElement>(null);
   const showFiles = !activeView || activeView === "files";
   const showGitChanges = activeView === "git";
+  const showSkills = activeView === "skills";
   const showBrowser = activeView === "browser";
 
   useEffect(() => {
@@ -168,6 +172,8 @@ export function RightPanel() {
         <div className="flex min-h-0 min-w-0 flex-1">
           <BrowserPanel />
         </div>
+      ) : showSkills ? (
+        <SkillsModule />
       ) : activeWorkspaceId && workspace ? (
         <>
           <div className={showFiles ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>

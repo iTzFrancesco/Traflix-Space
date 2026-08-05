@@ -1985,12 +1985,7 @@ export const TerminalPane = memo(function TerminalPane({
             }}
           />
           <span>
-            usa{" "}
-            {pendingNames.length === 1
-              ? `la skill ${pendingNames[0]}`
-              : pendingNames.length === 2
-                ? `le skill ${pendingNames.join(" e ")}`
-                : `le skill ${pendingNames.slice(0, -1).join(", ")} e ${pendingNames[pendingNames.length - 1]}`}
+            usa la skill: {pendingNames.join(" e ")}
           </span>
         </div>
       )}

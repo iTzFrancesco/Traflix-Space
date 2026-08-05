@@ -10,6 +10,7 @@ import { AgentNotificationOverlay } from "./components/agent/AgentNotificationOv
 import { ProjectWorkspaceSync } from "./components/project/ProjectWorkspaceSync";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
+import { setupSkillsListener } from "./stores/skillStore";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 function isAgentNotificationWindow(): boolean {
@@ -36,6 +37,10 @@ function App() {
   useEffect(() => {
     syncWithBackend();
   }, [syncWithBackend]);
+
+  useEffect(() => {
+    setupSkillsListener();
+  }, []);
 
   return (
     <ErrorBoundary>

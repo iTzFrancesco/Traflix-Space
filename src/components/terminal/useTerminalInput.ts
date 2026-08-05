@@ -6,6 +6,7 @@ import { writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { downloadDir } from "@tauri-apps/api/path";
 import { Terminal } from "xterm";
 import { invokeWithTimeout } from "../../lib/timeout";
+import { useSkillStore } from "../../stores/skillStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 
 // ────────────────────────────────────────────────────────────
@@ -305,6 +306,31 @@ export function useTerminalInput(
       e.preventDefault();
       e.stopPropagation();
       const tid = terminalIdRef.current;
+
+      // This listener lives on the xterm container and intentionally stops
+      // propagation, so skill drops must be handled here before file drops.
+      // Otherwise TerminalPane never receives the JSON payload.
+      const skillPayload = e.dataTransfer?.getData("application/json");
+      if (skillPayload) {
+        try {
+          const data = JSON.parse(skillPayload) as {
+            type?: string;
+            name?: string;
+          };
+          if (data.type === "skill" && data.name) {
+            useTerminalStore.getState().markAgentInput(tid);
+            useSkillStore.getState().addPendingDrop(tid, data.name);
+            return;
+          }
+        } catch {
+          // Continue with the normal file-drop fallbacks.
+        }
+      }
+
+      // A reorder drag belongs to the skill list, never to a terminal.
+      if (e.dataTransfer?.types.includes("application/x-traflix-skill-reorder")) {
+        return;
+      }
 
       // 1) Usa i path ricevuti dal core Tauri (tauri://drag-enter / tauri://drag-drop)
       if (tauriDragFilePaths && tauriDragFilePaths.length > 0) {

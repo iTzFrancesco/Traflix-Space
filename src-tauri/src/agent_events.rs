@@ -127,7 +127,10 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
         .create(agent_event_pipe_name())
     {
         Ok(s) => {
-            info!(pipe = agent_event_pipe_name(), "Agent event named pipe ready (owner)");
+            info!(
+                pipe = agent_event_pipe_name(),
+                "Agent event named pipe ready (owner)"
+            );
             s
         }
         Err(e) if pipe_busy(&e) => {

@@ -30,10 +30,12 @@ interface SkillStore {
   skills: SkillInfo[];
   /** ID delle skill preferite (persistito) */
   favorites: string[];
-  /** Ordine custom — se vuoto, usa ordine alfabetico (persistito) */
+  /** Ordine manuale persistito; i preferiti restano comunque nel gruppo alto */
   order: string[];
   /** Flag loading iniziale */
   loading: boolean;
+  /** Errore dell'ultima scansione (NON persistito) */
+  error: string | null;
   /** Skills droppate in pending per terminale (keyed per terminalId, NON persistito) */
   pendingDrops: Record<string, PendingSkillDrop>;
 
@@ -41,8 +43,7 @@ interface SkillStore {
   setSkills: (skills: SkillInfo[]) => void;
   loadSkills: () => Promise<void>;
   toggleFavorite: (id: string) => void;
-  setOrder: (order: string[]) => void;
-  reorder: (fromIndex: number, toIndex: number) => void;
+  reorder: (draggedId: string, targetId: string) => void;
 
   /* Pending drops */
   addPendingDrop: (terminalId: string, skillName: string) => void;
@@ -57,18 +58,22 @@ export const useSkillStore = create<SkillStore>()(
       favorites: [],
       order: [],
       loading: false,
+      error: null,
       pendingDrops: {},
 
       setSkills: (skills) => set({ skills, loading: false }),
 
       loadSkills: async () => {
-        set({ loading: true });
+        set({ loading: true, error: null });
         try {
           const skills = await invoke<SkillInfo[]>("list_skills");
-          set({ skills, loading: false });
+          set({ skills, loading: false, error: null });
         } catch (err) {
           console.error("Errore caricamento skills:", err);
-          set({ loading: false });
+          set({
+            loading: false,
+            error: "Impossibile leggere la cartella delle skill.",
+          });
         }
       },
 
@@ -82,14 +87,16 @@ export const useSkillStore = create<SkillStore>()(
           };
         }),
 
-      setOrder: (order) => set({ order }),
-
-      reorder: (fromIndex, toIndex) =>
+      reorder: (draggedId, targetId) =>
         set((state) => {
-          const sorted = getSortedSkills(state);
-          const ids = sorted.map((s) => s.id);
+          if (draggedId === targetId) return state;
+          const ids = getSortedSkills(state).map((skill) => skill.id);
+          const fromIndex = ids.indexOf(draggedId);
+          const targetIndex = ids.indexOf(targetId);
+          if (fromIndex < 0 || targetIndex < 0) return state;
+
           const [moved] = ids.splice(fromIndex, 1);
-          ids.splice(toIndex, 0, moved);
+          ids.splice(ids.indexOf(targetId), 0, moved);
           return { order: ids };
         }),
 
@@ -181,39 +188,24 @@ function getSortedSkills(state: SkillStore): SkillInfo[] {
   const favList = skills.filter((s) => favorites.includes(s.id));
   const restList = skills.filter((s) => !favorites.includes(s.id));
 
-  if (order.length > 0) {
-    // Ordine custom: rispetta l'ordine DENTRO ciascun gruppo
-    const orderedFavs: SkillInfo[] = [];
-    const remainingFavs: SkillInfo[] = [];
-    for (const id of order) {
-      const skill = favList.find((s) => s.id === id);
-      if (skill) orderedFavs.push(skill);
-    }
-    for (const skill of favList) {
-      if (!orderedFavs.find((s) => s.id === skill.id)) {
-        remainingFavs.push(skill);
-      }
-    }
-
-    const orderedRest: SkillInfo[] = [];
-    const remainingRest: SkillInfo[] = [];
-    for (const id of order) {
-      const skill = restList.find((s) => s.id === id);
-      if (skill) orderedRest.push(skill);
-    }
-    for (const skill of restList) {
-      if (!orderedRest.find((s) => s.id === skill.id)) {
-        remainingRest.push(skill);
-      }
-    }
-
-    return [...orderedFavs, ...remainingFavs, ...orderedRest, ...remainingRest];
-  }
-
-  // Senza ordine custom: preferite in cima, poi alfabetico
   favList.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   restList.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-  return [...favList, ...restList];
+  return [...applyStoredOrder(favList, order), ...applyStoredOrder(restList, order)];
+}
+
+function applyStoredOrder(skills: SkillInfo[], order: string[]): SkillInfo[] {
+  if (order.length === 0) return skills;
+  const byId = new Map(skills.map((skill) => [skill.id, skill]));
+  const ordered: SkillInfo[] = [];
+
+  for (const id of order) {
+    const skill = byId.get(id);
+    if (skill) ordered.push(skill);
+  }
+  for (const skill of skills) {
+    if (!ordered.some((item) => item.id === skill.id)) ordered.push(skill);
+  }
+  return ordered;
 }
 
 /** Hook selector che restituisce le skills ordinate con shallow comparison */
@@ -234,9 +226,11 @@ export function useSortedSkills() {
 /* ─── Helpers ─── */
 
 function buildSkillMessage(names: string[]): string {
-  // Formato: "usa la skill, nome1, nome2, ..."
-  return `usa la skill, ${names.join(", ")}
-`;
+  // Formato stabile e leggibile anche quando vengono trascinate più skill:
+  // "usa la skill: research e grill-with-docs"
+  // Nessun Invio automatico: il testo resta nel prompt e l'agente parte
+  // solo quando l'utente conferma esplicitamente con Enter.
+  return `usa la skill: ${names.join(" e ")}`;
 }
 
 /* ─── Setup listener skills-changed ─── */
