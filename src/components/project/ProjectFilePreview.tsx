@@ -44,9 +44,10 @@ export function ProjectFilePreview({ preview, loading, error, onClose }: Project
         >
           <X size={13} />
         </button>
+        {loading && <LoaderCircle size={13} className="shrink-0 animate-spin text-primary" />}
       </div>
 
-      {loading && (
+      {loading && !preview && (
         <div className="flex items-center gap-2 px-3 py-4 text-xs text-neutral-text-muted">
           <LoaderCircle size={14} className="animate-spin text-primary" />
           Lettura file…
@@ -55,7 +56,7 @@ export function ProjectFilePreview({ preview, loading, error, onClose }: Project
 
       {!loading && error && <p className="px-3 py-4 text-xs text-red-200">{error}</p>}
 
-      {!loading && !error && preview && kind === "image" && preview.contentBase64 && preview.mimeType && (
+      {!error && preview && kind === "image" && preview.contentBase64 && preview.mimeType && (
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/30 p-3">
           <img
             src={`data:${preview.mimeType};base64,${preview.contentBase64}`}
@@ -65,19 +66,19 @@ export function ProjectFilePreview({ preview, loading, error, onClose }: Project
         </div>
       )}
 
-      {!loading && !error && kind === "binary" && (
+      {!error && kind === "binary" && (
         <p className="px-3 py-4 text-xs leading-relaxed text-neutral-text-muted">
           Questo file è binario e non ha una preview disponibile.
         </p>
       )}
 
-      {!loading && !error && preview && kind === "text" && (
+      {!error && preview && kind === "text" && (
         <pre className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-auto overflow-y-auto whitespace-pre px-4 py-3 font-mono text-[0.64rem] leading-relaxed text-neutral-text-dim">
           {preview.content || "(file vuoto)"}
         </pre>
       )}
 
-      {!loading && !error && preview?.truncated && (
+      {!error && preview?.truncated && (
         <p className="shrink-0 border-t border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[0.6rem] text-amber-100">
           Preview limitata per dimensione del file.
         </p>

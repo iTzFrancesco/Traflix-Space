@@ -171,7 +171,6 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
       return;
     }
     if (selectedPath === entry.path) {
-      clearDiff(workspaceId);
       void loadFilePreview(workspaceId, entry.path);
       return;
     }
@@ -180,9 +179,8 @@ export function ProjectExplorer({ workspaceId, workspaceName, rootPath }: Projec
 
   useEffect(() => {
     if (!isFilesView || !selectedPath) return;
-    clearDiff(workspaceId);
     void loadFilePreview(workspaceId, selectedPath);
-  }, [clearDiff, isFilesView, loadFilePreview, revision, selectedPath, workspaceId]);
+  }, [isFilesView, loadFilePreview, revision, selectedPath, workspaceId]);
 
   useEffect(() => {
     if (!isFilesView || !normalizedQuery) {

@@ -70,6 +70,7 @@ export function ProjectDiffViewer({
         >
           <X size={13} />
         </button>
+        {loading && <LoaderCircle size={13} className="shrink-0 animate-spin text-primary" />}
       </div>
 
       {showSideToggle ? (
@@ -128,7 +129,7 @@ export function ProjectDiffViewer({
         </div>
       )}
 
-      {loading && (
+      {loading && !diff && (
         <div className="flex items-center gap-2 px-3 py-4 text-xs text-neutral-text-muted">
           <LoaderCircle size={14} className="animate-spin text-primary" />
           Caricamento diff…
@@ -137,20 +138,20 @@ export function ProjectDiffViewer({
 
       {!loading && error && <p className="px-3 py-4 text-xs text-red-200">{error}</p>}
 
-      {!loading && !error && diff?.binary && (
+      {!error && diff?.binary && (
         <div className="flex items-center gap-2 px-3 py-4 text-xs text-neutral-text-muted">
           <FileDiff size={14} className="text-primary" />
           File binario: la patch non è visualizzabile in linea.
         </div>
       )}
 
-      {!loading && !error && !diff?.binary && lines.length === 0 && (
+      {!error && !diff?.binary && lines.length === 0 && (
         <p className="px-3 py-4 text-xs leading-relaxed text-neutral-text-muted">
           Nessun diff disponibile per questo lato.
         </p>
       )}
 
-      {!loading && !error && !diff?.binary && lines.length > 0 && (
+      {!error && !diff?.binary && lines.length > 0 && (
         <pre className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-auto overflow-y-auto px-2 py-2 font-mono text-[0.58rem] leading-relaxed">
           {lines.map((line, index) => (
             <code key={`${index}-${line}`} className={`block whitespace-pre px-1 ${lineClass(line)}`}>
@@ -160,13 +161,13 @@ export function ProjectDiffViewer({
         </pre>
       )}
 
-      {!loading && diff?.truncated && (
+      {!error && diff?.truncated && (
         <p className="shrink-0 border-t border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[0.6rem] text-amber-100">
           Patch troncata per mantenere fluida la review.
         </p>
       )}
 
-      {!loading && diff && !diff.binary && (diff.additions > 0 || diff.deletions > 0) && (
+      {!error && diff && !diff.binary && (diff.additions > 0 || diff.deletions > 0) && (
         <div className="flex shrink-0 gap-3 border-t border-white/[0.06] px-3 py-2 font-mono text-[0.58rem]">
           <span className="text-emerald-300">+{diff.additions}</span>
           <span className="text-red-300">-{diff.deletions}</span>

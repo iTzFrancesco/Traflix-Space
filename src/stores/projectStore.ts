@@ -22,6 +22,7 @@ interface ProjectStore {
   clearDiff: (workspaceId: string) => void;
   loadFilePreview: (workspaceId: string, path: string) => Promise<void>;
   clearPreview: (workspaceId: string) => void;
+  clearSelection: (workspaceId: string) => void;
   stagePath: (workspaceId: string, path: string) => Promise<void>;
   unstagePath: (workspaceId: string, path: string) => Promise<void>;
   discardPath: (workspaceId: string, path: string) => Promise<void>;
@@ -407,12 +408,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     previewRequests.set(workspaceId, (previewRequests.get(workspaceId) ?? 0) + 1);
     set((state) => {
       const workspace = state.workspaces[workspaceId] ?? createWorkspaceState();
+      const previousDiff = workspace.diff?.path === path && workspace.diff.side === side ? workspace.diff : null;
       return {
           workspaces: {
             ...state.workspaces,
             [workspaceId]: {
               ...workspace,
-              diff: null,
+              diff: previousDiff,
               diffLoading: true,
               diffError: null,
               preview: null,
@@ -478,12 +480,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     diffRequests.set(workspaceId, (diffRequests.get(workspaceId) ?? 0) + 1);
     set((state) => {
       const workspace = state.workspaces[workspaceId] ?? createWorkspaceState();
+      const previousPreview = workspace.preview?.path === path ? workspace.preview : null;
       return {
         workspaces: {
           ...state.workspaces,
           [workspaceId]: {
             ...workspace,
-            preview: null,
+            preview: previousPreview,
             previewLoading: true,
             previewError: null,
             diff: null,
@@ -542,6 +545,30 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         workspaces: {
           ...state.workspaces,
           [workspaceId]: { ...workspace, preview: null, previewLoading: false, previewError: null },
+        },
+      };
+    });
+  },
+
+  clearSelection: (workspaceId) => {
+    previewRequests.set(workspaceId, (previewRequests.get(workspaceId) ?? 0) + 1);
+    diffRequests.set(workspaceId, (diffRequests.get(workspaceId) ?? 0) + 1);
+    get().ensureWorkspace(workspaceId);
+    set((state) => {
+      const workspace = state.workspaces[workspaceId] ?? createWorkspaceState();
+      return {
+        workspaces: {
+          ...state.workspaces,
+          [workspaceId]: {
+            ...workspace,
+            selectedPath: null,
+            preview: null,
+            previewLoading: false,
+            previewError: null,
+            diff: null,
+            diffLoading: false,
+            diffError: null,
+          },
         },
       };
     });

@@ -8,6 +8,7 @@ import {
 import { motion } from "framer-motion";
 import { useUIStore } from "../../stores/uiStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { ProjectGitChanges } from "../project/ProjectGitChanges";
 import { ProjectExplorer } from "../project/ProjectExplorer";
 
@@ -27,15 +28,27 @@ export function RightPanel() {
   const togglePanel = useUIStore((state) => state.toggleRightPanel);
   const setPanelWidth = useUIStore((state) => state.setRightPanelWidth);
   const setActiveView = useUIStore((state) => state.setRightPanelActiveView);
+  const clearSelection = useProjectStore((state) => state.clearSelection);
   const panelRef = useRef<HTMLElement>(null);
   const showFiles = !activeView || activeView === "files";
   const showGitChanges = activeView === "git";
 
   useEffect(() => {
+    if (activeWorkspaceId) clearSelection(activeWorkspaceId);
+  }, [activeWorkspaceId, clearSelection]);
+
+  useEffect(() => {
     if (isOpen && !activeView) setActiveView("files");
   }, [activeView, isOpen, setActiveView]);
 
+  const changePanelView = (view: string) => {
+    if (view === activeView) return;
+    if (activeWorkspaceId) clearSelection(activeWorkspaceId);
+    setActiveView(view);
+  };
+
   const openPanel = () => {
+    if (activeWorkspaceId) clearSelection(activeWorkspaceId);
     setActiveView("files");
     if (!isOpen) togglePanel();
   };
@@ -129,7 +142,7 @@ export function RightPanel() {
               key={id}
               type="button"
               disabled={!available}
-              onClick={() => available && setActiveView(id)}
+              onClick={() => available && changePanelView(id)}
               className={`flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2 text-[0.66rem] font-semibold transition-colors ${
                 active
                   ? "border-primary/70 bg-primary/[0.13] text-neutral-text"

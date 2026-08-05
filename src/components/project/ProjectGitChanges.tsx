@@ -179,7 +179,7 @@ export function ProjectGitChanges({ workspaceId, workspaceName }: ProjectGitChan
     );
   };
 
-  if (!workspaceState || gitLoading || gitStatus?.repositoryState !== "repository") {
+  if (!workspaceState || (!gitStatus && gitLoading) || gitStatus?.repositoryState !== "repository") {
     return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="border-b border-white/[0.06] px-4 pb-3 pt-4 text-center">
