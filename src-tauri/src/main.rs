@@ -6,6 +6,7 @@ mod project;
 mod settings;
 mod skills;
 mod terminal_engine;
+mod voice_bridge;
 mod workspace;
 
 use std::sync::{
@@ -61,6 +62,8 @@ fn main() {
             app.manage(TerminalManager::new());
             app.manage(project::watcher::ProjectWatcherRegistry::default());
             app.manage(agent_events::AgentEventRegistry::default());
+            app.manage(voice_bridge::VoiceBridgeState::new());
+            voice_bridge::start(app.handle().clone());
 
             // Agent hooks/plugins forward normalized turn-complete events to
             // this local Windows named pipe. The listener is best-effort and
@@ -175,6 +178,7 @@ fn main() {
             agent::commands::list_agents,
             settings::commands::get_settings,
             settings::commands::set_settings,
+            voice_bridge::voice_bridge_command,
             terminal_engine::commands::terminal_spawn,
             terminal_engine::commands::terminal_write,
             terminal_engine::commands::terminal_resize,
