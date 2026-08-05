@@ -318,6 +318,25 @@ interface TerminalViewportAnchor {
   text: string;
 }
 
+const RESIZE_SCROLL_SETTLE_MS = 500;
+
+function armResizeScrollBarrier(
+  barrierUntilRef: React.MutableRefObject<number>,
+  barrierTimerRef: React.MutableRefObject<number | null>,
+) {
+  barrierUntilRef.current = Math.max(
+    barrierUntilRef.current,
+    performance.now() + RESIZE_SCROLL_SETTLE_MS,
+  );
+  if (barrierTimerRef.current !== null) {
+    window.clearTimeout(barrierTimerRef.current);
+  }
+  barrierTimerRef.current = window.setTimeout(() => {
+    barrierTimerRef.current = null;
+    barrierUntilRef.current = 0;
+  }, RESIZE_SCROLL_SETTLE_MS);
+}
+
 /** Capture readable content so a column/row reflow can find the same line. */
 function captureViewportAnchor(term: Terminal): TerminalViewportAnchor | null {
   const buffer = term.buffer.active;
@@ -390,9 +409,11 @@ function restoreScrollPosition(
   autoScrollRef: React.MutableRefObject<boolean>,
   scrollPositionRef: React.MutableRefObject<TerminalScrollPosition>,
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
+  position: TerminalScrollPosition = scrollPositionRef.current,
 ) {
-  const { followsOutput, offsetFromBottom } = scrollPositionRef.current;
+  const { followsOutput, offsetFromBottom } = position;
   if (followsOutput) {
+    scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
     programmaticScrollTargetRef.current = -1;
     term.scrollToBottom();
     programmaticScrollTargetRef.current = term.buffer.active.viewportY;
@@ -404,6 +425,7 @@ function restoreScrollPosition(
   // rehydrating. There is nothing to restore yet; keep the saved reader intent
   // intact instead of converting it to "follow" at buffer line zero.
   if (term.buffer.active.baseY === 0) {
+    scrollPositionRef.current = position;
     autoScrollRef.current = false;
     return;
   }
@@ -432,6 +454,7 @@ async function syncMeasuredPtySize(
   terminalId: string,
   skipHiddenPane: boolean,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
+  fitInProgressRef: React.MutableRefObject<boolean>,
 ) {
   if (skipHiddenPane) return;
 
@@ -444,9 +467,12 @@ async function syncMeasuredPtySize(
   if (rect.width <= 0 || rect.height <= 0) return;
 
   try {
+    fitInProgressRef.current = true;
     fitAddon.fit();
   } catch {
     return;
+  } finally {
+    fitInProgressRef.current = false;
   }
   if (term.cols <= 0 || term.rows <= 0) return;
 
@@ -461,6 +487,9 @@ function fitAndResizePty(
   scrollPositionRef: React.MutableRefObject<TerminalScrollPosition>,
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
+  fitInProgressRef: React.MutableRefObject<boolean>,
+  resizeScrollBarrierUntilRef: React.MutableRefObject<number>,
+  resizeScrollBarrierTimerRef: React.MutableRefObject<number | null>,
 ) {
   // xterm can emit internal scroll events while parsing output. Snapshot the
   // live viewport just before reflow so a resize never restores stale state.
@@ -472,12 +501,22 @@ function fitAndResizePty(
     ? null
     : captureViewportAnchor(term);
   try {
+    fitInProgressRef.current = true;
     fitAddon.fit();
   } catch {
     // Fit can throw if container has zero size (hidden pane).
     return;
+  } finally {
+    fitInProgressRef.current = false;
   }
   if (positionBeforeFit.followsOutput) {
+    // Codex performs a second, asynchronous transcript reflow after it
+    // receives terminal_resize. Keep follow mode authoritative while that
+    // repaint clears and rebuilds the PTY scrollback.
+    armResizeScrollBarrier(
+      resizeScrollBarrierUntilRef,
+      resizeScrollBarrierTimerRef,
+    );
     // Following the live stream is the one case where an explicit bottom
     // restore is correct. For a reader in history, xterm's buffer reflow
     // already adjusts ydisp to keep the same content visible. Reapplying the
@@ -488,6 +527,7 @@ function fitAndResizePty(
       autoScrollRef,
       scrollPositionRef,
       programmaticScrollTargetRef,
+      positionBeforeFit,
     );
   } else if (term.buffer.active.baseY > 0) {
     // xterm normally keeps ydisp stable during reflow. If a focus transition
@@ -504,7 +544,16 @@ function fitAndResizePty(
     programmaticScrollTargetRef.current = null;
   }
   if (term.cols > 0 && term.rows > 0) {
-    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows).catch(() => {});
+    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows)
+      .then(() => {
+        if (positionBeforeFit.followsOutput) {
+          armResizeScrollBarrier(
+            resizeScrollBarrierUntilRef,
+            resizeScrollBarrierTimerRef,
+          );
+        }
+      })
+      .catch(() => {});
   }
 }
 
@@ -605,6 +654,9 @@ export const TerminalPane = memo(function TerminalPane({
   });
   const userScrollIntentRef = useRef(false);
   const programmaticScrollTargetRef = useRef<number | null>(null);
+  const fitInProgressRef = useRef(false);
+  const resizeScrollBarrierUntilRef = useRef(0);
+  const resizeScrollBarrierTimerRef = useRef<number | null>(null);
   const ptyResizeStateRef = useRef<PtyResizeState>({
     pending: null,
     flushing: false,
@@ -616,6 +668,7 @@ export const TerminalPane = memo(function TerminalPane({
     raf: null,
     remainingFrames: 0,
   });
+  const resizeDebounceRef = useRef<number | null>(null);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
@@ -683,6 +736,9 @@ export const TerminalPane = memo(function TerminalPane({
         scrollPositionRef,
         programmaticScrollTargetRef,
         ptyResizeStateRef,
+        fitInProgressRef,
+        resizeScrollBarrierUntilRef,
+        resizeScrollBarrierTimerRef,
       );
     };
 
@@ -816,6 +872,10 @@ export const TerminalPane = memo(function TerminalPane({
 
     scrollDisposableRef.current?.dispose();
     scrollDisposableRef.current = term.onScroll(() => {
+      // xterm may emit a scroll event while fitAddon.resize() is reflowing the
+      // buffer. That is layout work, not user navigation, and must not replace
+      // the follow-mode snapshot with a transient viewportY at the top.
+      if (fitInProgressRef.current) return;
       const programmaticTarget = programmaticScrollTargetRef.current;
       if (programmaticTarget !== null) {
         if (
@@ -832,6 +892,25 @@ export const TerminalPane = memo(function TerminalPane({
         // wheel/key/scrollbar intent is allowed to override the restore.
         if (!userScrollIntentRef.current) return;
         programmaticScrollTargetRef.current = null;
+      }
+      if (resizeScrollBarrierUntilRef.current > performance.now()) {
+        if (!userScrollIntentRef.current) {
+          // A Codex transcript reflow can emit a genuine xterm scroll event
+          // while replaying its cleared scrollback. Treat it as layout noise
+          // and keep the user's pre-resize follow intent intact.
+          scrollPositionRef.current = {
+            followsOutput: true,
+            offsetFromBottom: 0,
+          };
+          autoScrollRef.current = true;
+          programmaticScrollTargetRef.current = -1;
+          term.scrollToBottom();
+          programmaticScrollTargetRef.current = term.buffer.active.viewportY;
+          return;
+        }
+        // A real wheel/key/scrollbar action is allowed to leave follow mode
+        // immediately, even while the post-resize repaint is settling.
+        resizeScrollBarrierUntilRef.current = 0;
       }
       // Every non-programmatic xterm scroll event is authoritative. Output
       // can change baseY while a reader is in history, and ignoring these
@@ -928,6 +1007,15 @@ export const TerminalPane = memo(function TerminalPane({
         fitScheduleRef.current.raf = null;
         fitScheduleRef.current.remainingFrames = 0;
       }
+      if (resizeDebounceRef.current !== null) {
+        window.clearTimeout(resizeDebounceRef.current);
+        resizeDebounceRef.current = null;
+      }
+      if (resizeScrollBarrierTimerRef.current !== null) {
+        window.clearTimeout(resizeScrollBarrierTimerRef.current);
+        resizeScrollBarrierTimerRef.current = null;
+      }
+      resizeScrollBarrierUntilRef.current = 0;
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -1032,6 +1120,7 @@ export const TerminalPane = memo(function TerminalPane({
                 terminalId,
                 focusModeActive && !isFocused,
                 ptyResizeStateRef,
+                fitInProgressRef,
               );
             }
             await restoreSnapshot();
@@ -1225,37 +1314,35 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     const handleResize = () => {
       if (focusModeActive && !isFocused) return;
-      scheduleFitAndResize();
+      if (resizeDebounceRef.current !== null) {
+        window.clearTimeout(resizeDebounceRef.current);
+      }
+      resizeDebounceRef.current = window.setTimeout(() => {
+        resizeDebounceRef.current = null;
+        scheduleFitAndResize();
+      }, 150);
     };
 
     const container = containerRef.current;
     if (!container) return;
 
-    let lastResizeTime = 0;
-    const RESIZE_THROTTLE_MS = 100;
-
     const raf = requestAnimationFrame(() => {
-      lastResizeTime = Date.now();
-      handleResize();
+      if (focusModeActive && !isFocused) return;
+      scheduleFitAndResize();
     });
 
-    let observerRaf: number | null = null;
     const observer = new ResizeObserver(() => {
       if (focusModeActive && !isFocused) return;
-      if (observerRaf !== null) cancelAnimationFrame(observerRaf);
-      observerRaf = requestAnimationFrame(() => {
-        const now = Date.now();
-        if (now - lastResizeTime >= RESIZE_THROTTLE_MS) {
-          lastResizeTime = now;
-          handleResize();
-        }
-      });
+      handleResize();
     });
     observer.observe(container);
 
     return () => {
       cancelAnimationFrame(raf);
-      if (observerRaf !== null) cancelAnimationFrame(observerRaf);
+      if (resizeDebounceRef.current !== null) {
+        window.clearTimeout(resizeDebounceRef.current);
+        resizeDebounceRef.current = null;
+      }
       observer.disconnect();
     };
   }, [terminalId, focusModeActive, isFocused, scheduleFitAndResize]);
