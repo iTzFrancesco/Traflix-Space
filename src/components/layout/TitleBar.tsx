@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { version as APP_VERSION } from "../../../package.json";
-import { VoiceWidget } from "./VoiceWidget";
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -39,8 +38,6 @@ export function TitleBar() {
           v{APP_VERSION}
         </span>
       </div>
-
-      <VoiceWidget />
 
       {IS_DEV && (
         <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 pointer-events-none">
