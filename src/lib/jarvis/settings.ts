@@ -30,6 +30,29 @@ export function defaultJarvisSettings(): JarvisSettings {
       privacyConsentAt: undefined,
     },
     advancedViewEnabled: false,
+    voiceInput: {
+      enabled: true,
+      provider: "groq",
+      model: "whisper-large-v3-turbo",
+      language: "it",
+      maxDurationSeconds: 45,
+      selectedInputDeviceId: undefined,
+      autoSubmitTranscript: false,
+      privacyConsent: false,
+      privacyConsentAt: undefined,
+    },
+    voiceOutput: {
+      enabled: true,
+      provider: "edge_tts",
+      voice: "it-IT-DiegoNeural",
+      rate: "+0%",
+      volume: "+0%",
+      pitch: "+0Hz",
+      autoSpeak: true,
+      maxSpokenChars: 800,
+      privacyConsent: false,
+      privacyConsentAt: undefined,
+    },
   };
 }
 

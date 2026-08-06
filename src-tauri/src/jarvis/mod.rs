@@ -12,6 +12,7 @@ pub mod requests;
 pub mod runtime_detector;
 pub mod tools;
 pub mod types;
+pub mod voice;
 
 #[cfg(test)]
 mod tests;

@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
-import { MicOff, Settings, X } from "lucide-react";
+import { Mic, MicOff, Settings, X } from "lucide-react";
 import { JarvisExpandedPanel } from "./JarvisExpandedPanel";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
 import { useJarvisStore } from "../../stores/jarvisStore";
-import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, WidgetPosition } from "../../lib/jarvis/types";
+import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceRequestStatusView, WidgetPosition } from "../../lib/jarvis/types";
 
 interface JarvisWidgetProps {
   workspaceId: string | null;
@@ -24,13 +24,19 @@ interface JarvisWidgetProps {
   onRejectAction: (action: PendingAction) => void;
   onUpdateAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
+  voiceRequest: VoiceRequestStatusView | null;
+  onVoiceStart: () => void;
+  onVoiceStop: () => void;
+  onVoiceCancel: () => void;
+  onVoiceDiscard: () => void;
+  ttsStatus: TtsStatusView;
+  onStopTts: () => void;
 }
 
 export function JarvisWidget(props: JarvisWidgetProps) {
   const expanded = useJarvisStore((state) => state.expanded);
   const dragging = useJarvisStore((state) => state.dragging);
   const position = useJarvisStore((state) => state.settings.jarvis.widgetPosition);
-  const muted = useJarvisStore((state) => state.settings.jarvis.muted);
   const setExpanded = useJarvisStore((state) => state.setExpanded);
   const setDragging = useJarvisStore((state) => state.setDragging);
   const updateWidgetPosition = useJarvisStore((state) => state.updateWidgetPosition);
@@ -63,12 +69,12 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         <div className="flex h-16 items-center gap-3 px-4" title="Trascina Jarvis">
           <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} aria-label="Apri chat Jarvis"><JarvisOrb active={expanded || activeRequests > 0} /></button>
           <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-semibold text-neutral-text">{statusText}</p><p className="truncate text-[11px] text-neutral-text-muted">{props.workspaceName ?? "Jarvis globale"}</p></button>
-          <button type="button" data-jarvis-control onClick={() => void useJarvisStore.getState().toggleMuted()} className="ui-icon-button h-9 w-9" title={muted ? "Riattiva stato" : "Muta stato"} aria-label={muted ? "Riattiva stato" : "Muta stato"}><MicOff size={16} className={muted ? "text-primary" : "text-neutral-text-muted"} /></button>
+          <button type="button" data-jarvis-control onClick={() => { if (props.voiceRequest?.status === "recording") props.onVoiceStop(); else if (props.voiceRequest?.status === "transcribing" || props.voiceRequest?.status === "stopping") props.onVoiceCancel(); else props.onVoiceStart(); }} className="ui-icon-button h-9 w-9" title={props.voiceRequest?.status === "recording" ? "Ferma e trascrivi" : "Inizia registrazione"} aria-label={props.voiceRequest?.status === "recording" ? "Ferma e trascrivi" : "Inizia registrazione"}>{props.voiceRequest?.status === "recording" ? <MicOff size={16} className="text-danger" /> : <Mic size={16} className="text-neutral-text-muted" />}</button>
           <button type="button" data-jarvis-control onClick={props.onOpenSettings} className="ui-icon-button h-9 w-9" title="Impostazioni Jarvis" aria-label="Impostazioni Jarvis"><Settings size={16} /></button>
           <button type="button" data-jarvis-control onClick={props.onHide} className="ui-icon-button h-9 w-9" title="Nascondi Jarvis" aria-label="Nascondi Jarvis"><X size={17} /></button>
         </div>
       </div>
-      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} onSendMessage={props.onSendMessage} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} />}
+      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} onSendMessage={props.onSendMessage} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} voiceRequest={props.voiceRequest} onVoiceDiscard={props.onVoiceDiscard} onVoiceCancel={props.onVoiceCancel} ttsStatus={props.ttsStatus} onStopTts={props.onStopTts} />}
     </div>
   );
 }

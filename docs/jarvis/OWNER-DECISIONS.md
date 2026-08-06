@@ -35,3 +35,12 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - La PTY resta l'adapter universale e ogni mutazione passa da Pending Action,
   modifica esplicita opzionale e conferma backend con ricontrollo di generation.
 - La voce resta fuori scope fino alla conclusione della validazione Windows.
+## Fase 5 — voce cloud
+
+- STT unico: Groq `whisper-large-v3-turbo`, senza fallback e con consenso
+  separato. La chiave runtime è `GROQ_API_KEY` e resta nel backend.
+- TTS unico: Microsoft Edge TTS tramite helper isolato; nessuna chiave e
+  nessun fallback a Groq Orpheus/Canopy.
+- Il microfono è click-to-toggle e il transcript è sempre modificabile prima
+  dell’invio esplicito alla chat Fase 4. Non sono inclusi wake word, VAD,
+  ascolto continuo, full duplex o Gemini Live.

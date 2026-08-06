@@ -5,6 +5,7 @@ import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
 import { buildAgentSessionView } from "../src/lib/jarvis/sessionView.ts";
 import { advancedViewVisible, isWorkspaceChatLoading, MAX_COMPLETED_REQUEST_HISTORY, mergeConversationMessages, pendingActionsForWorkspace, pruneRequestHistory, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
 import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvis/pendingActionState.ts";
+import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
@@ -131,4 +132,18 @@ test("normal chat surface does not expose the phase-three dashboard or expand ar
 test("timeline reconciliation is idempotent and does not duplicate the optimistic user message", () => {
   const message = { id: "stable", role: "user", content: "test", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:00Z" };
   assert.equal(mergeConversationMessages([message], [message]).length, 1);
+});
+
+test("voice transcript remains bound to its original workspace", () => {
+  const request = { requestId: "voice-a", workspaceId: "workspace-a", status: "transcript_ready", transcript: "ciao", createdAt: "now", normalizedLevel: 0 };
+  assert.equal(voiceRequestForWorkspace(request, "workspace-b"), null);
+  assert.equal(canSendTranscript(request, "workspace-b", "ciao"), false);
+  assert.equal(canSendTranscript(request, "workspace-a", "ciao"), true);
+});
+
+test("voice transcript is never auto-submitted and TTS requires separate consent", () => {
+  assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: false }), false);
+  assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: true, privacyConsentAt: "now" }), true);
+  assert.equal(shouldStopTtsBeforeRecording("playing"), true);
+  assert.equal(shouldStopTtsBeforeRecording("idle"), false);
 });

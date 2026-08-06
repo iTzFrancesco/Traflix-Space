@@ -60,6 +60,7 @@ fn main() {
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(jarvis::JarvisState::default());
+            app.manage(jarvis::voice::VoiceState::default());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
             app.manage(project::watcher::ProjectWatcherRegistry::default());
@@ -201,6 +202,16 @@ fn main() {
             jarvis::chat::jarvis_update_pending_action,
             jarvis::chat::jarvis_reject_action,
             jarvis::chat::jarvis_clear_conversation,
+            jarvis::voice::commands::jarvis_voice_list_input_devices,
+            jarvis::voice::commands::jarvis_voice_start,
+            jarvis::voice::commands::jarvis_voice_stop,
+            jarvis::voice::commands::jarvis_voice_cancel,
+            jarvis::voice::commands::jarvis_voice_status,
+            jarvis::voice::commands::jarvis_voice_discard_transcript,
+            jarvis::voice::commands::jarvis_tts_speak,
+            jarvis::voice::commands::jarvis_tts_stop,
+            jarvis::voice::commands::jarvis_tts_status,
+            jarvis::voice::commands::jarvis_tts_list_voices,
             settings::commands::get_settings,
             settings::commands::set_settings,
             browser::browser_create,

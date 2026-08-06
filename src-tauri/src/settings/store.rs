@@ -50,6 +50,58 @@ pub struct JarvisSettings {
     pub text_model: TextModelSettings,
     #[serde(default)]
     pub advanced_view_enabled: bool,
+    #[serde(default)]
+    pub voice_input: VoiceInputSettings,
+    #[serde(default)]
+    pub voice_output: VoiceOutputSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceInputSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_groq_provider")]
+    pub provider: String,
+    #[serde(default = "default_groq_model")]
+    pub model: String,
+    #[serde(default = "default_voice_language")]
+    pub language: String,
+    #[serde(default = "default_voice_max_duration")]
+    pub max_duration_seconds: u32,
+    #[serde(default)]
+    pub selected_input_device_id: Option<String>,
+    #[serde(default)]
+    pub auto_submit_transcript: bool,
+    #[serde(default)]
+    pub privacy_consent: bool,
+    #[serde(default)]
+    pub privacy_consent_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceOutputSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_edge_provider")]
+    pub provider: String,
+    #[serde(default = "default_edge_voice")]
+    pub voice: String,
+    #[serde(default = "default_edge_rate")]
+    pub rate: String,
+    #[serde(default = "default_edge_volume")]
+    pub volume: String,
+    #[serde(default = "default_edge_pitch")]
+    pub pitch: String,
+    #[serde(default = "default_true")]
+    pub auto_speak: bool,
+    #[serde(default = "default_max_spoken_chars")]
+    pub max_spoken_chars: usize,
+    #[serde(default)]
+    pub privacy_consent: bool,
+    #[serde(default)]
+    pub privacy_consent_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +197,8 @@ struct LegacyJarvisSettings {
     gemini_live: Option<GeminiLiveSettings>,
     text_model: Option<TextModelSettings>,
     advanced_view_enabled: Option<bool>,
+    voice_input: Option<VoiceInputSettings>,
+    voice_output: Option<VoiceOutputSettings>,
     // These fields were part of the first text-provider slice. They are read
     // only to migrate values; they are never serialized again.
     model_provider: Option<String>,
@@ -202,6 +256,8 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             gemini_live: raw.gemini_live.unwrap_or_default(),
             text_model,
             advanced_view_enabled: raw.advanced_view_enabled.unwrap_or(false),
+            voice_input: raw.voice_input.unwrap_or_default(),
+            voice_output: raw.voice_output.unwrap_or_default(),
         })
     }
 }
@@ -213,6 +269,39 @@ impl Default for TextModelSettings {
             primary_model: default_primary_model(),
             fallback_model: default_fallback_model(),
             fallback_enabled: true,
+            privacy_consent: false,
+            privacy_consent_at: None,
+        }
+    }
+}
+
+impl Default for VoiceInputSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: default_groq_provider(),
+            model: default_groq_model(),
+            language: default_voice_language(),
+            max_duration_seconds: default_voice_max_duration(),
+            selected_input_device_id: None,
+            auto_submit_transcript: false,
+            privacy_consent: false,
+            privacy_consent_at: None,
+        }
+    }
+}
+
+impl Default for VoiceOutputSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: default_edge_provider(),
+            voice: default_edge_voice(),
+            rate: default_edge_rate(),
+            volume: default_edge_volume(),
+            pitch: default_edge_pitch(),
+            auto_speak: true,
+            max_spoken_chars: default_max_spoken_chars(),
             privacy_consent: false,
             privacy_consent_at: None,
         }
@@ -247,6 +336,8 @@ impl Default for JarvisSettings {
             gemini_live: GeminiLiveSettings::default(),
             text_model: TextModelSettings::default(),
             advanced_view_enabled: false,
+            voice_input: VoiceInputSettings::default(),
+            voice_output: VoiceOutputSettings::default(),
         }
     }
 }
@@ -307,6 +398,36 @@ fn default_primary_model() -> String {
 }
 fn default_fallback_model() -> String {
     "deepseek-v4-flash-free".to_string()
+}
+fn default_groq_provider() -> String {
+    "groq".to_string()
+}
+fn default_groq_model() -> String {
+    "whisper-large-v3-turbo".to_string()
+}
+fn default_voice_language() -> String {
+    "it".to_string()
+}
+fn default_voice_max_duration() -> u32 {
+    45
+}
+fn default_edge_provider() -> String {
+    "edge_tts".to_string()
+}
+fn default_edge_voice() -> String {
+    "it-IT-DiegoNeural".to_string()
+}
+fn default_edge_rate() -> String {
+    "+0%".to_string()
+}
+fn default_edge_volume() -> String {
+    "+0%".to_string()
+}
+fn default_edge_pitch() -> String {
+    "+0Hz".to_string()
+}
+fn default_max_spoken_chars() -> usize {
+    800
 }
 
 fn migrate_text_model(settings: &mut TextModelSettings) {
@@ -401,6 +522,12 @@ impl SettingsManager {
         if !settings.jarvis.text_model.privacy_consent {
             settings.jarvis.text_model.privacy_consent_at = None;
         }
+        if !settings.jarvis.voice_input.privacy_consent {
+            settings.jarvis.voice_input.privacy_consent_at = None;
+        }
+        if !settings.jarvis.voice_output.privacy_consent {
+            settings.jarvis.voice_output.privacy_consent_at = None;
+        }
         *self.settings.lock().await = settings.clone();
         Self::save_to_disk(&self.store_path, &settings)
     }
@@ -426,6 +553,8 @@ mod tests {
         assert!(settings.jarvis.text_model.fallback_enabled);
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
+        assert_eq!(settings.jarvis.voice_input.model, "whisper-large-v3-turbo");
+        assert_eq!(settings.jarvis.voice_output.provider, "edge_tts");
         assert_eq!(settings.jarvis.voice_engine, VoiceEngine::Standard);
     }
 

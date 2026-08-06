@@ -108,6 +108,13 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
           onChange={(next) => updateJarvis(() => next)}
         />
 
+        <VoiceOptions
+          input={jarvis.voiceInput}
+          output={jarvis.voiceOutput}
+          onInputChange={(voiceInput) => updateJarvis((current) => ({ ...current, voiceInput }))}
+          onOutputChange={(voiceOutput) => updateJarvis((current) => ({ ...current, voiceOutput }))}
+        />
+
         <ToggleRow
           label="Abilita strumenti avanzati"
           description="Mostra diagnostica, registry e Context Broker soltanto dentro Settings."
@@ -208,6 +215,22 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
       </div>
     </Modal>
   );
+}
+
+function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input: AppSettings["jarvis"]["voiceInput"]; output: AppSettings["jarvis"]["voiceOutput"]; onInputChange: (value: AppSettings["jarvis"]["voiceInput"]) => void; onOutputChange: (value: AppSettings["jarvis"]["voiceOutput"]) => void }) {
+  return <div className="space-y-4 rounded-xl border border-signal/20 bg-signal/[0.04] p-5">
+    <div><h3 className="font-semibold text-neutral-text">Voce Jarvis</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">STT esclusivamente Groq Whisper turbo. TTS esclusivamente Microsoft Edge TTS. Il transcript non viene inviato automaticamente.</p></div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <ReadOnlyField label="STT" value="Groq · whisper-large-v3-turbo" />
+      <ReadOnlyField label="TTS" value="Microsoft Edge TTS" />
+      <TextField label="Voce Edge" value={output.voice} onChange={(voice) => onOutputChange({ ...output, voice })} />
+      <TextField label="Durata massima (s)" value={String(input.maxDurationSeconds)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, maxDurationSeconds: Math.max(1, Math.min(45, Math.floor(parsed))) }); }} />
+    </div>
+    <ToggleRow label="Abilita input vocale" description="Registra solo dopo un click esplicito." checked={input.enabled} onChange={(enabled) => onInputChange({ ...input, enabled })} />
+    <ToggleRow label="Parla automaticamente le risposte" description="Richiede consenso separato per inviare il testo a Edge TTS." checked={output.autoSpeak} onChange={(autoSpeak) => onOutputChange({ ...output, autoSpeak })} />
+    <ToggleRow label="Consenso audio → Groq" description="L'audio registrato viene inviato a Groq per Whisper e resta solo in memoria." checked={input.privacyConsent} onChange={(privacyConsent) => onInputChange({ ...input, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />
+    <ToggleRow label="Consenso testo → Edge TTS" description="Il testo della risposta viene inviato al servizio vocale online Edge TTS." checked={output.privacyConsent} onChange={(privacyConsent) => onOutputChange({ ...output, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />
+  </div>;
 }
 
 function ModelOptions({ settings, onChange }: { settings: AppSettings["jarvis"]; onChange: (settings: AppSettings["jarvis"]) => void }) {

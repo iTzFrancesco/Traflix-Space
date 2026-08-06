@@ -34,6 +34,33 @@ export interface JarvisSettings {
   geminiLive: GeminiLiveSettings;
   textModel: TextModelSettings;
   advancedViewEnabled: boolean;
+  voiceInput: VoiceInputSettings;
+  voiceOutput: VoiceOutputSettings;
+}
+
+export interface VoiceInputSettings {
+  enabled: boolean;
+  provider: "groq";
+  model: "whisper-large-v3-turbo" | string;
+  language: string;
+  maxDurationSeconds: number;
+  selectedInputDeviceId?: string | null;
+  autoSubmitTranscript: boolean;
+  privacyConsent: boolean;
+  privacyConsentAt?: string;
+}
+
+export interface VoiceOutputSettings {
+  enabled: boolean;
+  provider: "edge_tts";
+  voice: string;
+  rate: string;
+  volume: string;
+  pitch: string;
+  autoSpeak: boolean;
+  maxSpokenChars: number;
+  privacyConsent: boolean;
+  privacyConsentAt?: string;
 }
 
 export interface TextModelSettings {
@@ -56,6 +83,16 @@ export interface AppSettings {
   };
   jarvis: JarvisSettings;
 }
+
+export type VoiceRequestStatus = "idle" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
+export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
+export interface VoiceErrorView { code: string; message: string; }
+export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; }
+export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; }
+export type TtsStatus = "idle" | "synthesizing" | "playing" | "stopped" | "failed";
+export interface TtsStatusView { requestId?: string; status: TtsStatus; error?: VoiceErrorView; }
+export interface TtsVoice { shortName: string; locale: string; gender?: string; }
+export interface TtsSpeakRequest { requestId: string; text: string; voice?: string; rate?: string; volume?: string; pitch?: string; }
 
 export type CacheStatus = "miss" | "hit" | "incremental" | "invalidated";
 

@@ -21,6 +21,11 @@ import type {
   TerminalSummary,
   ToolEnvelope,
   WorkspaceSummary,
+  TtsSpeakRequest,
+  TtsStatusView,
+  TtsVoice,
+  VoiceInputDevice,
+  VoiceRequestStatusView,
 } from "./types";
 
 const READ_TIMEOUT_MS = 15_000;
@@ -357,4 +362,44 @@ export function markSelectedAgent(
     }),
     READ_TIMEOUT_MS,
   );
+}
+
+export function voiceListInputDevices(): Promise<VoiceInputDevice[]> {
+  return invokeWithTimeout(() => invoke<VoiceInputDevice[]>("jarvis_voice_list_input_devices"), READ_TIMEOUT_MS);
+}
+
+export function voiceStart(request: { requestId: string; workspaceId: string; selectedDeviceId?: string | null }): Promise<VoiceRequestStatusView> {
+  return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_start", { request }), READ_TIMEOUT_MS);
+}
+
+export function voiceStop(requestId: string): Promise<VoiceRequestStatusView> {
+  return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_stop", { request: { requestId } }), MODEL_TIMEOUT_MS);
+}
+
+export function voiceCancel(requestId: string): Promise<VoiceRequestStatusView> {
+  return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_cancel", { request: { requestId } }), READ_TIMEOUT_MS);
+}
+
+export function voiceStatus(requestId?: string): Promise<VoiceRequestStatusView> {
+  return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_status", { requestId }), READ_TIMEOUT_MS);
+}
+
+export function voiceDiscardTranscript(requestId: string): Promise<void> {
+  return invokeWithTimeout(() => invoke<void>("jarvis_voice_discard_transcript", { requestId }), READ_TIMEOUT_MS);
+}
+
+export function ttsSpeak(request: TtsSpeakRequest): Promise<TtsStatusView> {
+  return invokeWithTimeout(() => invoke<TtsStatusView>("jarvis_tts_speak", { request }), MODEL_TIMEOUT_MS);
+}
+
+export function ttsStop(): Promise<TtsStatusView> {
+  return invokeWithTimeout(() => invoke<TtsStatusView>("jarvis_tts_stop"), READ_TIMEOUT_MS);
+}
+
+export function ttsStatus(): Promise<TtsStatusView> {
+  return invokeWithTimeout(() => invoke<TtsStatusView>("jarvis_tts_status"), READ_TIMEOUT_MS);
+}
+
+export function ttsListVoices(): Promise<TtsVoice[]> {
+  return invokeWithTimeout(() => invoke<TtsVoice[]>("jarvis_tts_list_voices"), READ_TIMEOUT_MS);
 }

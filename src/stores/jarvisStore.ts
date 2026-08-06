@@ -12,6 +12,12 @@ import {
   rejectAction,
   setSettings as persistSettings,
   updatePendingAction,
+  ttsSpeak,
+  ttsStop,
+  voiceCancel,
+  voiceDiscardTranscript,
+  voiceStart,
+  voiceStop,
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
@@ -29,6 +35,9 @@ import type {
   ModelContextViewV1,
   PendingAction,
   WidgetPosition,
+  TtsStatusView,
+  VoiceLevelEvent,
+  VoiceRequestStatusView,
 } from "../lib/jarvis/types";
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
@@ -60,6 +69,9 @@ interface JarvisStore {
   providerStatus: JarvisProviderStatus | null;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
+  voiceRequest: VoiceRequestStatusView | null;
+  voiceLevel: VoiceLevelEvent | null;
+  ttsStatus: TtsStatusView;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
@@ -94,6 +106,14 @@ interface JarvisStore {
   updatePendingAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   loadProviderStatus: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
+  startVoice: () => Promise<void>;
+  stopVoice: () => Promise<void>;
+  cancelVoice: () => Promise<void>;
+  discardVoiceTranscript: () => Promise<void>;
+  setVoiceRequest: (status: VoiceRequestStatusView) => void;
+  setVoiceLevel: (event: VoiceLevelEvent) => void;
+  setTtsStatus: (status: TtsStatusView) => void;
+  stopTts: () => Promise<void>;
 }
 
 let settingsSaveQueue = Promise.resolve();
@@ -110,6 +130,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
+  voiceRequest: null, voiceLevel: null, ttsStatus: { status: "idle" },
 
   loadSettings: async () => {
     set({ settingsLoading: true, settingsError: null });
@@ -168,6 +189,10 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         return;
       }
       set((state) => ({ conversation: mergeConversationMessages(state.conversation, [response.message]), pendingActions: mergeActions(state.pendingActions, response.pendingActions), uiIntents: [...state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), ...response.uiIntents], followUps: { ...state.followUps, [workspaceId]: response.followUps }, requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "completed" } }) }));
+      const voiceSettings = get().settings.jarvis.voiceOutput;
+      if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt) {
+        void ttsSpeak({ requestId: `tts-${response.message.id}`, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch }).then((status) => set({ ttsStatus: status })).catch(() => undefined);
+      }
     } catch (error) {
       const cancelled = error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "chat_cancelled";
       set((state) => ({ requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: cancelled ? "cancelled" : "failed", error: errorMessage(error) } }), chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) } }));
@@ -186,6 +211,21 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   updatePendingAction: async (action, text) => { try { const result = await updatePendingAction(action.id, action.invocation, text); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); return result; } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); throw error; } },
   loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
+  startVoice: async () => {
+    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!workspaceId) return;
+    if (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing") await get().stopTts();
+    const requestId = crypto.randomUUID();
+    const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
+    set({ voiceRequest: status });
+  },
+  stopVoice: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; set((state) => state.voiceRequest ? { voiceRequest: { ...state.voiceRequest, status: "stopping" } } : state); const status = await voiceStop(requestId); set({ voiceRequest: status }); },
+  cancelVoice: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set({ voiceRequest: status }); },
+  discardVoiceTranscript: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set({ voiceRequest: null }); },
+  setVoiceRequest: (voiceRequest) => set((state) => { if (state.voiceRequest && state.voiceRequest.requestId !== voiceRequest.requestId && voiceRequest.status !== "recording") return state; return { voiceRequest }; }),
+  setVoiceLevel: (voiceLevel) => set((state) => state.voiceRequest?.requestId === voiceLevel.requestId ? { voiceLevel, voiceRequest: { ...state.voiceRequest, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs } } : state),
+  setTtsStatus: (ttsStatus) => set({ ttsStatus }),
+  stopTts: async () => { const status = await ttsStop(); set({ ttsStatus: status }); },
 }));
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {

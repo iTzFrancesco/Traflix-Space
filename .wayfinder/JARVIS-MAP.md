@@ -18,6 +18,16 @@
 - **Vincoli:** una sola credenziale backend, consenso esplicito, nessuna
   discovery/preflight automatica e nessuna chiave nel frontend.
 
+### JARVIS-012 — Pipeline vocale Fase 5
+
+- **Stato:** Decisa per la Fase 5
+- **Decisione:** input click-to-toggle con Groq `whisper-large-v3-turbo` come
+  unico STT; transcript modificabile e invio esplicito a `jarvis_chat`; output
+  Edge TTS interrompibile.
+- **Vincoli:** consensi input/output separati, audio bounded in memoria,
+  nessun fallback STT/TTS, nessuna wake word/VAD/full duplex e nessuna chiave
+  nel frontend.
+
 ### JARVIS-001 — Qual è il confine globale?
 
 - **Domanda:** Jarvis deve poter mescolare automaticamente workspace diverse?
