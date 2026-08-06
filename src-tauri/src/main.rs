@@ -3,6 +3,7 @@
 mod agent;
 mod agent_events;
 mod browser;
+mod jarvis;
 mod project;
 mod settings;
 mod skills;
@@ -58,6 +59,7 @@ fn main() {
             info!("Inizializzazione stato applicazione");
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
+            app.manage(jarvis::JarvisState::default());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
             app.manage(project::watcher::ProjectWatcherRegistry::default());
@@ -174,6 +176,14 @@ fn main() {
             project::commands::project_unwatch_workspace,
             skills::commands::list_skills,
             agent::commands::list_agents,
+            jarvis::commands::jarvis_workspace_list,
+            jarvis::commands::jarvis_terminal_list,
+            jarvis::commands::jarvis_agent_list,
+            jarvis::commands::jarvis_agent_get_status,
+            jarvis::commands::jarvis_agent_get_last_result,
+            jarvis::commands::jarvis_agent_get_messages,
+            jarvis::commands::jarvis_build_context,
+            jarvis::commands::jarvis_refresh_context,
             settings::commands::get_settings,
             settings::commands::set_settings,
             browser::browser_create,

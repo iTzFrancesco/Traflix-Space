@@ -149,3 +149,13 @@ JARVIS-011 ────────────────> session summaries e
 - build, test Windows, packaging MSI;
 - autenticazione/token provider;
 - push, PR e modifica di `.wayfinder/MAP.md`.
+
+## Stato Fase 2 — decisioni owner consolidate
+
+- JARVIS-001: **approvata** — Jarvis globale, target workspace catturato per invocazione e nessun merge implicito.
+- JARVIS-002: **approvata per questo slice** — Rust è l’autorità del broker e delle policy; React mantiene solo il client IPC typed.
+- JARVIS-003: **approvata per questo slice** — seam `AgentContextSource`; fake test-only, nessun terminal scraping come fondamento.
+- JARVIS-006: **sostituita per questo slice** — raccolta automatica soltanto Markdown, cache incrementale volatile per workspace, nessuna lettura automatica del codice.
+- JARVIS-010: **approvata per questo slice** — tool allowlisted e completamente read-only.
+- JARVIS-011: **approvata per questo slice** — completion notification è segnale di lifecycle, non risultato.
+- JARVIS-012: **approvata** — Context Broker minimo, fake adapter e tool read-only.
