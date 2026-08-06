@@ -1,6 +1,7 @@
 export type RequestedDepth = "summary" | "last_result" | "full_messages";
 
 export type VoiceEngine = "standard" | "gemini_live";
+export type ModelProvider = "long_cat" | "deep_seek";
 
 export interface WidgetPosition {
   x: number;
@@ -31,6 +32,11 @@ export interface JarvisSettings {
   widgetPosition: WidgetPosition;
   standardPipeline: StandardPipelineSettings;
   geminiLive: GeminiLiveSettings;
+  modelProvider: ModelProvider;
+  model: string;
+  fallbackToDeepseek: boolean;
+  privacyConsent: boolean;
+  privacyConsentAt?: string;
 }
 
 export interface AppSettings {
@@ -260,4 +266,53 @@ export interface ActiveWorkspaceCapture {
   workspaceId: string | null;
   capturedAt: string;
   provenance: Provenance;
+}
+
+export type ChatRole = "user" | "assistant";
+
+export interface JarvisConversationMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  workspaceId: string;
+  createdAt: string;
+  provider?: string;
+  untrusted?: boolean;
+}
+
+export type PendingActionStatus = "pending" | "confirmed" | "rejected" | "expired" | "failed";
+
+export interface PendingAction {
+  id: string;
+  operation: string;
+  description: string;
+  preview: string;
+  invocation: InvocationBinding;
+  terminalId?: string;
+  generation?: number;
+  provider?: string;
+  status: PendingActionStatus;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface JarvisChatResponse {
+  invocation: InvocationBinding;
+  message: JarvisConversationMessage;
+  provider: string;
+  fallbackUsed: boolean;
+  pendingActions: PendingAction[];
+  followUps: string[];
+  warnings: string[];
+}
+
+export interface JarvisProviderStatus {
+  primary: ModelProvider;
+  model: string;
+  fallback: ModelProvider;
+  fallbackEnabled: boolean;
+  longCatConfigured: boolean;
+  deepSeekConfigured: boolean;
+  privacyConsent: boolean;
+  privacyConsentAt?: string;
 }

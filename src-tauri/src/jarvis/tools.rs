@@ -1,6 +1,9 @@
+use crate::jarvis::actions::PendingActionRegistry;
 use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
 use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::context_broker::ContextBroker;
+use crate::jarvis::memory::ConversationMemory;
+use crate::jarvis::model::ModelProvider;
 use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
@@ -15,6 +18,9 @@ use std::sync::Arc;
 pub struct JarvisState {
     pub broker: ContextBroker,
     pub registry: Arc<AgentSessionRegistry>,
+    pub memory: Arc<ConversationMemory>,
+    pub model: ModelProvider,
+    pub actions: Arc<PendingActionRegistry>,
 }
 
 impl Default for JarvisState {
@@ -25,6 +31,9 @@ impl Default for JarvisState {
                 registry.clone(),
             ))),
             registry,
+            memory: Arc::new(ConversationMemory::default()),
+            model: ModelProvider::default(),
+            actions: Arc::new(PendingActionRegistry::default()),
         }
     }
 }

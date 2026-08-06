@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
-import { ChevronDown, ChevronUp, MicOff, Settings, X } from "lucide-react";
+import { MicOff, Settings, X } from "lucide-react";
 import { JarvisExpandedPanel } from "./JarvisExpandedPanel";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
 import { useJarvisStore } from "../../stores/jarvisStore";
-import type { AgentSessionContext, ModelContextViewV1, WidgetPosition } from "../../lib/jarvis/types";
+import type { AgentSessionContext, JarvisConversationMessage, JarvisProviderStatus, ModelContextViewV1, PendingAction, WidgetPosition } from "../../lib/jarvis/types";
 
 interface JarvisWidgetProps {
   workspaceId: string | null;
@@ -21,6 +21,17 @@ interface JarvisWidgetProps {
   onOpenTerminal: (session: AgentSessionContext) => void;
   onOpenSettings: () => void;
   onHide: () => void;
+  conversation: JarvisConversationMessage[];
+  pendingActions: PendingAction[];
+  chatLoading: boolean;
+  chatError: string | null;
+  providerStatus: JarvisProviderStatus | null;
+  onSendMessage: (message: string) => void;
+  onConfirmAction: (action: PendingAction) => void;
+  onRejectAction: (action: PendingAction) => void;
+  onClearConversation: () => void;
+  onLoadProviderStatus: () => void;
+  onIdentityDecision: (session: AgentSessionContext, decision: "confirmed" | "ignored") => void;
 }
 
 export function JarvisWidget(props: JarvisWidgetProps) {
@@ -132,7 +143,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         onPointerCancel={handlePointerUp}
       >
         <div className="flex h-16 items-center gap-3 px-4" title="Trascina Jarvis">
-          <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} aria-label="Apri pannello Jarvis">
+          <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} aria-label="Apri Advanced View di Jarvis">
             <JarvisOrb active={expanded || props.sessions.length > 0} />
           </button>
           <div className="min-w-0 flex-1">
@@ -144,9 +155,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           </button>
           <button type="button" data-jarvis-control onClick={props.onOpenSettings} className="ui-icon-button h-9 w-9" title="Impostazioni Jarvis" aria-label="Impostazioni Jarvis">
             <Settings size={16} />
-          </button>
-          <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} className="ui-icon-button h-9 w-9" title={expanded ? "Riduci Jarvis" : "Espandi Jarvis"} aria-label={expanded ? "Riduci Jarvis" : "Espandi Jarvis"}>
-            {expanded ? <ChevronDown size={17} /> : <ChevronUp size={17} />}
           </button>
           <button type="button" data-jarvis-control onClick={() => void props.onHide()} className="ui-icon-button h-9 w-9" title="Nascondi Jarvis" aria-label="Nascondi Jarvis">
             <X size={17} />
@@ -173,6 +181,17 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           onSelectSession={props.onSelectSession}
           onOpenTerminal={props.onOpenTerminal}
           onRefresh={props.onRefresh}
+          conversation={props.conversation}
+          pendingActions={props.pendingActions}
+          chatLoading={props.chatLoading}
+          chatError={props.chatError}
+          providerStatus={props.providerStatus}
+          onSendMessage={props.onSendMessage}
+          onConfirmAction={props.onConfirmAction}
+          onRejectAction={props.onRejectAction}
+          onClearConversation={props.onClearConversation}
+          onLoadProviderStatus={props.onLoadProviderStatus}
+          onIdentityDecision={props.onIdentityDecision}
         />
       )}
     </div>

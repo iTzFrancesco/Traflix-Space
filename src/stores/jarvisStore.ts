@@ -1,17 +1,28 @@
 import { create } from "zustand";
 import {
   agentGetLastResult,
+  clearConversation,
+  confirmAction,
   getSettings,
+  jarvisChat,
+  pendingActions,
+  providerStatus,
+  rejectAction,
   setSettings as persistSettings,
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
+import { useWorkspaceStore } from "./workspaceStore";
 import type {
   AgentResult,
   AgentSessionContext,
   AppSettings,
   ModelContextViewV1,
   WidgetPosition,
+  JarvisConversationMessage,
+  JarvisProviderStatus,
+  PendingAction,
+  InvocationBinding,
 } from "../lib/jarvis/types";
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
@@ -36,6 +47,11 @@ interface JarvisStore {
   currentError: string | null;
   registryRefreshTimestamp: string | null;
   otherWorkspaceAgentCount: number;
+  conversation: JarvisConversationMessage[];
+  pendingActions: PendingAction[];
+  chatLoading: boolean;
+  chatError: string | null;
+  providerStatus: JarvisProviderStatus | null;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
@@ -66,9 +82,16 @@ interface JarvisStore {
   setRegistryRefreshTimestamp: (timestamp: string) => void;
   setOtherWorkspaceAgentCount: (count: number) => void;
   loadLastResult: (workspaceId: string, sessionId: string) => Promise<void>;
+  sendMessage: (message: string) => Promise<void>;
+  refreshPendingActions: () => Promise<void>;
+  confirmPendingAction: (action: PendingAction) => Promise<void>;
+  rejectPendingAction: (action: PendingAction) => Promise<void>;
+  loadProviderStatus: () => Promise<void>;
+  clearConversation: (workspaceId: string) => Promise<void>;
 }
 
 let settingsSaveQueue = Promise.resolve();
+let chatRequestSequence = 0;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -94,6 +117,11 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentError: null,
   registryRefreshTimestamp: null,
   otherWorkspaceAgentCount: 0,
+  conversation: [],
+  pendingActions: [],
+  chatLoading: false,
+  chatError: null,
+  providerStatus: null,
 
   loadSettings: async () => {
     set({ settingsLoading: true, settingsError: null });
@@ -235,4 +263,96 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       });
     }
   },
+  sendMessage: async (message) => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    const workspaceId = useWorkspaceId();
+    if (!workspaceId) {
+      set({ chatError: "Nessuna workspace attiva" });
+      return;
+    }
+    const invocation: InvocationBinding = {
+      requestId: crypto.randomUUID(),
+      targetWorkspaceId: workspaceId,
+      createdAt: new Date().toISOString(),
+    };
+    const requestSequence = ++chatRequestSequence;
+    const userMessage: JarvisConversationMessage = {
+      id: `local-user-${invocation.requestId}`,
+      role: "user",
+      content: trimmed,
+      workspaceId,
+      createdAt: invocation.createdAt,
+    };
+    set((state) => ({
+      conversation: [...state.conversation, userMessage],
+      chatLoading: true,
+      chatError: null,
+    }));
+    try {
+      const response = await jarvisChat({ invocation, message: trimmed });
+      if (requestSequence !== chatRequestSequence) return;
+      if (useWorkspaceId() !== invocation.targetWorkspaceId) {
+        set({ chatLoading: false });
+        return;
+      }
+      set((state) => ({
+        conversation: [...state.conversation, response.message],
+        pendingActions: mergeActions(state.pendingActions, response.pendingActions),
+        chatLoading: false,
+      }));
+    } catch (error) {
+      if (requestSequence !== chatRequestSequence) return;
+      if (useWorkspaceId() !== invocation.targetWorkspaceId) {
+        set({ chatLoading: false });
+        return;
+      }
+      set({ chatLoading: false, chatError: errorMessage(error) });
+    }
+  },
+  refreshPendingActions: async () => {
+    try {
+      const result = await pendingActions();
+      set({ pendingActions: result.data });
+    } catch {
+      // Keep the last valid action snapshot during a transient IPC error.
+    }
+  },
+  confirmPendingAction: async (action) => {
+    try {
+      const confirmed = await confirmAction(action.id, action.invocation);
+      set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === confirmed.id ? confirmed : item) }));
+    } catch (error) {
+      set({ chatError: errorMessage(error) });
+    }
+  },
+  rejectPendingAction: async (action) => {
+    try {
+      const rejected = await rejectAction(action.id, action.invocation);
+      set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === rejected.id ? rejected : item) }));
+    } catch (error) {
+      set({ chatError: errorMessage(error) });
+    }
+  },
+  loadProviderStatus: async () => {
+    try {
+      set({ providerStatus: await providerStatus() });
+    } catch {
+      // The advanced view remains usable if the status probe is unavailable.
+    }
+  },
+  clearConversation: async (workspaceId) => {
+    await clearConversation(workspaceId);
+    set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId) }));
+  },
 }));
+
+function useWorkspaceId(): string | null {
+  return useWorkspaceStore.getState().activeWorkspaceId;
+}
+
+function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {
+  const byId = new Map(current.map((action) => [action.id, action]));
+  for (const action of incoming) byId.set(action.id, action);
+  return [...byId.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}

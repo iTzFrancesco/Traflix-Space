@@ -1,4 +1,5 @@
 use crate::agent_events::{agent_event_pipe_name, AGENT_EVENT_PROTOCOL};
+use crate::jarvis::runtime_detector::{detect_from_command, AgentDetection};
 use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
@@ -9,6 +10,113 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
+
+const MAX_COMMAND_BUFFER_BYTES: usize = 8 * 1024;
+
+#[derive(Default)]
+struct CommandInputBuffer {
+    text: String,
+    escape: Vec<u8>,
+    bracketed_paste: bool,
+}
+
+impl CommandInputBuffer {
+    fn reset(&mut self) {
+        self.text.clear();
+        self.escape.clear();
+        self.bracketed_paste = false;
+    }
+
+    fn push_text(&mut self, text: &str, detections: &mut Vec<AgentDetection>) {
+        for ch in text.chars() {
+            match ch {
+                '\r' | '\n' => {
+                    if !self.text.trim().is_empty() {
+                        if let Some(detection) = detect_from_command(&self.text) {
+                            detections.push(detection);
+                        }
+                    }
+                    self.text.clear();
+                }
+                '\u{8}' | '\u{7f}' => {
+                    self.text.pop();
+                }
+                '\t' => self.push_char(' '),
+                ch if ch.is_control() => self.reset(),
+                ch => self.push_char(ch),
+            }
+        }
+    }
+
+    fn push_char(&mut self, ch: char) {
+        if self.text.len() + ch.len_utf8() > MAX_COMMAND_BUFFER_BYTES {
+            self.reset();
+            return;
+        }
+        self.text.push(ch);
+    }
+
+    fn finish_escape(&mut self, detections: &mut Vec<AgentDetection>) {
+        if self.escape == b"\x1b[200~" {
+            self.bracketed_paste = true;
+        } else if self.escape == b"\x1b[201~" {
+            self.bracketed_paste = false;
+        } else if self.escape == b"\x1b[3~" {
+            // Delete has no cursor position in this bounded command tracker;
+            // treating it like backspace is safe and prevents stale identity.
+            self.text.pop();
+        }
+        self.escape.clear();
+        let _ = detections;
+    }
+
+    fn observe(&mut self, data: &[u8]) -> Vec<AgentDetection> {
+        let mut detections = Vec::new();
+        let mut printable = Vec::new();
+        for &byte in data {
+            if !self.escape.is_empty() {
+                self.escape.push(byte);
+                if self.escape.len() > 32 {
+                    self.escape.clear();
+                } else if self.escape.len() >= 3 && (0x40..=0x7e).contains(&byte) {
+                    self.finish_escape(&mut detections);
+                }
+                continue;
+            }
+
+            if byte == 0x1b {
+                if !printable.is_empty() {
+                    self.push_text(&String::from_utf8_lossy(&printable), &mut detections);
+                    printable.clear();
+                }
+                self.escape.push(byte);
+            } else if byte == 0x08
+                || byte == 0x7f
+                || byte == b'\r'
+                || byte == b'\n'
+                || byte == b'\t'
+            {
+                if !printable.is_empty() {
+                    self.push_text(&String::from_utf8_lossy(&printable), &mut detections);
+                    printable.clear();
+                }
+                self.push_text(&String::from_utf8_lossy(&[byte]), &mut detections);
+            } else if byte.is_ascii_graphic() || byte == b' ' || byte >= 0x80 {
+                printable.push(byte);
+            } else {
+                if !printable.is_empty() {
+                    self.push_text(&String::from_utf8_lossy(&printable), &mut detections);
+                    printable.clear();
+                }
+                self.reset();
+            }
+        }
+        if !printable.is_empty() {
+            self.push_text(&String::from_utf8_lossy(&printable), &mut detections);
+        }
+        detections
+    }
+}
 
 pub struct TerminalSession {
     pub id: String,
@@ -51,6 +159,9 @@ pub struct TerminalSession {
     /// `cd` / `chdir` commands on Enter (\r). Each write() call typically
     /// contains one character for typed input. Reset on \r or escape seqs.
     cd_buffer: Mutex<String>,
+    /// Separate bounded input tracker for complete command identity. It never
+    /// shares the CWD buffer and never stores command text outside the session.
+    command_buffer: Mutex<CommandInputBuffer>,
 }
 
 impl TerminalSession {
@@ -84,6 +195,7 @@ impl TerminalSession {
             output_sequence: Arc::new(AtomicU64::new(0)),
             cwd_changed: AtomicBool::new(false),
             cd_buffer: Mutex::new(String::new()),
+            command_buffer: Mutex::new(CommandInputBuffer::default()),
         }
     }
 
@@ -238,23 +350,21 @@ impl TerminalSession {
 
             if natural_exit {
                 process_alive_reader.store(false, Ordering::Release);
-                if registry_is_agent_terminal {
-                    super::notify_agent_exit(
-                        &app_reader,
-                        &TerminalAgentSnapshot {
-                            terminal_id: id.to_string(),
-                            workspace_id: registry_workspace_id.clone(),
-                            is_agent_terminal: true,
-                            agent_id: registry_agent_id.clone(),
-                            observed_provider: None,
-                            detection_source: "fallback".to_string(),
-                            detection_confidence: 0.2,
-                            identity_warnings: Vec::new(),
-                            generation: registry_generation,
-                            process_alive: false,
-                        },
-                    );
-                }
+                super::notify_agent_exit(
+                    &app_reader,
+                    &TerminalAgentSnapshot {
+                        terminal_id: id.to_string(),
+                        workspace_id: registry_workspace_id.clone(),
+                        is_agent_terminal: registry_is_agent_terminal,
+                        agent_id: registry_agent_id.clone(),
+                        observed_provider: None,
+                        detection_source: "fallback".to_string(),
+                        detection_confidence: 0.2,
+                        identity_warnings: Vec::new(),
+                        generation: registry_generation,
+                        process_alive: false,
+                    },
+                );
             }
 
             // Explicitly drop reader so the OS handle is released even if the
@@ -308,23 +418,21 @@ impl TerminalSession {
 
             if exited {
                 process_alive_watch.store(false, Ordering::Release);
-                if registry_is_agent_terminal_watch {
-                    super::notify_agent_exit(
-                        &app_watch,
-                        &TerminalAgentSnapshot {
-                            terminal_id: watch_id.to_string(),
-                            workspace_id: registry_workspace_id_watch.clone(),
-                            is_agent_terminal: true,
-                            agent_id: registry_agent_id_watch.clone(),
-                            observed_provider: None,
-                            detection_source: "fallback".to_string(),
-                            detection_confidence: 0.2,
-                            identity_warnings: Vec::new(),
-                            generation: registry_generation_watch,
-                            process_alive: false,
-                        },
-                    );
-                }
+                super::notify_agent_exit(
+                    &app_watch,
+                    &TerminalAgentSnapshot {
+                        terminal_id: watch_id.to_string(),
+                        workspace_id: registry_workspace_id_watch.clone(),
+                        is_agent_terminal: registry_is_agent_terminal_watch,
+                        agent_id: registry_agent_id_watch.clone(),
+                        observed_provider: None,
+                        detection_source: "fallback".to_string(),
+                        detection_confidence: 0.2,
+                        identity_warnings: Vec::new(),
+                        generation: registry_generation_watch,
+                        process_alive: false,
+                    },
+                );
                 info!(terminal_id = %watch_id, "Child process exited (watch thread)");
                 if !watch_stop.load(Ordering::Acquire)
                     && exit_emitted_watch
@@ -367,8 +475,6 @@ impl TerminalSession {
             if let Some(p) = Self::extract_cd_path_from_input(text) {
                 info!(
                     terminal_cwd_detected = "paste",
-                    raw = %text,
-                    path = %p,
                     "Paste/agent cd command detected"
                 );
                 Self::resolve_and_update_cwd(&self.cwd, &self.cwd_changed, &p);
@@ -397,8 +503,6 @@ impl TerminalSession {
                         if let Some(p) = Self::extract_cd_path_from(&trimmed) {
                             info!(
                                 terminal_cwd_detected = "keystroke",
-                                buffer = %trimmed,
-                                path = %p,
                                 "Keystroke cd command detected"
                             );
                             drop(buf);
@@ -548,8 +652,6 @@ impl TerminalSession {
             Err(e) => {
                 info!(
                     terminal_cwd_resolve_failed = true,
-                    raw = %path_str,
-                    cleaned = %cleaned,
                     error = %e,
                     "CD path canonicalize failed"
                 );
@@ -578,6 +680,16 @@ impl TerminalSession {
         } else {
             Err("PTY not spawned".to_string())
         }
+    }
+
+    /// Observe only complete shell commands. The caller applies the resulting
+    /// identity outside the PTY writer lock, so a detector can never block
+    /// input or resize.
+    pub fn observe_agent_commands(&self, data: &[u8]) -> Vec<AgentDetection> {
+        self.command_buffer
+            .lock()
+            .map(|mut buffer| buffer.observe(data))
+            .unwrap_or_default()
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
@@ -672,4 +784,59 @@ fn resolve_agent_bridge_path(app: &AppHandle) -> Option<PathBuf> {
         .into_iter()
         .flatten()
         .find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalSession;
+
+    fn make_session() -> TerminalSession {
+        TerminalSession::new(
+            "terminal-test".to_string(),
+            "shell".to_string(),
+            ".".to_string(),
+            80,
+            24,
+        )
+    }
+
+    #[test]
+    fn command_detection_waits_for_a_complete_line() {
+        let session = make_session();
+        for byte in b"codex --resume" {
+            assert!(session.observe_agent_commands(&[*byte]).is_empty());
+        }
+        let detections = session.observe_agent_commands(b"\r");
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].provider, "codex");
+    }
+
+    #[test]
+    fn command_buffer_handles_editing_paste_and_navigation_sequences() {
+        let session = make_session();
+        assert!(session
+            .observe_agent_commands(b"codexx\x08\x1b[A\x1b[3~x")
+            .is_empty());
+        let detections = session.observe_agent_commands(b"\r");
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].provider, "codex");
+
+        let session = make_session();
+        assert!(session
+            .observe_agent_commands(b"\x1b[200~pnpm exec claude\x1b[201~")
+            .is_empty());
+        let detections = session.observe_agent_commands(b"\n");
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].provider, "claude");
+    }
+
+    #[test]
+    fn command_buffer_does_not_classify_output_or_shell_wrappers() {
+        let session = make_session();
+        assert!(session.observe_agent_commands(b"echo codex\r").is_empty());
+        assert!(session
+            .observe_agent_commands(b"powershell codex\r")
+            .is_empty());
+        assert!(session.observe_agent_commands(b"codex\r").len() == 1);
+    }
 }

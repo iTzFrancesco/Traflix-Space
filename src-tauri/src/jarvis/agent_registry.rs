@@ -3,11 +3,13 @@ use crate::jarvis::types::{
     AgentCompletionNotification, AgentResult, AgentSessionRef, AgentState, AgentTurnContext,
     Provenance,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
 pub const MAX_TERMINAL_FALLBACK_BYTES: usize = 32 * 1024;
 const MAX_RETAINED_SESSIONS: usize = 256;
+const MAX_TERMINAL_HISTORY: usize = 20;
+const MAX_COMPLETION_KEYS: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalAgentSnapshot {
@@ -72,10 +74,47 @@ struct ResolvedIdentity {
     identity_needs_confirmation: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityDecision {
+    Confirmed,
+    Ignored,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct IdentityDecisionKey {
+    terminal_id: String,
+    generation: u64,
+    provider: String,
+}
+
+#[derive(Default)]
+struct BoundedCompletionKeys {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl BoundedCompletionKeys {
+    fn accept(&mut self, key: String) -> bool {
+        if self.set.contains(&key) {
+            return false;
+        }
+        self.set.insert(key.clone());
+        self.order.push_back(key);
+        while self.order.len() > MAX_COMPLETION_KEYS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+        true
+    }
+}
+
 #[derive(Default)]
 pub struct AgentSessionRegistry {
     sessions: Mutex<HashMap<String, AgentSessionRecord>>,
-    completion_keys: Mutex<HashSet<String>>,
+    completion_keys: Mutex<BoundedCompletionKeys>,
+    identity_decisions: Mutex<HashMap<IdentityDecisionKey, IdentityDecision>>,
+    selected_session: Mutex<Option<String>>,
 }
 
 impl AgentSessionRegistry {
@@ -133,6 +172,14 @@ impl AgentSessionRegistry {
             }
         });
         update_identity_from_snapshot(record, terminal, &identity);
+        if let Some(provider) = identity.observed_provider.as_deref() {
+            if self
+                .identity_decision(&terminal.terminal_id, terminal.generation, provider)
+                .is_some()
+            {
+                record.reference.identity_needs_confirmation = false;
+            }
+        }
         record.reference.updated_at = observed_at.to_string();
         record.state = if terminal.process_alive {
             match record.state {
@@ -143,7 +190,7 @@ impl AgentSessionRegistry {
             AgentState::Exited
         };
         let reference = record.reference.clone();
-        prune_sessions(&mut sessions);
+        self.prune_sessions_locked(&mut sessions);
         Some(reference)
     }
 
@@ -171,7 +218,7 @@ impl AgentSessionRegistry {
             let Ok(mut keys) = self.completion_keys.lock() else {
                 return false;
             };
-            if !keys.insert(key) {
+            if !keys.accept(key) {
                 return false;
             }
         }
@@ -181,6 +228,13 @@ impl AgentSessionRegistry {
         completion_terminal.observed_provider = normalize_observed_provider(&observation.provider);
         completion_terminal.detection_source = "completion-event".to_string();
         completion_terminal.detection_confidence = 1.0;
+        if let Some(provider) = completion_terminal.observed_provider.as_deref() {
+            self.clear_identity_decision(
+                &completion_terminal.terminal_id,
+                completion_terminal.generation,
+                provider,
+            );
+        }
         let reference = self.observe_terminal_started(&completion_terminal, observed_at);
         let Some(reference) = reference else {
             return false;
@@ -242,7 +296,7 @@ impl AgentSessionRegistry {
                 "completion observed, result unavailable",
             );
         }
-        prune_sessions(&mut sessions);
+        self.prune_sessions_locked(&mut sessions);
         true
     }
 
@@ -258,6 +312,7 @@ impl AgentSessionRegistry {
                 record.reference.updated_at = observed_at.to_string();
             }
         }
+        self.prune_sessions_locked(&mut sessions);
     }
 
     pub fn reconcile(&self, terminals: &[TerminalAgentSnapshot], observed_at: &str) {
@@ -284,7 +339,7 @@ impl AgentSessionRegistry {
                 }
             }
         }
-        prune_sessions(&mut sessions);
+        self.prune_sessions_locked(&mut sessions);
     }
 
     pub fn list_sessions(
@@ -347,6 +402,81 @@ impl AgentSessionRegistry {
                 code: "agent_session_not_found".to_string(),
                 message: "agent session not found".to_string(),
             })
+    }
+
+    pub fn set_identity_decision(
+        &self,
+        terminal_id: &str,
+        generation: u64,
+        provider: &str,
+        decision: IdentityDecision,
+    ) {
+        let key = IdentityDecisionKey {
+            terminal_id: terminal_id.to_string(),
+            generation,
+            provider: normalize_observed_provider(provider)
+                .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
+        };
+        if key.provider.is_empty() {
+            return;
+        }
+        if let Ok(mut decisions) = self.identity_decisions.lock() {
+            decisions.insert(key.clone(), decision);
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Some(record) = sessions.values_mut().find(|record| {
+                record.reference.terminal_id.as_deref() == Some(terminal_id)
+                    && record.reference.generation == generation
+                    && record.reference.resolved_provider == key.provider
+            }) {
+                record.reference.identity_needs_confirmation = false;
+            }
+        }
+    }
+
+    pub fn clear_identity_decision(&self, terminal_id: &str, generation: u64, provider: &str) {
+        let key = IdentityDecisionKey {
+            terminal_id: terminal_id.to_string(),
+            generation,
+            provider: normalize_observed_provider(provider)
+                .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
+        };
+        if let Ok(mut decisions) = self.identity_decisions.lock() {
+            decisions.remove(&key);
+        }
+    }
+
+    pub fn mark_selected(&self, reference: &AgentSessionRef) {
+        if let Ok(mut selected) = self.selected_session.lock() {
+            *selected = Some(reference.agent_session_id.clone());
+        }
+    }
+
+    fn identity_decision(
+        &self,
+        terminal_id: &str,
+        generation: u64,
+        provider: &str,
+    ) -> Option<IdentityDecision> {
+        let key = IdentityDecisionKey {
+            terminal_id: terminal_id.to_string(),
+            generation,
+            provider: normalize_observed_provider(provider)
+                .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
+        };
+        self.identity_decisions
+            .lock()
+            .ok()
+            .and_then(|decisions| decisions.get(&key).copied())
+    }
+
+    fn prune_sessions_locked(&self, sessions: &mut HashMap<String, AgentSessionRecord>) {
+        let selected = self
+            .selected_session
+            .lock()
+            .ok()
+            .and_then(|selected| selected.clone());
+        prune_sessions(sessions, selected.as_deref());
     }
 }
 
@@ -457,41 +587,54 @@ fn update_identity_from_snapshot(
     }
 }
 
-fn prune_sessions(sessions: &mut HashMap<String, AgentSessionRecord>) {
-    if sessions.len() <= MAX_RETAINED_SESSIONS {
-        return;
-    }
-    let mut latest_generation: HashMap<&str, u64> = HashMap::new();
+fn prune_sessions(sessions: &mut HashMap<String, AgentSessionRecord>, selected: Option<&str>) {
+    let mut by_terminal: HashMap<String, Vec<(u64, String, String)>> = HashMap::new();
     for record in sessions.values() {
-        let Some(terminal_id) = record.reference.terminal_id.as_deref() else {
+        if record.state != AgentState::Exited
+            || selected == Some(record.reference.agent_session_id.as_str())
+        {
+            continue;
+        }
+        let Some(terminal_id) = record.reference.terminal_id.as_ref() else {
             continue;
         };
-        latest_generation
-            .entry(terminal_id)
-            .and_modify(|generation| *generation = (*generation).max(record.reference.generation))
-            .or_insert(record.reference.generation);
+        by_terminal.entry(terminal_id.clone()).or_default().push((
+            record.reference.generation,
+            record.reference.updated_at.clone(),
+            record.reference.agent_session_id.clone(),
+        ));
+    }
+
+    let mut remove = Vec::new();
+    for (_, mut history) in by_terminal {
+        history.sort();
+        let keep_from = history.len().saturating_sub(MAX_TERMINAL_HISTORY);
+        remove.extend(history.into_iter().take(keep_from).map(|(_, _, id)| id));
+    }
+    for id in remove {
+        sessions.remove(&id);
+    }
+
+    if sessions.len() <= MAX_RETAINED_SESSIONS {
+        return;
     }
     let mut candidates = sessions
         .values()
         .filter(|record| {
             record.state == AgentState::Exited
-                && record
-                    .reference
-                    .terminal_id
-                    .as_deref()
-                    .and_then(|terminal_id| latest_generation.get(terminal_id))
-                    .is_some_and(|generation| *generation != record.reference.generation)
+                && selected != Some(record.reference.agent_session_id.as_str())
         })
         .map(|record| {
             (
                 record.reference.updated_at.clone(),
+                record.reference.generation,
                 record.reference.agent_session_id.clone(),
             )
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    candidates.sort();
     let remove_count = sessions.len().saturating_sub(MAX_RETAINED_SESSIONS);
-    for (_, session_id) in candidates.into_iter().take(remove_count) {
+    for (_, _, session_id) in candidates.into_iter().take(remove_count) {
         sessions.remove(&session_id);
     }
 }
@@ -886,7 +1029,41 @@ mod tests {
         }
         let sessions = registry.list_sessions("workspace-a").unwrap();
         assert!(sessions.len() <= super::MAX_RETAINED_SESSIONS);
+        assert!(sessions.len() <= super::MAX_TERMINAL_HISTORY + 1);
         assert!(sessions.iter().any(|session| session.generation == 300));
+    }
+
+    #[test]
+    fn completion_dedupe_eviction_accepts_a_new_event_after_the_bound() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        let observation = |event_id: String| CompletionObservation {
+            provider: "codex".to_string(),
+            event_id: Some(event_id),
+            provider_session_id: None,
+            provider_turn_id: None,
+            occurred_at: None,
+        };
+        assert!(registry.observe_completion(
+            &terminal,
+            observation("original".to_string()),
+            None,
+            "now",
+        ));
+        for index in 0..super::MAX_COMPLETION_KEYS {
+            assert!(registry.observe_completion(
+                &terminal,
+                observation(format!("event-{index}")),
+                None,
+                "now",
+            ));
+        }
+        assert!(registry.observe_completion(
+            &terminal,
+            observation("original".to_string()),
+            None,
+            "later",
+        ));
     }
 
     #[test]

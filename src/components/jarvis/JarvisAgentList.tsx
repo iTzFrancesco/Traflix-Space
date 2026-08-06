@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Bot, Circle } from "lucide-react";
 import type { AgentSessionContext } from "../../lib/jarvis/types";
 import type { AgentSessionHistoryGroup } from "../../lib/jarvis/sessionView";
@@ -8,11 +7,11 @@ interface JarvisAgentListProps {
   history: AgentSessionHistoryGroup[];
   selectedSessionId: string | null;
   onSelect: (session: AgentSessionContext) => void;
+  onDecision: (session: AgentSessionContext, decision: "confirmed" | "ignored") => void;
 }
 
-export function JarvisAgentList({ sessions, history, selectedSessionId, onSelect }: JarvisAgentListProps) {
-  const [decisions, setDecisions] = useState<Record<string, "confirmed" | "ignored">>({});
-  const visibleSessions = sessions.filter((session) => decisions[session.ref.agentSessionId] !== "ignored");
+export function JarvisAgentList({ sessions, history, selectedSessionId, onSelect, onDecision }: JarvisAgentListProps) {
+  const visibleSessions = sessions;
 
   if (visibleSessions.length === 0 && history.length === 0) {
     return <p className="px-1 py-4 text-sm text-neutral-text-muted">Nessuna agent session nella workspace.</p>;
@@ -25,9 +24,9 @@ export function JarvisAgentList({ sessions, history, selectedSessionId, onSelect
           key={session.ref.agentSessionId}
           session={session}
           selected={session.ref.agentSessionId === selectedSessionId}
-          confirmed={decisions[session.ref.agentSessionId] === "confirmed"}
+          confirmed={!session.ref.identityNeedsConfirmation}
           onSelect={() => onSelect(session)}
-          onDecision={(decision) => setDecisions((current) => ({ ...current, [session.ref.agentSessionId]: decision }))}
+          onDecision={(decision) => onDecision(session, decision)}
         />
       ))}
       {history.length > 0 && (

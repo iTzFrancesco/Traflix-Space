@@ -271,7 +271,10 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
                 .clone()
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
             let fallback = manager
-                .get_normalized_screen_text(&event.terminal_id, MAX_TERMINAL_FALLBACK_BYTES)
+                .get_recent_normalized_terminal_text(
+                    &event.terminal_id,
+                    MAX_TERMINAL_FALLBACK_BYTES,
+                )
                 .await
                 .ok()
                 .and_then(|text| {
@@ -347,6 +350,20 @@ mod tests {
         let key = event().dedupe_key().unwrap();
         assert!(registry.accept_once(key.clone()));
         assert!(!registry.accept_once(key));
+    }
+
+    #[test]
+    fn registry_eviction_is_bounded_and_allows_a_legitimate_later_duplicate() {
+        let registry = AgentEventRegistry::default();
+        let original = event().dedupe_key().unwrap();
+        assert!(registry.accept_once(original.clone()));
+        for index in 0..MAX_DEDUPE_ENTRIES {
+            assert!(registry.accept_once(format!("event-{index}")));
+        }
+        assert!(registry.accept_once(original));
+        let seen = registry.seen.lock().expect("registry lock");
+        assert_eq!(seen.set.len(), MAX_DEDUPE_ENTRIES);
+        assert_eq!(seen.order.len(), MAX_DEDUPE_ENTRIES);
     }
 
     #[test]

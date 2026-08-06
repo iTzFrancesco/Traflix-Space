@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import {
-  agentList,
   agentSnapshot,
   buildModelContext,
+  markSelectedAgent,
+  setIdentityDecision,
 } from "../../lib/jarvis/client";
 import { SettingsModal } from "../layout/SettingsModal";
 import { useJarvisStore } from "../../stores/jarvisStore";
@@ -33,8 +34,27 @@ export function JarvisGlobalOverlay() {
   const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const setRegistryRefreshTimestamp = useJarvisStore((state) => state.setRegistryRefreshTimestamp);
   const otherWorkspaceAgentCount = useJarvisStore((state) => state.otherWorkspaceAgentCount);
+  const conversation = useJarvisStore((state) => state.conversation);
+  const pendingActions = useJarvisStore((state) => state.pendingActions);
+  const chatLoading = useJarvisStore((state) => state.chatLoading);
+  const chatError = useJarvisStore((state) => state.chatError);
+  const providerStatus = useJarvisStore((state) => state.providerStatus);
+  const expanded = useJarvisStore((state) => state.expanded);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const loadLastResult = useJarvisStore((state) => state.loadLastResult);
+  const sendMessage = useJarvisStore((state) => state.sendMessage);
+  const confirmPendingAction = useJarvisStore((state) => state.confirmPendingAction);
+  const rejectPendingAction = useJarvisStore((state) => state.rejectPendingAction);
+  const refreshPendingActions = useJarvisStore((state) => state.refreshPendingActions);
+  const loadProviderStatus = useJarvisStore((state) => state.loadProviderStatus);
+  const clearConversation = useJarvisStore((state) => state.clearConversation);
+  const conversationForWorkspace = useMemo(
+    () => conversation.filter((message) => message.workspaceId === activeWorkspaceId),
+    [activeWorkspaceId, conversation],
+  );
+  const handleLoadProviderStatus = useCallback(() => {
+    void loadProviderStatus();
+  }, [loadProviderStatus]);
   const registryRequestRef = useRef(0);
   const sessions = registrySessions;
   const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
@@ -83,21 +103,26 @@ export function JarvisGlobalOverlay() {
 
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
-    void refreshContext();
     void refreshRegistry();
+    if (expanded) void refreshContext();
     const interval = window.setInterval(() => void refreshRegistry(), 5000);
     const unsubscribe = subscribeAgentTurnCompleted(() => void refreshRegistry());
     return () => {
       window.clearInterval(interval);
       unsubscribe();
     };
-  }, [activeWorkspaceId, refreshContext, refreshRegistry, settings.jarvis.enabled]);
+  }, [activeWorkspaceId, expanded, refreshContext, refreshRegistry, settings.jarvis.enabled]);
+
+  useEffect(() => {
+    if (expanded) void refreshPendingActions();
+  }, [expanded, refreshPendingActions]);
 
   useOtherWorkspaceAgentCount(activeWorkspaceId, workspaces.map((item) => item.id));
 
   const handleSelectSession = (session: AgentSessionContext) => {
     setSelectedAgentSessionId(session.ref.agentSessionId);
     setResult(session.ref.agentSessionId, session.lastResult ?? null);
+    void markSelectedAgent(session.ref.workspaceId, session.ref.agentSessionId).catch(() => undefined);
     if (activeWorkspaceId && session.ref.agentSessionId) {
       void loadLastResult(activeWorkspaceId, session.ref.agentSessionId);
     }
@@ -109,6 +134,15 @@ export function JarvisGlobalOverlay() {
       setActiveWorkspace(session.ref.workspaceId);
     }
     setActiveTerminal(session.ref.terminalId);
+  };
+
+  const handleIdentityDecision = async (session: AgentSessionContext, decision: "confirmed" | "ignored") => {
+    try {
+      await setIdentityDecision(decision === "confirmed" ? "confirm" : "ignore", session.ref);
+      await refreshRegistry(session.ref.workspaceId);
+    } catch (error) {
+      console.warn("[jarvis] identity decision failed", error);
+    }
   };
 
   if (!settings.jarvis.enabled) {
@@ -132,6 +166,17 @@ export function JarvisGlobalOverlay() {
         onOpenTerminal={handleOpenTerminal}
         onOpenSettings={() => setSettingsOpen(true)}
         onHide={() => void useJarvisStore.getState().hideJarvis()}
+        conversation={conversationForWorkspace}
+        pendingActions={pendingActions}
+        chatLoading={chatLoading}
+        chatError={chatError}
+        providerStatus={providerStatus}
+        onSendMessage={(message) => void sendMessage(message)}
+        onConfirmAction={(action) => void confirmPendingAction(action)}
+        onRejectAction={(action) => void rejectPendingAction(action)}
+        onClearConversation={() => activeWorkspaceId ? void clearConversation(activeWorkspaceId) : undefined}
+        onLoadProviderStatus={handleLoadProviderStatus}
+        onIdentityDecision={(session, decision) => void handleIdentityDecision(session, decision)}
       />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
@@ -153,9 +198,9 @@ function useOtherWorkspaceAgentCount(
       setOtherWorkspaceAgentCount(0);
       return;
     }
-    void Promise.all(otherIds.map((workspaceId) => agentList(workspaceId).catch(() => ({ data: [], provenance: { source: "jarvis", observedAt: new Date().toISOString(), confidence: 0, untrusted: false }, warnings: [] })))).then((results) => {
+    void Promise.all(otherIds.map((workspaceId) => agentSnapshot(workspaceId).catch(() => ({ data: [], provenance: { source: "jarvis", observedAt: new Date().toISOString(), confidence: 0, untrusted: false }, warnings: [] })))).then((results) => {
       if (cancelled) return;
-      const total = results.reduce((sum, result) => sum + result.data.length, 0);
+      const total = results.reduce((sum, result) => sum + result.data.filter((session) => ["starting", "working", "waiting"].includes(session.state)).length, 0);
       setOtherWorkspaceAgentCount(total);
     });
     return () => {

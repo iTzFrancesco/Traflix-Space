@@ -11,6 +11,9 @@ import type {
   ContextPackageV1,
   InvocationBinding,
   JarvisErrorEnvelope,
+  JarvisChatResponse,
+  JarvisProviderStatus,
+  PendingAction,
   ModelContextViewV1,
   Provenance,
   RequestedDepth,
@@ -20,6 +23,12 @@ import type {
 } from "./types";
 
 const READ_TIMEOUT_MS = 15_000;
+const MODEL_TIMEOUT_MS = 90_000;
+
+export interface JarvisChatRequest {
+  invocation: InvocationBinding;
+  message: string;
+}
 
 export function captureActiveWorkspace(
   targetTerminalId?: string,
@@ -240,6 +249,82 @@ export function getSettings(): Promise<AppSettings> {
 export function setSettings(settings: AppSettings): Promise<void> {
   return invokeWithTimeout(
     () => invoke<void>("set_settings", { settings }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function jarvisChat(request: JarvisChatRequest): Promise<JarvisChatResponse> {
+  return invokeWithTimeout(
+    () => invoke<JarvisChatResponse>("jarvis_chat", { request }),
+    MODEL_TIMEOUT_MS,
+  );
+}
+
+export function providerStatus(): Promise<JarvisProviderStatus> {
+  return invokeWithTimeout(
+    () => invoke<JarvisProviderStatus>("jarvis_provider_status"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function pendingActions(): Promise<ToolEnvelope<PendingAction[]>> {
+  return invokeWithTimeout(
+    () => invoke<ToolEnvelope<PendingAction[]>>("jarvis_pending_actions"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function confirmAction(actionId: string, invocation: InvocationBinding): Promise<PendingAction> {
+  return invokeWithTimeout(
+    () => invoke<PendingAction>("jarvis_confirm_action", { actionId, invocation }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function rejectAction(actionId: string, invocation: InvocationBinding): Promise<PendingAction> {
+  return invokeWithTimeout(
+    () => invoke<PendingAction>("jarvis_reject_action", { actionId, invocation }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function clearConversation(workspaceId: string): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_clear_conversation", { workspaceId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export type IdentityDecision = "confirm" | "ignore" | "clear";
+
+export function setIdentityDecision(
+  decision: IdentityDecision,
+  session: AgentSessionRef,
+): Promise<ToolEnvelope<AgentSessionRef>> {
+  if (!session.terminalId) return Promise.reject(new Error("Terminale non disponibile"));
+  const command = decision === "confirm" ? "jarvis_confirm_identity" : decision === "ignore" ? "jarvis_ignore_identity" : "jarvis_clear_identity_decision";
+  return invokeWithTimeout(
+    () => invoke<ToolEnvelope<AgentSessionRef>>(command, {
+      workspaceId: session.workspaceId,
+      terminalId: session.terminalId,
+      generation: session.generation,
+      provider: session.observedProvider ?? session.resolvedProvider,
+      requestId: crypto.randomUUID(),
+    }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function markSelectedAgent(
+  workspaceId: string,
+  agentSessionId: string,
+): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_mark_selected_agent", {
+      workspaceId,
+      agentSessionId,
+      requestId: crypto.randomUUID(),
+    }),
     READ_TIMEOUT_MS,
   );
 }

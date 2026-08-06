@@ -46,6 +46,29 @@ pub struct JarvisSettings {
     pub standard_pipeline: StandardPipelineSettings,
     #[serde(default)]
     pub gemini_live: GeminiLiveSettings,
+    #[serde(default)]
+    pub model_provider: ModelProvider,
+    #[serde(default = "default_longcat_model")]
+    pub model: String,
+    #[serde(default = "default_true")]
+    pub fallback_to_deepseek: bool,
+    #[serde(default)]
+    pub privacy_consent: bool,
+    #[serde(default)]
+    pub privacy_consent_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProvider {
+    LongCat,
+    DeepSeek,
+}
+
+impl Default for ModelProvider {
+    fn default() -> Self {
+        Self::LongCat
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +150,11 @@ impl Default for JarvisSettings {
             widget_position: WidgetPosition::default(),
             standard_pipeline: StandardPipelineSettings::default(),
             gemini_live: GeminiLiveSettings::default(),
+            model_provider: ModelProvider::default(),
+            model: default_longcat_model(),
+            fallback_to_deepseek: true,
+            privacy_consent: false,
+            privacy_consent_at: None,
         }
     }
 }
@@ -186,6 +214,10 @@ fn default_standard_tts() -> String {
 
 fn default_gemini_provider() -> String {
     "Gemini Live".to_string()
+}
+
+fn default_longcat_model() -> String {
+    "LongCat-2.0".to_string()
 }
 
 pub struct SettingsManager {

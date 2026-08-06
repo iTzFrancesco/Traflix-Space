@@ -19,9 +19,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::jarvis::runtime_detector::{
-    detect_from_command, detect_from_process_tree, normalize_provider,
-};
+#[cfg(windows)]
+use crate::jarvis::runtime_detector::detect_from_process_tree_async;
+use crate::jarvis::runtime_detector::{normalize_provider, AgentDetection};
 use crate::terminal_engine::scheduler::FrameScheduler;
 
 pub use crate::jarvis::agent_registry::{NormalizedTerminalText, TerminalAgentSnapshot};
@@ -32,6 +32,7 @@ pub struct TerminalManager {
     /// Currently focused terminal id (avoids write-locking every session on set_active).
     active_id: tokio::sync::Mutex<Option<String>>,
     next_generation: AtomicU64,
+    detector_started: std::sync::atomic::AtomicBool,
 }
 
 /// Current terminal location and the branch resolved for that exact location.
@@ -64,6 +65,7 @@ impl TerminalManager {
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
             active_id: tokio::sync::Mutex::new(None),
             next_generation: AtomicU64::new(1),
+            detector_started: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -193,7 +195,10 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         session.write(data)?;
-        observe_runtime_identity(&mut session, data);
+        let command_detections = session.observe_agent_commands(data);
+        for detection in command_detections {
+            apply_runtime_identity(&mut session, &detection);
+        }
         let agent_snapshot = snapshot_from_session(&session);
 
         // If the CWD was updated by a cd command detection, notify the frontend.
@@ -352,8 +357,7 @@ impl TerminalManager {
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.write().await;
-        observe_runtime_identity(&mut session, &[]);
+        let session = session.read().await;
         Ok(Some(snapshot_from_session(&session)))
     }
 
@@ -405,8 +409,7 @@ impl TerminalManager {
             .collect::<Vec<_>>();
         let mut snapshots = Vec::new();
         for session in sessions {
-            let mut session = session.write().await;
-            observe_runtime_identity(&mut session, &[]);
+            let session = session.read().await;
             if session.is_agent_terminal {
                 snapshots.push(snapshot_from_session(&session));
             }
@@ -445,6 +448,24 @@ impl TerminalManager {
             content: text[start..].to_string(),
             truncated: true,
         })
+    }
+
+    pub async fn get_recent_normalized_terminal_text(
+        &self,
+        id: &str,
+        max_bytes: usize,
+    ) -> Result<NormalizedTerminalText, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        let mut parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let text = parser.recent_normalized_text();
+        bounded_terminal_text(&text, max_bytes)
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
@@ -649,8 +670,100 @@ impl TerminalManager {
         }
     }
 
-    pub fn start_event_loop(&self, _app: AppHandle) {
+    pub fn start_event_loop(&self, app: AppHandle) {
         info!("Terminal manager event loop ready");
+        if self
+            .detector_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        #[cfg(windows)]
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let manager = app.state::<TerminalManager>();
+                let targets = manager.process_detection_targets().await;
+                let root_pids = targets
+                    .iter()
+                    .map(|(_, _, pid, _)| *pid)
+                    .collect::<Vec<_>>();
+                let detections = detect_from_process_tree_async(root_pids).await;
+                manager
+                    .apply_process_detections(targets, detections, &app)
+                    .await;
+                let retry_fast = manager
+                    .process_detection_targets()
+                    .await
+                    .iter()
+                    .any(|(_, _, _, source)| identity_source_priority(source) < 4);
+                tokio::time::sleep(std::time::Duration::from_secs(if retry_fast {
+                    3
+                } else {
+                    10
+                }))
+                .await;
+            }
+        });
+
+        #[cfg(not(windows))]
+        {
+            let _ = app;
+        }
+    }
+
+    #[cfg(windows)]
+    async fn process_detection_targets(&self) -> Vec<(String, u64, u32, String)> {
+        let sessions = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        let mut targets = Vec::new();
+        for session in sessions {
+            let session = session.read().await;
+            if !session.process_alive.load(Ordering::Acquire)
+                || session.process_id.is_none()
+                || identity_source_priority(&session.detection_source) >= 4
+            {
+                continue;
+            }
+            targets.push((
+                session.id.clone(),
+                session.generation,
+                session.process_id.unwrap_or_default(),
+                session.detection_source.clone(),
+            ));
+        }
+        targets
+    }
+
+    #[cfg(windows)]
+    async fn apply_process_detections(
+        &self,
+        targets: Vec<(String, u64, u32, String)>,
+        detections: std::collections::HashMap<u32, AgentDetection>,
+        app: &AppHandle,
+    ) {
+        for (terminal_id, generation, pid, _) in targets {
+            let Some(detection) = detections.get(&pid) else {
+                continue;
+            };
+            let Some(entry) = self.sessions.get(&terminal_id) else {
+                continue;
+            };
+            let mut session = entry.write().await;
+            if session.generation == generation
+                && session.process_id == Some(pid)
+                && session.process_alive.load(Ordering::Acquire)
+            {
+                apply_runtime_identity(&mut session, detection);
+                let snapshot = snapshot_from_session(&session);
+                drop(session);
+                notify_agent_started(app, &snapshot);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -688,21 +801,14 @@ fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
     }
 }
 
-fn observe_runtime_identity(session: &mut TerminalSession, input: &[u8]) {
-    let command_detection = std::str::from_utf8(input)
-        .ok()
-        .and_then(detect_from_command);
-    let detection = detect_from_process_tree(session.process_id).or(command_detection);
-    let Some(detection) = detection else {
-        return;
-    };
+fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetection) {
     let current_priority = identity_source_priority(&session.detection_source);
     let incoming_priority = identity_source_priority(&detection.source);
     if session.observed_provider.is_some() && incoming_priority < current_priority {
         return;
     }
     session.observed_provider = Some(detection.provider.clone());
-    session.detection_source = detection.source;
+    session.detection_source = detection.source.clone();
     session.detection_confidence = detection.confidence;
     session.is_agent_terminal = true;
     if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
@@ -716,6 +822,25 @@ fn observe_runtime_identity(session: &mut TerminalSession, input: &[u8]) {
             );
         }
     }
+}
+
+fn bounded_terminal_text(text: &str, max_bytes: usize) -> Result<NormalizedTerminalText, String> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = normalized.trim_end_matches('\n');
+    if normalized.len() <= max_bytes {
+        return Ok(NormalizedTerminalText {
+            content: normalized.to_string(),
+            truncated: false,
+        });
+    }
+    let mut start = normalized.len().saturating_sub(max_bytes);
+    while start < normalized.len() && !normalized.is_char_boundary(start) {
+        start += 1;
+    }
+    Ok(NormalizedTerminalText {
+        content: normalized[start..].to_string(),
+        truncated: true,
+    })
 }
 
 fn identity_source_priority(source: &str) -> u8 {

@@ -1,3 +1,4 @@
+use crate::jarvis::agent_registry::IdentityDecision;
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
@@ -160,6 +161,226 @@ pub async fn jarvis_agent_get_messages(
         request_id,
         &observed_at,
     )
+}
+
+#[tauri::command]
+pub fn jarvis_mark_selected_agent(
+    app: AppHandle,
+    workspace_id: String,
+    agent_session_id: String,
+    request_id: Option<String>,
+) -> Result<(), JarvisErrorEnvelope> {
+    let observed_at = now();
+    let sessions = app
+        .state::<JarvisState>()
+        .registry
+        .list_sessions(&workspace_id)
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "agent_registry_unavailable",
+                "agent registry unavailable",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?;
+    let session = sessions
+        .into_iter()
+        .find(|session| session.agent_session_id == agent_session_id)
+        .ok_or_else(|| {
+            JarvisErrorEnvelope::new(
+                "agent_session_not_found",
+                "agent session not found",
+                request_id,
+                Some(workspace_id),
+                &observed_at,
+            )
+        })?;
+    app.state::<JarvisState>().registry.mark_selected(&session);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn jarvis_confirm_identity(
+    app: AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    generation: u64,
+    provider: String,
+    request_id: Option<String>,
+) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
+    decide_identity(
+        &app,
+        workspace_id,
+        terminal_id,
+        generation,
+        provider,
+        request_id,
+        IdentityDecision::Confirmed,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn jarvis_ignore_identity(
+    app: AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    generation: u64,
+    provider: String,
+    request_id: Option<String>,
+) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
+    decide_identity(
+        &app,
+        workspace_id,
+        terminal_id,
+        generation,
+        provider,
+        request_id,
+        IdentityDecision::Ignored,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn jarvis_clear_identity_decision(
+    app: AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    generation: u64,
+    provider: String,
+    request_id: Option<String>,
+) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    let manager = app.state::<TerminalManager>();
+    let snapshot = manager
+        .get_agent_snapshot(&terminal_id)
+        .await
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?
+        .ok_or_else(|| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?;
+    if snapshot.workspace_id != workspace_id || snapshot.generation != generation {
+        return Err(JarvisErrorEnvelope::new(
+            "terminal_generation_mismatch",
+            "terminal generation is no longer current",
+            request_id,
+            Some(workspace_id),
+            &observed_at,
+        ));
+    }
+    app.state::<JarvisState>().registry.clear_identity_decision(
+        &terminal_id,
+        generation,
+        &provider,
+    );
+    identity_session(&app, &workspace_id, request_id, &observed_at)
+}
+
+async fn decide_identity(
+    app: &AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    generation: u64,
+    provider: String,
+    request_id: Option<String>,
+    decision: IdentityDecision,
+) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    let manager = app.state::<TerminalManager>();
+    let snapshot = manager
+        .get_agent_snapshot(&terminal_id)
+        .await
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?
+        .ok_or_else(|| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?;
+    if snapshot.workspace_id != workspace_id || snapshot.generation != generation {
+        return Err(JarvisErrorEnvelope::new(
+            "terminal_generation_mismatch",
+            "terminal generation is no longer current",
+            request_id,
+            Some(workspace_id),
+            &observed_at,
+        ));
+    }
+    app.state::<JarvisState>().registry.set_identity_decision(
+        &terminal_id,
+        generation,
+        &provider,
+        decision,
+    );
+    identity_session(app, &workspace_id, request_id, &observed_at)
+}
+
+fn identity_session(
+    app: &AppHandle,
+    workspace_id: &str,
+    request_id: Option<String>,
+    observed_at: &str,
+) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
+    let session = app
+        .state::<JarvisState>()
+        .registry
+        .list_sessions(workspace_id)
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "agent_registry_unavailable",
+                "agent registry unavailable",
+                request_id.clone(),
+                Some(workspace_id.to_string()),
+                observed_at,
+            )
+        })?
+        .into_iter()
+        .filter(|session| session.terminal_id.is_some())
+        .max_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.agent_session_id.cmp(&right.agent_session_id))
+        })
+        .ok_or_else(|| {
+            JarvisErrorEnvelope::new(
+                "agent_session_not_found",
+                "agent session not found",
+                request_id.clone(),
+                Some(workspace_id.to_string()),
+                observed_at,
+            )
+        })?;
+    Ok(ToolEnvelope {
+        data: session,
+        provenance: crate::jarvis::types::Provenance::trusted("agent-registry", observed_at),
+        warnings: Vec::new(),
+    })
 }
 
 #[tauri::command]

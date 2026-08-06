@@ -78,7 +78,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <div>
             <p className="font-semibold text-neutral-text">Jarvis</p>
             <p className="mt-1 text-sm leading-relaxed text-neutral-text-muted">
-              I motori vocali sono solo configurati localmente in questa fase. Nessun provider è collegato.
+              Jarvis testuale usa il provider configurato dal backend. Le credenziali non vengono mai salvate in settings, frontend o log.
             </p>
           </div>
         </div>
@@ -99,6 +99,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             onClick={() => selectVoiceEngine("gemini_live")}
           />
         </div>
+
+        <ModelOptions
+          settings={jarvis}
+          onChange={(next) => updateJarvis(() => next)}
+        />
 
         <div className="space-y-4 rounded-xl border border-white/[0.08] bg-white/[0.02] p-5">
           <div className="flex items-center justify-between">
@@ -187,6 +192,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       </div>
     </Modal>
   );
+}
+
+function ModelOptions({ settings, onChange }: { settings: AppSettings["jarvis"]; onChange: (settings: AppSettings["jarvis"]) => void }) {
+  return <div className="space-y-4 rounded-xl border border-primary/20 bg-primary/[0.04] p-5">
+    <div><h3 className="font-semibold text-neutral-text">Jarvis testuale</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">LongCat è il provider primario; DeepSeek è il fallback opzionale. Configura le variabili d'ambiente backend <code>TRAFLIX_LONGCAT_API_KEY</code> e <code>TRAFLIX_DEEPSEEK_API_KEY</code> sul computer Windows.</p></div>
+    <div className="grid gap-4 sm:grid-cols-2">
+      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-wider text-neutral-text-muted">Provider</span><select value={settings.modelProvider} onChange={(event) => onChange({ ...settings, modelProvider: event.target.value as "long_cat" | "deep_seek" })} className="w-full rounded-lg border border-white/10 bg-neutral-bg px-3 py-2 text-sm text-neutral-text outline-none"><option value="long_cat">LongCat</option><option value="deep_seek">DeepSeek</option></select></label>
+      <TextField label="Modello" value={settings.model} placeholder="LongCat-2.0" onChange={(model) => onChange({ ...settings, model })} />
+    </div>
+    <ToggleRow label="Fallback DeepSeek" description="Usa DeepSeek se LongCat non è disponibile" checked={settings.fallbackToDeepseek} onChange={(fallbackToDeepseek) => onChange({ ...settings, fallbackToDeepseek })} />
+    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-3"><input type="checkbox" checked={settings.privacyConsent} onChange={(event) => onChange({ ...settings, privacyConsent: event.target.checked, privacyConsentAt: event.target.checked ? settings.privacyConsentAt ?? new Date().toISOString() : undefined })} className="mt-1 accent-primary" /><span><span className="block text-sm font-semibold text-neutral-text">Consento l'invio della conversazione e del contesto consentito al modello</span><span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">Markdown, stato terminali e output agent sono dati non fidati. Il consenso è richiesto prima di ogni richiesta; le chiavi restano nel backend.</span></span></label>
+  </div>;
 }
 
 function EngineCard({
