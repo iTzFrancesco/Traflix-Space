@@ -1,5 +1,50 @@
 export type RequestedDepth = "summary" | "last_result" | "full_messages";
 
+export type VoiceEngine = "standard" | "gemini_live";
+
+export interface WidgetPosition {
+  x: number;
+  y: number;
+}
+
+export interface StandardPipelineSettings {
+  stt: string;
+  fastModel: string;
+  contextPlanner: string;
+  tts: string;
+  voice: string;
+}
+
+export interface GeminiLiveSettings {
+  provider: string;
+  model: string;
+  voice: string;
+  automaticTurnDetection: boolean;
+  allowInterruption: boolean;
+}
+
+export interface JarvisSettings {
+  enabled: boolean;
+  voiceEngine: VoiceEngine;
+  muted: boolean;
+  wakeWordEnabled: boolean;
+  widgetPosition: WidgetPosition;
+  standardPipeline: StandardPipelineSettings;
+  geminiLive: GeminiLiveSettings;
+}
+
+export interface AppSettings {
+  sidebar: {
+    isCollapsed: boolean;
+    workspaceOrder: string[];
+    activeWorkspaceId: string | null;
+  };
+  theme: {
+    accentColor: string;
+  };
+  jarvis: JarvisSettings;
+}
+
 export type CacheStatus = "miss" | "hit" | "incremental" | "invalidated";
 
 export type AgentState =
@@ -86,6 +131,7 @@ export interface TerminalSummary {
   active: boolean;
   processAlive: boolean;
   agentId?: string;
+  generation: number;
   provenance: Provenance;
 }
 
@@ -94,7 +140,11 @@ export interface AgentSessionRef {
   provider: string;
   workspaceId: string;
   terminalId?: string;
+  generation: number;
   providerSessionId?: string;
+  providerTurnId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentTurnContext {

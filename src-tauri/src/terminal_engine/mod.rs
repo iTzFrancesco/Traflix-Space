@@ -13,19 +13,22 @@ pub use session::TerminalSession;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::terminal_engine::scheduler::FrameScheduler;
+
+pub use crate::jarvis::agent_registry::{NormalizedTerminalText, TerminalAgentSnapshot};
 
 pub struct TerminalManager {
     pub sessions: DashMap<String, Arc<RwLock<TerminalSession>>>,
     scheduler: tokio::sync::Mutex<FrameScheduler>,
     /// Currently focused terminal id (avoids write-locking every session on set_active).
     active_id: tokio::sync::Mutex<Option<String>>,
+    next_generation: AtomicU64,
 }
 
 /// Current terminal location and the branch resolved for that exact location.
@@ -57,6 +60,7 @@ impl TerminalManager {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
             active_id: tokio::sync::Mutex::new(None),
+            next_generation: AtomicU64::new(1),
         }
     }
 
@@ -89,6 +93,11 @@ impl TerminalManager {
                     // frontend synchronizes the measured DOM size after
                     // layout; resizing here would force a freshly mounted
                     // xterm's default 80x24 onto a running TUI.
+                    if let Ok(Some(snapshot)) = self.get_agent_snapshot(&id).await {
+                        if snapshot.is_agent_terminal {
+                            notify_agent_started(&app, &snapshot);
+                        }
+                    }
                     return Ok(id);
                 }
 
@@ -122,8 +131,12 @@ impl TerminalManager {
                         .trim_start_matches("\\\\.\\")
                         .to_string();
 
+                    let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
                     let mut session =
                         TerminalSession::new(id.clone(), shell, cwd, initial_cols, initial_rows);
+                    session.generation = generation;
+                    session.is_agent_terminal = config.agent_id.is_some();
+                    session.agent_id = config.agent_id.clone();
                     session.workspace_id = config.workspace_id.clone();
                     slot.insert(Arc::new(RwLock::new(session)));
                     info!(terminal_id = %id, "Terminal session created");
@@ -137,6 +150,12 @@ impl TerminalManager {
         if let Err(e) = self.spawn_shell(&app, &id).await {
             let _ = self.sessions.remove(&id);
             return Err(e);
+        }
+
+        if let Some(snapshot) = self.get_agent_snapshot(&id).await.ok().flatten() {
+            if snapshot.is_agent_terminal {
+                notify_agent_started(&app, &snapshot);
+            }
         }
 
         Ok(id)
@@ -167,6 +186,14 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         session.write(data)?;
+        let agent_snapshot = TerminalAgentSnapshot {
+            terminal_id: session.id.clone(),
+            workspace_id: session.workspace_id.clone().unwrap_or_default(),
+            is_agent_terminal: session.agent_id.is_some(),
+            agent_id: session.agent_id.clone(),
+            generation: session.generation,
+            process_alive: session.process_alive.load(Ordering::Acquire),
+        };
 
         // If the CWD was updated by a cd command detection, notify the frontend.
         if session.cwd_changed.swap(false, Ordering::Acquire) {
@@ -184,6 +211,10 @@ impl TerminalManager {
             );
         }
 
+        drop(session);
+        if agent_snapshot.is_agent_terminal {
+            notify_agent_input(&app, &agent_snapshot);
+        }
         Ok(())
     }
 
@@ -203,12 +234,24 @@ impl TerminalManager {
             .remove(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.1.write().await;
+        let agent_snapshot = TerminalAgentSnapshot {
+            terminal_id: session.id.clone(),
+            workspace_id: session.workspace_id.clone().unwrap_or_default(),
+            is_agent_terminal: session.agent_id.is_some(),
+            agent_id: session.agent_id.clone(),
+            generation: session.generation,
+            process_alive: false,
+        };
         session.kill();
         self.scheduler.lock().await.stop(id);
 
         let mut active = self.active_id.lock().await;
         if active.as_deref() == Some(id) {
             *active = None;
+        }
+
+        if agent_snapshot.is_agent_terminal {
+            notify_agent_exit(_app, &agent_snapshot);
         }
 
         info!(terminal_id = %id, "Terminal killed and removed");
@@ -303,6 +346,81 @@ impl TerminalManager {
             output_sequence,
             cols: session.grid.cols,
             rows: session.grid.rows,
+        })
+    }
+
+    pub async fn get_agent_snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<TerminalAgentSnapshot>, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        Ok(session.is_agent_terminal.then(|| TerminalAgentSnapshot {
+            terminal_id: session.id.clone(),
+            workspace_id: session.workspace_id.clone().unwrap_or_default(),
+            is_agent_terminal: true,
+            agent_id: session.agent_id.clone(),
+            generation: session.generation,
+            process_alive: session.process_alive.load(Ordering::Acquire),
+        }))
+    }
+
+    pub async fn list_agent_snapshots(&self) -> Vec<TerminalAgentSnapshot> {
+        let sessions = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        let mut snapshots = Vec::new();
+        for session in sessions {
+            let session = session.read().await;
+            if session.is_agent_terminal {
+                snapshots.push(TerminalAgentSnapshot {
+                    terminal_id: session.id.clone(),
+                    workspace_id: session.workspace_id.clone().unwrap_or_default(),
+                    is_agent_terminal: true,
+                    agent_id: session.agent_id.clone(),
+                    generation: session.generation,
+                    process_alive: session.process_alive.load(Ordering::Acquire),
+                });
+            }
+        }
+        snapshots.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
+        snapshots
+    }
+
+    pub async fn get_normalized_screen_text(
+        &self,
+        id: &str,
+        max_bytes: usize,
+    ) -> Result<NormalizedTerminalText, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        let parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let text = parser.screen_text(session.grid.rows, session.grid.cols);
+        let text = text.trim_end().to_string();
+        if text.len() <= max_bytes {
+            return Ok(NormalizedTerminalText {
+                content: text,
+                truncated: false,
+            });
+        }
+        let mut start = text.len() - max_bytes;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        Ok(NormalizedTerminalText {
+            content: text[start..].to_string(),
+            truncated: true,
         })
     }
 
@@ -529,6 +647,32 @@ impl TerminalManager {
     #[allow(dead_code)]
     pub async fn stop_frame_scheduler(&self, id: &str) {
         self.scheduler.lock().await.stop(id);
+    }
+}
+
+fn notify_agent_started(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state
+            .registry
+            .observe_terminal_started(snapshot, &chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn notify_agent_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state
+            .registry
+            .observe_input(snapshot, &chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn notify_agent_exit(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state.registry.observe_terminal_exit(
+            &snapshot.terminal_id,
+            snapshot.generation,
+            &chrono::Utc::now().to_rfc3339(),
+        );
     }
 }
 

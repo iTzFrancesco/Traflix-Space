@@ -159,3 +159,12 @@ JARVIS-011 ────────────────> session summaries e
 - JARVIS-010: **approvata per questo slice** — tool allowlisted e completamente read-only.
 - JARVIS-011: **approvata per questo slice** — completion notification è segnale di lifecycle, non risultato.
 - JARVIS-012: **approvata** — Context Broker minimo, fake adapter e tool read-only.
+
+## Stato Fase 3 — decisioni owner consolidate
+
+- JARVIS-001: **consolidata** — shell globale persistente, target e dati separati per workspace.
+- JARVIS-003: **sostituita per il percorso live** — registry terminal-based/provider-agnostic; `terminalId + generation` è l’identità, gli adapter strutturati restano opzionali.
+- JARVIS-009: **rinviata** — Standard/Gemini sono soltanto impostazioni; nessun motore vocale è collegato.
+- JARVIS-010: **consolidata** — il registry e i tool Jarvis restano read-only in questa fase.
+- JARVIS-011: **consolidata** — completion aggiorna `waiting` e l’ultimo fallback, senza chiudere la sessione.
+- JARVIS-012: **estesa** — Context Broker live collegato al `AgentSessionRegistry` terminal-based e shell globale visibile.

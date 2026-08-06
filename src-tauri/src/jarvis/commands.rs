@@ -59,6 +59,7 @@ pub async fn jarvis_agent_list(
         &observed_at,
     )
     .await?;
+    reconcile_live_registry(&app, &observed_at).await;
     JarvisToolService::new(&app.state::<JarvisState>().broker).agent_list(
         &workspace_id,
         request_id,
@@ -263,6 +264,10 @@ async fn build_context(
     let manager = app.state::<TerminalManager>();
     let terminals =
         list_terminals_for_workspace(&manager, &workspace_id, &invocation.created_at).await;
+    let all_agent_terminals = manager.list_agent_snapshots().await;
+    app.state::<JarvisState>()
+        .registry
+        .reconcile(&all_agent_terminals, &invocation.created_at);
     if let Some(terminal_id) = target_terminal_id {
         let configured_terminal = workspace
             .terminals
@@ -289,6 +294,14 @@ async fn build_context(
     } else {
         service.build_context(&workspace, invocation, terminals, requested_depth)
     }
+}
+
+async fn reconcile_live_registry(app: &AppHandle, observed_at: &str) {
+    let manager = app.state::<TerminalManager>();
+    let terminals = manager.list_agent_snapshots().await;
+    app.state::<JarvisState>()
+        .registry
+        .reconcile(&terminals, observed_at);
 }
 
 async fn build_model_context(

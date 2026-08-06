@@ -7,6 +7,7 @@ import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { RightPanel } from "./components/layout/RightPanel";
 import { AgentCompletionListener } from "./components/agent/AgentCompletionListener";
 import { AgentNotificationOverlay } from "./components/agent/AgentNotificationOverlay";
+import { JarvisGlobalOverlay } from "./components/jarvis/JarvisGlobalOverlay";
 import { ProjectWorkspaceSync } from "./components/project/ProjectWorkspaceSync";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
@@ -64,6 +65,7 @@ function App() {
       </div>
       <ProjectWorkspaceSync />
       <AgentCompletionListener />
+      <JarvisGlobalOverlay />
       <ToastContainer />
     </ErrorBoundary>
   );

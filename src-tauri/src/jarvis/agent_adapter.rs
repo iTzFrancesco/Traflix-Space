@@ -1,11 +1,13 @@
+use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::types::{
     AgentCompletionNotification, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
     AgentState, AgentTurnContext, Provenance,
 };
 #[cfg(test)]
 use std::collections::HashMap;
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSourceError {
@@ -18,6 +20,13 @@ impl AgentSourceError {
         Self {
             code: "agent_source_unavailable".to_string(),
             message: message.into(),
+        }
+    }
+
+    pub fn messages_unavailable() -> Self {
+        Self {
+            code: "agent_messages_unavailable".to_string(),
+            message: "structured agent messages unavailable for terminal source".to_string(),
         }
     }
 }
@@ -47,6 +56,53 @@ pub trait AgentContextSource: Send + Sync {
         &self,
         session: &AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError>;
+}
+
+#[derive(Clone)]
+pub struct LiveAgentContextSource {
+    registry: Arc<AgentSessionRegistry>,
+}
+
+impl LiveAgentContextSource {
+    pub fn new(registry: Arc<AgentSessionRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl AgentContextSource for LiveAgentContextSource {
+    fn list_sessions(&self, workspace_id: &str) -> Result<Vec<AgentSessionRef>, AgentSourceError> {
+        self.registry.list_sessions(workspace_id)
+    }
+
+    fn get_status(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<AgentStatusSnapshot, AgentSourceError> {
+        let status = self.registry.status(session)?;
+        Ok(AgentStatusSnapshot {
+            objective: status.objective,
+            state: status.state,
+            last_turn: status.last_turn,
+            completion_notification: status.completion_notification,
+            provenance: status.provenance,
+            confidence: status.confidence,
+            warnings: status.warnings,
+        })
+    }
+
+    fn get_last_result(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<Option<AgentResult>, AgentSourceError> {
+        self.registry.last_result(session)
+    }
+
+    fn get_messages(
+        &self,
+        _session: &AgentSessionRef,
+    ) -> Result<Vec<AgentMessage>, AgentSourceError> {
+        Err(AgentSourceError::messages_unavailable())
+    }
 }
 
 #[derive(Default)]

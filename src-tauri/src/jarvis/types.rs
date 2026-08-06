@@ -154,6 +154,7 @@ pub struct TerminalSummary {
     pub active: bool,
     pub process_alive: bool,
     pub agent_id: Option<String>,
+    pub generation: u64,
     pub provenance: Provenance,
 }
 
@@ -164,7 +165,11 @@ pub struct AgentSessionRef {
     pub provider: String,
     pub workspace_id: String,
     pub terminal_id: Option<String>,
+    pub generation: u64,
     pub provider_session_id: Option<String>,
+    pub provider_turn_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

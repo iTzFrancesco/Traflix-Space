@@ -8,6 +8,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Bell,
+  Sparkles,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,6 +18,7 @@ import { useUIStore } from "../../stores/uiStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
+import { useJarvisStore } from "../../stores/jarvisStore";
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -35,6 +37,9 @@ export function Sidebar() {
   const setWizardOpen = useUIStore((s) => s.setWizardOpen);
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
   const setSidebarWidth = useUIStore((s) => s.setSidebarWidth);
+  const jarvisEnabled = useJarvisStore((s) => s.settings.jarvis.enabled);
+  const setJarvisExpanded = useJarvisStore((s) => s.setExpanded);
+  const showJarvis = useJarvisStore((s) => s.showJarvis);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -48,6 +53,10 @@ export function Sidebar() {
   const dragStartWidth = useRef(0);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
+  const openJarvis = () => {
+    setJarvisExpanded(true);
+    if (!jarvisEnabled) void showJarvis();
+  };
   const pendingByWorkspace = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const terminal of Object.values(terminals)) {
@@ -252,6 +261,21 @@ export function Sidebar() {
             style={{ backgroundColor: "var(--color-neutral-border)" }}
           />
 
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={openJarvis}
+            className="relative flex h-11 w-11 items-center justify-center rounded-xl transition-colors duration-200"
+            style={{
+              color: "var(--color-primary)",
+              backgroundColor: jarvisEnabled ? "rgba(255,157,36,0.14)" : "rgba(255,255,255,0.04)",
+            }}
+            title={jarvisEnabled ? "Mostra Jarvis" : "Apri Jarvis"}
+            aria-label={jarvisEnabled ? "Mostra Jarvis" : "Apri Jarvis"}
+          >
+            <Sparkles size={19} />
+          </motion.button>
+
           {/* Workspace dots */}
           <div className="flex flex-col items-center gap-6 flex-1 overflow-y-auto">
             {workspaces.map((ws, index) => {
@@ -397,6 +421,23 @@ export function Sidebar() {
             <Plus size={22} style={{ color: "var(--color-primary)" }} />
             Nuovo Spazio
           </motion.button>
+        </div>
+
+        <div className="px-4 pb-4">
+          <button
+            type="button"
+            onClick={openJarvis}
+            className="flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors"
+            style={{
+              borderColor: jarvisEnabled ? "rgba(255,157,36,0.28)" : "var(--color-neutral-border)",
+              backgroundColor: jarvisEnabled ? "rgba(255,157,36,0.08)" : "rgba(255,255,255,0.025)",
+            }}
+            title={jarvisEnabled ? "Mostra Jarvis" : "Apri Jarvis"}
+          >
+            <Sparkles size={18} className="text-primary" />
+            <span className="flex-1 text-sm font-semibold text-neutral-text">{jarvisEnabled ? "Jarvis" : "Apri Jarvis"}</span>
+            <span className="text-[10px] uppercase tracking-wider text-neutral-text-muted">{jarvisEnabled ? "globale" : "chiuso"}</span>
+          </button>
         </div>
 
         {/* Workspaces section */}

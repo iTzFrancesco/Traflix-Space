@@ -14,3 +14,14 @@ Queste decisioni vincolano il vertical slice `feat/jarvis-context-broker`.
 - Voce, wake word, STT/TTS, modelli LLM, widget e adapter reali Codex/OpenCode sono rinviati.
 
 I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ownership restano nel backend Rust; il client TypeScript cattura soltanto l’ID della workspace attiva e invia ID espliciti.
+
+## Decisioni consolidate per Fase 3
+
+- Il widget Jarvis è globale, resta montato durante il cambio workspace e la X lo disabilita; la sidebar lo riapre.
+- La posizione del widget è globale, normalizzata e persistita; non è legata alla workspace attiva.
+- Standard Voice Pipeline e Gemini Live Voice sono selezionabili e configurabili soltanto come schema/UI; nessun provider è ancora collegato.
+- Il Live Agent Session Registry è terminal-based e provider-agnostic. Il percorso canonico è `Jarvis → TerminalManager/PTTY → CLI originale`.
+- `terminalId + generation` è l’identità della sessione. Provider, provider session e provider turn sono metadata opzionali e non sono richiesti per la correlazione.
+- Completion aggiorna il turn e lo stato `waiting`, ma non chiude la Agent session. Il terminal fallback è bounded, untrusted e con provenance a confidence ridotta.
+- I messaggi completi non sono disponibili senza un adapter strutturato futuro; il terminale non viene convertito in transcript artificiale.
+- Restano rinviati voce reale, LLM, provider strutturati Codex/OpenCode e tutte le operazioni mutative.

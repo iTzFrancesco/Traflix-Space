@@ -1103,6 +1103,7 @@ export const TerminalPane = memo(function TerminalPane({
           cols,
           rows,
           workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
+          agentId: agentId ?? null,
         });
         spawnSucceeded = true;
         useTerminalStore.getState().markSpawned(terminalId);
@@ -1459,6 +1460,7 @@ export const TerminalPane = memo(function TerminalPane({
         cols: xtermRef.current?.cols ?? 80,
         rows: xtermRef.current?.rows ?? 24,
         workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
+        agentId: agentId ?? null,
       });
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;

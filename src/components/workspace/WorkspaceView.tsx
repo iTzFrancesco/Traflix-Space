@@ -388,6 +388,7 @@ export function WorkspaceView() {
                 cols: 80,
                 rows: 24,
                 workspaceId,
+                agentId: newTerminal.agentId,
               }),
             10000,
           );

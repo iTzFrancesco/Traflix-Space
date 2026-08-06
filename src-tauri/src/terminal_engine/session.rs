@@ -2,6 +2,7 @@ use crate::agent_events::{agent_event_pipe_name, AGENT_EVENT_PROTOCOL};
 use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
+use crate::terminal_engine::TerminalAgentSnapshot;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,9 +24,11 @@ pub struct TerminalSession {
     pub active: bool,
     #[allow(dead_code)]
     pub agent_id: Option<String>,
+    pub is_agent_terminal: bool,
     /// Owning workspace, if known. Injected into the PTY environment so the
     /// agent-event bridge reports the correct TRAFLIX_WORKSPACE_ID.
     pub workspace_id: Option<String>,
+    pub generation: u64,
     #[allow(dead_code)]
     pub exit_code: Option<i32>,
     pub reader_stop: Arc<AtomicBool>,
@@ -59,7 +62,9 @@ impl TerminalSession {
             parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
+            is_agent_terminal: false,
             workspace_id: None,
+            generation: 0,
             exit_code: None,
             reader_stop: Arc::new(AtomicBool::new(false)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
@@ -157,6 +162,10 @@ impl TerminalSession {
         let exit_emitted_reader = self.exit_emitted.clone();
         let process_alive_reader = self.process_alive.clone();
         let output_sequence_reader = self.output_sequence.clone();
+        let registry_workspace_id = self.workspace_id.clone().unwrap_or_default();
+        let registry_is_agent_terminal = self.is_agent_terminal;
+        let registry_agent_id = self.agent_id.clone();
+        let registry_generation = self.generation;
 
         // PTY reader thread — exits on stop flag, EOF, or after master is dropped.
         tokio::task::spawn_blocking(move || {
@@ -215,6 +224,19 @@ impl TerminalSession {
 
             if natural_exit {
                 process_alive_reader.store(false, Ordering::Release);
+                if registry_is_agent_terminal {
+                    super::notify_agent_exit(
+                        &app_reader,
+                        &TerminalAgentSnapshot {
+                            terminal_id: id.to_string(),
+                            workspace_id: registry_workspace_id.clone(),
+                            is_agent_terminal: true,
+                            agent_id: registry_agent_id.clone(),
+                            generation: registry_generation,
+                            process_alive: false,
+                        },
+                    );
+                }
             }
 
             // Explicitly drop reader so the OS handle is released even if the
@@ -245,6 +267,10 @@ impl TerminalSession {
         let watch_child = child_arc;
         let exit_emitted_watch = self.exit_emitted.clone();
         let process_alive_watch = self.process_alive.clone();
+        let registry_workspace_id_watch = self.workspace_id.clone().unwrap_or_default();
+        let registry_is_agent_terminal_watch = self.is_agent_terminal;
+        let registry_agent_id_watch = self.agent_id.clone();
+        let registry_generation_watch = self.generation;
         tokio::task::spawn_blocking(move || loop {
             if watch_stop.load(Ordering::Acquire) {
                 return;
@@ -264,6 +290,19 @@ impl TerminalSession {
 
             if exited {
                 process_alive_watch.store(false, Ordering::Release);
+                if registry_is_agent_terminal_watch {
+                    super::notify_agent_exit(
+                        &app_watch,
+                        &TerminalAgentSnapshot {
+                            terminal_id: watch_id.to_string(),
+                            workspace_id: registry_workspace_id_watch.clone(),
+                            is_agent_terminal: true,
+                            agent_id: registry_agent_id_watch.clone(),
+                            generation: registry_generation_watch,
+                            process_alive: false,
+                        },
+                    );
+                }
                 info!(terminal_id = %watch_id, "Child process exited (watch thread)");
                 if !watch_stop.load(Ordering::Acquire)
                     && exit_emitted_watch

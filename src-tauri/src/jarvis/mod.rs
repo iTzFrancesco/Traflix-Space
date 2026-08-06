@@ -1,4 +1,5 @@
 pub mod agent_adapter;
+pub mod agent_registry;
 pub mod cache;
 pub mod commands;
 pub mod context_broker;

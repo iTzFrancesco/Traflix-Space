@@ -16,13 +16,14 @@ pub async fn terminal_spawn(
     cols: u16,
     rows: u16,
     workspace_id: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<(), String> {
     info!(%terminal_id, "terminal_spawn called");
     let manager = app.state::<TerminalManager>();
     let config = crate::workspace::registry::TerminalConfig {
         id: terminal_id.clone(),
         shell,
-        agent_id: None,
+        agent_id,
         command: None,
         cwd,
         title: "Terminal".to_string(),
@@ -98,6 +99,7 @@ pub async fn terminal_reopen(
     cols: u16,
     rows: u16,
     workspace_id: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<(), String> {
     info!(%terminal_id, "terminal_reopen called");
     let manager = app.state::<TerminalManager>();
@@ -112,7 +114,7 @@ pub async fn terminal_reopen(
     let config = crate::workspace::registry::TerminalConfig {
         id: terminal_id.clone(),
         shell,
-        agent_id: None,
+        agent_id,
         command: None,
         cwd,
         title: "Terminal".to_string(),

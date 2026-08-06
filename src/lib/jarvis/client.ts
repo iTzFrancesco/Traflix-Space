@@ -3,6 +3,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { invokeWithTimeout } from "../timeout";
 import type {
   ActiveWorkspaceCapture,
+  AppSettings,
   AgentMessage,
   AgentResult,
   AgentSessionContext,
@@ -214,3 +215,17 @@ export function refreshModelContext(
 }
 
 export type JarvisClientError = JarvisErrorEnvelope;
+
+export function getSettings(): Promise<AppSettings> {
+  return invokeWithTimeout(
+    () => invoke<AppSettings>("get_settings"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function setSettings(settings: AppSettings): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("set_settings", { settings }),
+    READ_TIMEOUT_MS,
+  );
+}

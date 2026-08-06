@@ -1,4 +1,5 @@
-use crate::jarvis::agent_adapter::context_from_status;
+use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
+use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::context_broker::ContextBroker;
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
@@ -8,15 +9,21 @@ use crate::jarvis::types::{
 use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::WorkspaceConfig;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 pub struct JarvisState {
     pub broker: ContextBroker,
+    pub registry: Arc<AgentSessionRegistry>,
 }
 
 impl Default for JarvisState {
     fn default() -> Self {
+        let registry = Arc::new(AgentSessionRegistry::default());
         Self {
-            broker: ContextBroker::new(),
+            broker: ContextBroker::with_source(Arc::new(LiveAgentContextSource::new(
+                registry.clone(),
+            ))),
+            registry,
         }
     }
 }
@@ -335,6 +342,7 @@ pub async fn list_terminals_for_workspace(
             active: session.active,
             process_alive: session.process_alive.load(Ordering::Acquire),
             agent_id: session.agent_id.clone(),
+            generation: session.generation,
             provenance: Provenance::trusted("terminal-manager", observed_at),
         });
     }

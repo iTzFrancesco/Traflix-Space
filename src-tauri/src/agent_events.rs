@@ -4,6 +4,11 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
+use crate::jarvis::agent_registry::{
+    fallback_result_from_terminal_with_truncation, CompletionObservation,
+    MAX_TERMINAL_FALLBACK_BYTES,
+};
+use crate::jarvis::JarvisState;
 use crate::terminal_engine::TerminalManager;
 
 pub const AGENT_EVENT_PROTOCOL: u8 = 1;
@@ -159,7 +164,7 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
             match reader.read_line(&mut line).await {
                 Ok(bytes) if bytes > 0 && bytes <= MAX_EVENT_BYTES => {
                     info!(bytes, "Agent event received from named pipe");
-                    handle_payload(&client_app, &registry, line.trim());
+                    handle_payload(&client_app, &registry, line.trim()).await;
                 }
                 Ok(bytes) if bytes > MAX_EVENT_BYTES => {
                     warn!(bytes, "Agent event payload rejected: too large");
@@ -177,7 +182,7 @@ fn pipe_busy(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(231)
 }
 
-fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
+async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
     let event = match serde_json::from_str::<AgentTurnCompletedEvent>(payload) {
         Ok(event) => event,
         Err(error) => {
@@ -224,6 +229,43 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
         // instance does not own this PTY, but it still needs the event so its
         // Traflix overlay can notify the user above the desktop.
         warn!(terminal_id = %event.terminal_id, "Agent event received for a terminal owned by another Traflix instance");
+    }
+
+    if terminal_known {
+        if let Ok(Some(snapshot)) = manager.get_agent_snapshot(&event.terminal_id).await {
+            let observed_at = event
+                .occurred_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            let fallback = manager
+                .get_normalized_screen_text(&event.terminal_id, MAX_TERMINAL_FALLBACK_BYTES)
+                .await
+                .ok()
+                .and_then(|text| {
+                    fallback_result_from_terminal_with_truncation(
+                        &text.content,
+                        text.truncated,
+                        &observed_at,
+                    )
+                });
+            let observation = CompletionObservation {
+                provider: event.provider.clone(),
+                event_id: event.event_id.clone(),
+                provider_session_id: event.provider_session_id.clone(),
+                provider_turn_id: event.provider_turn_id.clone(),
+                occurred_at: event.occurred_at.clone(),
+            };
+            if let Some(jarvis) = app.try_state::<JarvisState>() {
+                jarvis
+                    .registry
+                    .observe_completion(&snapshot, observation, fallback, &observed_at);
+            }
+        } else {
+            warn!(
+                terminal_id = %event.terminal_id,
+                "Agent completion could not be correlated with a terminal agent session"
+            );
+        }
     }
 
     info!(
