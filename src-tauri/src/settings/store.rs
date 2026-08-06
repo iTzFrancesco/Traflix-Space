@@ -164,7 +164,10 @@ impl<'de> Deserialize<'de> for JarvisSettings {
         let mut text_model = raw.text_model.clone().unwrap_or_default();
         if !has_new_text_model {
             if let Some(model) = raw.model.filter(|value| !value.trim().is_empty()) {
-                text_model.primary_model = model;
+                text_model.primary_model = migrate_legacy_primary_model(&model);
+                if is_legacy_deepseek_model(&model) {
+                    text_model.fallback_model = default_fallback_model();
+                }
             }
             if let Some(enabled) = raw.fallback_to_deepseek {
                 text_model.fallback_enabled = enabled;
@@ -175,8 +178,15 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             text_model.privacy_consent_at = raw.privacy_consent_at;
             // The legacy provider selector is intentionally not mapped to a
             // second runtime provider. All text traffic now uses OpenCode Zen.
-            let _ = raw.model_provider;
+            if raw
+                .model_provider
+                .as_deref()
+                .is_some_and(is_legacy_deepseek_provider)
+            {
+                text_model.fallback_model = default_fallback_model();
+            }
         }
+        migrate_text_model(&mut text_model);
         if !text_model.privacy_consent {
             text_model.privacy_consent_at = None;
         }
@@ -297,6 +307,50 @@ fn default_fallback_model() -> String {
     "deepseek-v4-flash-free".to_string()
 }
 
+fn migrate_text_model(settings: &mut TextModelSettings) {
+    settings.primary_model = migrate_legacy_primary_model(&settings.primary_model);
+    if is_legacy_deepseek_model(&settings.fallback_model) {
+        settings.fallback_model = default_fallback_model();
+    }
+}
+
+fn migrate_legacy_primary_model(model: &str) -> String {
+    if is_legacy_longcat_model(model) || is_legacy_deepseek_model(model) {
+        default_primary_model()
+    } else {
+        model.to_string()
+    }
+}
+
+fn is_legacy_longcat_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "longcat" | "longcat-2.0" | "longcat-2.0-free"
+    )
+}
+
+fn is_legacy_deepseek_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "deepseek"
+            | "deepseek-chat"
+            | "deepseek-coder"
+            | "deepseek-reasoner"
+            | "deepseek-v3"
+            | "deepseek-v3.1"
+            | "deepseek-v4"
+            | "deepseek-v4-flash"
+            | "deepseek-v4-flash-free"
+    )
+}
+
+fn is_legacy_deepseek_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "deepseek" | "deep_seek" | "deep-seek"
+    )
+}
+
 pub struct SettingsManager {
     settings: Arc<Mutex<AppSettings>>,
     store_path: String,
@@ -371,6 +425,65 @@ mod tests {
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
         assert_eq!(settings.jarvis.voice_engine, VoiceEngine::Standard);
+    }
+
+    #[test]
+    fn f513485_longcat_aliases_migrate_to_the_zen_primary() {
+        for legacy_model in ["LongCat-2.0", "LongCat", "longcat"] {
+            let legacy = format!(
+                r##"{{
+                    "sidebar": {{ "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null }},
+                    "theme": {{ "accentColor": "#123456" }},
+                    "jarvis": {{ "modelProvider": "long_cat", "model": "{legacy_model}", "fallbackToDeepseek": true }}
+                }}"##
+            );
+            let settings: AppSettings = serde_json::from_str(&legacy).unwrap();
+            assert_eq!(settings.jarvis.text_model.primary_model, "longcat-2.0-free");
+            assert_eq!(
+                settings.jarvis.text_model.fallback_model,
+                "deepseek-v4-flash-free"
+            );
+        }
+    }
+
+    #[test]
+    fn f513485_direct_deepseek_models_migrate_to_the_free_zen_fallback() {
+        let legacy = r##"{
+            "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
+            "theme": { "accentColor": "#123456" },
+            "jarvis": { "modelProvider": "deepseek", "model": "deepseek-chat", "fallbackToDeepseek": true }
+        }"##;
+        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(settings.jarvis.text_model.primary_model, "longcat-2.0-free");
+        assert_eq!(
+            settings.jarvis.text_model.fallback_model,
+            "deepseek-v4-flash-free"
+        );
+    }
+
+    #[test]
+    fn custom_legacy_model_is_preserved_during_migration() {
+        let legacy = r##"{
+            "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
+            "theme": { "accentColor": "#123456" },
+            "jarvis": { "modelProvider": "long_cat", "model": "my-private-model", "fallbackToDeepseek": true }
+        }"##;
+        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(settings.jarvis.text_model.primary_model, "my-private-model");
+    }
+
+    #[test]
+    fn custom_deepseek_model_is_not_rewritten() {
+        let legacy = r##"{
+            "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
+            "theme": { "accentColor": "#123456" },
+            "jarvis": { "modelProvider": "long_cat", "model": "deepseek-enterprise-custom", "fallbackToDeepseek": true }
+        }"##;
+        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            settings.jarvis.text_model.primary_model,
+            "deepseek-enterprise-custom"
+        );
     }
 
     #[test]

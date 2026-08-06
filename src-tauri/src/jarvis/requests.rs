@@ -9,6 +9,7 @@ pub enum ChatRequestError {
     AlreadyRunning,
     RegistryFull,
     NotFound,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,26 @@ impl ChatRequestRegistry {
         Ok(record.status)
     }
 
+    /// Linearize a tool proposal with cancellation. The request mutex is held
+    /// while `operation` runs, so cancellation either wins before the action
+    /// is created or is ordered after it and can discard that action before
+    /// the cancel IPC returns.
+    pub fn with_active<T, F>(&self, request_id: &str, operation: F) -> Result<T, ChatRequestError>
+    where
+        F: FnOnce() -> T,
+    {
+        let Ok(requests) = self.requests.lock() else {
+            return Err(ChatRequestError::NotFound);
+        };
+        let Some(record) = requests.get(request_id) else {
+            return Err(ChatRequestError::NotFound);
+        };
+        if record.cancellation.is_cancelled() {
+            return Err(ChatRequestError::Cancelled);
+        }
+        Ok(operation())
+    }
+
     pub fn status(&self, request_id: &str) -> Result<ChatRequestStatus, ChatRequestError> {
         self.requests
             .lock()
@@ -101,6 +122,9 @@ impl ChatRequestRegistry {
 #[cfg(test)]
 mod tests {
     use super::{ChatRequestError, ChatRequestRegistry};
+    use crate::jarvis::actions::{PendingActionInput, PendingActionRegistry};
+    use crate::jarvis::types::InvocationBinding;
+    use serde_json::json;
 
     #[test]
     fn requests_are_isolated_by_workspace_and_cancel_is_single_request() {
@@ -114,5 +138,34 @@ mod tests {
         registry.finish("a");
         assert_eq!(registry.status("a"), Err(ChatRequestError::NotFound));
         assert!(registry.status("b").is_ok());
+    }
+
+    #[test]
+    fn cancelled_request_cannot_enter_the_action_creation_gate() {
+        let registry = ChatRequestRegistry::default();
+        let actions = PendingActionRegistry::default();
+        registry.start("request-a", "workspace-a").unwrap();
+        registry.cancel("request-a").unwrap();
+        let result = registry.with_active("request-a", || {
+            actions.create(PendingActionInput {
+                operation: "agent.send".to_string(),
+                description: "send".to_string(),
+                preview: "old".to_string(),
+                editable_text: Some("old".to_string()),
+                invocation: InvocationBinding::new(
+                    "request-a",
+                    "workspace-a",
+                    Some("terminal-a".to_string()),
+                    None,
+                    "2026-08-07T00:00:00Z",
+                ),
+                terminal_id: Some("terminal-a".to_string()),
+                generation: Some(1),
+                provider: Some("codex".to_string()),
+                payload: json!({"text":"old"}),
+            })
+        });
+        assert!(matches!(result, Err(ChatRequestError::Cancelled)));
+        assert!(actions.list().is_empty());
     }
 }

@@ -834,6 +834,24 @@ fn read_only_agent_queries_do_not_change_fixture_or_fake_state() {
             "2026-08-06T00:00:00Z",
         )
         .expect("last result");
+    let status = tools
+        .agent_status(
+            "workspace-one",
+            "session-read-only",
+            Some("request-status".to_string()),
+            "2026-08-06T00:00:00Z",
+        )
+        .expect("status");
+    assert_eq!(status.data.reference.agent_session_id, "session-read-only");
+    let missing = tools
+        .agent_status(
+            "workspace-one",
+            "missing-session",
+            Some("request-status-missing".to_string()),
+            "2026-08-06T00:00:00Z",
+        )
+        .expect_err("missing status must be bounded error");
+    assert_eq!(missing.code, "agent_session_not_owned");
     let _ = tools
         .agent_messages(
             "workspace-one",

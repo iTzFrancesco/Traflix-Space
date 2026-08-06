@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
 import { buildAgentSessionView } from "../src/lib/jarvis/sessionView.ts";
-import { advancedViewVisible, isWorkspaceChatLoading, mergeConversationMessages, pendingActionsForWorkspace, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
+import { advancedViewVisible, isWorkspaceChatLoading, MAX_COMPLETED_REQUEST_HISTORY, mergeConversationMessages, pendingActionsForWorkspace, pruneRequestHistory, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
+import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvis/pendingActionState.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
@@ -80,9 +81,40 @@ test("requests can run concurrently in different workspaces but not twice in one
   assert.equal(isWorkspaceChatLoading(requests, "workspace-c"), false);
 });
 
+test("request pruning keeps every active request and only recent completed history", () => {
+  const requests = {
+    activeA: { requestId: "activeA", workspaceId: "workspace-a", createdAt: "2026-08-07T02:00:00Z", status: "running" },
+    activeB: { requestId: "activeB", workspaceId: "workspace-b", createdAt: "2026-08-07T02:01:00Z", status: "cancellation_requested" },
+  };
+  for (let index = 0; index < MAX_COMPLETED_REQUEST_HISTORY + 12; index += 1) {
+    requests[`done-${index}`] = { requestId: `done-${index}`, workspaceId: "workspace-a", createdAt: `2026-08-07T00:${String(index).padStart(2, "0")}:00Z`, status: "completed" };
+  }
+  const pruned = pruneRequestHistory(requests);
+  assert.equal(Object.keys(pruned).length, MAX_COMPLETED_REQUEST_HISTORY + 2);
+  assert.equal(pruned.activeA.status, "running");
+  assert.equal(pruned.activeB.status, "cancellation_requested");
+  assert.equal(pruned["done-0"], undefined);
+  assert.ok(pruned[`done-${MAX_COMPLETED_REQUEST_HISTORY + 11}`]);
+});
+
 test("pending actions are scoped to the active conversation workspace", () => {
   const action = (workspaceId) => ({ id: workspaceId, status: "pending", invocation: { targetWorkspaceId: workspaceId, requestId: workspaceId } });
   assert.deepEqual(pendingActionsForWorkspace([action("workspace-a"), action("workspace-b")], "workspace-a").map((item) => item.id), ["workspace-a"]);
+});
+
+test("pending action edit must save before confirm and confirms the returned payload", async () => {
+  const action = { id: "action-1", operation: "agent.send", status: "pending", preview: "old", editableText: "old" };
+  const editing = { action, editing: true, saving: false };
+  assert.equal(canConfirmPendingAction(editing), false);
+  assert.equal(canConfirmPendingAction({ ...editing, saving: true }), false);
+  const saved = await savePendingActionEdit(editing, "new prompt", async (current, text) => ({ ...current, preview: text, editableText: text }));
+  assert.equal(saved.editing, false);
+  assert.equal(saved.saving, false);
+  assert.equal(canConfirmPendingAction(saved), true);
+  let confirmedPayload = null;
+  if (canConfirmPendingAction(saved)) confirmedPayload = saved.action.editableText;
+  assert.equal(confirmedPayload, "new prompt");
+  assert.notEqual(confirmedPayload, action.editableText);
 });
 
 test("advanced diagnostics are visible only from Settings when enabled", () => {

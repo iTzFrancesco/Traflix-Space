@@ -164,11 +164,12 @@ pub async fn jarvis_cancel_chat(
     app: AppHandle,
     request_id: String,
 ) -> Result<JarvisChatRequestStatus, JarvisErrorEnvelope> {
-    let status = app
-        .state::<JarvisState>()
+    let state = app.state::<JarvisState>();
+    let status = state
         .chat_requests
         .cancel(&request_id)
         .map_err(|error| request_error(error, &request_id, None))?;
+    state.actions.discard_pending_for_request(&request_id);
     Ok(JarvisChatRequestStatus {
         request_id,
         status: status_label(status).to_string(),
@@ -285,6 +286,7 @@ async fn run_chat(
                     app,
                     &workspace,
                     &request.invocation,
+                    &cancellation,
                     call.clone(),
                     &args,
                     &context,
@@ -642,11 +644,15 @@ async fn execute_or_propose_tool(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
     invocation: &InvocationBinding,
+    cancellation: &CancellationToken,
     call: ModelToolCall,
     args: &Value,
     context: &ModelContextViewV1,
 ) -> (Value, Option<PendingAction>, Option<JarvisUiIntent>) {
     if is_mutating_tool(&call.function.name) {
+        if cancellation.is_cancelled() {
+            return (json!({"error":"chat cancelled"}), None, None);
+        }
         let terminal_id = args
             .get("terminalId")
             .and_then(Value::as_str)
@@ -708,24 +714,29 @@ async fn execute_or_propose_tool(
                 )
             ),
         };
-        let action = app
-            .state::<JarvisState>()
-            .actions
-            .create(PendingActionInput {
-                operation,
-                description: "Operazione proposta dal modello; richiede conferma esplicita."
-                    .to_string(),
-                preview,
-                editable_text: payload
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                invocation: invocation.clone(),
-                terminal_id: Some(terminal_id),
-                generation: Some(snapshot.generation),
-                provider: Some(terminal.resolved_provider.clone()),
-                payload,
-            });
+        let input = PendingActionInput {
+            operation,
+            description: "Operazione proposta dal modello; richiede conferma esplicita."
+                .to_string(),
+            preview,
+            editable_text: payload
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            invocation: invocation.clone(),
+            terminal_id: Some(terminal_id),
+            generation: Some(snapshot.generation),
+            provider: Some(terminal.resolved_provider.clone()),
+            payload,
+        };
+        let state = app.state::<JarvisState>();
+        let action = match state
+            .chat_requests
+            .with_active(&invocation.request_id, || state.actions.create(input))
+        {
+            Ok(action) => action,
+            Err(_) => return (json!({"error":"chat cancelled"}), None, None),
+        };
         return (
             json!({"pendingActionId": action.id, "status":"pending_confirmation", "executed":false}),
             Some(action),
@@ -773,7 +784,19 @@ async fn execute_or_propose_tool(
             serde_json::to_value(context.agent_sessions.clone()).unwrap_or_else(|_| json!([]))
         }
         "agent.status" => {
-            serde_json::to_value(context.agent_sessions.clone()).unwrap_or_else(|_| json!([]))
+            let session_id = args
+                .get("agentSessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            context
+                .agent_sessions
+                .iter()
+                .find(|session| session.reference.agent_session_id == session_id)
+                .map(|session| {
+                    serde_json::to_value(session)
+                        .unwrap_or_else(|_| json!({"error":"agent status unavailable"}))
+                })
+                .unwrap_or_else(|| json!({"error":"agent_session_not_found"}))
         }
         "agent.last_result" => {
             let session_id = args
@@ -1090,6 +1113,7 @@ fn request_error(
             ("request_registry_full", "troppe richieste Jarvis attive")
         }
         ChatRequestError::NotFound => ("request_not_found", "richiesta non trovata"),
+        ChatRequestError::Cancelled => ("chat_cancelled", "richiesta annullata"),
     };
     JarvisErrorEnvelope::new(
         code,

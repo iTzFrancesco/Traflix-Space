@@ -165,6 +165,18 @@ impl PendingActionRegistry {
             .and_then(|actions| actions.get(action_id).cloned())
     }
 
+    pub fn discard_pending_for_request(&self, request_id: &str) -> usize {
+        let Ok(mut actions) = self.actions.lock() else {
+            return 0;
+        };
+        let before = actions.len();
+        actions.retain(|_, record| {
+            !(record.action.status == PendingActionStatus::Pending
+                && record.action.invocation.request_id == request_id)
+        });
+        before.saturating_sub(actions.len())
+    }
+
     pub fn update_agent_send(
         &self,
         action_id: &str,
@@ -401,5 +413,23 @@ mod tests {
             registry.record(&action.id).unwrap().payload["text"],
             "new\ntext"
         );
+    }
+
+    #[test]
+    fn cancelling_a_request_discards_its_pending_actions() {
+        let registry = PendingActionRegistry::default();
+        registry.create(PendingActionInput {
+            operation: "agent.send".to_string(),
+            description: "send".to_string(),
+            preview: "old".to_string(),
+            editable_text: Some("old".to_string()),
+            invocation: invocation("request-a"),
+            terminal_id: Some("terminal-a".to_string()),
+            generation: Some(3),
+            provider: Some("codex".to_string()),
+            payload: json!({"text":"old"}),
+        });
+        assert_eq!(registry.discard_pending_for_request("request-a"), 1);
+        assert!(registry.list().is_empty());
     }
 }

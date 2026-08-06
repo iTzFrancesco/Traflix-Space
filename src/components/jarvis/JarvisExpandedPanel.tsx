@@ -16,7 +16,7 @@ interface JarvisExpandedPanelProps {
   onCancelRequest: (requestId: string) => void;
   onConfirmAction: (action: PendingAction) => void;
   onRejectAction: (action: PendingAction) => void;
-  onUpdateAction: (action: PendingAction, text: string) => void;
+  onUpdateAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
 }
 

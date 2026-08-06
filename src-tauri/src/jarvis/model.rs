@@ -255,6 +255,12 @@ impl OpenCodeZenProvider {
 
     fn open_breaker(&self, reason: FallbackReason) {
         if let Ok(mut breaker) = self.breaker.lock() {
+            if breaker
+                .as_ref()
+                .is_some_and(|state| state.until > Instant::now())
+            {
+                return;
+            }
             *breaker = Some(BreakerState {
                 until: Instant::now() + PRIMARY_BREAKER,
                 reason,
@@ -352,10 +358,11 @@ impl OpenCodeZenProvider {
                 if error == ModelError::Cancelled {
                     return Err(error);
                 }
-                let Some(reason) = primary_reason.or_else(|| error.fallback_reason()) else {
+                let Some(reason) = primary_reason.clone().or_else(|| error.fallback_reason())
+                else {
                     return Err(error);
                 };
-                if error == ModelError::ModelUnavailable {
+                if primary_reason.is_none() && error == ModelError::ModelUnavailable {
                     self.open_breaker(reason.clone());
                 }
                 if !request.settings.fallback_enabled
@@ -645,6 +652,44 @@ mod tests {
             .status(&settings())
             .circuit_breaker_reason
             .is_some());
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_breaker_deadline_is_not_extended_by_requests_while_open() {
+        let (addr, handle) = server(vec![
+            (404, r#"{"error":"model not found"}"#),
+            (200, ok("fallback")),
+            (200, ok("fallback")),
+        ])
+        .await;
+        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
+        provider
+            .complete(request(), CancellationToken::new())
+            .await
+            .unwrap();
+        let first_deadline = provider
+            .breaker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("breaker opened")
+            .until;
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let second = provider
+            .complete(request(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(second.fallback_used);
+        let second_deadline = provider
+            .breaker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("breaker remains open")
+            .until;
+        assert!(second_deadline <= first_deadline);
         handle.await.unwrap();
     }
 
