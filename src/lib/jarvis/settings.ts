@@ -21,11 +21,15 @@ export function defaultJarvisSettings(): JarvisSettings {
       automaticTurnDetection: true,
       allowInterruption: true,
     },
-    modelProvider: "long_cat",
-    model: "LongCat-2.0",
-    fallbackToDeepseek: true,
-    privacyConsent: false,
-    privacyConsentAt: undefined,
+    textModel: {
+      provider: "open_code_zen",
+      primaryModel: "longcat-2.0-free",
+      fallbackModel: "deepseek-v4-flash-free",
+      fallbackEnabled: true,
+      privacyConsent: false,
+      privacyConsentAt: undefined,
+    },
+    advancedViewEnabled: false,
   };
 }
 

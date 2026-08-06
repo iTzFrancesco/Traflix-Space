@@ -3,7 +3,8 @@ use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
 use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::context_broker::ContextBroker;
 use crate::jarvis::memory::ConversationMemory;
-use crate::jarvis::model::ModelProvider;
+use crate::jarvis::model::{JarvisModelProvider, OpenCodeZenProvider};
+use crate::jarvis::requests::ChatRequestRegistry;
 use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
@@ -19,8 +20,9 @@ pub struct JarvisState {
     pub broker: ContextBroker,
     pub registry: Arc<AgentSessionRegistry>,
     pub memory: Arc<ConversationMemory>,
-    pub model: ModelProvider,
+    pub model: Arc<dyn JarvisModelProvider>,
     pub actions: Arc<PendingActionRegistry>,
+    pub chat_requests: Arc<ChatRequestRegistry>,
 }
 
 impl Default for JarvisState {
@@ -32,8 +34,9 @@ impl Default for JarvisState {
             ))),
             registry,
             memory: Arc::new(ConversationMemory::default()),
-            model: ModelProvider::default(),
+            model: Arc::new(OpenCodeZenProvider::default()),
             actions: Arc::new(PendingActionRegistry::default()),
+            chat_requests: Arc::new(ChatRequestRegistry::default()),
         }
     }
 }

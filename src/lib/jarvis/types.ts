@@ -1,7 +1,7 @@
 export type RequestedDepth = "summary" | "last_result" | "full_messages";
 
 export type VoiceEngine = "standard" | "gemini_live";
-export type ModelProvider = "long_cat" | "deep_seek";
+export type ModelProvider = "open_code_zen";
 
 export interface WidgetPosition {
   x: number;
@@ -32,9 +32,15 @@ export interface JarvisSettings {
   widgetPosition: WidgetPosition;
   standardPipeline: StandardPipelineSettings;
   geminiLive: GeminiLiveSettings;
-  modelProvider: ModelProvider;
-  model: string;
-  fallbackToDeepseek: boolean;
+  textModel: TextModelSettings;
+  advancedViewEnabled: boolean;
+}
+
+export interface TextModelSettings {
+  provider: ModelProvider;
+  primaryModel: string;
+  fallbackModel: string;
+  fallbackEnabled: boolean;
   privacyConsent: boolean;
   privacyConsentAt?: string;
 }
@@ -287,6 +293,7 @@ export interface PendingAction {
   operation: string;
   description: string;
   preview: string;
+  editableText?: string;
   invocation: InvocationBinding;
   terminalId?: string;
   generation?: number;
@@ -300,19 +307,44 @@ export interface JarvisChatResponse {
   invocation: InvocationBinding;
   message: JarvisConversationMessage;
   provider: string;
+  modelUsed: string;
+  primaryModel: string;
   fallbackUsed: boolean;
+  fallbackReason?: string;
   pendingActions: PendingAction[];
+  uiIntents: JarvisUiIntent[];
   followUps: string[];
   warnings: string[];
 }
 
+export interface JarvisUiIntent {
+  id: string;
+  kind: "open_terminal";
+  workspaceId: string;
+  terminalId: string;
+  generation: number;
+  label: string;
+}
+
 export interface JarvisProviderStatus {
-  primary: ModelProvider;
-  model: string;
-  fallback: ModelProvider;
+  provider: ModelProvider;
+  primaryModel: string;
+  fallbackModel: string;
+  configured: boolean;
   fallbackEnabled: boolean;
-  longCatConfigured: boolean;
-  deepSeekConfigured: boolean;
   privacyConsent: boolean;
   privacyConsentAt?: string;
+  primaryModelAvailable: boolean;
+  circuitBreakerUntil?: string;
+  circuitBreakerReason?: string;
+}
+
+export type JarvisRequestStatus = "running" | "cancellation_requested" | "completed" | "failed" | "cancelled";
+
+export interface JarvisRequestState {
+  requestId: string;
+  workspaceId: string;
+  createdAt: string;
+  status: JarvisRequestStatus;
+  error?: string;
 }

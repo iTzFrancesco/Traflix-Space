@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 const MAX_PENDING_ACTIONS: usize = 64;
 const ACTION_TTL_MINUTES: i64 = 10;
+pub const MAX_ACTION_TEXT_BYTES: usize = 16 * 1024;
 static NEXT_ACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +28,7 @@ pub struct PendingAction {
     pub operation: String,
     pub description: String,
     pub preview: String,
+    pub editable_text: Option<String>,
     pub invocation: InvocationBinding,
     pub terminal_id: Option<String>,
     pub generation: Option<u64>,
@@ -51,6 +53,7 @@ pub struct PendingActionInput {
     pub terminal_id: Option<String>,
     pub generation: Option<u64>,
     pub provider: Option<String>,
+    pub editable_text: Option<String>,
     pub payload: Value,
 }
 
@@ -60,6 +63,7 @@ pub enum ActionError {
     NotPending,
     InvocationMismatch,
     Expired,
+    PayloadInvalid,
 }
 
 #[derive(Default)]
@@ -75,6 +79,7 @@ impl PendingActionRegistry {
             operation: input.operation,
             description: input.description,
             preview: input.preview,
+            editable_text: input.editable_text,
             invocation: input.invocation,
             terminal_id: input.terminal_id,
             generation: input.generation,
@@ -159,6 +164,85 @@ impl PendingActionRegistry {
             .ok()
             .and_then(|actions| actions.get(action_id).cloned())
     }
+
+    pub fn update_agent_send(
+        &self,
+        action_id: &str,
+        invocation: &InvocationBinding,
+        text: &str,
+    ) -> Result<PendingAction, ActionError> {
+        let normalized = validate_agent_text(text).map_err(|_| ActionError::PayloadInvalid)?;
+        let Ok(mut actions) = self.actions.lock() else {
+            return Err(ActionError::NotFound);
+        };
+        let Some(record) = actions.get_mut(action_id) else {
+            return Err(ActionError::NotFound);
+        };
+        if record.action.status != PendingActionStatus::Pending {
+            return Err(ActionError::NotPending);
+        }
+        if record.action.operation != "agent.send"
+            || record.action.invocation.target_workspace_id != invocation.target_workspace_id
+            || record.action.invocation.request_id != invocation.request_id
+        {
+            return Err(ActionError::InvocationMismatch);
+        }
+        if record.action.expires_at < Utc::now().to_rfc3339() {
+            record.action.status = PendingActionStatus::Expired;
+            return Err(ActionError::Expired);
+        }
+        record.payload = serde_json::json!({"text": normalized});
+        record.action.preview = format!("Scrivere nel terminale: {}", preview_text(&normalized));
+        record.action.editable_text = Some(normalized);
+        Ok(record.action.clone())
+    }
+}
+
+/// Normalize a model/user agent prompt without accepting terminal protocol
+/// bytes. PTY framing is generated only after confirmation by the backend.
+pub fn validate_agent_text(text: &str) -> Result<String, ActionError> {
+    if text.trim().is_empty() || text.len() > MAX_ACTION_TEXT_BYTES {
+        return Err(ActionError::PayloadInvalid);
+    }
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.len() > MAX_ACTION_TEXT_BYTES
+        || normalized.bytes().any(|byte| {
+            byte == 0
+                || byte == 0x1b
+                || byte == 0x7f
+                || (byte < 0x20 && byte != b'\n' && byte != b'\t')
+        })
+        || normalized
+            .chars()
+            .any(|character| character.is_control() && character != '\n' && character != '\t')
+    {
+        return Err(ActionError::PayloadInvalid);
+    }
+    Ok(normalized)
+}
+
+pub fn prompt_bytes(text: &str) -> Result<Vec<u8>, ActionError> {
+    let normalized = validate_agent_text(text)?;
+    if normalized.contains('\n') {
+        let mut bytes = Vec::with_capacity(normalized.len() + 16);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(normalized.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~\r");
+        Ok(bytes)
+    } else {
+        let mut bytes = normalized.into_bytes();
+        bytes.push(b'\r');
+        Ok(bytes)
+    }
+}
+
+fn preview_text(text: &str) -> String {
+    let value = text.replace('\n', "↵");
+    let mut end = value.len().min(240);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn prune_actions(actions: &mut HashMap<String, PendingActionRecord>) {
@@ -211,7 +295,8 @@ fn uuid_like_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingActionInput, PendingActionRegistry, PendingActionStatus, MAX_PENDING_ACTIONS,
+        prompt_bytes, validate_agent_text, PendingActionInput, PendingActionRegistry,
+        PendingActionStatus, MAX_PENDING_ACTIONS,
     };
     use crate::jarvis::types::InvocationBinding;
     use serde_json::json;
@@ -233,6 +318,7 @@ mod tests {
             operation: "terminal.write".to_string(),
             description: "test".to_string(),
             preview: "echo test".to_string(),
+            editable_text: None,
             invocation: invocation("request-a"),
             terminal_id: Some("terminal-a".to_string()),
             generation: Some(3),
@@ -260,6 +346,7 @@ mod tests {
                 operation: "terminal.write".to_string(),
                 description: format!("test-{index}"),
                 preview: "echo test".to_string(),
+                editable_text: None,
                 invocation: invocation(&format!("request-{index}")),
                 terminal_id: Some("terminal-a".to_string()),
                 generation: Some(3),
@@ -268,5 +355,51 @@ mod tests {
             });
         }
         assert!(registry.list().len() <= MAX_PENDING_ACTIONS);
+    }
+
+    #[test]
+    fn agent_text_rejects_terminal_controls_and_normalizes_multiline_input() {
+        assert!(validate_agent_text("nul\0").is_err());
+        assert!(validate_agent_text("escape\x1b").is_err());
+        assert!(validate_agent_text("control\u{0007}").is_err());
+        assert_eq!(
+            validate_agent_text("one\r\ntwo\rtab\t").unwrap(),
+            "one\ntwo\ntab\t"
+        );
+    }
+
+    #[test]
+    fn backend_generates_one_enter_and_bracketed_paste_only_for_multiline() {
+        assert_eq!(prompt_bytes("hello").unwrap(), b"hello\r");
+        assert_eq!(
+            prompt_bytes("one\ntwo").unwrap(),
+            b"\x1b[200~one\ntwo\x1b[201~\r"
+        );
+    }
+
+    #[test]
+    fn pending_agent_send_can_be_updated_without_changing_target_or_operation() {
+        let registry = PendingActionRegistry::default();
+        let action = registry.create(PendingActionInput {
+            operation: "agent.send".to_string(),
+            description: "send".to_string(),
+            preview: "old".to_string(),
+            editable_text: Some("old".to_string()),
+            invocation: invocation("request-a"),
+            terminal_id: Some("terminal-a".to_string()),
+            generation: Some(3),
+            provider: Some("codex".to_string()),
+            payload: json!({"text":"old"}),
+        });
+        let updated = registry
+            .update_agent_send(&action.id, &invocation("request-a"), "new\r\ntext")
+            .unwrap();
+        assert_eq!(updated.operation, "agent.send");
+        assert_eq!(updated.terminal_id.as_deref(), Some("terminal-a"));
+        assert_eq!(updated.generation, Some(3));
+        assert_eq!(
+            registry.record(&action.id).unwrap().payload["text"],
+            "new\ntext"
+        );
     }
 }

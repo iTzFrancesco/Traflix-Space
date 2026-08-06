@@ -118,6 +118,27 @@ pub struct AgentSessionRegistry {
 }
 
 impl AgentSessionRegistry {
+    pub fn control_allowed(&self, terminal_id: &str, generation: u64) -> bool {
+        let Ok(sessions) = self.sessions.lock() else {
+            return false;
+        };
+        let providers = sessions
+            .values()
+            .filter(|record| {
+                record.reference.terminal_id.as_deref() == Some(terminal_id)
+                    && record.reference.generation == generation
+                    && !record.reference.identity_needs_confirmation
+                    && record.state != AgentState::Exited
+            })
+            .map(|record| record.reference.resolved_provider.clone())
+            .collect::<Vec<_>>();
+        drop(sessions);
+        providers.into_iter().any(|provider| {
+            self.identity_decision(terminal_id, generation, &provider)
+                != Some(IdentityDecision::Ignored)
+        })
+    }
+
     pub fn observe_terminal_started(
         &self,
         terminal: &TerminalAgentSnapshot,

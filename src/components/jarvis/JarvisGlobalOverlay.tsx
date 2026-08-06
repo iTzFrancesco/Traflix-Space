@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
-import {
-  agentSnapshot,
-  buildModelContext,
-  markSelectedAgent,
-  setIdentityDecision,
-} from "../../lib/jarvis/client";
+import { agentSnapshot, buildModelContext, terminalList } from "../../lib/jarvis/client";
 import { SettingsModal } from "../layout/SettingsModal";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { JarvisWidget } from "./JarvisWidget";
-import type { AgentSessionContext } from "../../lib/jarvis/types";
 
 export function JarvisGlobalOverlay() {
   const workspaces = useWorkspaceStore((state) => state.workspaces);
@@ -25,186 +19,78 @@ export function JarvisGlobalOverlay() {
   const contextError = useJarvisStore((state) => state.contextError);
   const registrySessions = useJarvisStore((state) => state.registrySessions);
   const isRefreshing = useJarvisStore((state) => state.isRefreshing);
+  const conversation = useJarvisStore((state) => state.conversation);
+  const pendingActions = useJarvisStore((state) => state.pendingActions);
+  const requests = useJarvisStore((state) => state.requests);
+  const chatErrors = useJarvisStore((state) => state.chatErrors);
+  const providerStatus = useJarvisStore((state) => state.providerStatus);
+  const uiIntents = useJarvisStore((state) => state.uiIntents);
+  const followUps = useJarvisStore((state) => state.followUps);
+  const loadSettings = useJarvisStore((state) => state.loadSettings);
+  const loadConversation = useJarvisStore((state) => state.loadConversation);
   const setContext = useJarvisStore((state) => state.setContext);
   const setContextStatus = useJarvisStore((state) => state.setContextStatus);
   const setRegistrySessions = useJarvisStore((state) => state.setRegistrySessions);
   const setRefreshing = useJarvisStore((state) => state.setRefreshing);
-  const setResult = useJarvisStore((state) => state.setResult);
-  const setSelectedAgentSessionId = useJarvisStore((state) => state.setSelectedAgentSessionId);
-  const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const setRegistryRefreshTimestamp = useJarvisStore((state) => state.setRegistryRefreshTimestamp);
-  const otherWorkspaceAgentCount = useJarvisStore((state) => state.otherWorkspaceAgentCount);
-  const conversation = useJarvisStore((state) => state.conversation);
-  const pendingActions = useJarvisStore((state) => state.pendingActions);
-  const chatLoading = useJarvisStore((state) => state.chatLoading);
-  const chatError = useJarvisStore((state) => state.chatError);
-  const providerStatus = useJarvisStore((state) => state.providerStatus);
-  const expanded = useJarvisStore((state) => state.expanded);
-  const loadSettings = useJarvisStore((state) => state.loadSettings);
-  const loadLastResult = useJarvisStore((state) => state.loadLastResult);
   const sendMessage = useJarvisStore((state) => state.sendMessage);
+  const cancelChatRequest = useJarvisStore((state) => state.cancelChatRequest);
   const confirmPendingAction = useJarvisStore((state) => state.confirmPendingAction);
   const rejectPendingAction = useJarvisStore((state) => state.rejectPendingAction);
+  const updatePendingAction = useJarvisStore((state) => state.updatePendingAction);
   const refreshPendingActions = useJarvisStore((state) => state.refreshPendingActions);
   const loadProviderStatus = useJarvisStore((state) => state.loadProviderStatus);
-  const clearConversation = useJarvisStore((state) => state.clearConversation);
-  const conversationForWorkspace = useMemo(
-    () => conversation.filter((message) => message.workspaceId === activeWorkspaceId),
-    [activeWorkspaceId, conversation],
-  );
-  const handleLoadProviderStatus = useCallback(() => {
-    void loadProviderStatus();
-  }, [loadProviderStatus]);
+  const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const registryRequestRef = useRef(0);
-  const sessions = registrySessions;
   const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
+  const conversationForWorkspace = useMemo(() => conversation.filter((message) => message.workspaceId === activeWorkspaceId), [activeWorkspaceId, conversation]);
+  const chatError = activeWorkspaceId ? chatErrors[activeWorkspaceId] ?? null : null;
 
   const refreshRegistry = useCallback(async (targetWorkspaceId: string | null = useWorkspaceStore.getState().activeWorkspaceId) => {
-    if (!targetWorkspaceId) {
-      setRegistrySessions([]);
-      return;
-    }
+    if (!targetWorkspaceId) return;
     const requestNumber = ++registryRequestRef.current;
     setRefreshing(true);
     try {
       const snapshot = await agentSnapshot(targetWorkspaceId);
-      if (requestNumber !== registryRequestRef.current) return;
-      if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
-      setRegistrySessions(snapshot.data);
-      setRegistryRefreshTimestamp(new Date().toISOString());
-    } catch (error) {
-      console.warn("[jarvis] agent registry refresh failed", error);
-    } finally {
-      if (requestNumber === registryRequestRef.current) setRefreshing(false);
-    }
-  }, [setRegistryRefreshTimestamp, setRefreshing, setRegistrySessions]);
+      if (requestNumber !== registryRequestRef.current || useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
+      setRegistrySessions(snapshot.data); setRegistryRefreshTimestamp(new Date().toISOString());
+    } catch { /* preserve last valid registry snapshot */ }
+    finally { if (requestNumber === registryRequestRef.current) setRefreshing(false); }
+  }, [setRefreshing, setRegistryRefreshTimestamp, setRegistrySessions]);
 
   const refreshContext = useCallback(async () => {
-    const targetWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-    if (!targetWorkspaceId) return;
+    const target = useWorkspaceStore.getState().activeWorkspaceId; if (!target) return;
     setContextStatus("loading");
-    try {
-      const modelContext = await buildModelContext("summary");
-      if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
-      setContext(modelContext, "ready");
-    } catch (error) {
-      if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
-      setContext(null, "unavailable", error instanceof Error ? error.message : String(error));
-    }
+    try { const result = await buildModelContext("summary"); if (useWorkspaceStore.getState().activeWorkspaceId !== target) return; setContext(result, "ready"); }
+    catch (error) { if (useWorkspaceStore.getState().activeWorkspaceId === target) setContext(null, "unavailable", error instanceof Error ? error.message : String(error)); }
   }, [setContext, setContextStatus]);
 
-  const refresh = useCallback(async () => {
-    await Promise.all([refreshRegistry(), refreshContext()]);
-  }, [refreshContext, refreshRegistry]);
-
-  useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
-
+  useEffect(() => { void loadSettings(); }, [loadSettings]);
+  useEffect(() => { if (activeWorkspaceId) void loadConversation(activeWorkspaceId); }, [activeWorkspaceId, loadConversation]);
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
     void refreshRegistry();
-    if (expanded) void refreshContext();
+    if (settings.jarvis.advancedViewEnabled) void refreshContext();
     const interval = window.setInterval(() => void refreshRegistry(), 5000);
     const unsubscribe = subscribeAgentTurnCompleted(() => void refreshRegistry());
-    return () => {
-      window.clearInterval(interval);
-      unsubscribe();
-    };
-  }, [activeWorkspaceId, expanded, refreshContext, refreshRegistry, settings.jarvis.enabled]);
+    return () => { window.clearInterval(interval); unsubscribe(); };
+  }, [activeWorkspaceId, refreshContext, refreshRegistry, settings.jarvis.advancedViewEnabled, settings.jarvis.enabled]);
+  useEffect(() => { if (activeWorkspaceId) void refreshPendingActions(); }, [activeWorkspaceId, refreshPendingActions]);
+  useEffect(() => { if (settingsOpen || settings.jarvis.advancedViewEnabled) void loadProviderStatus(); }, [loadProviderStatus, settings.jarvis.advancedViewEnabled, settingsOpen]);
 
-  useEffect(() => {
-    if (expanded) void refreshPendingActions();
-  }, [expanded, refreshPendingActions]);
-
-  useOtherWorkspaceAgentCount(activeWorkspaceId, workspaces.map((item) => item.id));
-
-  const handleSelectSession = (session: AgentSessionContext) => {
-    setSelectedAgentSessionId(session.ref.agentSessionId);
-    setResult(session.ref.agentSessionId, session.lastResult ?? null);
-    void markSelectedAgent(session.ref.workspaceId, session.ref.agentSessionId).catch(() => undefined);
-    if (activeWorkspaceId && session.ref.agentSessionId) {
-      void loadLastResult(activeWorkspaceId, session.ref.agentSessionId);
-    }
-  };
-
-  const handleOpenTerminal = (session: AgentSessionContext) => {
-    if (!session.ref.terminalId) return;
-    if (session.ref.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-      setActiveWorkspace(session.ref.workspaceId);
-    }
-    setActiveTerminal(session.ref.terminalId);
-  };
-
-  const handleIdentityDecision = async (session: AgentSessionContext, decision: "confirmed" | "ignored") => {
+  const handleOpenTerminal = async (workspaceId: string, terminalId: string, generation: number) => {
     try {
-      await setIdentityDecision(decision === "confirmed" ? "confirm" : "ignore", session.ref);
-      await refreshRegistry(session.ref.workspaceId);
-    } catch (error) {
-      console.warn("[jarvis] identity decision failed", error);
-    }
+      const result = await terminalList(workspaceId);
+      const terminal = result.data.find((item) => item.terminalId === terminalId);
+      if (!terminal || terminal.workspaceId !== workspaceId || terminal.generation !== generation || !terminal.processAlive) return;
+      if (workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) setActiveWorkspace(workspaceId);
+      setActiveTerminal(terminalId);
+    } catch { /* stale UI intent is ignored */ }
   };
 
-  if (!settings.jarvis.enabled) {
-    return null;
-  }
-
-  return (
-    <>
-      <JarvisWidget
-        workspaceId={activeWorkspaceId}
-        workspaceName={workspace?.name ?? null}
-        workspaceRoot={workspace?.rootPath ?? null}
-        context={context}
-        contextStatus={contextStatus}
-        contextError={contextError}
-        sessions={sessions}
-        isRefreshing={isRefreshing}
-        otherWorkspaceAgentCount={otherWorkspaceAgentCount}
-        onRefresh={() => void refresh()}
-        onSelectSession={handleSelectSession}
-        onOpenTerminal={handleOpenTerminal}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onHide={() => void useJarvisStore.getState().hideJarvis()}
-        conversation={conversationForWorkspace}
-        pendingActions={pendingActions}
-        chatLoading={chatLoading}
-        chatError={chatError}
-        providerStatus={providerStatus}
-        onSendMessage={(message) => void sendMessage(message)}
-        onConfirmAction={(action) => void confirmPendingAction(action)}
-        onRejectAction={(action) => void rejectPendingAction(action)}
-        onClearConversation={() => activeWorkspaceId ? void clearConversation(activeWorkspaceId) : undefined}
-        onLoadProviderStatus={handleLoadProviderStatus}
-        onIdentityDecision={(session, decision) => void handleIdentityDecision(session, decision)}
-      />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    </>
-  );
-}
-
-function useOtherWorkspaceAgentCount(
-  activeWorkspaceId: string | null,
-  workspaceIds: string[],
-): void {
-  const setOtherWorkspaceAgentCount = useJarvisStore((state) => state.setOtherWorkspaceAgentCount);
-  const otherIds = useMemo(
-    () => workspaceIds.filter((workspaceId) => workspaceId !== activeWorkspaceId),
-    [activeWorkspaceId, workspaceIds.join("|")],
-  );
-  useEffect(() => {
-    let cancelled = false;
-    if (otherIds.length === 0) {
-      setOtherWorkspaceAgentCount(0);
-      return;
-    }
-    void Promise.all(otherIds.map((workspaceId) => agentSnapshot(workspaceId).catch(() => ({ data: [], provenance: { source: "jarvis", observedAt: new Date().toISOString(), confidence: 0, untrusted: false }, warnings: [] })))).then((results) => {
-      if (cancelled) return;
-      const total = results.reduce((sum, result) => sum + result.data.filter((session) => ["starting", "working", "waiting"].includes(session.state)).length, 0);
-      setOtherWorkspaceAgentCount(total);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [otherIds, setOtherWorkspaceAgentCount]);
+  if (!settings.jarvis.enabled) return null;
+  return <>
+    <JarvisWidget workspaceId={activeWorkspaceId} workspaceName={workspace?.name ?? null} conversation={conversationForWorkspace} pendingActions={pendingActions} requests={requests} chatError={chatError} providerStatus={providerStatus} uiIntents={uiIntents} followUps={activeWorkspaceId ? followUps[activeWorkspaceId] ?? [] : []} onOpenSettings={() => setSettingsOpen(true)} onHide={() => void useJarvisStore.getState().hideJarvis()} onSendMessage={(message) => void sendMessage(message)} onCancelRequest={(requestId) => void cancelChatRequest(requestId)} onConfirmAction={(action) => void confirmPendingAction(action)} onRejectAction={(action) => void rejectPendingAction(action)} onUpdateAction={(action, text) => void updatePendingAction(action, text)} onOpenTerminal={handleOpenTerminal} />
+    <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} advanced={{ context, contextStatus, contextError, sessions: registrySessions, isRefreshing, onRefresh: () => void refreshRegistry(), onRefreshContext: () => void refreshContext() }} />
+  </>;
 }

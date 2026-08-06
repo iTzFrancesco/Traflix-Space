@@ -25,3 +25,13 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - Completion aggiorna il turn e lo stato `waiting`, ma non chiude la Agent session. Il terminal fallback è bounded, untrusted e con provenance a confidence ridotta.
 - I messaggi completi non sono disponibili senza un adapter strutturato futuro; il terminale non viene convertito in transcript artificiale.
 - Restano rinviati voce reale, LLM, provider strutturati Codex/OpenCode e tutte le operazioni mutative.
+
+## Decisioni consolidate per Fase 4
+
+- Il provider testuale runtime è OpenCode Zen; `longcat-2.0-free` è il primary
+  configurabile e `deepseek-v4-flash-free` il fallback configurabile.
+- La sola credenziale backend è `OPENCODE_ZEN_API_KEY`; il consenso privacy è
+  necessario prima di ogni richiesta di rete.
+- La PTY resta l'adapter universale e ogni mutazione passa da Pending Action,
+  modifica esplicita opzionale e conferma backend con ricontrollo di generation.
+- La voce resta fuori scope fino alla conclusione della validazione Windows.

@@ -1,0 +1,46 @@
+import { useMemo } from "react";
+import { ArrowUpRight, Bot, ShieldCheck } from "lucide-react";
+import { JarvisChatInput, CancelButton } from "./JarvisChatInput";
+import { JarvisPendingActionCard } from "./JarvisPendingActionCard";
+import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction } from "../../lib/jarvis/types";
+
+interface Props {
+  workspaceId: string | null;
+  workspaceName: string | null;
+  conversation: JarvisConversationMessage[];
+  pendingActions: PendingAction[];
+  requests: JarvisRequestState[];
+  chatError: string | null;
+  providerStatus: JarvisProviderStatus | null;
+  uiIntents: JarvisUiIntent[];
+  followUps: string[];
+  onSendMessage: (message: string) => void;
+  onCancelRequest: (requestId: string) => void;
+  onConfirmAction: (action: PendingAction) => void;
+  onRejectAction: (action: PendingAction) => void;
+  onUpdateAction: (action: PendingAction, text: string) => void;
+  onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
+}
+
+export function JarvisChatPanel(props: Props) {
+  const pending = useMemo(() => props.pendingActions.filter((action) => action.status === "pending" && action.invocation.targetWorkspaceId === props.workspaceId), [props.pendingActions, props.workspaceId]);
+  return (
+    <div className="p-4">
+      <div className="max-h-[min(420px,56vh)] space-y-3 overflow-y-auto pr-1">
+        {props.conversation.length === 0 && <div className="rounded-xl border border-primary/20 bg-primary/[0.06] p-4"><p className="text-sm font-semibold text-neutral-text">Sono Jarvis.</p><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">Posso leggere Markdown consentito, osservare agenti e preparare operazioni da confermare. Questa conversazione resta nella workspace {props.workspaceName ?? "attiva"}.</p></div>}
+        {props.conversation.map((message) => <div key={message.id} className={message.role === "user" ? "ml-10 rounded-xl bg-primary/[0.14] px-3 py-2" : "mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2"}><p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-text">{message.content}</p>{message.provider && <p className="mt-1 text-[10px] text-neutral-text-muted">{message.provider}</p>}</div>)}
+        {props.requests.map((request) => <div key={request.requestId} className="mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-xs text-neutral-text-muted"><div className="flex items-center justify-between gap-2"><span className="inline-flex items-center gap-1"><Bot size={13} /> {request.status === "cancellation_requested" ? "Annullamento…" : request.status === "running" ? "Jarvis sta pensando…" : request.status}</span>{(request.status === "running" || request.status === "cancellation_requested") && <CancelButton onCancel={() => props.onCancelRequest(request.requestId)} />}</div>{request.error && <p className="mt-1 text-danger">{request.error}</p>}</div>)}
+      </div>
+      {props.chatError && <p className="mt-3 rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{props.chatError}</p>}
+      {props.uiIntents.filter((intent) => intent.workspaceId === props.workspaceId).map((intent) => <button key={intent.id} type="button" onClick={() => props.onOpenTerminal(intent.workspaceId, intent.terminalId, intent.generation)} className="mt-3 inline-flex items-center rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-text">{intent.label}</button>)}
+      {props.followUps.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{props.followUps.map((followUp) => <button key={followUp} type="button" onClick={() => props.onSendMessage(followUp)} className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-neutral-text-muted hover:border-primary/50 hover:text-neutral-text">{followUp}</button>)}</div>}
+      {pending.length > 0 && <div className="mt-3 space-y-2"><p className="eyebrow text-primary">Conferme richieste</p>{pending.map((action) => <JarvisPendingActionCard key={action.id} action={action} onConfirm={props.onConfirmAction} onReject={props.onRejectAction} onUpdate={props.onUpdateAction} />)}</div>}
+      <div className="mt-3 flex items-center gap-2 text-[10px] text-neutral-text-muted"><ShieldCheck size={13} className="text-signal" /> Le operazioni mutative richiedono sempre conferma.</div>
+      <JarvisChatInput disabled={!props.workspaceId || props.requests.some((request) => request.status === "running" || request.status === "cancellation_requested")} onSend={props.onSendMessage} />
+      {props.providerStatus && <p className="mt-2 text-[10px] text-neutral-text-muted">{props.providerStatus.primaryModelAvailable ? props.providerStatus.primaryModel : props.providerStatus.fallbackModel}{props.providerStatus.configured ? "" : " · provider non configurato"}</p>}
+      {/* Intent is rendered by the chat response in future messages; the
+          target validation remains in the backend and this button is explicit. */}
+      <span className="sr-only"><ArrowUpRight /></span>
+    </div>
+  );
+}

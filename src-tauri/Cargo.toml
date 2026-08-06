@@ -30,7 +30,8 @@ parking_lot = "0.12"
 dashmap = "6"
 portable-pty = "0.8"
 notify = { version = "7", features = [] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
 
 [features]
 default = ["custom-protocol"]

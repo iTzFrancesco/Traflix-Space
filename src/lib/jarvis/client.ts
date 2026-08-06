@@ -12,6 +12,7 @@ import type {
   InvocationBinding,
   JarvisErrorEnvelope,
   JarvisChatResponse,
+  JarvisConversationMessage,
   JarvisProviderStatus,
   PendingAction,
   ModelContextViewV1,
@@ -28,6 +29,7 @@ const MODEL_TIMEOUT_MS = 90_000;
 export interface JarvisChatRequest {
   invocation: InvocationBinding;
   message: string;
+  messageId?: string;
 }
 
 export function captureActiveWorkspace(
@@ -260,6 +262,27 @@ export function jarvisChat(request: JarvisChatRequest): Promise<JarvisChatRespon
   );
 }
 
+export function cancelChat(requestId: string): Promise<{ requestId: string; status: string }> {
+  return invokeWithTimeout(
+    () => invoke<{ requestId: string; status: string }>("jarvis_cancel_chat", { requestId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function chatStatus(requestId: string): Promise<{ requestId: string; status: string }> {
+  return invokeWithTimeout(
+    () => invoke<{ requestId: string; status: string }>("jarvis_chat_status", { requestId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function conversationHistory(workspaceId: string): Promise<JarvisConversationMessage[]> {
+  return invokeWithTimeout(
+    () => invoke<JarvisConversationMessage[]>("jarvis_conversation_history", { workspaceId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
 export function providerStatus(): Promise<JarvisProviderStatus> {
   return invokeWithTimeout(
     () => invoke<JarvisProviderStatus>("jarvis_provider_status"),
@@ -284,6 +307,13 @@ export function confirmAction(actionId: string, invocation: InvocationBinding): 
 export function rejectAction(actionId: string, invocation: InvocationBinding): Promise<PendingAction> {
   return invokeWithTimeout(
     () => invoke<PendingAction>("jarvis_reject_action", { actionId, invocation }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function updatePendingAction(actionId: string, invocation: InvocationBinding, text: string): Promise<PendingAction> {
+  return invokeWithTimeout(
+    () => invoke<PendingAction>("jarvis_update_pending_action", { actionId, invocation, text }),
     READ_TIMEOUT_MS,
   );
 }

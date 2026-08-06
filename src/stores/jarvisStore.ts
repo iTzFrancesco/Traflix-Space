@@ -1,28 +1,34 @@
 import { create } from "zustand";
 import {
   agentGetLastResult,
+  cancelChat,
   clearConversation,
   confirmAction,
+  conversationHistory,
   getSettings,
   jarvisChat,
   pendingActions,
   providerStatus,
   rejectAction,
   setSettings as persistSettings,
+  updatePendingAction,
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
+import { isWorkspaceChatLoading, mergeConversationMessages } from "../lib/jarvis/chatState";
 import { useWorkspaceStore } from "./workspaceStore";
 import type {
   AgentResult,
   AgentSessionContext,
   AppSettings,
-  ModelContextViewV1,
-  WidgetPosition,
+  InvocationBinding,
   JarvisConversationMessage,
   JarvisProviderStatus,
+  JarvisRequestState,
+  JarvisUiIntent,
+  ModelContextViewV1,
   PendingAction,
-  InvocationBinding,
+  WidgetPosition,
 } from "../lib/jarvis/types";
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
@@ -49,15 +55,15 @@ interface JarvisStore {
   otherWorkspaceAgentCount: number;
   conversation: JarvisConversationMessage[];
   pendingActions: PendingAction[];
-  chatLoading: boolean;
-  chatError: string | null;
+  requests: Record<string, JarvisRequestState>;
+  chatErrors: Record<string, string | undefined>;
   providerStatus: JarvisProviderStatus | null;
+  uiIntents: JarvisUiIntent[];
+  followUps: Record<string, string[]>;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
-  updateJarvisSettings: (
-    updater: (settings: AppSettings["jarvis"]) => AppSettings["jarvis"],
-  ) => Promise<void>;
+  updateJarvisSettings: (updater: (settings: AppSettings["jarvis"]) => AppSettings["jarvis"]) => Promise<void>;
   showJarvis: () => Promise<void>;
   hideJarvis: () => Promise<void>;
   toggleMuted: () => Promise<void>;
@@ -68,11 +74,7 @@ interface JarvisStore {
   setSettingsOpen: (open: boolean) => void;
   setSelectedAgentSessionId: (sessionId: string | null) => void;
   clearResult: () => void;
-  setContext: (
-    context: ModelContextViewV1 | null,
-    status: JarvisContextStatus,
-    error?: string | null,
-  ) => void;
+  setContext: (context: ModelContextViewV1 | null, status: JarvisContextStatus, error?: string | null) => void;
   setContextStatus: (status: JarvisContextStatus, error?: string | null) => void;
   setRegistrySessions: (sessions: AgentSessionContext[]) => void;
   setRefreshing: (refreshing: boolean) => void;
@@ -82,274 +84,105 @@ interface JarvisStore {
   setRegistryRefreshTimestamp: (timestamp: string) => void;
   setOtherWorkspaceAgentCount: (count: number) => void;
   loadLastResult: (workspaceId: string, sessionId: string) => Promise<void>;
+  loadConversation: (workspaceId: string) => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
+  cancelChatRequest: (requestId: string) => Promise<void>;
+  isChatLoading: (workspaceId: string | null) => boolean;
   refreshPendingActions: () => Promise<void>;
   confirmPendingAction: (action: PendingAction) => Promise<void>;
   rejectPendingAction: (action: PendingAction) => Promise<void>;
+  updatePendingAction: (action: PendingAction, text: string) => Promise<void>;
   loadProviderStatus: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
 }
 
 let settingsSaveQueue = Promise.resolve();
-let chatRequestSequence = 0;
 
 function errorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
   return error instanceof Error ? error.message : String(error);
 }
 
 export const useJarvisStore = create<JarvisStore>((set, get) => ({
-  settings: defaultAppSettings(),
-  settingsLoaded: false,
-  settingsLoading: false,
-  settingsError: null,
-  expanded: false,
-  dragging: false,
-  settingsOpen: false,
-  selectedAgentSessionId: null,
-  context: null,
-  contextStatus: "idle",
-  contextError: null,
-  registrySessions: [],
-  isRefreshing: false,
-  currentResult: null,
-  currentResultSessionId: null,
-  currentResultLoading: false,
-  currentError: null,
-  registryRefreshTimestamp: null,
-  otherWorkspaceAgentCount: 0,
-  conversation: [],
-  pendingActions: [],
-  chatLoading: false,
-  chatError: null,
-  providerStatus: null,
+  settings: defaultAppSettings(), settingsLoaded: false, settingsLoading: false, settingsError: null,
+  expanded: false, dragging: false, settingsOpen: false, selectedAgentSessionId: null,
+  context: null, contextStatus: "idle", contextError: null, registrySessions: [], isRefreshing: false,
+  currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
+  registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
+  requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
 
   loadSettings: async () => {
     set({ settingsLoading: true, settingsError: null });
-    try {
-      const settings = await getSettings();
-      set({ settings, settingsLoaded: true, settingsLoading: false });
-    } catch (error) {
-      set({
-        settingsLoaded: true,
-        settingsLoading: false,
-        settingsError: errorMessage(error),
-      });
-    }
+    try { set({ settings: await getSettings(), settingsLoaded: true, settingsLoading: false }); }
+    catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error) }); }
   },
-
   saveSettings: async (settings) => {
     set({ settings, settingsError: null });
-    settingsSaveQueue = settingsSaveQueue
-      .catch(() => undefined)
-      .then(() => persistSettings(settings));
-    try {
-      await settingsSaveQueue;
-    } catch (error) {
-      set({ settingsError: errorMessage(error) });
-      throw error;
-    }
+    settingsSaveQueue = settingsSaveQueue.catch(() => undefined).then(() => persistSettings(settings));
+    try { await settingsSaveQueue; } catch (error) { set({ settingsError: errorMessage(error) }); throw error; }
   },
-
   updateJarvisSettings: async (updater) => {
-    const nextSettings = {
-      ...get().settings,
-      jarvis: updater(get().settings.jarvis),
-    };
-    await get().saveSettings(nextSettings);
+    const current = get().settings;
+    await get().saveSettings({ ...current, jarvis: updater(current.jarvis) });
   },
-
-  showJarvis: async () => {
-    await get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: true }));
-  },
-
-  hideJarvis: async () => {
-    set({ expanded: false });
-    await get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: false }));
-  },
-
-  toggleMuted: async () => {
-    await get().updateJarvisSettings((jarvis) => ({
-      ...jarvis,
-      muted: !jarvis.muted,
-    }));
-  },
-
-  updateWidgetPosition: async (position) => {
-    await get().updateJarvisSettings((jarvis) => ({
-      ...jarvis,
-      widgetPosition: position,
-    }));
-  },
-
-  resetJarvisSettings: async () => {
-    await get().updateJarvisSettings(() => defaultJarvisSettings());
-  },
-
-  setExpanded: (expanded) => set({ expanded }),
-  setDragging: (dragging) => set({ dragging }),
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
-  setSelectedAgentSessionId: (selectedAgentSessionId) =>
-    set({ selectedAgentSessionId }),
-  clearResult: () =>
-    set({
-      currentResult: null,
-      currentResultSessionId: null,
-      currentResultLoading: false,
-      currentError: null,
-    }),
-  setContext: (context, contextStatus, error = null) =>
-    set((state) => ({
-      context: context ?? state.context,
-      contextStatus,
-      contextError: error,
-    })),
-  setContextStatus: (contextStatus, error = null) =>
-    set({ contextStatus, contextError: error }),
-  setRegistrySessions: (sessions) =>
-    set((state) => {
-      const next = applyRegistrySnapshot(
-        {
-          sessions: state.registrySessions,
-          selectedSessionId: state.selectedAgentSessionId,
-          currentResult: state.currentResult,
-          currentResultSessionId: state.currentResultSessionId,
-          currentResultLoading: state.currentResultLoading,
-          currentError: state.currentError,
-        },
-        sessions,
-      );
-      return {
-        registrySessions: next.sessions,
-        selectedAgentSessionId: next.selectedSessionId,
-        currentResult: next.currentResult,
-        currentResultSessionId: next.currentResultSessionId,
-        currentResultLoading: next.currentResultLoading,
-        currentError: next.currentError,
-      };
-    }),
-  setRefreshing: (isRefreshing) => set({ isRefreshing }),
-  setResult: (sessionId, result) =>
-    set({
-      currentResultSessionId: sessionId,
-      currentResult: result,
-      currentResultLoading: false,
-    }),
-  setResultLoading: (currentResultLoading) => set({ currentResultLoading }),
-  setCurrentError: (currentError) => set({ currentError }),
-  setRegistryRefreshTimestamp: (registryRefreshTimestamp) =>
-    set({ registryRefreshTimestamp }),
-  setOtherWorkspaceAgentCount: (otherWorkspaceAgentCount) =>
-    set({ otherWorkspaceAgentCount }),
+  showJarvis: async () => get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: true })),
+  hideJarvis: async () => { set({ expanded: false }); await get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: false })); },
+  toggleMuted: async () => get().updateJarvisSettings((jarvis) => ({ ...jarvis, muted: !jarvis.muted })),
+  updateWidgetPosition: async (position) => get().updateJarvisSettings((jarvis) => ({ ...jarvis, widgetPosition: position })),
+  resetJarvisSettings: async () => get().updateJarvisSettings(() => defaultJarvisSettings()),
+  setExpanded: (expanded) => set({ expanded }), setDragging: (dragging) => set({ dragging }), setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  setSelectedAgentSessionId: (selectedAgentSessionId) => set({ selectedAgentSessionId }),
+  clearResult: () => set({ currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null }),
+  setContext: (context, contextStatus, contextError = null) => set((state) => ({ context: context ?? state.context, contextStatus, contextError })),
+  setContextStatus: (contextStatus, contextError = null) => set({ contextStatus, contextError }),
+  setRegistrySessions: (sessions) => set((state) => {
+    const next = applyRegistrySnapshot({ sessions: state.registrySessions, selectedSessionId: state.selectedAgentSessionId, currentResult: state.currentResult, currentResultSessionId: state.currentResultSessionId, currentResultLoading: state.currentResultLoading, currentError: state.currentError }, sessions);
+    return { registrySessions: next.sessions, selectedAgentSessionId: next.selectedSessionId, currentResult: next.currentResult, currentResultSessionId: next.currentResultSessionId, currentResultLoading: next.currentResultLoading, currentError: next.currentError };
+  }),
+  setRefreshing: (isRefreshing) => set({ isRefreshing }), setResult: (sessionId, currentResult) => set({ currentResultSessionId: sessionId, currentResult, currentResultLoading: false }),
+  setResultLoading: (currentResultLoading) => set({ currentResultLoading }), setCurrentError: (currentError) => set({ currentError }),
+  setRegistryRefreshTimestamp: (registryRefreshTimestamp) => set({ registryRefreshTimestamp }), setOtherWorkspaceAgentCount: (otherWorkspaceAgentCount) => set({ otherWorkspaceAgentCount }),
   loadLastResult: async (workspaceId, sessionId) => {
-    set({
-      currentResultLoading: true,
-      currentResultSessionId: sessionId,
-      currentError: null,
-    });
+    set({ currentResultLoading: true, currentResultSessionId: sessionId, currentError: null });
+    try { const envelope = await agentGetLastResult(workspaceId, sessionId); if (get().currentResultSessionId !== sessionId) return; set({ currentResult: envelope.data, currentResultLoading: false, currentError: envelope.warnings.length ? envelope.warnings.join(" · ") : null }); }
+    catch (error) { if (get().currentResultSessionId === sessionId) set({ currentResultLoading: false, currentError: errorMessage(error) }); }
+  },
+  loadConversation: async (workspaceId) => {
     try {
-      const envelope = await agentGetLastResult(workspaceId, sessionId);
-      if (get().currentResultSessionId !== sessionId) return;
-      set({
-        currentResult: envelope.data,
-        currentResultLoading: false,
-        currentError:
-          envelope.warnings.length > 0 ? envelope.warnings.join(" · ") : null,
-      });
-    } catch (error) {
-      if (get().currentResultSessionId !== sessionId) return;
-      set({
-        currentResultLoading: false,
-        currentError: errorMessage(error),
-      });
-    }
+      const history = await conversationHistory(workspaceId);
+      set((state) => ({ conversation: mergeConversationMessages(state.conversation, history.filter((message) => message.workspaceId === workspaceId)) }));
+    } catch { /* keep last valid conversation during a transient IPC failure */ }
   },
   sendMessage: async (message) => {
     const trimmed = message.trim();
-    if (!trimmed) return;
-    const workspaceId = useWorkspaceId();
-    if (!workspaceId) {
-      set({ chatError: "Nessuna workspace attiva" });
-      return;
-    }
-    const invocation: InvocationBinding = {
-      requestId: crypto.randomUUID(),
-      targetWorkspaceId: workspaceId,
-      createdAt: new Date().toISOString(),
-    };
-    const requestSequence = ++chatRequestSequence;
-    const userMessage: JarvisConversationMessage = {
-      id: `local-user-${invocation.requestId}`,
-      role: "user",
-      content: trimmed,
-      workspaceId,
-      createdAt: invocation.createdAt,
-    };
-    set((state) => ({
-      conversation: [...state.conversation, userMessage],
-      chatLoading: true,
-      chatError: null,
-    }));
+    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!trimmed || !workspaceId) { if (!workspaceId) set({ chatErrors: { ...get().chatErrors, [workspaceId ?? "none"]: "Nessuna workspace attiva" } }); return; }
+    if (isWorkspaceChatLoading(get().requests, workspaceId)) { set((state) => ({ chatErrors: { ...state.chatErrors, [workspaceId]: "Attendi la risposta corrente o annullala." } })); return; }
+    const invocation: InvocationBinding = { requestId: crypto.randomUUID(), targetWorkspaceId: workspaceId, createdAt: new Date().toISOString() };
+    const userMessage: JarvisConversationMessage = { id: `local-user-${invocation.requestId}`, role: "user", content: trimmed, workspaceId, createdAt: invocation.createdAt };
+    set((state) => ({ conversation: mergeConversationMessages(state.conversation, [userMessage]), requests: { ...state.requests, [invocation.requestId]: { requestId: invocation.requestId, workspaceId, createdAt: invocation.createdAt, status: "running" } }, chatErrors: { ...state.chatErrors, [workspaceId]: undefined } }));
     try {
-      const response = await jarvisChat({ invocation, message: trimmed });
-      if (requestSequence !== chatRequestSequence) return;
-      if (useWorkspaceId() !== invocation.targetWorkspaceId) {
-        set({ chatLoading: false });
-        return;
-      }
-      set((state) => ({
-        conversation: [...state.conversation, response.message],
-        pendingActions: mergeActions(state.pendingActions, response.pendingActions),
-        chatLoading: false,
-      }));
+      const response = await jarvisChat({ invocation, message: trimmed, messageId: userMessage.id });
+      set((state) => ({ conversation: mergeConversationMessages(state.conversation, [response.message]), pendingActions: mergeActions(state.pendingActions, response.pendingActions), uiIntents: [...state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), ...response.uiIntents], followUps: { ...state.followUps, [workspaceId]: response.followUps }, requests: { ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "completed" } } }));
     } catch (error) {
-      if (requestSequence !== chatRequestSequence) return;
-      if (useWorkspaceId() !== invocation.targetWorkspaceId) {
-        set({ chatLoading: false });
-        return;
-      }
-      set({ chatLoading: false, chatError: errorMessage(error) });
+      const cancelled = error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "chat_cancelled";
+      set((state) => ({ requests: { ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: cancelled ? "cancelled" : "failed", error: errorMessage(error) } }, chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) } }));
     }
   },
-  refreshPendingActions: async () => {
-    try {
-      const result = await pendingActions();
-      set({ pendingActions: result.data });
-    } catch {
-      // Keep the last valid action snapshot during a transient IPC error.
-    }
+  cancelChatRequest: async (requestId) => {
+    const request = get().requests[requestId];
+    if (!request || (request.status !== "running" && request.status !== "cancellation_requested")) return;
+    set((state) => ({ requests: { ...state.requests, [requestId]: { ...request, status: "cancellation_requested" } } }));
+    try { await cancelChat(requestId); } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [request.workspaceId]: errorMessage(error) } })); }
   },
-  confirmPendingAction: async (action) => {
-    try {
-      const confirmed = await confirmAction(action.id, action.invocation);
-      set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === confirmed.id ? confirmed : item) }));
-    } catch (error) {
-      set({ chatError: errorMessage(error) });
-    }
-  },
-  rejectPendingAction: async (action) => {
-    try {
-      const rejected = await rejectAction(action.id, action.invocation);
-      set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === rejected.id ? rejected : item) }));
-    } catch (error) {
-      set({ chatError: errorMessage(error) });
-    }
-  },
-  loadProviderStatus: async () => {
-    try {
-      set({ providerStatus: await providerStatus() });
-    } catch {
-      // The advanced view remains usable if the status probe is unavailable.
-    }
-  },
-  clearConversation: async (workspaceId) => {
-    await clearConversation(workspaceId);
-    set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId) }));
-  },
+  isChatLoading: (workspaceId) => isWorkspaceChatLoading(get().requests, workspaceId),
+  refreshPendingActions: async () => { try { set({ pendingActions: (await pendingActions()).data }); } catch { /* preserve snapshot */ } },
+  confirmPendingAction: async (action) => { try { const result = await confirmAction(action.id, action.invocation); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); } },
+  rejectPendingAction: async (action) => { try { const result = await rejectAction(action.id, action.invocation); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); } },
+  updatePendingAction: async (action, text) => { try { const result = await updatePendingAction(action.id, action.invocation, text); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); } },
+  loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
+  clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
 }));
-
-function useWorkspaceId(): string | null {
-  return useWorkspaceStore.getState().activeWorkspaceId;
-}
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {
   const byId = new Map(current.map((action) => [action.id, action]));

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
 import { buildAgentSessionView } from "../src/lib/jarvis/sessionView.ts";
+import { advancedViewVisible, isWorkspaceChatLoading, mergeConversationMessages, pendingActionsForWorkspace, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
+
+const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
+const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
 
 function session({ id, terminalId, generation, state = "waiting", updatedAt, provider = "codex", result = null }) {
   return {
@@ -53,4 +58,45 @@ test("old exited generations are grouped under History and providers remain dist
   const view = buildAgentSessionView(sessions, Date.parse("2026-08-06T10:01:00Z"));
   assert.deepEqual(view.visible.map((item) => item.ref.resolvedProvider), ["codex", "pi"]);
   assert.equal(view.history[0].sessions[0].ref.agentSessionId, "codex-old");
+});
+
+test("conversation reconciliation keeps completed workspace A after switching to B", () => {
+  const a = { id: "a", role: "user", content: "A", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:00Z" };
+  const responseA = { id: "a-response", role: "assistant", content: "risposta A", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:01Z" };
+  const b = { id: "b", role: "user", content: "B", workspaceId: "workspace-b", createdAt: "2026-08-07T00:00:02Z" };
+  const merged = mergeConversationMessages([a, b], [responseA, a]);
+  assert.deepEqual(merged.map((message) => message.id), ["a", "a-response", "b"]);
+  assert.equal(merged.filter((message) => message.workspaceId === "workspace-a").length, 2);
+});
+
+test("requests can run concurrently in different workspaces but not twice in one", () => {
+  const requests = {
+    a: { requestId: "a", workspaceId: "workspace-a", createdAt: "now", status: "running" },
+    b: { requestId: "b", workspaceId: "workspace-b", createdAt: "now", status: "running" },
+  };
+  assert.equal(requestsForWorkspace(requests, "workspace-a").length, 1);
+  assert.equal(requestsForWorkspace(requests, "workspace-b").length, 1);
+  assert.equal(isWorkspaceChatLoading(requests, "workspace-a"), true);
+  assert.equal(isWorkspaceChatLoading(requests, "workspace-c"), false);
+});
+
+test("pending actions are scoped to the active conversation workspace", () => {
+  const action = (workspaceId) => ({ id: workspaceId, status: "pending", invocation: { targetWorkspaceId: workspaceId, requestId: workspaceId } });
+  assert.deepEqual(pendingActionsForWorkspace([action("workspace-a"), action("workspace-b")], "workspace-a").map((item) => item.id), ["workspace-a"]);
+});
+
+test("advanced diagnostics are visible only from Settings when enabled", () => {
+  assert.equal(advancedViewVisible(false, true), false);
+  assert.equal(advancedViewVisible(true, false), false);
+  assert.equal(advancedViewVisible(true, true), true);
+});
+
+test("normal chat surface does not expose the phase-three dashboard or expand arrow", () => {
+  assert.doesNotMatch(chatPanelSource, /Agents|Diagnostics|Context Broker|Advanced View/);
+  assert.doesNotMatch(widgetSource, /Chevron|Advanced View/);
+});
+
+test("timeline reconciliation is idempotent and does not duplicate the optimistic user message", () => {
+  const message = { id: "stable", role: "user", content: "test", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:00Z" };
+  assert.equal(mergeConversationMessages([message], [message]).length, 1);
 });

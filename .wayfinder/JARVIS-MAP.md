@@ -10,6 +10,14 @@
 
 ## Decisioni
 
+### JARVIS-011 — Provider testuale del vertical slice
+
+- **Stato:** Decisa per la Fase 4
+- **Decisione:** OpenCode Zen è l'unico provider runtime; `longcat-2.0-free` è
+  primary configurabile e `deepseek-v4-flash-free` è fallback configurabile.
+- **Vincoli:** una sola credenziale backend, consenso esplicito, nessuna
+  discovery/preflight automatica e nessuna chiave nel frontend.
+
 ### JARVIS-001 — Qual è il confine globale?
 
 - **Domanda:** Jarvis deve poter mescolare automaticamente workspace diverse?

@@ -288,7 +288,15 @@ pub async fn jarvis_clear_identity_decision(
         generation,
         &provider,
     );
-    identity_session(&app, &workspace_id, request_id, &observed_at)
+    identity_session(
+        &app,
+        &workspace_id,
+        &terminal_id,
+        generation,
+        &provider,
+        request_id,
+        &observed_at,
+    )
 }
 
 async fn decide_identity(
@@ -338,12 +346,23 @@ async fn decide_identity(
         &provider,
         decision,
     );
-    identity_session(app, &workspace_id, request_id, &observed_at)
+    identity_session(
+        app,
+        &workspace_id,
+        &terminal_id,
+        generation,
+        &provider,
+        request_id,
+        &observed_at,
+    )
 }
 
 fn identity_session(
     app: &AppHandle,
     workspace_id: &str,
+    terminal_id: &str,
+    generation: u64,
+    provider: &str,
     request_id: Option<String>,
     observed_at: &str,
 ) -> Result<ToolEnvelope<AgentSessionRef>, JarvisErrorEnvelope> {
@@ -361,11 +380,11 @@ fn identity_session(
             )
         })?
         .into_iter()
-        .filter(|session| session.terminal_id.is_some())
-        .max_by(|left, right| {
-            left.updated_at
-                .cmp(&right.updated_at)
-                .then_with(|| left.agent_session_id.cmp(&right.agent_session_id))
+        .find(|session| {
+            session.terminal_id.as_deref() == Some(terminal_id)
+                && session.generation == generation
+                && (session.resolved_provider == provider
+                    || session.observed_provider.as_deref() == Some(provider))
         })
         .ok_or_else(|| {
             JarvisErrorEnvelope::new(

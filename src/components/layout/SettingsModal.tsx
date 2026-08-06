@@ -4,13 +4,16 @@ import { Modal } from "../ui/Modal";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import { defaultJarvisSettings } from "../../lib/jarvis/settings";
 import type { AppSettings, VoiceEngine } from "../../lib/jarvis/types";
+import { JarvisAdvancedSettings } from "../jarvis/JarvisAdvancedSettings";
+import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
+  advanced?: Omit<JarvisAdvancedSettingsProps, "providerStatus">;
 }
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
@@ -105,6 +108,19 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onChange={(next) => updateJarvis(() => next)}
         />
 
+        <ToggleRow
+          label="Abilita strumenti avanzati"
+          description="Mostra diagnostica, registry e Context Broker soltanto dentro Settings."
+          checked={jarvis.advancedViewEnabled}
+          onChange={(advancedViewEnabled) => updateJarvis((current) => ({ ...current, advancedViewEnabled }))}
+        />
+        {jarvis.advancedViewEnabled && advanced && (
+          <JarvisAdvancedSettings
+            {...advanced}
+            providerStatus={useJarvisStore.getState().providerStatus}
+          />
+        )}
+
         <div className="space-y-4 rounded-xl border border-white/[0.08] bg-white/[0.02] p-5">
           <div className="flex items-center justify-between">
             <div>
@@ -196,13 +212,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
 function ModelOptions({ settings, onChange }: { settings: AppSettings["jarvis"]; onChange: (settings: AppSettings["jarvis"]) => void }) {
   return <div className="space-y-4 rounded-xl border border-primary/20 bg-primary/[0.04] p-5">
-    <div><h3 className="font-semibold text-neutral-text">Jarvis testuale</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">LongCat è il provider primario; DeepSeek è il fallback opzionale. Configura le variabili d'ambiente backend <code>TRAFLIX_LONGCAT_API_KEY</code> e <code>TRAFLIX_DEEPSEEK_API_KEY</code> sul computer Windows.</p></div>
+    <div><h3 className="font-semibold text-neutral-text">Jarvis testuale</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">Provider unico OpenCode Zen. La credenziale backend si chiama <code>OPENCODE_ZEN_API_KEY</code> e non viene mai mostrata o salvata.</p></div>
     <div className="grid gap-4 sm:grid-cols-2">
-      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-wider text-neutral-text-muted">Provider</span><select value={settings.modelProvider} onChange={(event) => onChange({ ...settings, modelProvider: event.target.value as "long_cat" | "deep_seek" })} className="w-full rounded-lg border border-white/10 bg-neutral-bg px-3 py-2 text-sm text-neutral-text outline-none"><option value="long_cat">LongCat</option><option value="deep_seek">DeepSeek</option></select></label>
-      <TextField label="Modello" value={settings.model} placeholder="LongCat-2.0" onChange={(model) => onChange({ ...settings, model })} />
+      <ReadOnlyField label="Provider" value="OpenCode Zen" />
+      <TextField label="Modello primario" value={settings.textModel.primaryModel} placeholder="longcat-2.0-free" onChange={(primaryModel) => onChange({ ...settings, textModel: { ...settings.textModel, primaryModel } })} />
+      <TextField label="Modello fallback" value={settings.textModel.fallbackModel} placeholder="deepseek-v4-flash-free" onChange={(fallbackModel) => onChange({ ...settings, textModel: { ...settings.textModel, fallbackModel } })} />
     </div>
-    <ToggleRow label="Fallback DeepSeek" description="Usa DeepSeek se LongCat non è disponibile" checked={settings.fallbackToDeepseek} onChange={(fallbackToDeepseek) => onChange({ ...settings, fallbackToDeepseek })} />
-    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-3"><input type="checkbox" checked={settings.privacyConsent} onChange={(event) => onChange({ ...settings, privacyConsent: event.target.checked, privacyConsentAt: event.target.checked ? settings.privacyConsentAt ?? new Date().toISOString() : undefined })} className="mt-1 accent-primary" /><span><span className="block text-sm font-semibold text-neutral-text">Consento l'invio della conversazione e del contesto consentito al modello</span><span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">Markdown, stato terminali e output agent sono dati non fidati. Il consenso è richiesto prima di ogni richiesta; le chiavi restano nel backend.</span></span></label>
+    <ToggleRow label="Fallback abilitato" description="Usa il modello fallback soltanto per errori temporanei o modello primario indisponibile." checked={settings.textModel.fallbackEnabled} onChange={(fallbackEnabled) => onChange({ ...settings, textModel: { ...settings.textModel, fallbackEnabled } })} />
+    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-3"><input type="checkbox" checked={settings.textModel.privacyConsent} onChange={(event) => onChange({ ...settings, textModel: { ...settings.textModel, privacyConsent: event.target.checked, privacyConsentAt: event.target.checked ? settings.textModel.privacyConsentAt ?? new Date().toISOString() : undefined } })} className="mt-1 accent-primary" /><span><span className="block text-sm font-semibold text-neutral-text">Consento l'invio del contesto consentito</span><span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">Possono essere inviati messaggio, Markdown consentito, indice documenti, stato terminali e output agent bounded e non fidati. Non vengono inviati codice sorgente, .env o secret.</span></span></label>
   </div>;
 }
 

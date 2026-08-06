@@ -8,6 +8,7 @@ pub mod context_broker;
 pub mod documentation;
 pub mod memory;
 pub mod model;
+pub mod requests;
 pub mod runtime_detector;
 pub mod tools;
 pub mod types;
