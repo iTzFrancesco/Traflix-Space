@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::capture::{AudioCaptureSession, AudioCaptureSource, PlatformAudioCapture};
 use super::playback::{AudioPlayback, PlatformAudioPlayback};
 use super::types::{
-    error_view, TtsStatus, TtsStatusView, VoiceErrorCode, VoiceRequestStatus,
-    VoiceRequestStatusView, MAX_VOICE_REQUESTS,
+    error_view, normalize_max_duration_seconds, TtsStatus, TtsStatusView, VoiceErrorCode,
+    VoiceRequestStatus, VoiceRequestStatusView, MAX_VOICE_REQUESTS,
 };
 
 struct ActiveVoiceRequest {
@@ -21,6 +22,9 @@ struct VoiceRegistryInner {
     requests: HashMap<String, ActiveVoiceRequest>,
     tts: TtsStatusView,
     tts_cancellation: Option<CancellationToken>,
+    tts_active: bool,
+    tts_cancel_requested: bool,
+    tts_finished: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -50,6 +54,9 @@ impl VoiceState {
                     error: None,
                 },
                 tts_cancellation: None,
+                tts_active: false,
+                tts_cancel_requested: false,
+                tts_finished: Arc::new(Notify::new()),
             })),
             capture,
             playback,
@@ -74,9 +81,10 @@ impl VoiceState {
         }) {
             return Err(VoiceErrorCode::AlreadyActive);
         }
-        let capture = self
-            .capture
-            .start(selected_device_id.as_deref(), max_duration_seconds)?;
+        let capture = self.capture.start(
+            selected_device_id.as_deref(),
+            normalize_max_duration_seconds(max_duration_seconds),
+        )?;
         let now = chrono::Utc::now().to_rfc3339();
         let view = VoiceRequestStatusView {
             request_id: request_id.clone(),
@@ -116,6 +124,31 @@ impl VoiceState {
                     .max_by_key(|request| request.view.created_at.clone())
                     .map(|request| request.view.request_id.clone())
             })
+            .ok_or(VoiceErrorCode::NotFound)?;
+        let request = inner
+            .requests
+            .get_mut(&id)
+            .ok_or(VoiceErrorCode::NotFound)?;
+        if matches!(request.view.status, VoiceRequestStatus::Recording) {
+            if let Some(capture) = request.capture.as_ref() {
+                request.view.duration_ms = Some(capture.elapsed_ms());
+                request.view.normalized_level = capture.normalized_level().clamp(0.0, 1.0);
+            }
+        }
+        Ok(request.view.clone())
+    }
+
+    pub fn snapshot_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
+        let mut inner = self.inner.lock();
+        let id = inner
+            .requests
+            .values()
+            .filter(|request| request.view.workspace_id == workspace_id)
+            .max_by_key(|request| request.view.created_at.clone())
+            .map(|request| request.view.request_id.clone())
             .ok_or(VoiceErrorCode::NotFound)?;
         let request = inner
             .requests
@@ -203,7 +236,7 @@ impl VoiceState {
             .ok_or(VoiceErrorCode::NotFound)
     }
 
-    pub fn begin_tts(&self, request_id: String) -> CancellationToken {
+    pub fn begin_tts(&self, request_id: String) -> (CancellationToken, TtsStatusView) {
         let mut inner = self.inner.lock();
         if let Some(previous) = inner.tts_cancellation.take() {
             previous.cancel();
@@ -215,31 +248,99 @@ impl VoiceState {
             error: None,
         };
         inner.tts_cancellation = Some(token.clone());
-        token
+        inner.tts_active = true;
+        inner.tts_cancel_requested = false;
+        (token, inner.tts.clone())
     }
 
-    pub fn set_tts(&self, status: TtsStatus, error: Option<VoiceErrorCode>) -> TtsStatusView {
+    pub fn set_tts_for(
+        &self,
+        request_id: &str,
+        status: TtsStatus,
+        error: Option<VoiceErrorCode>,
+    ) -> Option<TtsStatusView> {
         let mut inner = self.inner.lock();
-        inner.tts.status = status;
+        if inner.tts.request_id.as_deref() != Some(request_id) {
+            return None;
+        }
+        let final_status = if inner.tts_cancel_requested {
+            TtsStatus::Stopped
+        } else {
+            status
+        };
+        inner.tts.status = final_status;
         inner.tts.error = error.map(|code| error_view(code, friendly_message(code)));
         if matches!(
             inner.tts.status,
             TtsStatus::Idle | TtsStatus::Stopped | TtsStatus::Failed
         ) {
             inner.tts_cancellation = None;
+            inner.tts_active = false;
+            inner.tts_finished.notify_waiters();
         }
-        inner.tts.clone()
+        Some(inner.tts.clone())
     }
 
     pub fn tts_status(&self) -> TtsStatusView {
         self.inner.lock().tts.clone()
     }
 
-    pub fn stop_tts(&self) -> TtsStatusView {
-        if let Some(token) = self.inner.lock().tts_cancellation.clone() {
+    pub fn request_stop_tts(&self) -> (TtsStatusView, Option<String>) {
+        let mut inner = self.inner.lock();
+        let request_id = inner.tts.request_id.clone();
+        if let Some(token) = inner.tts_cancellation.clone() {
             token.cancel();
+            inner.tts_cancel_requested = true;
+            inner.tts.status = TtsStatus::Stopped;
+            inner.tts.error = None;
         }
-        self.set_tts(TtsStatus::Stopped, None)
+        (inner.tts.clone(), request_id)
+    }
+
+    pub async fn wait_tts_request_finished(&self, request_id: Option<String>) {
+        let Some(request_id) = request_id else { return };
+        let notify = self.inner.lock().tts_finished.clone();
+        loop {
+            let finished = {
+                let inner = self.inner.lock();
+                inner.tts.request_id.as_deref() != Some(request_id.as_str()) || !inner.tts_active
+            };
+            if finished {
+                return;
+            }
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified()).await;
+            if self.inner.lock().tts.request_id.as_deref() != Some(request_id.as_str()) {
+                return;
+            }
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        let (captures, tts_token, tts_request_id) = {
+            let mut inner = self.inner.lock();
+            let captures = inner
+                .requests
+                .values_mut()
+                .filter_map(|request| {
+                    request.cancellation.cancel();
+                    request.capture.take()
+                })
+                .collect::<Vec<_>>();
+            let tts_token = inner.tts_cancellation.clone();
+            let tts_request_id = inner.tts.request_id.clone();
+            if let Some(token) = &tts_token {
+                token.cancel();
+                inner.tts_cancel_requested = true;
+                inner.tts.status = TtsStatus::Stopped;
+            }
+            (captures, tts_token, tts_request_id)
+        };
+        for capture in captures {
+            let _ = capture.stop();
+        }
+        let _ = tts_token;
+        self.wait_tts_request_finished(tts_request_id).await;
     }
 }
 
@@ -319,5 +420,47 @@ mod tests {
             state.snapshot(Some("req")).unwrap().status,
             VoiceRequestStatus::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_tts_a_cannot_overwrite_new_tts_b() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        let (_a_token, a_started) = state.begin_tts("tts-a".into());
+        assert_eq!(a_started.status, TtsStatus::Synthesizing);
+        let (_stopped, _a_id) = state.request_stop_tts();
+        let (_b_token, b_started) = state.begin_tts("tts-b".into());
+        assert_eq!(b_started.request_id.as_deref(), Some("tts-b"));
+        assert!(state.set_tts_for("tts-a", TtsStatus::Idle, None).is_none());
+        assert_eq!(state.tts_status().request_id.as_deref(), Some("tts-b"));
+        assert_eq!(state.tts_status().status, TtsStatus::Synthesizing);
+    }
+
+    #[test]
+    fn tts_transitions_are_request_scoped_and_end_idle() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        let (_token, synthesizing) = state.begin_tts("tts".into());
+        assert_eq!(synthesizing.status, TtsStatus::Synthesizing);
+        let playing = state.set_tts_for("tts", TtsStatus::Playing, None).unwrap();
+        assert_eq!(playing.request_id.as_deref(), Some("tts"));
+        let idle = state.set_tts_for("tts", TtsStatus::Idle, None).unwrap();
+        assert_eq!(idle.status, TtsStatus::Idle);
     }
 }

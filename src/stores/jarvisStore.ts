@@ -18,6 +18,7 @@ import {
   voiceDiscardTranscript,
   voiceStart,
   voiceStop,
+  voiceWorkspaceStatus,
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
@@ -69,7 +70,7 @@ interface JarvisStore {
   providerStatus: JarvisProviderStatus | null;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
-  voiceRequest: VoiceRequestStatusView | null;
+  voiceRequests: Record<string, VoiceRequestStatusView>;
   voiceLevel: VoiceLevelEvent | null;
   ttsStatus: TtsStatusView;
 
@@ -97,7 +98,7 @@ interface JarvisStore {
   setOtherWorkspaceAgentCount: (count: number) => void;
   loadLastResult: (workspaceId: string, sessionId: string) => Promise<void>;
   loadConversation: (workspaceId: string) => Promise<void>;
-  sendMessage: (message: string) => Promise<void>;
+  sendMessage: (message: string) => Promise<boolean>;
   cancelChatRequest: (requestId: string) => Promise<void>;
   isChatLoading: (workspaceId: string | null) => boolean;
   refreshPendingActions: () => Promise<void>;
@@ -110,6 +111,8 @@ interface JarvisStore {
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
+  sendVoiceTranscript: (requestId: string, text: string) => Promise<boolean>;
+  loadVoiceDraft: (workspaceId: string) => Promise<void>;
   setVoiceRequest: (status: VoiceRequestStatusView) => void;
   setVoiceLevel: (event: VoiceLevelEvent) => void;
   setTtsStatus: (status: TtsStatusView) => void;
@@ -130,7 +133,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
-  voiceRequest: null, voiceLevel: null, ttsStatus: { status: "idle" },
+  voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
 
   loadSettings: async () => {
     set({ settingsLoading: true, settingsError: null });
@@ -177,8 +180,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   sendMessage: async (message) => {
     const trimmed = message.trim();
     const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-    if (!trimmed || !workspaceId) { if (!workspaceId) set({ chatErrors: { ...get().chatErrors, [workspaceId ?? "none"]: "Nessuna workspace attiva" } }); return; }
-    if (isWorkspaceChatLoading(get().requests, workspaceId)) { set((state) => ({ chatErrors: { ...state.chatErrors, [workspaceId]: "Attendi la risposta corrente o annullala." } })); return; }
+    if (!trimmed || !workspaceId) { if (!workspaceId) set({ chatErrors: { ...get().chatErrors, [workspaceId ?? "none"]: "Nessuna workspace attiva" } }); return false; }
+    if (isWorkspaceChatLoading(get().requests, workspaceId)) { set((state) => ({ chatErrors: { ...state.chatErrors, [workspaceId]: "Attendi la risposta corrente o annullala." } })); return false; }
     const invocation: InvocationBinding = { requestId: crypto.randomUUID(), targetWorkspaceId: workspaceId, createdAt: new Date().toISOString() };
     const userMessage: JarvisConversationMessage = { id: `local-user-${invocation.requestId}`, role: "user", content: trimmed, workspaceId, createdAt: invocation.createdAt };
     set((state) => ({ conversation: mergeConversationMessages(state.conversation, [userMessage]), requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { requestId: invocation.requestId, workspaceId, createdAt: invocation.createdAt, status: "running" } }), chatErrors: { ...state.chatErrors, [workspaceId]: undefined } }));
@@ -186,16 +189,18 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       const response = await jarvisChat({ invocation, message: trimmed, messageId: userMessage.id });
       if (get().requests[invocation.requestId]?.status === "cancellation_requested") {
         set((state) => ({ requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "cancelled" } }) }));
-        return;
+        return false;
       }
       set((state) => ({ conversation: mergeConversationMessages(state.conversation, [response.message]), pendingActions: mergeActions(state.pendingActions, response.pendingActions), uiIntents: [...state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), ...response.uiIntents], followUps: { ...state.followUps, [workspaceId]: response.followUps }, requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "completed" } }) }));
       const voiceSettings = get().settings.jarvis.voiceOutput;
       if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt) {
-        void ttsSpeak({ requestId: `tts-${response.message.id}`, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch }).then((status) => set({ ttsStatus: status })).catch(() => undefined);
+        void ttsSpeak({ requestId: `tts-${response.message.id}`, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch }).then((status) => get().setTtsStatus(status)).catch(() => undefined);
       }
+      return true;
     } catch (error) {
       const cancelled = error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "chat_cancelled";
       set((state) => ({ requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: cancelled ? "cancelled" : "failed", error: errorMessage(error) } }), chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) } }));
+      return false;
     }
   },
   cancelChatRequest: async (requestId) => {
@@ -217,15 +222,40 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     if (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing") await get().stopTts();
     const requestId = crypto.randomUUID();
     const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
-    set({ voiceRequest: status });
+    set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } }));
   },
-  stopVoice: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; set((state) => state.voiceRequest ? { voiceRequest: { ...state.voiceRequest, status: "stopping" } } : state); const status = await voiceStop(requestId); set({ voiceRequest: status }); },
-  cancelVoice: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set({ voiceRequest: status }); },
-  discardVoiceTranscript: async () => { const requestId = get().voiceRequest?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set({ voiceRequest: null }); },
-  setVoiceRequest: (voiceRequest) => set((state) => { if (state.voiceRequest && state.voiceRequest.requestId !== voiceRequest.requestId && voiceRequest.status !== "recording") return state; return { voiceRequest }; }),
-  setVoiceLevel: (voiceLevel) => set((state) => state.voiceRequest?.requestId === voiceLevel.requestId ? { voiceLevel, voiceRequest: { ...state.voiceRequest, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs } } : state),
-  setTtsStatus: (ttsStatus) => set({ ttsStatus }),
-  stopTts: async () => { const status = await ttsStop(); set({ ttsStatus: status }); },
+  stopVoice: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; set((state) => ({ voiceRequests: { ...state.voiceRequests, [workspaceId]: { ...state.voiceRequests[workspaceId], status: "stopping" } } })); const status = await voiceStop(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } })); },
+  cancelVoice: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } })); },
+  discardVoiceTranscript: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests }; }); },
+  sendVoiceTranscript: async (requestId, text) => {
+    const origin = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
+    const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!origin || origin.status !== "transcript_ready" || origin.workspaceId !== activeWorkspaceId || !text.trim()) return false;
+    const accepted = await get().sendMessage(text);
+    if (!accepted) return false;
+    await voiceDiscardTranscript(requestId);
+    set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[origin.workspaceId]; return { voiceRequests }; });
+    return true;
+  },
+  loadVoiceDraft: async (workspaceId) => {
+    try {
+      const status = await voiceWorkspaceStatus(workspaceId);
+      set((state) => {
+        const voiceRequests = { ...state.voiceRequests };
+        if (status) voiceRequests[workspaceId] = status;
+        else delete voiceRequests[workspaceId];
+        return { voiceRequests };
+      });
+    } catch { /* preserve the last valid draft during a transient IPC failure */ }
+  },
+  setVoiceRequest: (voiceRequest) => set((state) => {
+    const current = state.voiceRequests[voiceRequest.workspaceId];
+    if (current && current.requestId !== voiceRequest.requestId && voiceRequest.status !== "recording") return state;
+    return { voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest } };
+  }),
+  setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs } } }; }),
+  setTtsStatus: (ttsStatus) => set((state) => state.ttsStatus.requestId && ttsStatus.requestId && state.ttsStatus.requestId !== ttsStatus.requestId && ttsStatus.status !== "synthesizing" ? state : { ttsStatus }),
+  stopTts: async () => { const status = await ttsStop(); get().setTtsStatus(status); },
 }));
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {

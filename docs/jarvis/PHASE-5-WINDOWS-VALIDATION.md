@@ -24,3 +24,7 @@ Windows con microfono e playback reali.
 - [ ] Chiusura app senza processi helper o stream audio orfani.
 - [ ] Verifica finale che log, settings e frontend non contengano segreti,
       audio o transcript completo.
+- [ ] Eseguire `scripts/build-jarvis-edge-tts-sidecar.ps1` e verificare il
+      binary PyInstaller con il target Windows corretto.
+- [ ] In release verificare l’uso del sidecar senza Python di sistema; in debug
+      verificare `TRAF_EDGE_TTS_HELPER`/Python.

@@ -384,6 +384,10 @@ export function voiceStatus(requestId?: string): Promise<VoiceRequestStatusView>
   return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_status", { requestId }), READ_TIMEOUT_MS);
 }
 
+export function voiceWorkspaceStatus(workspaceId: string): Promise<VoiceRequestStatusView | null> {
+  return invokeWithTimeout(() => invoke<VoiceRequestStatusView | null>("jarvis_voice_workspace_status", { workspaceId }), READ_TIMEOUT_MS);
+}
+
 export function voiceDiscardTranscript(requestId: string): Promise<void> {
   return invokeWithTimeout(() => invoke<void>("jarvis_voice_discard_transcript", { requestId }), READ_TIMEOUT_MS);
 }

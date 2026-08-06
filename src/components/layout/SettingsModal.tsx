@@ -3,7 +3,9 @@ import { Check, RotateCcw, Save, Settings2 } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import { defaultJarvisSettings } from "../../lib/jarvis/settings";
-import type { AppSettings, VoiceEngine } from "../../lib/jarvis/types";
+import { ttsListVoices, voiceListInputDevices } from "../../lib/jarvis/client";
+import { inputDeviceOptions, italianVoices } from "../../lib/jarvis/voiceSettings";
+import type { AppSettings, TtsVoice, VoiceEngine, VoiceInputDevice } from "../../lib/jarvis/types";
 import { JarvisAdvancedSettings } from "../jarvis/JarvisAdvancedSettings";
 import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
 
@@ -134,7 +136,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
               <h3 className="font-semibold text-neutral-text">
                 {jarvis.voiceEngine === "standard" ? "Standard Voice Pipeline" : "Gemini Live Voice"}
               </h3>
-              <p className="mt-1 text-xs text-neutral-text-muted">Schema locale, provider non collegato.</p>
+              <p className="mt-1 text-xs text-neutral-text-muted">Pipeline cloud configurata: Groq Whisper turbo e Edge TTS con consensi separati.</p>
             </div>
             <span className="rounded-full border border-white/10 px-2.5 py-1 text-[11px] uppercase tracking-wider text-neutral-text-muted">
               Solo impostazioni
@@ -168,7 +170,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             />
             <ToggleRow
               label="Microfono muto"
-              description="Stato preparatorio, nessun microfono attivo"
+              description="Il microfono parte soltanto dopo un click esplicito sul widget."
               checked={jarvis.muted}
               onChange={(muted) => updateJarvis((current) => ({ ...current, muted }))}
             />
@@ -218,15 +220,28 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
 }
 
 function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input: AppSettings["jarvis"]["voiceInput"]; output: AppSettings["jarvis"]["voiceOutput"]; onInputChange: (value: AppSettings["jarvis"]["voiceInput"]) => void; onOutputChange: (value: AppSettings["jarvis"]["voiceOutput"]) => void }) {
+  const [devices, setDevices] = useState<VoiceInputDevice[]>([]);
+  const [voices, setVoices] = useState<TtsVoice[]>([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [loadingVoices, setLoadingVoices] = useState(false);
+  const loadDevices = async () => { setLoadingDevices(true); try { setDevices(await voiceListInputDevices()); } finally { setLoadingDevices(false); } };
+  const loadVoices = async () => { setLoadingVoices(true); try { setVoices(italianVoices(await ttsListVoices())); } finally { setLoadingVoices(false); } };
   return <div className="space-y-4 rounded-xl border border-signal/20 bg-signal/[0.04] p-5">
     <div><h3 className="font-semibold text-neutral-text">Voce Jarvis</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">STT esclusivamente Groq Whisper turbo. TTS esclusivamente Microsoft Edge TTS. Il transcript non viene inviato automaticamente.</p></div>
     <div className="grid gap-3 sm:grid-cols-2">
       <ReadOnlyField label="STT" value="Groq · whisper-large-v3-turbo" />
       <ReadOnlyField label="TTS" value="Microsoft Edge TTS" />
-      <TextField label="Voce Edge" value={output.voice} onChange={(voice) => onOutputChange({ ...output, voice })} />
+      <label className="space-y-1 text-xs text-neutral-text-muted"><span>Microfono</span><select value={input.selectedInputDeviceId ?? ""} onChange={(event) => onInputChange({ ...input, selectedInputDeviceId: event.target.value || undefined })} className="w-full rounded-lg border border-white/10 bg-neutral-bg px-2 py-2 text-sm text-neutral-text"><option value="">Predefinito di Windows</option>{inputDeviceOptions(devices).map((device) => <option key={device.id} value={device.id}>{device.label}</option>)}</select></label>
+      <div className="flex items-end"><button type="button" onClick={() => void loadDevices()} disabled={loadingDevices} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-text-muted hover:text-neutral-text disabled:opacity-50">{loadingDevices ? "Ricerca…" : "Aggiorna microfoni"}</button></div>
+      <label className="space-y-1 text-xs text-neutral-text-muted"><span>Voce Edge</span><select value={output.voice} onChange={(event) => onOutputChange({ ...output, voice: event.target.value })} className="w-full rounded-lg border border-white/10 bg-neutral-bg px-2 py-2 text-sm text-neutral-text">{voices.length === 0 && <option value={output.voice}>{output.voice}</option>}{voices.map((voice) => <option key={voice.shortName} value={voice.shortName}>{voice.shortName} · {voice.locale}</option>)}</select></label>
+      <div className="flex items-end"><button type="button" onClick={() => void loadVoices()} disabled={loadingVoices} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-text-muted hover:text-neutral-text disabled:opacity-50">{loadingVoices ? "Caricamento…" : "Carica voci italiane"}</button></div>
       <TextField label="Durata massima (s)" value={String(input.maxDurationSeconds)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, maxDurationSeconds: Math.max(1, Math.min(45, Math.floor(parsed))) }); }} />
+      <TextField label="Rate" value={output.rate} onChange={(rate) => onOutputChange({ ...output, rate })} />
+      <TextField label="Volume" value={output.volume} onChange={(volume) => onOutputChange({ ...output, volume })} />
+      <TextField label="Pitch" value={output.pitch} onChange={(pitch) => onOutputChange({ ...output, pitch })} />
     </div>
     <ToggleRow label="Abilita input vocale" description="Registra solo dopo un click esplicito." checked={input.enabled} onChange={(enabled) => onInputChange({ ...input, enabled })} />
+    <ToggleRow label="Abilita output vocale" description="Consente a Edge TTS di sintetizzare le risposte dopo il consenso separato." checked={output.enabled} onChange={(enabled) => onOutputChange({ ...output, enabled })} />
     <ToggleRow label="Parla automaticamente le risposte" description="Richiede consenso separato per inviare il testo a Edge TTS." checked={output.autoSpeak} onChange={(autoSpeak) => onOutputChange({ ...output, autoSpeak })} />
     <ToggleRow label="Consenso audio → Groq" description="L'audio registrato viene inviato a Groq per Whisper e resta solo in memoria." checked={input.privacyConsent} onChange={(privacyConsent) => onInputChange({ ...input, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />
     <ToggleRow label="Consenso testo → Edge TTS" description="Il testo della risposta viene inviato al servizio vocale online Edge TTS." checked={output.privacyConsent} onChange={(privacyConsent) => onOutputChange({ ...output, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />

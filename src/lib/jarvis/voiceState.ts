@@ -4,6 +4,10 @@ export function voiceRequestForWorkspace(request: VoiceRequestStatusView | null,
   return request && request.workspaceId === workspaceId ? request : null;
 }
 
+export function voiceDraftsForWorkspaces(requests: Record<string, VoiceRequestStatusView>, workspaceId: string | null): VoiceRequestStatusView[] {
+  return workspaceId ? Object.values(requests).filter((request) => request.workspaceId === workspaceId) : [];
+}
+
 export function canSendTranscript(request: VoiceRequestStatusView | null, workspaceId: string | null, text: string): boolean {
   return Boolean(request && request.status === "transcript_ready" && request.workspaceId === workspaceId && text.trim());
 }

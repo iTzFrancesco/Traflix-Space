@@ -7,11 +7,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
 use super::registry::{friendly_message, VoiceState};
 use super::stt::{GroqSpeechToTextProvider, SpeechToTextProvider};
-use super::tts::{sanitize_for_speech, EdgeTextToSpeechProvider, TextToSpeechProvider};
+use super::tts::{
+    cleanup_temp_file, sanitize_for_speech, EdgeTextToSpeechProvider, TextToSpeechProvider,
+};
 use super::types::{
-    error_view, TtsSpeakRequest, TtsStatus, TtsStatusView, VoiceCancelRequest, VoiceErrorCode,
-    VoiceErrorView, VoiceInputDevice, VoiceLevelEvent, VoiceRequestStatus, VoiceRequestStatusView,
-    VoiceStartRequest, VoiceStopRequest,
+    error_view, normalize_max_duration_seconds, TtsSpeakRequest, TtsStatus, TtsStatusView,
+    VoiceCancelRequest, VoiceErrorCode, VoiceErrorView, VoiceInputDevice, VoiceLevelEvent,
+    VoiceRequestStatus, VoiceRequestStatusView, VoiceStartRequest, VoiceStopRequest,
 };
 
 const VOICE_STATE_EVENT: &str = "jarvis://voice-state";
@@ -33,13 +35,16 @@ pub async fn jarvis_voice_start(
     request: VoiceStartRequest,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
     let configured = settings.get().await;
-    ensure_input_allowed(&configured.jarvis.voice_input)?;
+    let provider = GroqSpeechToTextProvider::from_environment().map_err(to_error)?;
+    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured())?;
+    let max_duration_seconds =
+        normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
     let status = state
         .start(
             request.request_id,
             request.workspace_id,
             request.selected_device_id,
-            configured.jarvis.voice_input.max_duration_seconds,
+            max_duration_seconds,
         )
         .map_err(to_error)?;
     emit_voice_state(&app, &status);
@@ -67,13 +72,11 @@ pub async fn jarvis_voice_start(
     });
     let watchdog_app = app.clone();
     let watchdog_state = (*state).clone();
-    let watchdog_config = configured.jarvis.voice_input.clone();
+    let mut watchdog_config = configured.jarvis.voice_input.clone();
+    watchdog_config.max_duration_seconds = max_duration_seconds;
     let watchdog_request_id = status.request_id.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(
-            watchdog_config.max_duration_seconds as u64,
-        ))
-        .await;
+        tokio::time::sleep(std::time::Duration::from_secs(max_duration_seconds as u64)).await;
         if watchdog_state
             .snapshot(Some(&watchdog_request_id))
             .map(|current| current.status == VoiceRequestStatus::Recording)
@@ -98,7 +101,8 @@ pub async fn jarvis_voice_stop(
     settings: State<'_, SettingsManager>,
     request: VoiceStopRequest,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
-    let config = settings.get().await.jarvis.voice_input;
+    let mut config = settings.get().await.jarvis.voice_input;
+    config.max_duration_seconds = normalize_max_duration_seconds(config.max_duration_seconds);
     finish_voice_stop(&app, &state, config, request.request_id).await
 }
 
@@ -191,6 +195,18 @@ pub fn jarvis_voice_status(
 }
 
 #[tauri::command]
+pub fn jarvis_voice_workspace_status(
+    state: State<'_, VoiceState>,
+    workspace_id: String,
+) -> Result<Option<VoiceRequestStatusView>, VoiceErrorView> {
+    match state.snapshot_workspace(&workspace_id) {
+        Ok(status) => Ok(Some(status)),
+        Err(VoiceErrorCode::NotFound) => Ok(None),
+        Err(code) => Err(to_error(code)),
+    }
+}
+
+#[tauri::command]
 pub fn jarvis_voice_discard_transcript(
     state: State<'_, VoiceState>,
     request_id: String,
@@ -209,12 +225,14 @@ pub async fn jarvis_tts_speak(
     ensure_output_allowed(&config)?;
     let text = sanitize_for_speech(&request.text, config.max_spoken_chars)
         .ok_or_else(|| to_error(VoiceErrorCode::InvalidRequest))?;
-    let cancellation = state.begin_tts(request.request_id.clone());
+    let request_id = request.request_id.clone();
+    let (cancellation, synthesizing) = state.begin_tts(request_id.clone());
+    emit_tts_state(&app, &synthesizing);
     let helper = helper_path(&app);
     let provider = EdgeTextToSpeechProvider::new(helper);
     let path = match provider
         .speak(
-            request.request_id,
+            request_id.clone(),
             text,
             request.voice.unwrap_or(config.voice),
             request.rate.unwrap_or(config.rate),
@@ -227,7 +245,8 @@ pub async fn jarvis_tts_speak(
     {
         Ok(path) => path,
         Err(code) => {
-            let status = state.set_tts(
+            let status = state.set_tts_for(
+                &request_id,
                 if code == VoiceErrorCode::Cancelled {
                     TtsStatus::Stopped
                 } else {
@@ -235,21 +254,33 @@ pub async fn jarvis_tts_speak(
                 },
                 Some(code),
             );
-            emit_tts_state(&app, &status);
-            return Err(to_error(code));
+            if let Some(status) = status {
+                emit_tts_state(&app, &status);
+                return Err(to_error(code));
+            }
+            return Ok(state.tts_status());
         }
     };
-    let _ = state.set_tts(TtsStatus::Playing, None);
+    if let Some(status) = state.set_tts_for(&request_id, TtsStatus::Playing, None) {
+        emit_tts_state(&app, &status);
+    } else {
+        cleanup_temp_file(&path);
+        return Ok(state.tts_status());
+    }
     let playback = state.playback.play(path.clone(), cancellation).await;
-    let _ = std::fs::remove_file(&path);
+    cleanup_temp_file(&path);
     match playback {
         Ok(()) => {
-            let status = state.set_tts(TtsStatus::Idle, None);
-            emit_tts_state(&app, &status);
-            Ok(status)
+            if let Some(status) = state.set_tts_for(&request_id, TtsStatus::Idle, None) {
+                emit_tts_state(&app, &status);
+                Ok(status)
+            } else {
+                Ok(state.tts_status())
+            }
         }
         Err(code) => {
-            let status = state.set_tts(
+            let status = state.set_tts_for(
+                &request_id,
                 if code == VoiceErrorCode::Cancelled {
                     TtsStatus::Stopped
                 } else {
@@ -257,21 +288,29 @@ pub async fn jarvis_tts_speak(
                 },
                 Some(code),
             );
-            emit_tts_state(&app, &status);
-            if code == VoiceErrorCode::Cancelled {
-                Ok(status)
+            if let Some(status) = status {
+                emit_tts_state(&app, &status);
+                if code == VoiceErrorCode::Cancelled {
+                    Ok(status)
+                } else {
+                    Err(to_error(code))
+                }
             } else {
-                Err(to_error(code))
+                Ok(state.tts_status())
             }
         }
     }
 }
 
 #[tauri::command]
-pub fn jarvis_tts_stop(app: AppHandle, state: State<'_, VoiceState>) -> TtsStatusView {
-    let status = state.stop_tts();
+pub async fn jarvis_tts_stop(
+    app: AppHandle,
+    state: State<'_, VoiceState>,
+) -> Result<TtsStatusView, VoiceErrorView> {
+    let (status, request_id) = state.request_stop_tts();
     emit_tts_state(&app, &status);
-    status
+    state.wait_tts_request_finished(request_id).await;
+    Ok(state.tts_status())
 }
 
 #[tauri::command]
@@ -294,33 +333,40 @@ pub async fn jarvis_tts_list_voices(
 ) -> Result<Vec<TtsVoice>, VoiceErrorView> {
     let config = settings.get().await.jarvis.voice_output;
     ensure_output_allowed(&config)?;
-    let mut child = tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
-        .arg("-u")
-        .arg(helper_path(&app))
+    let mut child = helper_command(helper_path(&app))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
+        if stdin
             .write_all(
                 br#"{"action":"listVoices"}
 "#,
             )
             .await
-            .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
+            .is_err()
+        {
+            let _ = child.kill().await;
+            return Err(to_error(VoiceErrorCode::HelperFailed));
+        }
     }
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| to_error(VoiceErrorCode::HelperFailed))?;
-    let status = child
-        .wait()
-        .await
-        .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return Err(to_error(VoiceErrorCode::HelperFailed));
+    };
+    let status = match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await
+    {
+        Ok(Ok(status)) => status,
+        _ => {
+            let _ = child.kill().await;
+            return Err(to_error(VoiceErrorCode::HelperFailed));
+        }
+    };
     let mut bytes = Vec::new();
     stdout
+        .take(64 * 1024 + 1)
         .read_to_end(&mut bytes)
         .await
         .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
@@ -344,6 +390,7 @@ struct VoiceListResult {
 
 fn ensure_input_allowed(
     settings: &crate::settings::store::VoiceInputSettings,
+    provider_configured: bool,
 ) -> Result<(), VoiceErrorView> {
     if !settings.enabled
         || settings.provider != "groq"
@@ -356,6 +403,9 @@ fn ensure_input_allowed(
             .is_empty()
     {
         return Err(to_error(VoiceErrorCode::ConsentRequired));
+    }
+    if !provider_configured {
+        return Err(to_error(VoiceErrorCode::ProviderNotConfigured));
     }
     Ok(())
 }
@@ -378,13 +428,45 @@ fn ensure_output_allowed(
 }
 
 fn helper_path(app: &AppHandle) -> PathBuf {
-    if let Ok(path) = std::env::var("TRAF_EDGE_TTS_HELPER") {
-        return PathBuf::from(path);
+    if cfg!(debug_assertions) {
+        if let Ok(path) = std::env::var("TRAF_EDGE_TTS_HELPER") {
+            return PathBuf::from(path);
+        }
+        return app
+            .path()
+            .resource_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("scripts/jarvis-edge-tts.py");
     }
-    app.path()
+    let resource_dir = app
+        .path()
         .resource_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("scripts/jarvis-edge-tts.py")
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let candidates = if cfg!(windows) {
+        vec![
+            resource_dir.join("binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe"),
+            resource_dir.join("binaries/jarvis-edge-tts.exe"),
+            resource_dir.join("jarvis-edge-tts.exe"),
+        ]
+    } else {
+        vec![resource_dir.join("binaries/jarvis-edge-tts")]
+    };
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| resource_dir.join("binaries/jarvis-edge-tts"))
+}
+
+fn helper_command(path: PathBuf) -> tokio::process::Command {
+    if path.extension().and_then(|value| value.to_str()) == Some("exe") {
+        let command = tokio::process::Command::new(path);
+        command
+    } else {
+        let mut command =
+            tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
+        command.arg("-u").arg(path);
+        command
+    }
 }
 
 fn to_error(code: VoiceErrorCode) -> VoiceErrorView {
@@ -395,4 +477,21 @@ fn emit_voice_state(app: &AppHandle, status: &VoiceRequestStatusView) {
 }
 fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
     let _ = app.emit(TTS_STATE_EVENT, status);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_input_allowed;
+    use crate::settings::store::VoiceInputSettings;
+
+    #[test]
+    fn missing_groq_key_is_rejected_before_capture() {
+        let mut settings = VoiceInputSettings::default();
+        settings.privacy_consent = true;
+        settings.privacy_consent_at = Some("now".into());
+        assert_eq!(
+            ensure_input_allowed(&settings, false).unwrap_err().code,
+            "voice_provider_not_configured"
+        );
+    }
 }

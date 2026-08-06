@@ -44,9 +44,14 @@ timestamp. Il consenso input informa dell’invio dell’audio a Groq; quello
 output informa dell’invio del testo a Edge TTS. Nessuna chiave è salvata nei
 settings o inviata al frontend.
 
-Le voci vengono elencate soltanto su richiesta esplicita. La strategia di
-release è includere l’helper come sidecar PyInstaller; in debug il comando
-usa Python e il modulo `edge-tts` presenti nell’ambiente. La voce predefinita
+Le voci vengono elencate soltanto su richiesta esplicita. La strategia release
+è verificabile su Windows con
+`powershell -ExecutionPolicy Bypass -File scripts/build-jarvis-edge-tts-sidecar.ps1`:
+lo script genera `src-tauri/binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe`
+con PyInstaller e il manifest Tauri lo include come `externalBin`. Il sidecar
+non è stato costruito sulla VPS Linux; la verifica del binario resta manuale.
+In debug il comando usa Python e il modulo `edge-tts` presenti nell’ambiente.
+La voce predefinita
 è `it-IT-DiegoNeural` e il codice non seleziona silenziosamente una voce
 straniera.
 

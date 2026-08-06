@@ -5,7 +5,8 @@ import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
 import { buildAgentSessionView } from "../src/lib/jarvis/sessionView.ts";
 import { advancedViewVisible, isWorkspaceChatLoading, MAX_COMPLETED_REQUEST_HISTORY, mergeConversationMessages, pendingActionsForWorkspace, pruneRequestHistory, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
 import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvis/pendingActionState.ts";
-import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
+import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceDraftsForWorkspaces, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
+import { inputDeviceOptions, italianVoices } from "../src/lib/jarvis/voiceSettings.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
@@ -141,9 +142,23 @@ test("voice transcript remains bound to its original workspace", () => {
   assert.equal(canSendTranscript(request, "workspace-a", "ciao"), true);
 });
 
+test("voice drafts remain separate when switching between workspaces", () => {
+  const drafts = {
+    a: { requestId: "voice-a", workspaceId: "workspace-a", status: "transcript_ready", transcript: "A", createdAt: "now", normalizedLevel: 0 },
+    b: { requestId: "voice-b", workspaceId: "workspace-b", status: "transcript_ready", transcript: "B", createdAt: "later", normalizedLevel: 0 },
+  };
+  assert.deepEqual(voiceDraftsForWorkspaces(drafts, "workspace-a").map((draft) => draft.transcript), ["A"]);
+  assert.deepEqual(voiceDraftsForWorkspaces(drafts, "workspace-b").map((draft) => draft.transcript), ["B"]);
+});
+
 test("voice transcript is never auto-submitted and TTS requires separate consent", () => {
   assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: false }), false);
   assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: true, privacyConsentAt: "now" }), true);
   assert.equal(shouldStopTtsBeforeRecording("playing"), true);
   assert.equal(shouldStopTtsBeforeRecording("idle"), false);
+});
+
+test("voice settings helpers keep default device and Italian voices only", () => {
+  assert.deepEqual(inputDeviceOptions([{ id: "mic", name: "Desk mic", isDefault: true, available: true }]), [{ id: "mic", label: "Desk mic (predefinito)" }]);
+  assert.deepEqual(italianVoices([{ shortName: "it-IT-A", locale: "it-IT" }, { shortName: "en-US-A", locale: "en-US" }]).map((voice) => voice.shortName), ["it-IT-A"]);
 });

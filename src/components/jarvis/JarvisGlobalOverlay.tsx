@@ -28,7 +28,8 @@ export function JarvisGlobalOverlay() {
   const providerStatus = useJarvisStore((state) => state.providerStatus);
   const uiIntents = useJarvisStore((state) => state.uiIntents);
   const followUps = useJarvisStore((state) => state.followUps);
-  const voiceRequest = useJarvisStore((state) => state.voiceRequest);
+  const voiceRequests = useJarvisStore((state) => state.voiceRequests);
+  const voiceRequest = activeWorkspaceId ? voiceRequests[activeWorkspaceId] ?? null : null;
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const loadConversation = useJarvisStore((state) => state.loadConversation);
@@ -49,6 +50,8 @@ export function JarvisGlobalOverlay() {
   const stopVoice = useJarvisStore((state) => state.stopVoice);
   const cancelVoice = useJarvisStore((state) => state.cancelVoice);
   const discardVoiceTranscript = useJarvisStore((state) => state.discardVoiceTranscript);
+  const sendVoiceTranscript = useJarvisStore((state) => state.sendVoiceTranscript);
+  const loadVoiceDraft = useJarvisStore((state) => state.loadVoiceDraft);
   const setVoiceRequest = useJarvisStore((state) => state.setVoiceRequest);
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
   const setTtsStatus = useJarvisStore((state) => state.setTtsStatus);
@@ -79,6 +82,7 @@ export function JarvisGlobalOverlay() {
 
   useEffect(() => { void loadSettings(); }, [loadSettings]);
   useEffect(() => { if (activeWorkspaceId) void loadConversation(activeWorkspaceId); }, [activeWorkspaceId, loadConversation]);
+  useEffect(() => { if (activeWorkspaceId) void loadVoiceDraft(activeWorkspaceId); }, [activeWorkspaceId, loadVoiceDraft]);
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
     void refreshRegistry();
@@ -111,7 +115,7 @@ export function JarvisGlobalOverlay() {
 
   if (!settings.jarvis.enabled) return null;
   return <>
-    <JarvisWidget workspaceId={activeWorkspaceId} workspaceName={workspace?.name ?? null} conversation={conversationForWorkspace} pendingActions={pendingActions} requests={requests} chatError={chatError} providerStatus={providerStatus} uiIntents={uiIntents} followUps={activeWorkspaceId ? followUps[activeWorkspaceId] ?? [] : []} voiceRequest={voiceRequest} ttsStatus={ttsStatus} onOpenSettings={() => setSettingsOpen(true)} onHide={() => void useJarvisStore.getState().hideJarvis()} onSendMessage={(message) => void sendMessage(message)} onCancelRequest={(requestId) => void cancelChatRequest(requestId)} onConfirmAction={(action) => void confirmPendingAction(action)} onRejectAction={(action) => void rejectPendingAction(action)} onUpdateAction={(action, text) => updatePendingAction(action, text)} onOpenTerminal={handleOpenTerminal} onVoiceStart={() => void startVoice()} onVoiceStop={() => void stopVoice()} onVoiceCancel={() => void cancelVoice()} onVoiceDiscard={() => void discardVoiceTranscript()} onStopTts={() => void stopTts()} />
+    <JarvisWidget workspaceId={activeWorkspaceId} workspaceName={workspace?.name ?? null} conversation={conversationForWorkspace} pendingActions={pendingActions} requests={requests} chatError={chatError} providerStatus={providerStatus} uiIntents={uiIntents} followUps={activeWorkspaceId ? followUps[activeWorkspaceId] ?? [] : []} voiceRequest={voiceRequest} ttsStatus={ttsStatus} onOpenSettings={() => setSettingsOpen(true)} onHide={() => void useJarvisStore.getState().hideJarvis()} onSendMessage={(message) => void sendMessage(message)} onSendVoiceTranscript={async (requestId, text) => { await sendVoiceTranscript(requestId, text); }} onCancelRequest={(requestId) => void cancelChatRequest(requestId)} onConfirmAction={(action) => void confirmPendingAction(action)} onRejectAction={(action) => void rejectPendingAction(action)} onUpdateAction={(action, text) => updatePendingAction(action, text)} onOpenTerminal={handleOpenTerminal} onVoiceStart={() => void startVoice()} onVoiceStop={() => void stopVoice()} onVoiceCancel={() => void cancelVoice()} onVoiceDiscard={() => void discardVoiceTranscript()} onStopTts={() => void stopTts()} />
     <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} advanced={{ context, contextStatus, contextError, sessions: registrySessions, isRefreshing, onRefresh: () => void refreshRegistry(), onRefreshContext: () => void refreshContext() }} />
   </>;
 }

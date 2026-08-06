@@ -207,6 +207,7 @@ fn main() {
             jarvis::voice::commands::jarvis_voice_stop,
             jarvis::voice::commands::jarvis_voice_cancel,
             jarvis::voice::commands::jarvis_voice_status,
+            jarvis::voice::commands::jarvis_voice_workspace_status,
             jarvis::voice::commands::jarvis_voice_discard_transcript,
             jarvis::voice::commands::jarvis_tts_speak,
             jarvis::voice::commands::jarvis_tts_stop,
@@ -241,8 +242,10 @@ fn main() {
             // On real process exit (tray Quit, no-tray window close, OS kill),
             // tear down every PTY/shell so no orphans accumulate.
             if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+                let voice = app.state::<jarvis::voice::VoiceState>().clone();
                 let manager = app.state::<TerminalManager>();
                 tauri::async_runtime::block_on(async {
+                    voice.shutdown().await;
                     manager.kill_all().await;
                 });
             }

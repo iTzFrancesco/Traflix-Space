@@ -8,6 +8,7 @@ pub const MAX_WAV_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_VOICE_REQUESTS: usize = 32;
 pub const MAX_VOICE_LEVEL_EVENTS_PER_SECOND: u32 = 20;
 pub const GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
+pub const MAX_MP3_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +143,25 @@ pub enum VoiceErrorCode {
     InvalidRequest,
     HelperFailed,
     PlaybackFailed,
+}
+
+pub fn normalize_max_duration_seconds(value: u32) -> u32 {
+    value.clamp(1, (MAX_RECORDING_MS / 1000) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_max_duration_seconds, MAX_RECORDING_MS};
+
+    #[test]
+    fn corrupted_duration_is_bounded_for_capture_and_watchdog() {
+        assert_eq!(normalize_max_duration_seconds(0), 1);
+        assert_eq!(
+            normalize_max_duration_seconds(99),
+            MAX_RECORDING_MS as u32 / 1000
+        );
+        assert_eq!(normalize_max_duration_seconds(12), 12);
+    }
 }
 
 impl VoiceErrorCode {

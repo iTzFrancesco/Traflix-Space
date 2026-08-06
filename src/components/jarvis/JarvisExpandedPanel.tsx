@@ -13,6 +13,7 @@ interface JarvisExpandedPanelProps {
   uiIntents: JarvisUiIntent[];
   followUps: string[];
   onSendMessage: (message: string) => void;
+  onSendVoiceTranscript: (requestId: string, text: string) => Promise<void> | void;
   onCancelRequest: (requestId: string) => void;
   onConfirmAction: (action: PendingAction) => void;
   onRejectAction: (action: PendingAction) => void;

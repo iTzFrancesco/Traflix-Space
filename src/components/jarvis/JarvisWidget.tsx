@@ -19,6 +19,7 @@ interface JarvisWidgetProps {
   onOpenSettings: () => void;
   onHide: () => void;
   onSendMessage: (message: string) => void;
+  onSendVoiceTranscript: (requestId: string, text: string) => Promise<void> | void;
   onCancelRequest: (requestId: string) => void;
   onConfirmAction: (action: PendingAction) => void;
   onRejectAction: (action: PendingAction) => void;
@@ -61,20 +62,21 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     if (!dragging) return; const element = widgetRef.current; if (element?.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId); setDragging(false); if (element) void updateWidgetPosition(clampWidgetPosition(positionFromRect(element.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight }), { width: window.innerWidth, height: window.innerHeight }, { width: element.offsetWidth, height: element.offsetHeight }));
   };
   const activeRequests = Object.values(props.requests).filter((request) => request.workspaceId === props.workspaceId && (request.status === "running" || request.status === "cancellation_requested")).length;
-  const statusText = !props.workspaceName ? "Seleziona una workspace" : activeRequests ? "Jarvis sta lavorando…" : "Pronto quando vuoi";
+  const speaking = props.ttsStatus.status === "synthesizing" || props.ttsStatus.status === "playing";
+  const statusText = !props.workspaceName ? "Seleziona una workspace" : speaking ? "Sto parlando…" : activeRequests ? "Jarvis sta lavorando…" : "Pronto quando vuoi";
 
   return (
     <div ref={widgetRef} className="fixed z-40 select-none" style={{ left: `${position.x * 100}%`, top: `${position.y * 100}%`, transform: "translate(-50%, -50%)", touchAction: "none" }}>
       <div className={expanded ? "w-[min(540px,calc(100vw-24px))] rounded-2xl border border-white/[0.1] bg-neutral-surface/95 shadow-xl backdrop-blur-xl" : "w-fit max-w-[calc(100vw-24px)] rounded-2xl border border-white/[0.1] bg-neutral-surface/95 shadow-xl backdrop-blur-xl"} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}>
         <div className="flex h-16 items-center gap-3 px-4" title="Trascina Jarvis">
-          <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} aria-label="Apri chat Jarvis"><JarvisOrb active={expanded || activeRequests > 0} /></button>
+          <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} aria-label="Apri chat Jarvis"><JarvisOrb active={expanded || activeRequests > 0 || speaking} /></button>
           <button type="button" data-jarvis-control onClick={() => setExpanded(!expanded)} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-semibold text-neutral-text">{statusText}</p><p className="truncate text-[11px] text-neutral-text-muted">{props.workspaceName ?? "Jarvis globale"}</p></button>
           <button type="button" data-jarvis-control onClick={() => { if (props.voiceRequest?.status === "recording") props.onVoiceStop(); else if (props.voiceRequest?.status === "transcribing" || props.voiceRequest?.status === "stopping") props.onVoiceCancel(); else props.onVoiceStart(); }} className="ui-icon-button h-9 w-9" title={props.voiceRequest?.status === "recording" ? "Ferma e trascrivi" : "Inizia registrazione"} aria-label={props.voiceRequest?.status === "recording" ? "Ferma e trascrivi" : "Inizia registrazione"}>{props.voiceRequest?.status === "recording" ? <MicOff size={16} className="text-danger" /> : <Mic size={16} className="text-neutral-text-muted" />}</button>
           <button type="button" data-jarvis-control onClick={props.onOpenSettings} className="ui-icon-button h-9 w-9" title="Impostazioni Jarvis" aria-label="Impostazioni Jarvis"><Settings size={16} /></button>
           <button type="button" data-jarvis-control onClick={props.onHide} className="ui-icon-button h-9 w-9" title="Nascondi Jarvis" aria-label="Nascondi Jarvis"><X size={17} /></button>
         </div>
       </div>
-      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} onSendMessage={props.onSendMessage} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} voiceRequest={props.voiceRequest} onVoiceDiscard={props.onVoiceDiscard} onVoiceCancel={props.onVoiceCancel} ttsStatus={props.ttsStatus} onStopTts={props.onStopTts} />}
+      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} onSendMessage={props.onSendMessage} onSendVoiceTranscript={props.onSendVoiceTranscript} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} voiceRequest={props.voiceRequest} onVoiceDiscard={props.onVoiceDiscard} onVoiceCancel={props.onVoiceCancel} ttsStatus={props.ttsStatus} onStopTts={props.onStopTts} />}
     </div>
   );
 }
