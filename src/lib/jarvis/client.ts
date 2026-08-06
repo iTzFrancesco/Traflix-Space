@@ -10,6 +10,7 @@ import type {
   ContextPackageV1,
   InvocationBinding,
   JarvisErrorEnvelope,
+  ModelContextViewV1,
   Provenance,
   RequestedDepth,
   TerminalSummary,
@@ -165,6 +166,48 @@ export function refreshContext(
         requestedDepth,
         targetTerminalId: invocation.targetTerminalId,
         targetAgentSessionId: invocation.targetAgentSessionId,
+      }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function buildModelContext(
+  requestedDepth: RequestedDepth = "summary",
+  requestedDocumentPaths: string[] = [],
+  targetTerminalId?: string,
+  targetAgentSessionId?: string,
+): Promise<ModelContextViewV1> {
+  const invocation = captureActiveWorkspace(targetTerminalId, targetAgentSessionId);
+  return invokeWithTimeout(
+    () =>
+      invoke<ModelContextViewV1>("jarvis_build_model_context", {
+        workspaceId: invocation.targetWorkspaceId,
+        requestId: invocation.requestId,
+        requestedDepth,
+        targetTerminalId: invocation.targetTerminalId,
+        targetAgentSessionId: invocation.targetAgentSessionId,
+        requestedDocumentPaths,
+      }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function refreshModelContext(
+  requestedDepth: RequestedDepth = "summary",
+  requestedDocumentPaths: string[] = [],
+  targetTerminalId?: string,
+  targetAgentSessionId?: string,
+): Promise<ModelContextViewV1> {
+  const invocation = captureActiveWorkspace(targetTerminalId, targetAgentSessionId);
+  return invokeWithTimeout(
+    () =>
+      invoke<ModelContextViewV1>("jarvis_refresh_model_context", {
+        workspaceId: invocation.targetWorkspaceId,
+        requestId: invocation.requestId,
+        requestedDepth,
+        targetTerminalId: invocation.targetTerminalId,
+        targetAgentSessionId: invocation.targetAgentSessionId,
+        requestedDocumentPaths,
       }),
     READ_TIMEOUT_MS,
   );

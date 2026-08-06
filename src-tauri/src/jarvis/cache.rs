@@ -1,5 +1,7 @@
-use crate::jarvis::documentation::{DocumentationCollector, DocumentationLimits, DocumentMetadata};
-use crate::jarvis::types::{CacheStatus, DocumentationContext, DocumentationEntry, OmittedDocument};
+use crate::jarvis::documentation::{DocumentMetadata, DocumentationCollector, DocumentationLimits};
+use crate::jarvis::types::{
+    CacheStatus, DocumentationContext, DocumentationEntry, OmittedDocument,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -50,9 +52,7 @@ impl ContextCache {
         let discovery = collector.discover_until(workspace_root, deadline, cancellation)?;
         let root = discovery.root.clone();
         let previous = self.workspaces.get(workspace_id).cloned();
-        let root_changed = previous
-            .as_ref()
-            .is_some_and(|entry| entry.root != root);
+        let root_changed = previous.as_ref().is_some_and(|entry| entry.root != root);
         let previous_documents = if root_changed {
             BTreeMap::new()
         } else {
@@ -109,7 +109,8 @@ impl ContextCache {
                             relative_path: discovered.relative_path,
                             reason: reason_for_error(&error),
                         });
-                        warnings.push("one or more Markdown documents could not be read".to_string());
+                        warnings
+                            .push("one or more Markdown documents could not be read".to_string());
                         continue;
                     }
                 }
@@ -139,10 +140,15 @@ impl ContextCache {
         };
 
         let revision = revision_for(&root, &documents);
-        let mut document_entries = documents.values().map(|cached| cached.entry.clone()).collect::<Vec<_>>();
+        let mut document_entries = documents
+            .values()
+            .map(|cached| cached.entry.clone())
+            .collect::<Vec<_>>();
         document_entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         omitted_documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        omitted_documents.dedup_by(|left, right| left.relative_path == right.relative_path && left.reason == right.reason);
+        omitted_documents.dedup_by(|left, right| {
+            left.relative_path == right.relative_path && left.reason == right.reason
+        });
         warnings.sort();
         warnings.dedup();
 

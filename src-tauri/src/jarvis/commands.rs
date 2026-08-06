@@ -1,8 +1,8 @@
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
-    ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, RequestedDepth, ToolEnvelope,
-    TerminalSummary, WorkspaceSummary, AgentMessage, AgentResult, AgentSessionContext,
-    AgentSessionRef,
+    AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
+    InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth, TerminalSummary,
+    ToolEnvelope, WorkspaceSummary,
 };
 use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::{WorkspaceConfig, WorkspaceRegistry};
@@ -15,7 +15,7 @@ pub async fn jarvis_workspace_list(
 ) -> Result<ToolEnvelope<Vec<WorkspaceSummary>>, JarvisErrorEnvelope> {
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
-    let workspaces = load_workspaces(workspace_registry, None, None, &observed_at).await?;
+    let workspaces = load_workspaces(&workspace_registry, None, None, &observed_at).await?;
     Ok(JarvisToolService::new(&app.state::<JarvisState>().broker)
         .workspace_list(&workspaces, &observed_at))
 }
@@ -29,14 +29,14 @@ pub async fn jarvis_terminal_list(
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
     let _workspace = load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
     )
     .await?;
     let manager = app.state::<TerminalManager>();
-    let terminals = list_terminals_for_workspace(manager, &workspace_id, &observed_at).await;
+    let terminals = list_terminals_for_workspace(&manager, &workspace_id, &observed_at).await;
     JarvisToolService::new(&app.state::<JarvisState>().broker).terminal_list(
         &workspace_id,
         terminals,
@@ -53,7 +53,7 @@ pub async fn jarvis_agent_list(
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
     load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
@@ -76,7 +76,7 @@ pub async fn jarvis_agent_get_status(
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
     load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
@@ -100,7 +100,7 @@ pub async fn jarvis_agent_get_last_result(
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
     load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
@@ -124,7 +124,7 @@ pub async fn jarvis_agent_get_messages(
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
     load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
@@ -180,6 +180,52 @@ pub async fn jarvis_refresh_context(
     .await
 }
 
+#[tauri::command]
+pub async fn jarvis_build_model_context(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+    requested_depth: RequestedDepth,
+    target_terminal_id: Option<String>,
+    target_agent_session_id: Option<String>,
+    requested_document_paths: Vec<String>,
+) -> Result<ModelContextViewV1, JarvisErrorEnvelope> {
+    build_model_context(
+        app,
+        workspace_id,
+        request_id,
+        requested_depth,
+        target_terminal_id,
+        target_agent_session_id,
+        requested_document_paths,
+        false,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn jarvis_refresh_model_context(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+    requested_depth: RequestedDepth,
+    target_terminal_id: Option<String>,
+    target_agent_session_id: Option<String>,
+    requested_document_paths: Vec<String>,
+) -> Result<ModelContextViewV1, JarvisErrorEnvelope> {
+    build_model_context(
+        app,
+        workspace_id,
+        request_id,
+        requested_depth,
+        target_terminal_id,
+        target_agent_session_id,
+        requested_document_paths,
+        true,
+    )
+    .await
+}
+
 async fn build_context(
     app: AppHandle,
     workspace_id: String,
@@ -208,20 +254,25 @@ async fn build_context(
     );
     let workspace_registry = app.state::<WorkspaceRegistry>();
     let workspace = load_workspace(
-        workspace_registry,
+        &workspace_registry,
         &workspace_id,
         Some(request_id.clone()),
         &invocation.created_at,
     )
     .await?;
     let manager = app.state::<TerminalManager>();
-    let terminals = list_terminals_for_workspace(manager, &workspace_id, &invocation.created_at).await;
+    let terminals =
+        list_terminals_for_workspace(&manager, &workspace_id, &invocation.created_at).await;
     if let Some(terminal_id) = target_terminal_id {
         let configured_terminal = workspace
             .terminals
             .iter()
             .any(|terminal| terminal.id == terminal_id);
-        if !configured_terminal && !terminals.iter().any(|terminal| terminal.terminal_id == terminal_id) {
+        if !configured_terminal
+            && !terminals
+                .iter()
+                .any(|terminal| terminal.terminal_id == terminal_id)
+        {
             return Err(JarvisErrorEnvelope::new(
                 "terminal_not_owned",
                 "terminal does not belong to target workspace",
@@ -238,6 +289,39 @@ async fn build_context(
     } else {
         service.build_context(&workspace, invocation, terminals, requested_depth)
     }
+}
+
+async fn build_model_context(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+    requested_depth: RequestedDepth,
+    target_terminal_id: Option<String>,
+    target_agent_session_id: Option<String>,
+    requested_document_paths: Vec<String>,
+    refresh: bool,
+) -> Result<ModelContextViewV1, JarvisErrorEnvelope> {
+    let package = build_context(
+        app,
+        workspace_id.clone(),
+        request_id.clone(),
+        requested_depth,
+        target_terminal_id,
+        target_agent_session_id,
+        refresh,
+    )
+    .await?;
+    package
+        .to_model_context_view(&requested_document_paths)
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "document_path_invalid",
+                "requested document path rejected by context policy",
+                Some(request_id),
+                Some(workspace_id),
+                package.documentation.generated_at.clone(),
+            )
+        })
 }
 
 async fn load_workspace(

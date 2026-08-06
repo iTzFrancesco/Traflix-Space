@@ -184,6 +184,8 @@ fn main() {
             jarvis::commands::jarvis_agent_get_messages,
             jarvis::commands::jarvis_build_context,
             jarvis::commands::jarvis_refresh_context,
+            jarvis::commands::jarvis_build_model_context,
+            jarvis::commands::jarvis_refresh_model_context,
             settings::commands::get_settings,
             settings::commands::set_settings,
             browser::browser_create,

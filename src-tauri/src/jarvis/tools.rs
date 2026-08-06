@@ -1,4 +1,4 @@
-use crate::jarvis::agent_adapter::{context_from_status, AgentContextSource};
+use crate::jarvis::agent_adapter::context_from_status;
 use crate::jarvis::context_broker::ContextBroker;
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
@@ -65,9 +65,18 @@ impl<'a> JarvisToolService<'a> {
         observed_at: &str,
     ) -> Result<ToolEnvelope<Vec<TerminalSummary>>, JarvisErrorEnvelope> {
         if workspace_id.trim().is_empty() {
-            return Err(error("workspace_id_required", "workspaceId is required", None, None, observed_at));
+            return Err(error(
+                "workspace_id_required",
+                "workspaceId is required",
+                None,
+                None,
+                observed_at,
+            ));
         }
-        if terminals.iter().any(|terminal| terminal.workspace_id != workspace_id) {
+        if terminals
+            .iter()
+            .any(|terminal| terminal.workspace_id != workspace_id)
+        {
             return Err(error(
                 "terminal_workspace_mismatch",
                 "terminal does not belong to workspace",
@@ -93,7 +102,9 @@ impl<'a> JarvisToolService<'a> {
             .broker
             .source()
             .list_sessions(workspace_id)
-            .map_err(|source| source_error(source, request_id.clone(), workspace_id, observed_at))?;
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
         Ok(ToolEnvelope {
             data: sessions,
             provenance: Provenance::trusted("agent-context-source", observed_at),
@@ -108,12 +119,15 @@ impl<'a> JarvisToolService<'a> {
         request_id: Option<String>,
         observed_at: &str,
     ) -> Result<ToolEnvelope<AgentSessionContext>, JarvisErrorEnvelope> {
-        let reference = self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
+        let reference =
+            self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
         let status = self
             .broker
             .source()
             .get_status(&reference)
-            .map_err(|source| source_error(source, request_id.clone(), workspace_id, observed_at))?;
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
         Ok(ToolEnvelope {
             data: context_from_status(reference, status),
             provenance: Provenance::trusted("agent-context-source", observed_at),
@@ -128,17 +142,22 @@ impl<'a> JarvisToolService<'a> {
         request_id: Option<String>,
         observed_at: &str,
     ) -> Result<ToolEnvelope<Option<AgentResult>>, JarvisErrorEnvelope> {
-        let reference = self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
+        let reference =
+            self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
         let status = self
             .broker
             .source()
             .get_status(&reference)
-            .map_err(|source| source_error(source, request_id.clone(), workspace_id, observed_at))?;
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
         let result = self
             .broker
             .source()
             .get_last_result(&reference)
-            .map_err(|source| source_error(source, request_id.clone(), workspace_id, observed_at))?;
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
         let mut warnings = status.warnings;
         if result.is_none()
             && status
@@ -162,7 +181,8 @@ impl<'a> JarvisToolService<'a> {
         request_id: Option<String>,
         observed_at: &str,
     ) -> Result<ToolEnvelope<Vec<AgentMessage>>, JarvisErrorEnvelope> {
-        let reference = self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
+        let reference =
+            self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
         let messages = self
             .broker
             .source()
@@ -203,8 +223,12 @@ impl<'a> JarvisToolService<'a> {
                 &invocation.created_at,
             ));
         }
-        self.broker
-            .build(invocation, std::path::Path::new(&workspace.root_path), terminals, requested_depth)
+        self.broker.build(
+            invocation,
+            std::path::Path::new(&workspace.root_path),
+            terminals,
+            requested_depth,
+        )
     }
 
     pub fn refresh_context(
@@ -235,8 +259,12 @@ impl<'a> JarvisToolService<'a> {
                 &invocation.created_at,
             ));
         }
-        self.broker
-            .refresh(invocation, std::path::Path::new(&workspace.root_path), terminals, requested_depth)
+        self.broker.refresh(
+            invocation,
+            std::path::Path::new(&workspace.root_path),
+            terminals,
+            requested_depth,
+        )
     }
 
     fn resolve_session(
@@ -250,7 +278,9 @@ impl<'a> JarvisToolService<'a> {
             .broker
             .source()
             .list_sessions(workspace_id)
-            .map_err(|source| source_error(source, request_id.clone(), workspace_id, observed_at))?;
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
         let reference = sessions
             .into_iter()
             .find(|session| session.agent_session_id == session_id)
@@ -258,7 +288,7 @@ impl<'a> JarvisToolService<'a> {
                 error(
                     "agent_session_not_owned",
                     "agent session does not belong to workspace",
-                    request_id,
+                    request_id.clone(),
                     Some(workspace_id.to_string()),
                     observed_at,
                 )
@@ -292,7 +322,11 @@ pub async fn list_terminals_for_workspace(
         if session.workspace_id.as_deref() != Some(workspace_id) {
             continue;
         }
-        let cwd = session.cwd.lock().map(|cwd| cwd.clone()).unwrap_or_default();
+        let cwd = session
+            .cwd
+            .lock()
+            .map(|cwd| cwd.clone())
+            .unwrap_or_default();
         terminals.push(TerminalSummary {
             terminal_id: session.id.clone(),
             workspace_id: workspace_id.to_string(),

@@ -119,8 +119,13 @@ impl DocumentationCollector {
 
         let candidate = canonical_root.join(relative);
         let discovered = self.discover_candidate(&canonical_root, &candidate, relative_path)?;
-        self.read_until(&discovered, self.limits.max_bytes_per_document, Instant::now() + self.limits.timeout, None)
-            .map(|document| document.entry)
+        self.read_until(
+            &discovered,
+            self.limits.max_bytes_per_document,
+            Instant::now() + self.limits.timeout,
+            None,
+        )
+        .map(|document| document.entry)
     }
 
     pub fn discover(&self, root: &Path) -> Result<DiscoveryResult, DocumentationError> {
@@ -149,8 +154,12 @@ impl DocumentationCollector {
             cancellation,
             &mut result,
         )?;
-        result.documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        result.omitted_documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        result
+            .documents
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        result
+            .omitted_documents
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         result.warnings.sort();
         Ok(result)
     }
@@ -230,7 +239,12 @@ impl DocumentationCollector {
 
             if metadata.file_type().is_symlink() {
                 match fs::canonicalize(&path) {
-                    Ok(target) if target.starts_with(root) && target.is_file() && is_markdown(&file_name) && !is_sensitive_file(&file_name) => {
+                    Ok(target)
+                        if target.starts_with(root)
+                            && target.is_file()
+                            && is_markdown(&file_name)
+                            && !is_sensitive_file(&file_name) =>
+                    {
                         if result.documents.len() >= self.limits.max_documents {
                             result.omitted_documents.push(OmittedDocument {
                                 relative_path: relative,
@@ -238,7 +252,9 @@ impl DocumentationCollector {
                             });
                             continue;
                         }
-                        match fs::metadata(&target).and_then(|target_metadata| self.document_metadata(&path, &target, &target_metadata)) {
+                        match fs::metadata(&target).and_then(|target_metadata| {
+                            self.document_metadata(&path, &target, &target_metadata)
+                        }) {
                             Ok(document_metadata) => result.documents.push(DiscoveredDocument {
                                 relative_path: relative,
                                 absolute_path: path,
@@ -289,10 +305,9 @@ impl DocumentationCollector {
                 continue;
             }
             if !is_markdown(&file_name) {
-                result.omitted_documents.push(OmittedDocument {
-                    relative_path: relative,
-                    reason: "non-Markdown file excluded".to_string(),
-                });
+                // Source, manifest, configuration and binary files are outside
+                // the automatic context by policy. Skip them without creating
+                // an unbounded diagnostic list for large repositories.
                 continue;
             }
             if result.documents.len() >= self.limits.max_documents {
@@ -352,7 +367,8 @@ impl DocumentationCollector {
             return Err(DocumentationError::NotMarkdown);
         }
         let metadata = fs::symlink_metadata(candidate).map_err(|_| DocumentationError::Io)?;
-        let canonical = fs::canonicalize(candidate).map_err(|_| DocumentationError::OutsideWorkspace)?;
+        let canonical =
+            fs::canonicalize(candidate).map_err(|_| DocumentationError::OutsideWorkspace)?;
         if !canonical.starts_with(root) || !canonical.is_file() {
             return Err(DocumentationError::OutsideWorkspace);
         }
@@ -368,7 +384,7 @@ impl DocumentationCollector {
 
     fn document_metadata(
         &self,
-        path: &Path,
+        _path: &Path,
         canonical: &Path,
         metadata: &Metadata,
     ) -> io::Result<DocumentMetadata> {
@@ -430,7 +446,10 @@ fn check_budget(
     deadline: Instant,
     cancellation: Option<&CancellationToken>,
 ) -> Result<(), DocumentationError> {
-    if cancellation.map(|token| token.is_cancelled()).unwrap_or(false) {
+    if cancellation
+        .map(|token| token.is_cancelled())
+        .unwrap_or(false)
+    {
         return Err(DocumentationError::Cancelled);
     }
     if Instant::now() >= deadline {

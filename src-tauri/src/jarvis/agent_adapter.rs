@@ -2,7 +2,9 @@ use crate::jarvis::types::{
     AgentCompletionNotification, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
     AgentState, AgentTurnContext, Provenance,
 };
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +35,18 @@ pub struct AgentStatusSnapshot {
 
 pub trait AgentContextSource: Send + Sync {
     fn list_sessions(&self, workspace_id: &str) -> Result<Vec<AgentSessionRef>, AgentSourceError>;
-    fn get_status(&self, session: &AgentSessionRef) -> Result<AgentStatusSnapshot, AgentSourceError>;
-    fn get_last_result(&self, session: &AgentSessionRef) -> Result<Option<AgentResult>, AgentSourceError>;
-    fn get_messages(&self, session: &AgentSessionRef) -> Result<Vec<AgentMessage>, AgentSourceError>;
+    fn get_status(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<AgentStatusSnapshot, AgentSourceError>;
+    fn get_last_result(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<Option<AgentResult>, AgentSourceError>;
+    fn get_messages(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<Vec<AgentMessage>, AgentSourceError>;
 }
 
 #[derive(Default)]
@@ -46,16 +57,31 @@ impl AgentContextSource for EmptyAgentContextSource {
         Ok(Vec::new())
     }
 
-    fn get_status(&self, _session: &AgentSessionRef) -> Result<AgentStatusSnapshot, AgentSourceError> {
-        Err(AgentSourceError::unavailable("no live agent source configured"))
+    fn get_status(
+        &self,
+        _session: &AgentSessionRef,
+    ) -> Result<AgentStatusSnapshot, AgentSourceError> {
+        Err(AgentSourceError::unavailable(
+            "no live agent source configured",
+        ))
     }
 
-    fn get_last_result(&self, _session: &AgentSessionRef) -> Result<Option<AgentResult>, AgentSourceError> {
-        Err(AgentSourceError::unavailable("no live agent source configured"))
+    fn get_last_result(
+        &self,
+        _session: &AgentSessionRef,
+    ) -> Result<Option<AgentResult>, AgentSourceError> {
+        Err(AgentSourceError::unavailable(
+            "no live agent source configured",
+        ))
     }
 
-    fn get_messages(&self, _session: &AgentSessionRef) -> Result<Vec<AgentMessage>, AgentSourceError> {
-        Err(AgentSourceError::unavailable("no live agent source configured"))
+    fn get_messages(
+        &self,
+        _session: &AgentSessionRef,
+    ) -> Result<Vec<AgentMessage>, AgentSourceError> {
+        Err(AgentSourceError::unavailable(
+            "no live agent source configured",
+        ))
     }
 }
 
@@ -89,7 +115,10 @@ impl FakeAgentContextSource {
         }
     }
 
-    fn find(&self, reference: &AgentSessionRef) -> Result<FakeAgentSessionFixture, AgentSourceError> {
+    fn find(
+        &self,
+        reference: &AgentSessionRef,
+    ) -> Result<FakeAgentSessionFixture, AgentSourceError> {
         let sessions = self
             .sessions
             .lock()
@@ -125,7 +154,10 @@ impl AgentContextSource for FakeAgentContextSource {
         Ok(result)
     }
 
-    fn get_status(&self, session: &AgentSessionRef) -> Result<AgentStatusSnapshot, AgentSourceError> {
+    fn get_status(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<AgentStatusSnapshot, AgentSourceError> {
         let fixture = self.find(session)?;
         Ok(AgentStatusSnapshot {
             objective: fixture.objective,
@@ -138,11 +170,17 @@ impl AgentContextSource for FakeAgentContextSource {
         })
     }
 
-    fn get_last_result(&self, session: &AgentSessionRef) -> Result<Option<AgentResult>, AgentSourceError> {
+    fn get_last_result(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<Option<AgentResult>, AgentSourceError> {
         Ok(self.find(session)?.last_result)
     }
 
-    fn get_messages(&self, session: &AgentSessionRef) -> Result<Vec<AgentMessage>, AgentSourceError> {
+    fn get_messages(
+        &self,
+        session: &AgentSessionRef,
+    ) -> Result<Vec<AgentMessage>, AgentSourceError> {
         Ok(self.find(session)?.messages)
     }
 }

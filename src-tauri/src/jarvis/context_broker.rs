@@ -1,4 +1,6 @@
-use crate::jarvis::agent_adapter::{context_from_status, AgentContextSource, EmptyAgentContextSource};
+use crate::jarvis::agent_adapter::{
+    context_from_status, AgentContextSource, EmptyAgentContextSource,
+};
 use crate::jarvis::cache::ContextCache;
 use crate::jarvis::documentation::{DocumentationError, DocumentationLimits};
 use crate::jarvis::types::{
@@ -50,7 +52,10 @@ impl ContextBroker {
         }
     }
 
-    pub fn with_source_and_clock(source: Arc<dyn AgentContextSource>, clock: Arc<dyn Clock>) -> Self {
+    pub fn with_source_and_clock(
+        source: Arc<dyn AgentContextSource>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             source,
             clock,
@@ -82,7 +87,13 @@ impl ContextBroker {
         let cache_output = self
             .cache
             .lock()
-            .map_err(|_| self.error("cache_unavailable", "context cache unavailable", &invocation))?
+            .map_err(|_| {
+                self.error(
+                    "cache_unavailable",
+                    "context cache unavailable",
+                    &invocation,
+                )
+            })?
             .build(
                 &invocation.target_workspace_id,
                 workspace_root,
@@ -134,7 +145,10 @@ impl ContextBroker {
                     last_result: None,
                     completion_notification: None,
                     messages: None,
-                    provenance: crate::jarvis::types::Provenance::trusted("agent-context-source", &generated_at),
+                    provenance: crate::jarvis::types::Provenance::trusted(
+                        "agent-context-source",
+                        &generated_at,
+                    ),
                     confidence: 0.0,
                     warnings: vec![format!("agent status unavailable: {}", error.code)],
                 },
@@ -149,7 +163,9 @@ impl ContextBroker {
                                 .as_ref()
                                 .is_some_and(|notification| !notification.result_available)
                         {
-                            context.warnings.push("completion observed, result unavailable".to_string());
+                            context
+                                .warnings
+                                .push("completion observed, result unavailable".to_string());
                         }
                         context.last_result = result;
                     }
@@ -192,6 +208,16 @@ impl ContextBroker {
         terminals: Vec<TerminalSummary>,
         requested_depth: RequestedDepth,
     ) -> Result<ContextPackageV1, crate::jarvis::types::JarvisErrorEnvelope> {
+        self.build(invocation, workspace_root, terminals, requested_depth)
+    }
+
+    pub fn force_rebuild(
+        &self,
+        invocation: InvocationBinding,
+        workspace_root: &Path,
+        terminals: Vec<TerminalSummary>,
+        requested_depth: RequestedDepth,
+    ) -> Result<ContextPackageV1, crate::jarvis::types::JarvisErrorEnvelope> {
         self.invalidate(&invocation.target_workspace_id);
         self.build(invocation, workspace_root, terminals, requested_depth)
     }
@@ -206,18 +232,33 @@ impl ContextBroker {
         invocation: &InvocationBinding,
     ) -> crate::jarvis::types::JarvisErrorEnvelope {
         let (code, message) = match error {
-            DocumentationError::RootResolution => ("workspace_root_unavailable", "workspace root unavailable"),
-            DocumentationError::RootNotDirectory => ("workspace_root_invalid", "workspace root is not a directory"),
-            DocumentationError::PathTraversal => ("path_traversal", "path rejected by workspace policy"),
-            DocumentationError::OutsideWorkspace => ("path_outside_workspace", "path rejected by workspace policy"),
-            DocumentationError::Timeout => ("context_timeout", "documentation collection timed out"),
-            DocumentationError::Cancelled => ("context_cancelled", "documentation collection cancelled"),
+            DocumentationError::RootResolution => {
+                ("workspace_root_unavailable", "workspace root unavailable")
+            }
+            DocumentationError::RootNotDirectory => (
+                "workspace_root_invalid",
+                "workspace root is not a directory",
+            ),
+            DocumentationError::PathTraversal => {
+                ("path_traversal", "path rejected by workspace policy")
+            }
+            DocumentationError::OutsideWorkspace => (
+                "path_outside_workspace",
+                "path rejected by workspace policy",
+            ),
+            DocumentationError::Timeout => {
+                ("context_timeout", "documentation collection timed out")
+            }
+            DocumentationError::Cancelled => {
+                ("context_cancelled", "documentation collection cancelled")
+            }
             DocumentationError::NotMarkdown
             | DocumentationError::SensitivePath
             | DocumentationError::ExcludedPath
-            | DocumentationError::Io => {
-                ("documentation_unavailable", "documentation collection unavailable")
-            }
+            | DocumentationError::Io => (
+                "documentation_unavailable",
+                "documentation collection unavailable",
+            ),
         };
         self.error(code, message, invocation)
     }

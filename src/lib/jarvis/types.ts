@@ -52,6 +52,32 @@ export interface DocumentationContext {
   warnings: string[];
 }
 
+export interface DocumentationIndexEntry {
+  relativePath: string;
+  modifiedAt: string;
+  contentHash: string;
+  truncated: boolean;
+  untrusted: boolean;
+}
+
+export interface DocumentationSummary {
+  workspaceId: string;
+  revision: string;
+  cacheStatus: CacheStatus;
+  documentCount: number;
+  omittedCount: number;
+  truncatedCount: number;
+  warningCount: number;
+}
+
+export interface DocumentationExcerpt {
+  relativePath: string;
+  contentHash: string;
+  content: string;
+  truncated: boolean;
+  untrusted: boolean;
+}
+
 export interface TerminalSummary {
   terminalId: string;
   workspaceId: string;
@@ -130,6 +156,19 @@ export interface ContextPackageV1 {
   terminals: TerminalSummary[];
   agentSessions: AgentSessionContext[];
   requestedDepth: RequestedDepth;
+  warnings: string[];
+}
+
+export interface ModelContextViewV1 {
+  viewVersion: string;
+  invocation: InvocationBinding;
+  documentationSummary: DocumentationSummary;
+  documentIndex: DocumentationIndexEntry[];
+  documentationExcerpts: DocumentationExcerpt[];
+  terminals: TerminalSummary[];
+  agentSessions: AgentSessionContext[];
+  requestedDepth: RequestedDepth;
+  provenance: Provenance;
   warnings: string[];
 }
 
