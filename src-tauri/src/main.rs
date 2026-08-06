@@ -179,6 +179,7 @@ fn main() {
             jarvis::commands::jarvis_workspace_list,
             jarvis::commands::jarvis_terminal_list,
             jarvis::commands::jarvis_agent_list,
+            jarvis::commands::jarvis_agent_snapshot,
             jarvis::commands::jarvis_agent_get_status,
             jarvis::commands::jarvis_agent_get_last_result,
             jarvis::commands::jarvis_agent_get_messages,

@@ -4,6 +4,7 @@ pub mod cache;
 pub mod commands;
 pub mod context_broker;
 pub mod documentation;
+pub mod runtime_detector;
 pub mod tools;
 pub mod types;
 

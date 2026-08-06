@@ -131,6 +131,12 @@ export interface TerminalSummary {
   active: boolean;
   processAlive: boolean;
   agentId?: string;
+  configuredAgentId?: string;
+  observedProvider?: string;
+  resolvedProvider: string;
+  detectionSource: string;
+  detectionConfidence: number;
+  identityWarnings: string[];
   generation: number;
   provenance: Provenance;
 }
@@ -138,6 +144,13 @@ export interface TerminalSummary {
 export interface AgentSessionRef {
   agentSessionId: string;
   provider: string;
+  configuredAgentId?: string;
+  observedProvider?: string;
+  resolvedProvider: string;
+  detectionSource: string;
+  detectionConfidence: number;
+  identityWarnings: string[];
+  identityNeedsConfirmation: boolean;
   workspaceId: string;
   terminalId?: string;
   generation: number;
@@ -179,6 +192,13 @@ export interface AgentMessage {
 
 export interface AgentSessionContext {
   ref: AgentSessionRef;
+  configuredAgentId?: string;
+  observedProvider?: string;
+  resolvedProvider: string;
+  detectionSource: string;
+  detectionConfidence: number;
+  identityWarnings: string[];
+  identityNeedsConfirmation: boolean;
   objective?: string;
   state: AgentState;
   lastTurn?: AgentTurnContext;

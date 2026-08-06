@@ -34,6 +34,8 @@ pub struct AgentTurnCompletedEvent {
     pub kind: String,
     pub terminal_id: String,
     #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
     pub event_id: Option<String>,
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -83,8 +85,11 @@ impl AgentTurnCompletedEvent {
     fn dedupe_key(&self) -> Option<String> {
         if let Some(event_id) = self.event_id.as_deref().filter(|value| !value.is_empty()) {
             return Some(format!(
-                "event:{}:{}:{}",
-                self.terminal_id, self.provider, event_id
+                "event:{}:{}:{}:{}",
+                self.terminal_id,
+                self.generation.unwrap_or_default(),
+                self.provider,
+                event_id
             ));
         }
 
@@ -95,10 +100,19 @@ impl AgentTurnCompletedEvent {
         }
 
         Some(format!(
-            "{}:{}:{}:{}:{}",
-            self.terminal_id, self.provider, self.kind, session, turn
+            "{}:{}:{}:{}:{}:{}",
+            self.terminal_id,
+            self.generation.unwrap_or_default(),
+            self.provider,
+            self.kind,
+            session,
+            turn
         ))
     }
+}
+
+fn matches_terminal_generation(event_generation: Option<u64>, current_generation: u64) -> bool {
+    event_generation.is_none() || event_generation == Some(current_generation)
 }
 
 pub fn start_listener(app: AppHandle) {
@@ -233,6 +247,25 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
 
     if terminal_known {
         if let Ok(Some(snapshot)) = manager.get_agent_snapshot(&event.terminal_id).await {
+            if !matches_terminal_generation(event.generation, snapshot.generation) {
+                if let Some(event_generation) = event.generation {
+                    warn!(
+                        terminal_id = %event.terminal_id,
+                        event_generation,
+                        current_generation = snapshot.generation,
+                        "Agent completion ignored for stale terminal generation"
+                    );
+                }
+                return;
+            }
+            let _ = manager
+                .observe_agent_provider(
+                    &event.terminal_id,
+                    &event.provider,
+                    "completion-event",
+                    1.0,
+                )
+                .await;
             let observed_at = event
                 .occurred_at
                 .clone()
@@ -290,6 +323,7 @@ mod tests {
             provider: "codex".to_string(),
             kind: "turn_completed".to_string(),
             terminal_id: "terminal-1".to_string(),
+            generation: Some(1),
             event_id: Some("event-1".to_string()),
             workspace_id: None,
             provider_session_id: Some("session-1".to_string()),
@@ -303,7 +337,7 @@ mod tests {
     fn dedupe_key_prefers_explicit_event_id() {
         assert_eq!(
             event().dedupe_key().as_deref(),
-            Some("event:terminal-1:codex:event-1")
+            Some("event:terminal-1:1:codex:event-1")
         );
     }
 
@@ -313,5 +347,12 @@ mod tests {
         let key = event().dedupe_key().unwrap();
         assert!(registry.accept_once(key.clone()));
         assert!(!registry.accept_once(key));
+    }
+
+    #[test]
+    fn completion_generation_must_match_the_current_terminal_generation() {
+        assert!(matches_terminal_generation(Some(7), 7));
+        assert!(!matches_terminal_generation(Some(6), 7));
+        assert!(matches_terminal_generation(None, 7));
     }
 }

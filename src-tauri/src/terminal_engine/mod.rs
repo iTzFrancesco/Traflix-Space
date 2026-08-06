@@ -19,6 +19,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use tracing::info;
 
+use crate::jarvis::runtime_detector::{
+    detect_from_command, detect_from_process_tree, normalize_provider,
+};
 use crate::terminal_engine::scheduler::FrameScheduler;
 
 pub use crate::jarvis::agent_registry::{NormalizedTerminalText, TerminalAgentSnapshot};
@@ -137,6 +140,10 @@ impl TerminalManager {
                     session.generation = generation;
                     session.is_agent_terminal = config.agent_id.is_some();
                     session.agent_id = config.agent_id.clone();
+                    if session.agent_id.is_some() {
+                        session.detection_source = "configured-hint".to_string();
+                        session.detection_confidence = 0.65;
+                    }
                     session.workspace_id = config.workspace_id.clone();
                     slot.insert(Arc::new(RwLock::new(session)));
                     info!(terminal_id = %id, "Terminal session created");
@@ -184,16 +191,10 @@ impl TerminalManager {
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
+        let mut session = session.write().await;
         session.write(data)?;
-        let agent_snapshot = TerminalAgentSnapshot {
-            terminal_id: session.id.clone(),
-            workspace_id: session.workspace_id.clone().unwrap_or_default(),
-            is_agent_terminal: session.agent_id.is_some(),
-            agent_id: session.agent_id.clone(),
-            generation: session.generation,
-            process_alive: session.process_alive.load(Ordering::Acquire),
-        };
+        observe_runtime_identity(&mut session, data);
+        let agent_snapshot = snapshot_from_session(&session);
 
         // If the CWD was updated by a cd command detection, notify the frontend.
         if session.cwd_changed.swap(false, Ordering::Acquire) {
@@ -234,14 +235,8 @@ impl TerminalManager {
             .remove(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.1.write().await;
-        let agent_snapshot = TerminalAgentSnapshot {
-            terminal_id: session.id.clone(),
-            workspace_id: session.workspace_id.clone().unwrap_or_default(),
-            is_agent_terminal: session.agent_id.is_some(),
-            agent_id: session.agent_id.clone(),
-            generation: session.generation,
-            process_alive: false,
-        };
+        let mut agent_snapshot = snapshot_from_session(&session);
+        agent_snapshot.process_alive = false;
         session.kill();
         self.scheduler.lock().await.stop(id);
 
@@ -357,15 +352,49 @@ impl TerminalManager {
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
-        Ok(session.is_agent_terminal.then(|| TerminalAgentSnapshot {
-            terminal_id: session.id.clone(),
-            workspace_id: session.workspace_id.clone().unwrap_or_default(),
-            is_agent_terminal: true,
-            agent_id: session.agent_id.clone(),
-            generation: session.generation,
-            process_alive: session.process_alive.load(Ordering::Acquire),
-        }))
+        let mut session = session.write().await;
+        observe_runtime_identity(&mut session, &[]);
+        Ok(Some(snapshot_from_session(&session)))
+    }
+
+    pub async fn observe_agent_provider(
+        &self,
+        id: &str,
+        provider: &str,
+        source: &str,
+        confidence: f32,
+    ) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let mut session = session.write().await;
+        let current_priority = identity_source_priority(&session.detection_source);
+        if session.observed_provider.is_some()
+            && identity_source_priority(source) < current_priority
+        {
+            return Ok(());
+        }
+        let normalized = provider.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Ok(());
+        }
+        session.observed_provider = Some(normalized.clone());
+        session.detection_source = source.to_string();
+        session.detection_confidence = confidence;
+        session.is_agent_terminal = true;
+        if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
+            if configured != normalized {
+                push_identity_warning(
+                    &mut session.identity_warnings,
+                    &format!(
+                        "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                        configured, normalized
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     pub async fn list_agent_snapshots(&self) -> Vec<TerminalAgentSnapshot> {
@@ -376,16 +405,10 @@ impl TerminalManager {
             .collect::<Vec<_>>();
         let mut snapshots = Vec::new();
         for session in sessions {
-            let session = session.read().await;
+            let mut session = session.write().await;
+            observe_runtime_identity(&mut session, &[]);
             if session.is_agent_terminal {
-                snapshots.push(TerminalAgentSnapshot {
-                    terminal_id: session.id.clone(),
-                    workspace_id: session.workspace_id.clone().unwrap_or_default(),
-                    is_agent_terminal: true,
-                    agent_id: session.agent_id.clone(),
-                    generation: session.generation,
-                    process_alive: session.process_alive.load(Ordering::Acquire),
-                });
+                snapshots.push(snapshot_from_session(&session));
             }
         }
         snapshots.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
@@ -647,6 +670,67 @@ impl TerminalManager {
     #[allow(dead_code)]
     pub async fn stop_frame_scheduler(&self, id: &str) {
         self.scheduler.lock().await.stop(id);
+    }
+}
+
+fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
+    TerminalAgentSnapshot {
+        terminal_id: session.id.clone(),
+        workspace_id: session.workspace_id.clone().unwrap_or_default(),
+        is_agent_terminal: session.is_agent_terminal,
+        agent_id: session.agent_id.clone(),
+        observed_provider: session.observed_provider.clone(),
+        detection_source: session.detection_source.clone(),
+        detection_confidence: session.detection_confidence,
+        identity_warnings: session.identity_warnings.clone(),
+        generation: session.generation,
+        process_alive: session.process_alive.load(Ordering::Acquire),
+    }
+}
+
+fn observe_runtime_identity(session: &mut TerminalSession, input: &[u8]) {
+    let command_detection = std::str::from_utf8(input)
+        .ok()
+        .and_then(detect_from_command);
+    let detection = detect_from_process_tree(session.process_id).or(command_detection);
+    let Some(detection) = detection else {
+        return;
+    };
+    let current_priority = identity_source_priority(&session.detection_source);
+    let incoming_priority = identity_source_priority(&detection.source);
+    if session.observed_provider.is_some() && incoming_priority < current_priority {
+        return;
+    }
+    session.observed_provider = Some(detection.provider.clone());
+    session.detection_source = detection.source;
+    session.detection_confidence = detection.confidence;
+    session.is_agent_terminal = true;
+    if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
+        if configured != detection.provider {
+            push_identity_warning(
+                &mut session.identity_warnings,
+                &format!(
+                    "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                    configured, detection.provider
+                ),
+            );
+        }
+    }
+}
+
+fn identity_source_priority(source: &str) -> u8 {
+    match source {
+        "completion-event" => 5,
+        "process-tree" => 4,
+        "command-observed" => 3,
+        "configured-hint" => 2,
+        _ => 1,
+    }
+}
+
+fn push_identity_warning(warnings: &mut Vec<String>, warning: &str) {
+    if !warnings.iter().any(|existing| existing == warning) {
+        warnings.push(warning.to_string());
     }
 }
 

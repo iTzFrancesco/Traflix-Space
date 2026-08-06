@@ -100,6 +100,7 @@ $normalized = [ordered]@{
     provider = $Provider
     kind = $Kind
     terminalId = $TerminalId
+    generation = if ($env:TRAFLIX_TERMINAL_GENERATION) { [UInt64]$env:TRAFLIX_TERMINAL_GENERATION } else { $null }
     eventId = $eventId
     workspaceId = $env:TRAFLIX_WORKSPACE_ID
     providerSessionId = $sessionId

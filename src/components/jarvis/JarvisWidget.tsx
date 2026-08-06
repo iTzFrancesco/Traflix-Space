@@ -7,11 +7,14 @@ import { useJarvisStore } from "../../stores/jarvisStore";
 import type { AgentSessionContext, ModelContextViewV1, WidgetPosition } from "../../lib/jarvis/types";
 
 interface JarvisWidgetProps {
+  workspaceId: string | null;
   workspaceName: string | null;
   workspaceRoot: string | null;
   context: ModelContextViewV1 | null;
   contextStatus: "idle" | "loading" | "ready" | "unavailable";
+  contextError: string | null;
   sessions: AgentSessionContext[];
+  isRefreshing: boolean;
   otherWorkspaceAgentCount: number;
   onRefresh: () => void;
   onSelectSession: (session: AgentSessionContext) => void;
@@ -27,6 +30,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const muted = useJarvisStore((state) => state.settings.jarvis.muted);
   const selectedSessionId = useJarvisStore((state) => state.selectedAgentSessionId);
   const currentResult = useJarvisStore((state) => state.currentResult);
+  const currentResultSessionId = useJarvisStore((state) => state.currentResultSessionId);
   const currentResultLoading = useJarvisStore((state) => state.currentResultLoading);
   const currentError = useJarvisStore((state) => state.currentError);
   const setExpanded = useJarvisStore((state) => state.setExpanded);
@@ -100,8 +104,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   };
 
   const statusText = props.workspaceName
-    ? props.contextStatus === "loading"
-      ? "Loading workspace…"
+    ? props.isRefreshing
+      ? "Refreshing agent registry…"
       : props.sessions.some((session) => session.state === "working")
         ? `${props.sessions.filter((session) => session.state === "working").length} agents working`
         : props.sessions.some((session) => session.completionNotification?.resultAvailable)
@@ -152,16 +156,20 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
       {expanded && (
         <JarvisExpandedPanel
+          workspaceId={props.workspaceId}
           workspaceName={props.workspaceName}
           workspaceRoot={props.workspaceRoot}
           context={props.context}
           contextStatus={props.contextStatus}
+          contextError={props.contextError}
           sessions={props.sessions}
           selectedSessionId={selectedSessionId}
           currentResult={currentResult}
+          currentResultSessionId={currentResultSessionId}
           currentResultLoading={currentResultLoading}
           currentError={currentError}
           otherWorkspaceAgentCount={props.otherWorkspaceAgentCount}
+          isRefreshing={props.isRefreshing}
           onSelectSession={props.onSelectSession}
           onOpenTerminal={props.onOpenTerminal}
           onRefresh={props.onRefresh}

@@ -1,6 +1,7 @@
 use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
 use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::context_broker::ContextBroker;
+use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
     AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
     InvocationBinding, JarvisErrorEnvelope, Provenance, RequestedDepth, TerminalSummary,
@@ -115,6 +116,46 @@ impl<'a> JarvisToolService<'a> {
         Ok(ToolEnvelope {
             data: sessions,
             provenance: Provenance::trusted("agent-context-source", observed_at),
+            warnings: Vec::new(),
+        })
+    }
+
+    pub fn agent_snapshot(
+        &self,
+        workspace_id: &str,
+        request_id: Option<String>,
+        observed_at: &str,
+    ) -> Result<ToolEnvelope<Vec<AgentSessionContext>>, JarvisErrorEnvelope> {
+        let references = self
+            .broker
+            .source()
+            .list_sessions(workspace_id)
+            .map_err(|source| {
+                source_error(source, request_id.clone(), workspace_id, observed_at)
+            })?;
+        let mut sessions = Vec::with_capacity(references.len());
+        for reference in references {
+            let status = self
+                .broker
+                .source()
+                .get_status(&reference)
+                .map_err(|source| {
+                    source_error(source, request_id.clone(), workspace_id, observed_at)
+                })?;
+            let result = self
+                .broker
+                .source()
+                .get_last_result(&reference)
+                .map_err(|source| {
+                    source_error(source, request_id.clone(), workspace_id, observed_at)
+                })?;
+            let mut context = context_from_status(reference, status);
+            context.last_result = result;
+            sessions.push(context);
+        }
+        Ok(ToolEnvelope {
+            data: sessions,
+            provenance: Provenance::trusted("agent-registry", observed_at),
             warnings: Vec::new(),
         })
     }
@@ -342,6 +383,16 @@ pub async fn list_terminals_for_workspace(
             active: session.active,
             process_alive: session.process_alive.load(Ordering::Acquire),
             agent_id: session.agent_id.clone(),
+            configured_agent_id: session.agent_id.clone(),
+            observed_provider: session.observed_provider.clone(),
+            resolved_provider: session
+                .observed_provider
+                .clone()
+                .or_else(|| session.agent_id.as_deref().and_then(normalize_provider))
+                .unwrap_or_else(|| "terminal-agent".to_string()),
+            detection_source: session.detection_source.clone(),
+            detection_confidence: session.detection_confidence,
+            identity_warnings: session.identity_warnings.clone(),
             generation: session.generation,
             provenance: Provenance::trusted("terminal-manager", observed_at),
         });

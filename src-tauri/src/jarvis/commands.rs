@@ -68,6 +68,29 @@ pub async fn jarvis_agent_list(
 }
 
 #[tauri::command]
+pub async fn jarvis_agent_snapshot(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: Option<String>,
+) -> Result<ToolEnvelope<Vec<AgentSessionContext>>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    let workspace_registry = app.state::<WorkspaceRegistry>();
+    load_workspace(
+        &workspace_registry,
+        &workspace_id,
+        request_id.clone(),
+        &observed_at,
+    )
+    .await?;
+    reconcile_live_registry(&app, &observed_at).await;
+    JarvisToolService::new(&app.state::<JarvisState>().broker).agent_snapshot(
+        &workspace_id,
+        request_id,
+        &observed_at,
+    )
+}
+
+#[tauri::command]
 pub async fn jarvis_agent_get_status(
     app: AppHandle,
     workspace_id: String,

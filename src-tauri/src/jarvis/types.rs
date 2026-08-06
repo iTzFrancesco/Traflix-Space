@@ -154,15 +154,29 @@ pub struct TerminalSummary {
     pub active: bool,
     pub process_alive: bool,
     pub agent_id: Option<String>,
+    pub configured_agent_id: Option<String>,
+    pub observed_provider: Option<String>,
+    pub resolved_provider: String,
+    pub detection_source: String,
+    pub detection_confidence: f32,
+    pub identity_warnings: Vec<String>,
     pub generation: u64,
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionRef {
     pub agent_session_id: String,
+    /// Backwards-compatible alias for the provider shown by older clients.
     pub provider: String,
+    pub configured_agent_id: Option<String>,
+    pub observed_provider: Option<String>,
+    pub resolved_provider: String,
+    pub detection_source: String,
+    pub detection_confidence: f32,
+    pub identity_warnings: Vec<String>,
+    pub identity_needs_confirmation: bool,
     pub workspace_id: String,
     pub terminal_id: Option<String>,
     pub generation: u64,
@@ -228,6 +242,13 @@ pub struct AgentMessage {
 pub struct AgentSessionContext {
     #[serde(rename = "ref")]
     pub reference: AgentSessionRef,
+    pub configured_agent_id: Option<String>,
+    pub observed_provider: Option<String>,
+    pub resolved_provider: String,
+    pub detection_source: String,
+    pub detection_confidence: f32,
+    pub identity_warnings: Vec<String>,
+    pub identity_needs_confirmation: bool,
     pub objective: Option<String>,
     pub state: AgentState,
     pub last_turn: Option<AgentTurnContext>,

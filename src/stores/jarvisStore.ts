@@ -5,8 +5,10 @@ import {
   setSettings as persistSettings,
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
+import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
 import type {
   AgentResult,
+  AgentSessionContext,
   AppSettings,
   ModelContextViewV1,
   WidgetPosition,
@@ -25,6 +27,9 @@ interface JarvisStore {
   selectedAgentSessionId: string | null;
   context: ModelContextViewV1 | null;
   contextStatus: JarvisContextStatus;
+  contextError: string | null;
+  registrySessions: AgentSessionContext[];
+  isRefreshing: boolean;
   currentResult: AgentResult | null;
   currentResultSessionId: string | null;
   currentResultLoading: boolean;
@@ -52,6 +57,9 @@ interface JarvisStore {
     status: JarvisContextStatus,
     error?: string | null,
   ) => void;
+  setContextStatus: (status: JarvisContextStatus, error?: string | null) => void;
+  setRegistrySessions: (sessions: AgentSessionContext[]) => void;
+  setRefreshing: (refreshing: boolean) => void;
   setResult: (sessionId: string, result: AgentResult | null) => void;
   setResultLoading: (loading: boolean) => void;
   setCurrentError: (error: string | null) => void;
@@ -77,6 +85,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   selectedAgentSessionId: null,
   context: null,
   contextStatus: "idle",
+  contextError: null,
+  registrySessions: [],
+  isRefreshing: false,
   currentResult: null,
   currentResultSessionId: null,
   currentResultLoading: false,
@@ -159,7 +170,36 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       currentError: null,
     }),
   setContext: (context, contextStatus, error = null) =>
-    set({ context, contextStatus, currentError: error }),
+    set((state) => ({
+      context: context ?? state.context,
+      contextStatus,
+      contextError: error,
+    })),
+  setContextStatus: (contextStatus, error = null) =>
+    set({ contextStatus, contextError: error }),
+  setRegistrySessions: (sessions) =>
+    set((state) => {
+      const next = applyRegistrySnapshot(
+        {
+          sessions: state.registrySessions,
+          selectedSessionId: state.selectedAgentSessionId,
+          currentResult: state.currentResult,
+          currentResultSessionId: state.currentResultSessionId,
+          currentResultLoading: state.currentResultLoading,
+          currentError: state.currentError,
+        },
+        sessions,
+      );
+      return {
+        registrySessions: next.sessions,
+        selectedAgentSessionId: next.selectedSessionId,
+        currentResult: next.currentResult,
+        currentResultSessionId: next.currentResultSessionId,
+        currentResultLoading: next.currentResultLoading,
+        currentError: next.currentError,
+      };
+    }),
+  setRefreshing: (isRefreshing) => set({ isRefreshing }),
   setResult: (sessionId, result) =>
     set({
       currentResultSessionId: sessionId,
@@ -180,6 +220,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     });
     try {
       const envelope = await agentGetLastResult(workspaceId, sessionId);
+      if (get().currentResultSessionId !== sessionId) return;
       set({
         currentResult: envelope.data,
         currentResultLoading: false,
@@ -187,8 +228,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
           envelope.warnings.length > 0 ? envelope.warnings.join(" · ") : null,
       });
     } catch (error) {
+      if (get().currentResultSessionId !== sessionId) return;
       set({
-        currentResult: null,
         currentResultLoading: false,
         currentError: errorMessage(error),
       });

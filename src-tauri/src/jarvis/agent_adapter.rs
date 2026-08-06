@@ -246,6 +246,13 @@ pub fn context_from_status(
     status: AgentStatusSnapshot,
 ) -> AgentSessionContext {
     AgentSessionContext {
+        configured_agent_id: reference.configured_agent_id.clone(),
+        observed_provider: reference.observed_provider.clone(),
+        resolved_provider: reference.resolved_provider.clone(),
+        detection_source: reference.detection_source.clone(),
+        detection_confidence: reference.detection_confidence,
+        identity_warnings: reference.identity_warnings.clone(),
+        identity_needs_confirmation: reference.identity_needs_confirmation,
         reference,
         objective: status.objective,
         state: status.state,

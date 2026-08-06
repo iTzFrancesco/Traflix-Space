@@ -86,6 +86,20 @@ export function agentList(
   );
 }
 
+export function agentSnapshot(
+  workspaceId: string,
+  requestId = crypto.randomUUID(),
+): Promise<ToolEnvelope<AgentSessionContext[]>> {
+  return invokeWithTimeout(
+    () =>
+      invoke<ToolEnvelope<AgentSessionContext[]>>("jarvis_agent_snapshot", {
+        workspaceId,
+        requestId,
+      }),
+    READ_TIMEOUT_MS,
+  );
+}
+
 export function agentGetStatus(
   workspaceId: string,
   agentSessionId: string,

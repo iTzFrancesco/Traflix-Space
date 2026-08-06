@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import {
   agentList,
+  agentSnapshot,
   buildModelContext,
 } from "../../lib/jarvis/client";
 import { SettingsModal } from "../layout/SettingsModal";
@@ -20,38 +21,61 @@ export function JarvisGlobalOverlay() {
   const settingsOpen = useJarvisStore((state) => state.settingsOpen);
   const context = useJarvisStore((state) => state.context);
   const contextStatus = useJarvisStore((state) => state.contextStatus);
-  const selectedAgentSessionId = useJarvisStore((state) => state.selectedAgentSessionId);
+  const contextError = useJarvisStore((state) => state.contextError);
+  const registrySessions = useJarvisStore((state) => state.registrySessions);
+  const isRefreshing = useJarvisStore((state) => state.isRefreshing);
   const setContext = useJarvisStore((state) => state.setContext);
-  const clearResult = useJarvisStore((state) => state.clearResult);
+  const setContextStatus = useJarvisStore((state) => state.setContextStatus);
+  const setRegistrySessions = useJarvisStore((state) => state.setRegistrySessions);
+  const setRefreshing = useJarvisStore((state) => state.setRefreshing);
+  const setResult = useJarvisStore((state) => state.setResult);
   const setSelectedAgentSessionId = useJarvisStore((state) => state.setSelectedAgentSessionId);
   const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const setRegistryRefreshTimestamp = useJarvisStore((state) => state.setRegistryRefreshTimestamp);
   const otherWorkspaceAgentCount = useJarvisStore((state) => state.otherWorkspaceAgentCount);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const loadLastResult = useJarvisStore((state) => state.loadLastResult);
-  const sessions = context?.agentSessions ?? [];
+  const registryRequestRef = useRef(0);
+  const sessions = registrySessions;
   const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
 
-  const refresh = useCallback(async () => {
-    const targetWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+  const refreshRegistry = useCallback(async (targetWorkspaceId: string | null = useWorkspaceStore.getState().activeWorkspaceId) => {
     if (!targetWorkspaceId) {
-      setContext(null, "ready");
+      setRegistrySessions([]);
       return;
     }
+    const requestNumber = ++registryRequestRef.current;
+    setRefreshing(true);
+    try {
+      const snapshot = await agentSnapshot(targetWorkspaceId);
+      if (requestNumber !== registryRequestRef.current) return;
+      if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
+      setRegistrySessions(snapshot.data);
+      setRegistryRefreshTimestamp(new Date().toISOString());
+    } catch (error) {
+      console.warn("[jarvis] agent registry refresh failed", error);
+    } finally {
+      if (requestNumber === registryRequestRef.current) setRefreshing(false);
+    }
+  }, [setRegistryRefreshTimestamp, setRefreshing, setRegistrySessions]);
 
-    setContext(null, "loading");
-    const requestStartedAt = new Date().toISOString();
+  const refreshContext = useCallback(async () => {
+    const targetWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!targetWorkspaceId) return;
+    setContextStatus("loading");
     try {
       const modelContext = await buildModelContext("summary");
       if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
       setContext(modelContext, "ready");
-      setRegistryRefreshTimestamp(requestStartedAt);
     } catch (error) {
       if (useWorkspaceStore.getState().activeWorkspaceId !== targetWorkspaceId) return;
       setContext(null, "unavailable", error instanceof Error ? error.message : String(error));
-      setRegistryRefreshTimestamp(requestStartedAt);
     }
-  }, [setContext, setRegistryRefreshTimestamp]);
+  }, [setContext, setContextStatus]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([refreshRegistry(), refreshContext()]);
+  }, [refreshContext, refreshRegistry]);
 
   useEffect(() => {
     void loadSettings();
@@ -59,29 +83,21 @@ export function JarvisGlobalOverlay() {
 
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
-    const unsubscribe = subscribeAgentTurnCompleted(() => void refresh());
+    void refreshContext();
+    void refreshRegistry();
+    const interval = window.setInterval(() => void refreshRegistry(), 5000);
+    const unsubscribe = subscribeAgentTurnCompleted(() => void refreshRegistry());
     return () => {
       window.clearInterval(interval);
       unsubscribe();
     };
-  }, [activeWorkspaceId, refresh, settings.jarvis.enabled]);
-
-  useEffect(() => {
-    if (
-      selectedAgentSessionId &&
-      !sessions.some((session) => session.ref.agentSessionId === selectedAgentSessionId)
-    ) {
-      setSelectedAgentSessionId(null);
-      clearResult();
-    }
-  }, [clearResult, selectedAgentSessionId, sessions, setSelectedAgentSessionId]);
+  }, [activeWorkspaceId, refreshContext, refreshRegistry, settings.jarvis.enabled]);
 
   useOtherWorkspaceAgentCount(activeWorkspaceId, workspaces.map((item) => item.id));
 
   const handleSelectSession = (session: AgentSessionContext) => {
     setSelectedAgentSessionId(session.ref.agentSessionId);
+    setResult(session.ref.agentSessionId, session.lastResult ?? null);
     if (activeWorkspaceId && session.ref.agentSessionId) {
       void loadLastResult(activeWorkspaceId, session.ref.agentSessionId);
     }
@@ -102,11 +118,14 @@ export function JarvisGlobalOverlay() {
   return (
     <>
       <JarvisWidget
+        workspaceId={activeWorkspaceId}
         workspaceName={workspace?.name ?? null}
         workspaceRoot={workspace?.rootPath ?? null}
         context={context}
         contextStatus={contextStatus}
+        contextError={contextError}
         sessions={sessions}
+        isRefreshing={isRefreshing}
         otherWorkspaceAgentCount={otherWorkspaceAgentCount}
         onRefresh={() => void refresh()}
         onSelectSession={handleSelectSession}

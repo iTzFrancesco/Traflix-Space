@@ -1,3 +1,4 @@
+use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
     AgentCompletionNotification, AgentResult, AgentSessionRef, AgentState, AgentTurnContext,
     Provenance,
@@ -6,13 +7,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 pub const MAX_TERMINAL_FALLBACK_BYTES: usize = 32 * 1024;
+const MAX_RETAINED_SESSIONS: usize = 256;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TerminalAgentSnapshot {
     pub terminal_id: String,
     pub workspace_id: String,
     pub is_agent_terminal: bool,
     pub agent_id: Option<String>,
+    pub observed_provider: Option<String>,
+    pub detection_source: String,
+    pub detection_confidence: f32,
+    pub identity_warnings: Vec<String>,
     pub generation: u64,
     pub process_alive: bool,
 }
@@ -56,6 +62,16 @@ struct AgentSessionRecord {
     warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedIdentity {
+    observed_provider: Option<String>,
+    resolved_provider: String,
+    detection_source: String,
+    detection_confidence: f32,
+    identity_warnings: Vec<String>,
+    identity_needs_confirmation: bool,
+}
+
 #[derive(Default)]
 pub struct AgentSessionRegistry {
     sessions: Mutex<HashMap<String, AgentSessionRecord>>,
@@ -71,15 +87,10 @@ impl AgentSessionRegistry {
         if terminal.workspace_id.trim().is_empty() {
             return None;
         }
-        if !terminal.is_agent_terminal {
+        if !terminal.is_agent_terminal && terminal.observed_provider.is_none() {
             return None;
         }
-        let provider = terminal
-            .agent_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("terminal-agent");
+        let identity = identity_from_snapshot(terminal);
 
         let Ok(mut sessions) = self.sessions.lock() else {
             return None;
@@ -95,7 +106,14 @@ impl AgentSessionRegistry {
             AgentSessionRecord {
                 reference: AgentSessionRef {
                     agent_session_id: session_id,
-                    provider: provider.to_string(),
+                    provider: identity.resolved_provider.clone(),
+                    configured_agent_id: terminal.agent_id.clone(),
+                    observed_provider: identity.observed_provider.clone(),
+                    resolved_provider: identity.resolved_provider.clone(),
+                    detection_source: identity.detection_source.clone(),
+                    detection_confidence: identity.detection_confidence,
+                    identity_warnings: identity.identity_warnings.clone(),
+                    identity_needs_confirmation: identity.identity_needs_confirmation,
                     workspace_id: terminal.workspace_id.clone(),
                     terminal_id: Some(terminal.terminal_id.clone()),
                     generation: terminal.generation,
@@ -111,10 +129,10 @@ impl AgentSessionRegistry {
                 last_result: None,
                 provenance: registry_provenance(observed_at),
                 confidence: 0.75,
-                warnings: Vec::new(),
+                warnings: identity.identity_warnings.clone(),
             }
         });
-        record.reference.provider = provider.to_string();
+        update_identity_from_snapshot(record, terminal, &identity);
         record.reference.updated_at = observed_at.to_string();
         record.state = if terminal.process_alive {
             match record.state {
@@ -124,7 +142,9 @@ impl AgentSessionRegistry {
         } else {
             AgentState::Exited
         };
-        Some(record.reference.clone())
+        let reference = record.reference.clone();
+        prune_sessions(&mut sessions);
+        Some(reference)
     }
 
     pub fn observe_input(&self, terminal: &TerminalAgentSnapshot, observed_at: &str) {
@@ -156,7 +176,12 @@ impl AgentSessionRegistry {
             }
         }
 
-        let reference = self.observe_terminal_started(terminal, observed_at);
+        let mut completion_terminal = terminal.clone();
+        completion_terminal.is_agent_terminal = true;
+        completion_terminal.observed_provider = normalize_observed_provider(&observation.provider);
+        completion_terminal.detection_source = "completion-event".to_string();
+        completion_terminal.detection_confidence = 1.0;
+        let reference = self.observe_terminal_started(&completion_terminal, observed_at);
         let Some(reference) = reference else {
             return false;
         };
@@ -169,9 +194,23 @@ impl AgentSessionRegistry {
 
         record.reference.provider_session_id = observation.provider_session_id.clone();
         record.reference.provider_turn_id = observation.provider_turn_id.clone();
-        if record.reference.provider == "terminal-agent" && !observation.provider.trim().is_empty()
-        {
-            record.reference.provider = observation.provider.trim().to_string();
+        if let Some(observed_provider) = normalize_observed_provider(&observation.provider) {
+            if let Some(configured) = record.reference.configured_agent_id.as_deref() {
+                if normalize_provider(configured).as_deref() != Some(observed_provider.as_str()) {
+                    let warning = format!(
+                        "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                        configured, observed_provider
+                    );
+                    push_warning(&mut record.reference.identity_warnings, &warning);
+                    push_warning(&mut record.warnings, &warning);
+                }
+            }
+            record.reference.observed_provider = Some(observed_provider.clone());
+            record.reference.resolved_provider = observed_provider.clone();
+            record.reference.provider = observed_provider;
+            record.reference.detection_source = "completion-event".to_string();
+            record.reference.detection_confidence = 1.0;
+            record.reference.identity_needs_confirmation = false;
         }
         record.reference.updated_at = observed_at.to_string();
         record.state = AgentState::Waiting;
@@ -188,8 +227,11 @@ impl AgentSessionRegistry {
             result_available: result.is_some(),
             untrusted: true,
         });
-        record.last_result = result;
-        if record.last_result.is_some() {
+        let result_available = result.is_some();
+        if result_available {
+            record.last_result = result;
+        }
+        if result_available {
             push_warning(
                 &mut record.warnings,
                 "Result captured from terminal fallback; structured messages unavailable",
@@ -200,6 +242,7 @@ impl AgentSessionRegistry {
                 "completion observed, result unavailable",
             );
         }
+        prune_sessions(&mut sessions);
         true
     }
 
@@ -219,14 +262,14 @@ impl AgentSessionRegistry {
 
     pub fn reconcile(&self, terminals: &[TerminalAgentSnapshot], observed_at: &str) {
         for terminal in terminals {
-            if terminal.is_agent_terminal {
+            if terminal.is_agent_terminal || terminal.observed_provider.is_some() {
                 self.observe_terminal_started(terminal, observed_at);
             }
         }
 
         let known: HashSet<(String, u64)> = terminals
             .iter()
-            .filter(|terminal| terminal.is_agent_terminal)
+            .filter(|terminal| terminal.is_agent_terminal || terminal.observed_provider.is_some())
             .map(|terminal| (terminal.terminal_id.clone(), terminal.generation))
             .collect();
         let Ok(mut sessions) = self.sessions.lock() else {
@@ -241,6 +284,7 @@ impl AgentSessionRegistry {
                 }
             }
         }
+        prune_sessions(&mut sessions);
     }
 
     pub fn list_sessions(
@@ -311,6 +355,145 @@ pub fn session_id_for(terminal: &TerminalAgentSnapshot) -> String {
         "agent-session:{}:{}",
         terminal.terminal_id, terminal.generation
     )
+}
+
+fn identity_from_snapshot(terminal: &TerminalAgentSnapshot) -> ResolvedIdentity {
+    let observed_provider = terminal
+        .observed_provider
+        .as_deref()
+        .and_then(normalize_observed_provider);
+    let configured_provider = terminal
+        .agent_id
+        .as_deref()
+        .and_then(|value| {
+            normalize_provider(value).or_else(|| Some(value.trim().to_ascii_lowercase()))
+        })
+        .filter(|value| !value.is_empty());
+    let (resolved_provider, detection_source, detection_confidence) =
+        if let Some(observed) = observed_provider.clone() {
+            (
+                observed,
+                if terminal.detection_source.trim().is_empty() {
+                    "runtime-detector".to_string()
+                } else {
+                    terminal.detection_source.clone()
+                },
+                terminal.detection_confidence.max(0.1),
+            )
+        } else if let Some(configured) = configured_provider {
+            (configured, "configured-hint".to_string(), 0.65)
+        } else {
+            ("terminal-agent".to_string(), "fallback".to_string(), 0.2)
+        };
+    let mut identity_warnings = terminal.identity_warnings.clone();
+    if let (Some(configured), Some(observed)) = (
+        terminal.agent_id.as_deref().and_then(normalize_provider),
+        observed_provider.as_deref(),
+    ) {
+        if configured != observed {
+            push_warning(
+                &mut identity_warnings,
+                &format!(
+                    "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                    configured, observed
+                ),
+            );
+        }
+    }
+    let identity_needs_confirmation = observed_provider.is_some()
+        && detection_source != "completion-event"
+        && detection_confidence < 0.75;
+    ResolvedIdentity {
+        observed_provider,
+        resolved_provider,
+        detection_source,
+        detection_confidence,
+        identity_warnings,
+        identity_needs_confirmation,
+    }
+}
+
+fn normalize_observed_provider(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(normalize_provider(value).unwrap_or_else(|| value.to_ascii_lowercase()))
+}
+
+fn identity_source_priority(source: &str) -> u8 {
+    match source {
+        "completion-event" => 5,
+        "process-tree" => 4,
+        "command-observed" => 3,
+        "configured-hint" => 2,
+        _ => 1,
+    }
+}
+
+fn update_identity_from_snapshot(
+    record: &mut AgentSessionRecord,
+    terminal: &TerminalAgentSnapshot,
+    identity: &ResolvedIdentity,
+) {
+    if record.reference.configured_agent_id.is_none() {
+        record.reference.configured_agent_id = terminal.agent_id.clone();
+    }
+    let current_priority = identity_source_priority(&record.reference.detection_source);
+    let incoming_priority = identity_source_priority(&identity.detection_source);
+    if incoming_priority >= current_priority
+        && (identity.observed_provider.is_some() || record.reference.observed_provider.is_none())
+    {
+        record.reference.observed_provider = identity.observed_provider.clone();
+        record.reference.resolved_provider = identity.resolved_provider.clone();
+        record.reference.provider = identity.resolved_provider.clone();
+        record.reference.detection_source = identity.detection_source.clone();
+        record.reference.detection_confidence = identity.detection_confidence;
+        record.reference.identity_needs_confirmation = identity.identity_needs_confirmation;
+    }
+    for warning in &identity.identity_warnings {
+        push_warning(&mut record.reference.identity_warnings, warning);
+        push_warning(&mut record.warnings, warning);
+    }
+}
+
+fn prune_sessions(sessions: &mut HashMap<String, AgentSessionRecord>) {
+    if sessions.len() <= MAX_RETAINED_SESSIONS {
+        return;
+    }
+    let mut latest_generation: HashMap<&str, u64> = HashMap::new();
+    for record in sessions.values() {
+        let Some(terminal_id) = record.reference.terminal_id.as_deref() else {
+            continue;
+        };
+        latest_generation
+            .entry(terminal_id)
+            .and_modify(|generation| *generation = (*generation).max(record.reference.generation))
+            .or_insert(record.reference.generation);
+    }
+    let mut candidates = sessions
+        .values()
+        .filter(|record| {
+            record.state == AgentState::Exited
+                && record
+                    .reference
+                    .terminal_id
+                    .as_deref()
+                    .and_then(|terminal_id| latest_generation.get(terminal_id))
+                    .is_some_and(|generation| *generation != record.reference.generation)
+        })
+        .map(|record| {
+            (
+                record.reference.updated_at.clone(),
+                record.reference.agent_session_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    let remove_count = sessions.len().saturating_sub(MAX_RETAINED_SESSIONS);
+    for (_, session_id) in candidates.into_iter().take(remove_count) {
+        sessions.remove(&session_id);
+    }
 }
 
 pub fn fallback_result_from_terminal(text: &str, observed_at: &str) -> Option<AgentResult> {
@@ -427,6 +610,10 @@ mod tests {
             workspace_id: "workspace-a".to_string(),
             is_agent_terminal: true,
             agent_id: Some("codex".to_string()),
+            observed_provider: None,
+            detection_source: "configured-hint".to_string(),
+            detection_confidence: 0.65,
+            identity_warnings: Vec::new(),
             generation,
             process_alive: alive,
         }
@@ -584,6 +771,122 @@ mod tests {
             .iter()
             .any(|warning| warning == "completion observed, result unavailable"));
         assert!(registry.last_result(&session).unwrap().is_none());
+    }
+
+    #[test]
+    fn observed_completion_provider_overrides_configured_hint_and_records_mismatch() {
+        let registry = AgentSessionRegistry::default();
+        let mut terminal = terminal(1, true);
+        terminal.agent_id = Some("pi".to_string());
+        registry.observe_terminal_started(&terminal, "before");
+        assert!(registry.observe_completion(
+            &terminal,
+            CompletionObservation {
+                provider: "codex".to_string(),
+                event_id: Some("codex-event".to_string()),
+                provider_session_id: None,
+                provider_turn_id: None,
+                occurred_at: None,
+            },
+            None,
+            "after",
+        ));
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(session.configured_agent_id.as_deref(), Some("pi"));
+        assert_eq!(session.observed_provider.as_deref(), Some("codex"));
+        assert_eq!(session.resolved_provider, "codex");
+        assert_eq!(session.detection_source, "completion-event");
+        assert!(session
+            .identity_warnings
+            .iter()
+            .any(|warning| warning.contains("configured agent 'pi'")));
+        registry.observe_terminal_started(&terminal, "later");
+        let session_after_refresh = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(session_after_refresh.resolved_provider, "codex");
+    }
+
+    #[test]
+    fn generic_terminal_is_promoted_by_runtime_observation() {
+        let registry = AgentSessionRegistry::default();
+        let mut terminal = terminal(1, true);
+        terminal.is_agent_terminal = false;
+        terminal.agent_id = None;
+        terminal.observed_provider = Some("freebuff".to_string());
+        terminal.detection_source = "command-observed".to_string();
+        terminal.detection_confidence = 0.8;
+        let reference = registry
+            .observe_terminal_started(&terminal, "now")
+            .expect("runtime detection promotes a generic terminal");
+        assert_eq!(reference.resolved_provider, "freebuff");
+        assert_eq!(reference.detection_source, "command-observed");
+    }
+
+    #[test]
+    fn providers_and_results_stay_isolated_by_terminal_and_generation() {
+        let registry = AgentSessionRegistry::default();
+        let mut codex = terminal(1, true);
+        codex.terminal_id = "codex-terminal".to_string();
+        let mut pi = terminal(1, true);
+        pi.terminal_id = "pi-terminal".to_string();
+        pi.agent_id = Some("pi".to_string());
+        registry.observe_terminal_started(&codex, "now");
+        registry.observe_terminal_started(&pi, "now");
+        assert!(registry.observe_completion(
+            &codex,
+            CompletionObservation {
+                provider: "codex".to_string(),
+                event_id: Some("codex-1".to_string()),
+                provider_session_id: None,
+                provider_turn_id: None,
+                occurred_at: None,
+            },
+            Some(super::super::types::AgentResult {
+                content: "codex result".to_string(),
+                truncated: false,
+                untrusted: true,
+                provenance: Provenance::untrusted("test", "now"),
+            }),
+            "now",
+        ));
+        assert!(registry.observe_completion(
+            &pi,
+            CompletionObservation {
+                provider: "pi".to_string(),
+                event_id: Some("pi-1".to_string()),
+                provider_session_id: None,
+                provider_turn_id: None,
+                occurred_at: None,
+            },
+            Some(super::super::types::AgentResult {
+                content: "pi result".to_string(),
+                truncated: false,
+                untrusted: true,
+                provenance: Provenance::untrusted("test", "now"),
+            }),
+            "now",
+        ));
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert_eq!(sessions.len(), 2);
+        for session in sessions {
+            let result = registry.last_result(&session).unwrap().unwrap();
+            if session.terminal_id.as_deref() == Some("codex-terminal") {
+                assert_eq!(result.content, "codex result");
+            } else {
+                assert_eq!(result.content, "pi result");
+            }
+        }
+    }
+
+    #[test]
+    fn pruning_is_bounded_and_keeps_the_current_generation() {
+        let registry = AgentSessionRegistry::default();
+        for generation in 1..=300 {
+            started(&registry, generation);
+        }
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert!(sessions.len() <= super::MAX_RETAINED_SESSIONS);
+        assert!(sessions.iter().any(|session| session.generation == 300));
     }
 
     #[test]

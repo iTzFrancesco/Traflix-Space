@@ -94,6 +94,13 @@ fn fake_session(
         reference: super::types::AgentSessionRef {
             agent_session_id: session_id.to_string(),
             provider: "fake".to_string(),
+            configured_agent_id: Some("fake".to_string()),
+            observed_provider: Some("fake".to_string()),
+            resolved_provider: "fake".to_string(),
+            detection_source: "test".to_string(),
+            detection_confidence: 1.0,
+            identity_warnings: Vec::new(),
+            identity_needs_confirmation: false,
             workspace_id: workspace_id.to_string(),
             terminal_id: Some(format!("terminal-{session_id}")),
             generation: 1,

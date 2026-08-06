@@ -24,6 +24,12 @@ pub struct TerminalSession {
     pub active: bool,
     #[allow(dead_code)]
     pub agent_id: Option<String>,
+    pub observed_provider: Option<String>,
+    pub detection_source: String,
+    pub detection_confidence: f32,
+    pub identity_warnings: Vec<String>,
+    pub last_observed_command: Option<String>,
+    pub process_id: Option<u32>,
     pub is_agent_terminal: bool,
     /// Owning workspace, if known. Injected into the PTY environment so the
     /// agent-event bridge reports the correct TRAFLIX_WORKSPACE_ID.
@@ -62,6 +68,12 @@ impl TerminalSession {
             parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
+            observed_provider: None,
+            detection_source: "fallback".to_string(),
+            detection_confidence: 0.2,
+            identity_warnings: Vec::new(),
+            last_observed_command: None,
+            process_id: None,
             is_agent_terminal: false,
             workspace_id: None,
             generation: 0,
@@ -109,6 +121,7 @@ impl TerminalSession {
             "TRAFLIX_AGENT_EVENT_PROTOCOL",
             AGENT_EVENT_PROTOCOL.to_string(),
         );
+        cmd.env("TRAFLIX_TERMINAL_GENERATION", self.generation.to_string());
         if let Some(bridge_path) = resolve_agent_bridge_path(&app) {
             let bridge_str = bridge_path.to_string_lossy().to_string();
             // Strip the Windows extended-length prefix (\\?\ and \\?\UNC\)
@@ -133,6 +146,7 @@ impl TerminalSession {
         })?;
 
         let child_killer = child.clone_killer();
+        self.process_id = child.process_id();
 
         let reader = pair.master.try_clone_reader().map_err(|e| {
             error!("Failed to get PTY reader: {}", e);
@@ -232,6 +246,10 @@ impl TerminalSession {
                             workspace_id: registry_workspace_id.clone(),
                             is_agent_terminal: true,
                             agent_id: registry_agent_id.clone(),
+                            observed_provider: None,
+                            detection_source: "fallback".to_string(),
+                            detection_confidence: 0.2,
+                            identity_warnings: Vec::new(),
                             generation: registry_generation,
                             process_alive: false,
                         },
@@ -298,6 +316,10 @@ impl TerminalSession {
                             workspace_id: registry_workspace_id_watch.clone(),
                             is_agent_terminal: true,
                             agent_id: registry_agent_id_watch.clone(),
+                            observed_provider: None,
+                            detection_source: "fallback".to_string(),
+                            detection_confidence: 0.2,
+                            identity_warnings: Vec::new(),
                             generation: registry_generation_watch,
                             process_alive: false,
                         },
