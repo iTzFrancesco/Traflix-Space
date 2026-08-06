@@ -176,6 +176,7 @@ pub struct OpenCodeZenProvider {
 #[derive(Debug, Clone)]
 struct BreakerState {
     until: Instant,
+    model_id: String,
     reason: FallbackReason,
 }
 
@@ -239,7 +240,7 @@ impl OpenCodeZenProvider {
         }
     }
 
-    fn breaker_reason(&self) -> Option<FallbackReason> {
+    fn breaker_reason(&self, model_id: &str) -> Option<FallbackReason> {
         let Ok(mut breaker) = self.breaker.lock() else {
             return None;
         };
@@ -250,19 +251,23 @@ impl OpenCodeZenProvider {
             *breaker = None;
             return None;
         }
+        if state.model_id != model_id {
+            return None;
+        }
         Some(state.reason.clone())
     }
 
-    fn open_breaker(&self, reason: FallbackReason) {
+    fn open_breaker(&self, model_id: &str, reason: FallbackReason) {
         if let Ok(mut breaker) = self.breaker.lock() {
             if breaker
                 .as_ref()
-                .is_some_and(|state| state.until > Instant::now())
+                .is_some_and(|state| state.until > Instant::now() && state.model_id == model_id)
             {
                 return;
             }
             *breaker = Some(BreakerState {
                 until: Instant::now() + PRIMARY_BREAKER,
+                model_id: model_id.to_string(),
                 reason,
             });
         }
@@ -333,7 +338,7 @@ impl OpenCodeZenProvider {
         if primary.is_empty() {
             return Err(ModelError::InvalidPayload);
         }
-        let primary_reason = self.breaker_reason();
+        let primary_reason = self.breaker_reason(&primary);
         let primary_result = if primary_reason.is_some() {
             Err(ModelError::ModelUnavailable)
         } else {
@@ -363,7 +368,7 @@ impl OpenCodeZenProvider {
                     return Err(error);
                 };
                 if primary_reason.is_none() && error == ModelError::ModelUnavailable {
-                    self.open_breaker(reason.clone());
+                    self.open_breaker(&primary, reason.clone());
                 }
                 if !request.settings.fallback_enabled
                     || request.settings.fallback_model.trim().is_empty()
@@ -390,9 +395,9 @@ impl OpenCodeZenProvider {
 impl JarvisModelProvider for OpenCodeZenProvider {
     fn status(&self, settings: &TextModelSettings) -> ProviderStatus {
         let breaker = self.breaker.lock().ok().and_then(|value| value.clone());
-        let active = breaker
-            .as_ref()
-            .filter(|value| value.until > Instant::now());
+        let active = breaker.as_ref().filter(|value| {
+            value.until > Instant::now() && value.model_id == settings.primary_model.trim()
+        });
         ProviderStatus {
             provider: ModelProvider::OpenCodeZen,
             primary_model: settings.primary_model.clone(),
@@ -691,6 +696,32 @@ mod tests {
             .until;
         assert!(second_deadline <= first_deadline);
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_primary_model_bypasses_breaker_for_the_old_model() {
+        let (addr, handle) = server(vec![
+            (404, r#"{"error":"model not found"}"#),
+            (200, ok("fallback")),
+            (200, ok("new primary")),
+        ])
+        .await;
+        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
+        provider
+            .complete(request(), CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut changed_request = request();
+        changed_request.settings.primary_model = "new-primary-model".into();
+        let result = provider
+            .complete(changed_request, CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result.model_used, "new-primary-model");
+        assert!(!result.fallback_used);
+        handle.abort();
     }
 
     #[tokio::test]

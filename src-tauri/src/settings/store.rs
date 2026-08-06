@@ -186,7 +186,9 @@ impl<'de> Deserialize<'de> for JarvisSettings {
                 text_model.fallback_model = default_fallback_model();
             }
         }
-        migrate_text_model(&mut text_model);
+        if !has_new_text_model {
+            migrate_text_model(&mut text_model);
+        }
         if !text_model.privacy_consent {
             text_model.privacy_consent_at = None;
         }
@@ -483,6 +485,20 @@ mod tests {
         assert_eq!(
             settings.jarvis.text_model.primary_model,
             "deepseek-enterprise-custom"
+        );
+    }
+
+    #[test]
+    fn serialized_new_text_model_preserves_explicit_deepseek_primary() {
+        let mut original = AppSettings::default();
+        original.jarvis.text_model.primary_model = "deepseek-v4-flash-free".to_string();
+
+        let serialized = serde_json::to_string(&original).unwrap();
+        let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            reloaded.jarvis.text_model.primary_model,
+            "deepseek-v4-flash-free"
         );
     }
 
