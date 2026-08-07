@@ -227,7 +227,22 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       set((state) => ({ conversation: mergeConversationMessages(state.conversation, [response.message]), pendingActions: mergeActions(state.pendingActions, response.pendingActions), uiIntents: [...state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), ...response.uiIntents], followUps: { ...state.followUps, [workspaceId]: response.followUps }, requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "completed" } }) }));
       const voiceSettings = get().settings.jarvis.voiceOutput;
       if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt) {
-        void ttsSpeak({ requestId: `tts-${response.message.id}`, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch }).then((status) => get().setTtsStatus(status)).catch(() => undefined);
+        const ttsRequestId = `tts-${response.message.id}`;
+        // Block the hands-free re-arm immediately. The backend emits the same
+        // synthesizing state, but setting it locally closes the small IPC gap
+        // between a completed chat response and the first TTS event.
+        get().setTtsStatus({ requestId: ttsRequestId, status: "synthesizing" });
+        void ttsSpeak({ requestId: ttsRequestId, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch })
+          .then((status) => get().setTtsStatus(status))
+          .catch((error) => {
+            const message = sanitizedVoiceError(error);
+            get().setTtsStatus({
+              requestId: ttsRequestId,
+              status: "failed",
+              error: { code: "tts_failed", message },
+            });
+            set({ voiceError: message });
+          });
       }
       return true;
     } catch (error) {
