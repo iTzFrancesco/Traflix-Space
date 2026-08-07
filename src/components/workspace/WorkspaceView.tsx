@@ -100,18 +100,27 @@ export function WorkspaceView() {
         terminalStore.markSpawned(terminal.id);
         terminalStore.markAgentLaunched(terminal.id);
 
+        // React state may not have committed a previous Jarvis-open event yet.
+        // For the focused workspace, the synchronous terminal ref is the
+        // authoritative event-to-event list so two rapid opens never drop the
+        // first pane from the visible grid.
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : loaded.terminals;
+
         // A restart reuses the existing configured pane. In that case only
         // refresh its runtime flags above; never duplicate the workspace item.
-        if (loaded.terminals.some((item) => item.id === terminal.id)) {
+        if (currentTerminals.some((item) => item.id === terminal.id)) {
           if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
             terminalStore.setActiveTerminal(terminal.id);
           }
           return;
         }
 
-        const nextTerminals = [...loaded.terminals, terminal];
+        const nextTerminals = [...currentTerminals, terminal];
         const nextLayout = computeLayout(nextTerminals.length);
-        if (workspaceTerminalsRef.current.workspaceId === workspaceId) {
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
           workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
         }
         setLoadedMap((previous) => {
@@ -136,8 +145,12 @@ export function WorkspaceView() {
         useTerminalStore.getState().removeTerminal(terminalId);
         const loaded = loadedMapRef.current.get(workspaceId);
         if (!loaded) return;
-        const nextTerminals = loaded.terminals.filter((item) => item.id !== terminalId);
-        if (workspaceTerminalsRef.current.workspaceId === workspaceId) {
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : loaded.terminals;
+        const nextTerminals = currentTerminals.filter((item) => item.id !== terminalId);
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
           workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
         }
         setLoadedMap((previous) => {
