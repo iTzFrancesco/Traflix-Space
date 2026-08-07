@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -16,8 +15,67 @@ use super::registry::{WorkspaceConfig, WorkspaceRegistry};
 fn normalize_windows_path(p: &str) -> String {
     let p = p.trim_start_matches("\\\\?\\");
     let p = p.trim_start_matches("\\\\.\\");
-    // `\\?\C:\...` dopo lo strip diventa `C:\...`, già corretto
     p.to_string()
+}
+
+fn canonical_directory(path: &str, label: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{} non specificata", label));
+    }
+    let canonical = std::fs::canonicalize(trimmed)
+        .map_err(|error| format!("{} non trovata: {} ({})", label, trimmed, error))?;
+    if !canonical.is_dir() {
+        return Err(format!("{} non è una cartella: {}", label, trimmed));
+    }
+    Ok(canonical)
+}
+
+/// Normalize a newly created workspace before it reaches the persistent
+/// registry. This keeps broken paths out of workspaces.json and binds each
+/// configured terminal to the workspace it belongs to.
+fn validate_new_workspace(config: &mut WorkspaceConfig) -> Result<(), String> {
+    if config.id.trim().is_empty() {
+        return Err("ID workspace non valido".to_string());
+    }
+    if config.name.trim().is_empty() {
+        return Err("Nome workspace non valido".to_string());
+    }
+    if config.terminals.is_empty() || config.terminals.len() > 8 {
+        return Err("Una workspace deve contenere da 1 a 8 terminali".to_string());
+    }
+
+    let root = canonical_directory(&config.root_path, "Cartella workspace")?;
+    config.root_path = normalize_windows_path(&root.to_string_lossy());
+
+    for terminal in &mut config.terminals {
+        if terminal.id.trim().is_empty() {
+            return Err("ID terminale non valido".to_string());
+        }
+        let cwd = if terminal.cwd.trim().is_empty() {
+            root.clone()
+        } else {
+            canonical_directory(&terminal.cwd, "Cartella terminale")?
+        };
+        terminal.cwd = normalize_windows_path(&cwd.to_string_lossy());
+        terminal.workspace_id = Some(config.id.clone());
+    }
+    Ok(())
+}
+
+fn preferred_default_workspace_path(home: &Path) -> PathBuf {
+    let preferred = home
+        .join("OneDrive")
+        .join("Documenti")
+        .join("developer")
+        .join("GitHub");
+    if preferred.is_dir() {
+        return preferred;
+    }
+    if home.is_dir() {
+        return home.to_path_buf();
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,11 +92,7 @@ pub async fn create_workspace(
     app: AppHandle,
     mut config: WorkspaceConfig,
 ) -> Result<WorkspaceConfig, String> {
-    // Normalizza tutti i path rimuovendo eventuale prefisso \\\?\ di Windows
-    config.root_path = normalize_windows_path(&config.root_path);
-    for term in &mut config.terminals {
-        term.cwd = normalize_windows_path(&term.cwd);
-    }
+    validate_new_workspace(&mut config)?;
 
     info!(name = %config.name, path = %config.root_path, "Creazione workspace");
 
@@ -83,10 +137,13 @@ pub async fn update_workspace(
         return Err("ID mismatch: url param differs from body".into());
     }
 
-    // Normalizza tutti i path rimuovendo eventuale prefisso \\\?\ di Windows
+    // Updates must remain possible even if a project folder was removed while
+    // Traflix Space was open (for example, to close stale terminals). Normalize
+    // persisted paths without imposing create-time existence checks.
     config.root_path = normalize_windows_path(&config.root_path);
     for term in &mut config.terminals {
         term.cwd = normalize_windows_path(&term.cwd);
+        term.workspace_id = Some(config.id.clone());
     }
 
     info!(%id, name = %config.name, "Aggiornamento workspace");
@@ -145,13 +202,10 @@ pub async fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> 
 pub async fn get_default_workspace_path() -> Result<String, String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Impossibile ottenere la home directory".to_string())?;
-    let default = PathBuf::from(&home)
-        .join("OneDrive")
-        .join("Documenti")
-        .join("developer")
-        .join("GitHub");
-    Ok(default.to_string_lossy().to_string())
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let default = preferred_default_workspace_path(&home);
+    Ok(normalize_windows_path(&default.to_string_lossy()))
 }
 
 #[tauri::command]
@@ -182,7 +236,7 @@ pub async fn navigate_folder(
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from(&home)),
         "." => base_path.clone(),
-        // Se il target contiene ":" (es. "C:") o inizia con "\\" è un path assoluto
+        // Se il target contiene ":" (es. "C:\") o inizia con "\\" è un path assoluto
         t if t.contains(":\\") || t.starts_with("\\") => PathBuf::from(t),
         t if t.starts_with("~/") || t.starts_with("~\\") => {
             let rel = &t[2..];
@@ -191,19 +245,16 @@ pub async fn navigate_folder(
         t => base_path.join(t),
     };
 
-    // Canonicalizza il path
     let canonical = std::fs::canonicalize(&resolved)
         .map_err(|e| format!("Percorso non trovato: {} ({})", resolved.display(), e))?;
 
     let canonical_str = normalize_windows_path(&canonical.to_string_lossy());
 
-    // Leggi il contenuto della directory
     let mut children: Vec<String> = Vec::new();
     if canonical.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&canonical) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                // Nascondi file/nascosti
                 if !name.starts_with('.') {
                     if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                         children.push(format!("{}/", name));
@@ -216,7 +267,6 @@ pub async fn navigate_folder(
         children.sort();
     }
 
-    // Anche il parent va normalizzato (viene da canonical)
     let parent = canonical
         .parent()
         .map(|p| normalize_windows_path(&p.to_string_lossy()));
@@ -241,20 +291,35 @@ pub async fn select_folder(app: AppHandle) -> Result<String, String> {
             let _ = tx.send(path);
         });
 
-    let file = tokio::time::timeout(Duration::from_secs(10), rx)
+    // A folder picker is a human interaction, not a network request. Do not
+    // expire it after an arbitrary ten seconds while the user is browsing.
+    let file = rx
         .await
-        .map_err(|_| "Dialog timeout: il dialog non ha risposto entro 10 secondi".to_string())?
-        .map_err(|_| "Dialog cancelled".to_string())?;
+        .map_err(|_| "Il selettore cartelle è stato chiuso in modo inatteso".to_string())?;
     match file {
         Some(path) => {
             let raw = path.to_string();
-            let normalized = normalize_windows_path(&raw);
+            let canonical = canonical_directory(&raw, "Cartella selezionata")?;
+            let normalized = normalize_windows_path(&canonical.to_string_lossy());
             info!(path = %normalized, "Cartella selezionata");
             Ok(normalized)
         }
         None => {
-            warn!("Nessuna cartella selezionata");
-            Err("Nessuna cartella selezionata".into())
+            info!("Selezione cartella annullata");
+            Err("folder-selection-cancelled".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preferred_default_workspace_path;
+    use std::path::Path;
+
+    #[test]
+    fn default_workspace_path_always_returns_an_existing_directory_candidate() {
+        let current = std::env::current_dir().unwrap();
+        let selected = preferred_default_workspace_path(Path::new(&current));
+        assert!(selected.is_dir());
     }
 }
