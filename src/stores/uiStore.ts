@@ -85,7 +85,6 @@ export const useUIStore = create<UIStore>()(
         const saved = (persisted ?? {}) as Partial<UIStore>;
         return {
           ...current,
-          ...saved,
           isCollapsed:
             typeof saved.isCollapsed === "boolean"
               ? saved.isCollapsed
