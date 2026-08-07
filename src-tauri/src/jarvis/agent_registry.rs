@@ -158,6 +158,10 @@ struct InputTracker {
     text: String,
     escape: Vec<u8>,
     bracketed_paste: bool,
+    /// Once cursor/editing semantics become unknowable, ignore the rest of
+    /// the line until the next Enter/Ctrl+C boundary. Resetting and then
+    /// collecting a suffix would fabricate a task that the user never typed.
+    unreliable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,17 +177,30 @@ impl InputTracker {
         self.text.clear();
         self.escape.clear();
         self.bracketed_paste = false;
+        self.unreliable = false;
+    }
+
+    fn invalidate_line(&mut self) {
+        self.text.clear();
+        self.escape.clear();
+        self.bracketed_paste = false;
+        self.unreliable = true;
     }
 
     fn pop_char(&mut self) {
-        self.text.pop();
+        if !self.unreliable {
+            self.text.pop();
+        }
     }
 
     fn push_char(&mut self, ch: char) {
+        if self.unreliable {
+            return;
+        }
         if self.text.len() + ch.len_utf8() > MAX_INPUT_BUFFER_BYTES {
-            // The line is too long to reconstruct reliably: drop it so we
-            // never invent a task from a truncated buffer.
-            self.reset();
+            // The line is too long to reconstruct reliably. Keep it invalid
+            // until a commit/reset boundary; never resume from a suffix.
+            self.invalidate_line();
             return;
         }
         self.text.push(ch);
@@ -193,8 +210,15 @@ impl InputTracker {
         if printable.is_empty() {
             return;
         }
+        if self.unreliable {
+            printable.clear();
+            return;
+        }
         for ch in String::from_utf8_lossy(&printable).chars() {
             self.push_char(ch);
+            if self.unreliable {
+                break;
+            }
         }
         printable.clear();
     }
@@ -213,10 +237,10 @@ impl InputTracker {
             _ => {
                 // Arrow keys, Home/End, Alt sequences and other editing move
                 // the cursor in ways this bounded tracker cannot reconstruct.
-                // The line becomes unreliable: drop it instead of inventing a
-                // task from an edited buffer.
+                // Invalidate the entire line until Enter/Ctrl+C instead of
+                // resetting and accidentally committing only a later suffix.
                 self.flush_printable(printable);
-                self.reset();
+                self.invalidate_line();
             }
         }
     }
@@ -225,12 +249,18 @@ impl InputTracker {
         let mut signals = Vec::new();
         let mut printable: Vec<u8> = Vec::new();
         for &byte in data {
+            if self.unreliable {
+                // A boundary makes the next line trustworthy again. Everything
+                // else belongs to the line we deliberately stopped tracking.
+                if matches!(byte, b'\r' | b'\n' | 0x03) {
+                    self.reset();
+                }
+                continue;
+            }
             if !self.escape.is_empty() {
                 self.escape.push(byte);
                 if self.escape.len() > 32 {
-                    self.escape.clear();
-                    self.flush_printable(&mut printable);
-                    self.reset();
+                    self.invalidate_line();
                 } else if self.escape.len() >= 3 && (0x40..=0x7e).contains(&byte) {
                     self.finish_escape(&mut printable);
                 }
@@ -244,13 +274,16 @@ impl InputTracker {
             match byte {
                 b'\r' | b'\n' => {
                     self.flush_printable(&mut printable);
-                    if self.bracketed_paste {
+                    if self.unreliable {
+                        self.reset();
+                    } else if self.bracketed_paste {
                         // Pasted content may contain newlines; the paste block
                         // commits only after its closing marker plus Enter.
                         self.text.push('\n');
                     } else if !self.text.is_empty() {
                         let text = std::mem::take(&mut self.text);
                         self.escape.clear();
+                        self.bracketed_paste = false;
                         signals.push(TrackerSignal::Committed(text));
                     } else {
                         self.escape.clear();
@@ -270,10 +303,10 @@ impl InputTracker {
                 }
                 _ if byte.is_ascii_control() => {
                     // Other control characters (e.g. Tab used for completion)
-                    // cannot be reconstructed faithfully: the line becomes
-                    // unreliable and is dropped.
+                    // cannot be reconstructed faithfully: invalidate the whole
+                    // line until the next boundary.
                     self.flush_printable(&mut printable);
-                    self.reset();
+                    self.invalidate_line();
                 }
                 _ => printable.push(byte),
             }
@@ -439,12 +472,11 @@ impl AgentSessionRegistry {
                     let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
                         continue;
                     };
-                    record.state = AgentState::Working;
                     record.reference.updated_at = observed_at.to_string();
                     record.last_activity_at = Some(observed_at.to_string());
                     if local_command {
-                        // Slash commands are real activity but never replace
-                        // the main task.
+                        // Slash commands are real activity but do not imply a
+                        // new work turn and never replace the main task/state.
                         record.push_activity(activity_event(
                             AgentActivityKind::PromptSubmitted,
                             AgentInteractionSource::User,
@@ -454,6 +486,7 @@ impl AgentSessionRegistry {
                             true,
                         ));
                     } else {
+                        record.state = AgentState::Working;
                         record.current_task = Some(AgentTaskContext {
                             text: bounded_task_text(&text),
                             source: AgentInteractionSource::User,
@@ -1323,7 +1356,7 @@ mod tests {
     use super::{
         fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation,
         TerminalAgentSnapshot, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT, MAX_ACTIVITY_TIMELINE,
-        MAX_TASK_TEXT_BYTES,
+        MAX_INPUT_BUFFER_BYTES, MAX_TASK_TEXT_BYTES,
     };
 
     fn terminal(generation: u64, alive: bool) -> TerminalAgentSnapshot {
@@ -1735,12 +1768,10 @@ mod tests {
         let terminal = terminal(1, true);
         started(&registry, 1);
 
-        // A partial line never becomes a task.
         registry.observe_user_input(&terminal, b"draft", "2026-08-07T00:00:00Z");
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
         assert!(registry.status(&session).unwrap().current_task.is_none());
 
-        // A send that never reached the PTY (failed pending action) leaves no task.
         let registry = AgentSessionRegistry::default();
         started(&registry, 1);
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
@@ -1776,6 +1807,38 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_cursor_edit_invalidates_the_whole_line_until_enter() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        registry.observe_user_input(&terminal, b"prefix\x1b[Dsuffix\r", "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+
+        commit(&registry, &terminal, "clean next task", "2026-08-07T00:01:00Z");
+        assert_eq!(
+            task_of(&registry.status(&session).unwrap()).text,
+            "clean next task"
+        );
+    }
+
+    #[test]
+    fn oversized_input_never_commits_a_truncated_suffix() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        let mut bytes = vec![b'x'; MAX_INPUT_BUFFER_BYTES + 64];
+        bytes.extend_from_slice(b"suffix\r");
+        registry.observe_user_input(&terminal, &bytes, "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+
+        commit(&registry, &terminal, "clean after overflow", "2026-08-07T00:01:00Z");
+        assert_eq!(
+            task_of(&registry.status(&session).unwrap()).text,
+            "clean after overflow"
+        );
+    }
+
+    #[test]
     fn ctrl_c_interrupts_without_inventing_a_task() {
         let registry = AgentSessionRegistry::default();
         let terminal = terminal(1, true);
@@ -1788,7 +1851,6 @@ mod tests {
             .iter()
             .any(|event| event.kind == AgentActivityKind::Interrupted));
 
-        // The tracker still works after the interruption.
         commit(&registry, &terminal, "next task", "2026-08-07T00:01:00Z");
         assert_eq!(
             task_of(&registry.status(&session).unwrap()).text,
@@ -1822,6 +1884,33 @@ mod tests {
     }
 
     #[test]
+    fn local_command_after_completion_preserves_waiting_state() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(&registry, &terminal, "real task", "2026-08-07T00:00:00Z");
+        assert!(registry.observe_completion(
+            &terminal,
+            CompletionObservation {
+                provider: "codex".to_string(),
+                event_id: Some("local-command-state".to_string()),
+                provider_session_id: None,
+                provider_turn_id: None,
+                occurred_at: None,
+            },
+            None,
+            "2026-08-07T00:01:00Z",
+        ));
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(registry.status(&session).unwrap().state, AgentState::Waiting);
+
+        commit(&registry, &terminal, "/model", "2026-08-07T00:02:00Z");
+        let status = registry.status(&session).unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
+        assert_eq!(task_of(&status).text, "real task");
+        assert_eq!(task_of(&status).completed_at.as_deref(), Some("2026-08-07T00:01:00Z"));
+    }
+
+    #[test]
     fn agent_launch_command_is_session_startup_not_a_task() {
         let registry = AgentSessionRegistry::default();
         let terminal = terminal(1, true);
@@ -1847,7 +1936,6 @@ mod tests {
         );
         assert!(registry.status(&session).unwrap().current_task.is_none());
 
-        // Within the 1s throttle the timestamp is not advanced.
         registry.observe_output("terminal-1", 1, "2026-08-07T00:00:00.500Z");
         assert_eq!(
             registry
@@ -1879,7 +1967,6 @@ mod tests {
         let task = task_of(&status);
         assert!(task.text.len() <= MAX_TASK_TEXT_BYTES);
 
-        // Flood the timeline beyond the bound.
         for index in 0..40 {
             registry.observe_jarvis_send(
                 &terminal,
@@ -1928,8 +2015,6 @@ mod tests {
         assert_eq!(task_of(&second_status).text, "task in generation 2");
         assert_eq!(first_status.state, AgentState::Exited);
 
-        // Workspace isolation: the activity lookup of session A rejects a
-        // reference forged for another workspace.
         let mut forged = sessions[0].clone();
         forged.workspace_id = "workspace-b".to_string();
         assert!(registry.activity(&forged, DEFAULT_ACTIVITY_LIMIT).is_err());
@@ -2005,7 +2090,6 @@ mod tests {
             "done"
         );
 
-        // A later task restarts the cycle; completion again marks it done.
         commit(&registry, &terminal, "second task", "2026-08-07T00:02:00Z");
         assert!(registry
             .status(&session)
