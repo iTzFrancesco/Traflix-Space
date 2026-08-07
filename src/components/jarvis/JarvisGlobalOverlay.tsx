@@ -72,6 +72,8 @@ export function JarvisGlobalOverlay() {
   const shortcutGenerationRef = useRef(0);
   const registryRequestRef = useRef(0);
   const resumeVoiceDraftRef = useRef<Set<string>>(new Set());
+  const settingsRecoveryDraftRef = useRef<Set<string>>(new Set());
+  const settingsWasOpenRef = useRef(settingsOpen);
   const workspace = workspaces.find(
     (candidate) => candidate.id === activeWorkspaceId,
   );
@@ -143,8 +145,21 @@ export function JarvisGlobalOverlay() {
     void loadSettings();
   }, [loadSettings]);
 
+  // A failed transcript submission must not create an automatic retry loop.
+  // Closing Settings is an explicit recovery boundary: if the user just fixed
+  // credentials/configuration, permit exactly one retry of the preserved draft.
   useEffect(() => {
-    if (!activeWorkspaceId || !settings.jarvis.enabled) return;
+    const wasOpen = settingsWasOpenRef.current;
+    settingsWasOpenRef.current = settingsOpen;
+    if (!wasOpen || settingsOpen || !activeWorkspaceId) return;
+    const draft = useJarvisStore.getState().voiceRequests[activeWorkspaceId];
+    if (draft?.status === "transcript_ready") {
+      settingsRecoveryDraftRef.current.add(draft.requestId);
+    }
+  }, [activeWorkspaceId, settingsOpen]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
     const workspaceId = activeWorkspaceId;
     let disposed = false;
 
@@ -163,14 +178,21 @@ export function JarvisGlobalOverlay() {
           (request.status === "running" ||
             request.status === "cancellation_requested"),
       );
+      const recoveryAllowed = draft
+        ? settingsRecoveryDraftRef.current.has(draft.requestId)
+        : false;
+      const previousChatFailed = Boolean(store.chatErrors[workspaceId]);
       if (
         store.settings.jarvis.enabled &&
+        !store.settingsOpen &&
         draft?.status === "transcript_ready" &&
         Boolean(draft.transcript?.trim()) &&
         store.settings.jarvis.voiceInput.autoSubmitTranscript &&
         !chatBusy &&
+        (!previousChatFailed || recoveryAllowed) &&
         !resumeVoiceDraftRef.current.has(draft.requestId)
       ) {
+        settingsRecoveryDraftRef.current.delete(draft.requestId);
         resumeVoiceDraftRef.current.add(draft.requestId);
         void store
           .sendVoiceTranscript(draft.requestId, draft.transcript ?? "")
@@ -183,9 +205,11 @@ export function JarvisGlobalOverlay() {
     };
   }, [
     activeWorkspaceId,
+    chatErrors,
     loadVoiceDraft,
     requests,
     settings.jarvis.enabled,
+    settingsOpen,
   ]);
 
   // An armed VAD capture is only ambient readiness, so it follows workspace
