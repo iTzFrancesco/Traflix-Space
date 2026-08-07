@@ -53,10 +53,7 @@ pub fn clear_secret(secret: JarvisSecretId) -> Result<JarvisSecretStatus, String
 }
 
 pub fn read_secret_env(name: &str) -> Option<String> {
-    if let Some(value) = env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(value) = env::var(name).ok().filter(|value| !value.trim().is_empty()) {
         return Some(value);
     }
 

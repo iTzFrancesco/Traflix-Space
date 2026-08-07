@@ -1814,7 +1814,12 @@ mod tests {
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
         assert!(registry.status(&session).unwrap().current_task.is_none());
 
-        commit(&registry, &terminal, "clean next task", "2026-08-07T00:01:00Z");
+        commit(
+            &registry,
+            &terminal,
+            "clean next task",
+            "2026-08-07T00:01:00Z",
+        );
         assert_eq!(
             task_of(&registry.status(&session).unwrap()).text,
             "clean next task"
@@ -1831,7 +1836,12 @@ mod tests {
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
         assert!(registry.status(&session).unwrap().current_task.is_none());
 
-        commit(&registry, &terminal, "clean after overflow", "2026-08-07T00:01:00Z");
+        commit(
+            &registry,
+            &terminal,
+            "clean after overflow",
+            "2026-08-07T00:01:00Z",
+        );
         assert_eq!(
             task_of(&registry.status(&session).unwrap()).text,
             "clean after overflow"
@@ -1901,13 +1911,19 @@ mod tests {
             "2026-08-07T00:01:00Z",
         ));
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
-        assert_eq!(registry.status(&session).unwrap().state, AgentState::Waiting);
+        assert_eq!(
+            registry.status(&session).unwrap().state,
+            AgentState::Waiting
+        );
 
         commit(&registry, &terminal, "/model", "2026-08-07T00:02:00Z");
         let status = registry.status(&session).unwrap();
         assert_eq!(status.state, AgentState::Waiting);
         assert_eq!(task_of(&status).text, "real task");
-        assert_eq!(task_of(&status).completed_at.as_deref(), Some("2026-08-07T00:01:00Z"));
+        assert_eq!(
+            task_of(&status).completed_at.as_deref(),
+            Some("2026-08-07T00:01:00Z")
+        );
     }
 
     #[test]

@@ -301,7 +301,11 @@ pub async fn execute_plan(
                 // A clarification/confirmation is a hard conversational
                 // boundary. Never continue later plan operations after asking
                 // the user for a choice, even if the model emitted more steps.
-                if state.control.pending(&invocation.target_workspace_id).is_some() {
+                if state
+                    .control
+                    .pending(&invocation.target_workspace_id)
+                    .is_some()
+                {
                     break;
                 }
             }
@@ -354,7 +358,11 @@ async fn execute_step(
         PlanOperation::DraftPrompt => Ok(step.prompt.clone().unwrap_or_default()),
         PlanOperation::AgentReport => Ok(build_agent_report(context)),
         PlanOperation::AgentOpen => {
-            let initial_prompt = if step.source.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+            let initial_prompt = if step
+                .source
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
                 // This path is used when the user answered a busy-handoff
                 // clarification with “open a new agent”. Preserve the original
                 // source and rebuild the bounded handoff instead of sending
@@ -433,18 +441,18 @@ async fn execute_step(
                 source,
                 "leggere la sorgente dell'handoff",
             )?;
-            let destination = if let Some(target) = bound_target_from_pending(context, pending, step)
-            {
-                TargetResolution::Selected(target)
-            } else {
-                resolve_target(
-                    app,
-                    context,
-                    step.destination.as_deref().or(step.target.as_deref()),
-                    step.provider.as_deref(),
-                )
-                .await
-            };
+            let destination =
+                if let Some(target) = bound_target_from_pending(context, pending, step) {
+                    TargetResolution::Selected(target)
+                } else {
+                    resolve_target(
+                        app,
+                        context,
+                        step.destination.as_deref().or(step.target.as_deref()),
+                        step.provider.as_deref(),
+                    )
+                    .await
+                };
             let destination =
                 target_or_clarify(app, invocation, step, destination, "inviare l'handoff")?;
             if is_busy(&destination.session) && !busy_override_matches(pending, step, &destination)
@@ -476,7 +484,8 @@ async fn execute_step(
             ))
         }
         PlanOperation::AgentAbort => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            {
                 TargetResolution::Selected(target)
             } else {
                 resolve_target(
@@ -487,8 +496,13 @@ async fn execute_step(
                 )
                 .await
             };
-            let target =
-                target_or_clarify(app, invocation, step, resolution, "interrompere la sessione")?;
+            let target = target_or_clarify(
+                app,
+                invocation,
+                step,
+                resolution,
+                "interrompere la sessione",
+            )?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo interrompo comunque?",
@@ -511,7 +525,8 @@ async fn execute_step(
             Ok(format!("Fatto, ho interrotto {}.", target_label(&target)))
         }
         PlanOperation::TerminalClose => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            {
                 TargetResolution::Selected(target)
             } else {
                 resolve_target(
@@ -522,7 +537,8 @@ async fn execute_step(
                 )
                 .await
             };
-            let target = target_or_clarify(app, invocation, step, resolution, "chiudere la sessione")?;
+            let target =
+                target_or_clarify(app, invocation, step, resolution, "chiudere la sessione")?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo chiudo comunque?",
@@ -535,7 +551,8 @@ async fn execute_step(
             Ok(format!("Fatto, ho chiuso {}.", target_label(&target)))
         }
         PlanOperation::TerminalRestart => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            {
                 TargetResolution::Selected(target)
             } else {
                 resolve_target(
@@ -546,7 +563,8 @@ async fn execute_step(
                 )
                 .await
             };
-            let target = target_or_clarify(app, invocation, step, resolution, "riavviare la sessione")?;
+            let target =
+                target_or_clarify(app, invocation, step, resolution, "riavviare la sessione")?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo riavvio comunque?",
@@ -590,7 +608,10 @@ fn merge_step_with_pending(
             merged.prompt = previous.prompt.clone();
         }
     } else if current.operation == PlanOperation::AgentOpen
-        && matches!(intent.operation, PlanOperation::AgentSend | PlanOperation::AgentHandoff)
+        && matches!(
+            intent.operation,
+            PlanOperation::AgentSend | PlanOperation::AgentHandoff
+        )
     {
         // “Aprine uno nuovo” after a busy-target question must not lose the
         // task that triggered the clarification. Handoffs also keep their
@@ -695,12 +716,7 @@ async fn resolve_target(
                 return None;
             }
             Some((
-                score_candidate(
-                    query_text,
-                    session,
-                    terminal,
-                    provider_filter.as_deref(),
-                ),
+                score_candidate(query_text, session, terminal, provider_filter.as_deref()),
                 session,
                 terminal,
             ))
@@ -1707,7 +1723,10 @@ mod tests {
         };
         let merged = merge_step_with_pending(&next, Some(&pending));
         assert_eq!(merged.source.as_deref(), Some("Codex Auth"));
-        assert_eq!(merged.prompt.as_deref(), Some("controlla soprattutto i test"));
+        assert_eq!(
+            merged.prompt.as_deref(),
+            Some("controlla soprattutto i test")
+        );
         assert_eq!(merged.provider.as_deref(), Some("pi"));
     }
 
