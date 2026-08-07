@@ -9,7 +9,15 @@ pub struct AgentDetection {
     pub confidence: f32,
 }
 
-const SUPPORTED_PROVIDERS: [&str; 6] = ["codex", "opencode", "claude", "pi", "cmdc", "freebuff"];
+const SUPPORTED_PROVIDERS: [&str; 7] = [
+    "codex",
+    "opencode",
+    "claude",
+    "pi",
+    "cmdc",
+    "cline",
+    "freebuff",
+];
 
 pub fn normalize_provider(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
@@ -224,6 +232,7 @@ mod tests {
             "pnpm exec claude\r\n",
             "bunx pi\r\n",
             "cmdc\r\n",
+            "cline\r\n",
             "uvx freebuff\r\n",
             "deno run codex\r\n",
             "deno run npm:codex\r\n",
@@ -242,6 +251,7 @@ mod tests {
         assert_eq!(normalize_provider("freebuff").as_deref(), Some("freebuff"));
         assert_eq!(normalize_provider("cmdc").as_deref(), Some("cmdc"));
         assert_eq!(normalize_provider("Command Code").as_deref(), Some("cmdc"));
+        assert_eq!(normalize_provider("cline").as_deref(), Some("cline"));
         assert!(normalize_provider("powershell").is_none());
         assert!(normalize_provider("anti-gravity").is_none());
     }
