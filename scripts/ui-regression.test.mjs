@@ -14,6 +14,7 @@ const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
 const gitChangesSource = source("../src/components/project/ProjectGitChanges.tsx");
 const workspaceViewSource = source("../src/components/workspace/WorkspaceView.tsx");
+const agentLauncherSource = source("../src/lib/agentLauncher.ts");
 
 const obsoleteJarvisUi = [
   "../src/components/jarvis/JarvisExpandedPanel.tsx",
@@ -93,6 +94,15 @@ test("late workspace loads cannot steal active terminal ownership", () => {
     /firstId\s*&&\s*useWorkspaceStore\.getState\(\)\.activeWorkspaceId === id[\s\S]*terminalStore\.setActiveTerminal\(firstId\)/,
   );
   assert.doesNotMatch(workspaceViewSource, /let cancelled = false/);
+});
+
+test("frontend agent launch is deduplicated and rolls back after bounded write failures", () => {
+  assert.match(agentLauncherSource, /MAX_LAUNCH_ATTEMPTS = 2/);
+  assert.match(agentLauncherSource, /queuedTerminals = new Set<string>/);
+  assert.match(agentLauncherSource, /this\.queuedTerminals\.has\(terminalId\)/);
+  assert.match(agentLauncherSource, /rollbackLaunchState\(terminalId\)/);
+  assert.match(agentLauncherSource, /agentLaunched: false/);
+  assert.match(agentLauncherSource, /await invoke\("terminal_write"/);
 });
 
 test("compact Jarvis microphone meter has real geometry", () => {
