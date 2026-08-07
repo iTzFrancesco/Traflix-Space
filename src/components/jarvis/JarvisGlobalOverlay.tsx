@@ -122,7 +122,34 @@ export function JarvisGlobalOverlay() {
   }, [loadSettings]);
 
   useEffect(() => {
-    if (activeWorkspaceId) void loadVoiceDraft(activeWorkspaceId);
+    if (!activeWorkspaceId) return;
+    const workspaceId = activeWorkspaceId;
+    let disposed = false;
+
+    void loadVoiceDraft(workspaceId).then(() => {
+      if (
+        disposed ||
+        useWorkspaceStore.getState().activeWorkspaceId !== workspaceId
+      ) {
+        return;
+      }
+      const store = useJarvisStore.getState();
+      const draft = store.voiceRequests[workspaceId];
+      if (
+        draft?.status === "transcript_ready" &&
+        Boolean(draft.transcript?.trim()) &&
+        store.settings.jarvis.voiceInput.autoSubmitTranscript
+      ) {
+        void store.sendVoiceTranscript(
+          draft.requestId,
+          draft.transcript ?? "",
+        );
+      }
+    });
+
+    return () => {
+      disposed = true;
+    };
   }, [activeWorkspaceId, loadVoiceDraft]);
 
   useEffect(() => {
