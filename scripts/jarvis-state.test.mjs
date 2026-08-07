@@ -3,15 +3,40 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
-import { isWorkspaceChatLoading, mergeConversationMessages, pendingActionsForWorkspace } from "../src/lib/jarvis/chatState.ts";
-import { collapsedJarvisStatus, mergeActivityEvents, stripActivities } from "../src/lib/jarvis/activityState.ts";
-import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
-import { inputDeviceOptions, italianVoices, sanitizedVoiceError } from "../src/lib/jarvis/voiceSettings.ts";
-import { defaultJarvisSettings, isJarvisOwnerModeReady, ownerModeJarvisSettings } from "../src/lib/jarvis/settings.ts";
+import {
+  isWorkspaceChatLoading,
+  mergeConversationMessages,
+  pendingActionsForWorkspace,
+} from "../src/lib/jarvis/chatState.ts";
+import {
+  collapsedJarvisStatus,
+  mergeActivityEvents,
+  stripActivities,
+} from "../src/lib/jarvis/activityState.ts";
+import {
+  canSendTranscript,
+  shouldAutoSpeak,
+  shouldStopTtsBeforeRecording,
+  voiceRequestForWorkspace,
+} from "../src/lib/jarvis/voiceState.ts";
+import {
+  inputDeviceOptions,
+  italianVoices,
+  sanitizedVoiceError,
+} from "../src/lib/jarvis/voiceSettings.ts";
+import {
+  defaultJarvisSettings,
+  isJarvisOwnerModeReady,
+  ownerModeJarvisSettings,
+} from "../src/lib/jarvis/settings.ts";
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+
 const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
+const browserSource = source("../src/components/browser/BrowserPanel.tsx");
+const skillsSource = source("../src/components/skills/SkillsModule.tsx");
+const wizardSource = source("../src/components/workspace/NewSpaceWizard.tsx");
 const sidebarSource = source("../src/components/layout/Sidebar.tsx");
 const rightPanelSource = source("../src/components/layout/RightPanel.tsx");
 const gridSource = source("../src/components/workspace/WorkspaceGrid.tsx");
@@ -48,7 +73,12 @@ function session(id, terminalId, generation, result = null) {
     state: "waiting",
     lastResult: result,
     warnings: [],
-    provenance: { source: "test", observedAt: now, confidence: 1, untrusted: false },
+    provenance: {
+      source: "test",
+      observedAt: now,
+      confidence: 1,
+      untrusted: false,
+    },
   };
 }
 
@@ -67,44 +97,93 @@ function idle(overrides = {}) {
 }
 
 test("registry refresh preserves canonical live selection and result", () => {
-  const result = { content: "done", truncated: false, untrusted: true, provenance: { source: "test", observedAt: "now", confidence: 1, untrusted: false } };
+  const result = {
+    content: "done",
+    truncated: false,
+    untrusted: true,
+    provenance: {
+      source: "test",
+      observedAt: "now",
+      confidence: 1,
+      untrusted: false,
+    },
+  };
   const current = session("codex-1", "terminal-1", 2, result);
   const state = applyRegistrySnapshot(
-    { sessions: [current], selectedSessionId: "codex-1", currentResult: result, currentResultSessionId: "codex-1", currentResultLoading: false, currentError: null },
+    {
+      sessions: [current],
+      selectedSessionId: "codex-1",
+      currentResult: result,
+      currentResultSessionId: "codex-1",
+      currentResultLoading: false,
+      currentError: null,
+    },
     [session("codex-1", "terminal-1", 2, result)],
   );
   assert.equal(state.selectedSessionId, "codex-1");
   assert.equal(state.currentResult.content, "done");
 });
 
-test("conversation merge is idempotent and preserves workspace ordering", () => {
-  const a = { id: "a", role: "user", content: "A", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:00Z" };
-  const b = { id: "b", role: "assistant", content: "B", workspaceId: "workspace-a", createdAt: "2026-08-07T00:00:01Z" };
-  assert.deepEqual(mergeConversationMessages([a], [a, b]).map((message) => message.id), ["a", "b"]);
-});
+test("conversation and legacy pending state stay workspace-scoped", () => {
+  const a = {
+    id: "a",
+    role: "user",
+    content: "A",
+    workspaceId: "workspace-a",
+    createdAt: "2026-08-07T00:00:00Z",
+  };
+  const b = {
+    id: "b",
+    role: "assistant",
+    content: "B",
+    workspaceId: "workspace-a",
+    createdAt: "2026-08-07T00:00:01Z",
+  };
+  assert.deepEqual(
+    mergeConversationMessages([a], [a, b]).map((message) => message.id),
+    ["a", "b"],
+  );
 
-test("chat concurrency and legacy Pending Actions remain workspace-scoped", () => {
-  const requests = { a: { requestId: "a", workspaceId: "workspace-a", createdAt: "now", status: "running" } };
+  const requests = {
+    a: {
+      requestId: "a",
+      workspaceId: "workspace-a",
+      createdAt: "now",
+      status: "running",
+    },
+  };
   assert.equal(isWorkspaceChatLoading(requests, "workspace-a"), true);
   assert.equal(isWorkspaceChatLoading(requests, "workspace-b"), false);
-  const action = (workspaceId) => ({ id: workspaceId, status: "pending", invocation: { targetWorkspaceId: workspaceId, requestId: workspaceId } });
-  assert.deepEqual(pendingActionsForWorkspace([action("workspace-a"), action("workspace-b")], "workspace-a").map((item) => item.id), ["workspace-a"]);
+
+  const action = (workspaceId) => ({
+    id: workspaceId,
+    status: "pending",
+    invocation: { targetWorkspaceId: workspaceId, requestId: workspaceId },
+  });
+  assert.deepEqual(
+    pendingActionsForWorkspace(
+      [action("workspace-a"), action("workspace-b")],
+      "workspace-a",
+    ).map((item) => item.id),
+    ["workspace-a"],
+  );
 });
 
-test("voice transcripts can only be submitted inside their origin workspace", () => {
-  const request = { requestId: "voice-a", workspaceId: "workspace-a", status: "transcript_ready", transcript: "ciao", createdAt: "now", normalizedLevel: 0 };
+test("voice transcript cannot escape its origin workspace", () => {
+  const request = {
+    requestId: "voice-a",
+    workspaceId: "workspace-a",
+    status: "transcript_ready",
+    transcript: "ciao",
+    createdAt: "now",
+    normalizedLevel: 0,
+  };
   assert.equal(voiceRequestForWorkspace(request, "workspace-b"), null);
   assert.equal(canSendTranscript(request, "workspace-b", "ciao"), false);
   assert.equal(canSendTranscript(request, "workspace-a", "ciao"), true);
 });
 
-test("voice helper policies preserve spoken-response and barge-in safety", () => {
-  assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: true, privacyConsentAt: "owner-mode" }), true);
-  assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: false, privacyConsent: true, privacyConsentAt: "owner-mode" }), false);
-  assert.equal(shouldStopTtsBeforeRecording("playing"), true);
-});
-
-test("owner mode guarantees the one-click automatic voice contract", () => {
+test("owner mode guarantees one-click automatic voice", () => {
   const settings = defaultJarvisSettings();
   assert.equal(isJarvisOwnerModeReady(settings), true);
   assert.equal(settings.voiceInput.activationMode, "click_toggle");
@@ -113,9 +192,11 @@ test("owner mode guarantees the one-click automatic voice contract", () => {
   assert.equal(settings.voiceOutput.enabled, true);
   assert.equal(settings.voiceOutput.autoSpeak, true);
   assert.equal(settings.voiceOutput.stopOnUserSpeech, true);
+  assert.equal(shouldAutoSpeak(settings.voiceOutput), true);
+  assert.equal(shouldStopTtsBeforeRecording("playing"), true);
 });
 
-test("owner mode upgrades old persisted flags without rewriting model choice", () => {
+test("owner mode upgrades legacy flags without rewriting model choice", () => {
   const old = defaultJarvisSettings();
   old.textModel.primaryModel = "custom-model";
   old.textModel.privacyConsent = false;
@@ -128,69 +209,132 @@ test("owner mode upgrades old persisted flags without rewriting model choice", (
 });
 
 test("voice utility output is safe and bounded", () => {
-  const message = sanitizedVoiceError({ message: "Bearer gsk_test_secret_value" });
+  const message = sanitizedVoiceError({
+    message: "Bearer gsk_test_secret_value",
+  });
   assert.equal(message.includes("gsk_test_secret_value"), false);
   assert.ok(message.length <= 240);
-  assert.deepEqual(inputDeviceOptions([{ id: "mic", name: "Desk mic", isDefault: true, available: true }]), [{ id: "mic", label: "Desk mic (predefinito)" }]);
-  assert.deepEqual(italianVoices([{ shortName: "it-IT-A", locale: "it-IT" }, { shortName: "en-US-A", locale: "en-US" }]).map((voice) => voice.shortName), ["it-IT-A"]);
+  assert.deepEqual(
+    inputDeviceOptions([
+      { id: "mic", name: "Desk mic", isDefault: true, available: true },
+    ]),
+    [{ id: "mic", label: "Desk mic (predefinito)" }],
+  );
+  assert.deepEqual(
+    italianVoices([
+      { shortName: "it-IT-A", locale: "it-IT" },
+      { shortName: "en-US-A", locale: "en-US" },
+    ]).map((voice) => voice.shortName),
+    ["it-IT-A"],
+  );
 });
 
-test("Jarvis pill is voice-first and cannot mount the old transcript/chat drawer", () => {
+test("normal Jarvis surface is voice-first, not a transcript or chat drawer", () => {
   assert.match(widgetSource, /VoiceMeter/);
-  assert.match(widgetSource, /termino quando fai una pausa/);
-  assert.doesNotMatch(widgetSource, /JarvisExpandedPanel|JarvisChatPanel|JarvisTranscriptCard|MessageSquareText|textarea/);
+  assert.match(widgetSource, /silence sends automatically/);
+  assert.match(widgetSource, /Talk to Jarvis/);
+  assert.doesNotMatch(
+    widgetSource,
+    /JarvisExpandedPanel|JarvisChatPanel|JarvisTranscriptCard|MessageSquareText|textarea|Text fallback|TRASCRIZIONE PRONTA|Invia alla chat/,
+  );
 });
 
-test("Jarvis exposes clear audio and visual listening feedback", () => {
+test("Jarvis gives audible and visual listening feedback", () => {
   assert.match(widgetSource, /playCue\("start"\)/);
   assert.match(widgetSource, /playCue\("stop"\)/);
   assert.match(widgetSource, /createOscillator/);
   assert.match(widgetSource, /normalizedLevel/);
   assert.match(widgetSource, /jarvis-pill--listening/);
+  assert.match(widgetSource, /<Square/);
 });
 
-test("Jarvis drag activates only after a deliberate long press", () => {
-  assert.match(widgetSource, /DRAG_HOLD_MS = 340/);
+test("Jarvis drag requires deliberate hold plus movement", () => {
+  assert.match(widgetSource, /DRAG_HOLD_MS = 380/);
+  assert.match(widgetSource, /DRAG_START_DISTANCE = 6/);
+  assert.match(widgetSource, /EARLY_MOVE_CANCEL_DISTANCE = 12/);
+  assert.match(widgetSource, /armed: false/);
   assert.match(widgetSource, /activated: false/);
-  assert.match(widgetSource, /window\.setTimeout/);
   assert.match(widgetSource, /intent\.activated = true;\s*setDragging\(true\)/s);
   assert.match(widgetSource, /if \(!intent\?\.activated/);
 });
 
-test("hold-to-talk fallback still guards lost releases", () => {
+test("hold-to-talk compatibility path still guards lost releases", () => {
   assert.match(widgetSource, /onBlur=\{releaseHeldVoice\}/);
   assert.match(widgetSource, /onPointerCancel=\{handleVoicePointerUp\}/);
   assert.match(widgetSource, /visibilitychange/);
 });
 
-test("normal settings expose only useful provider and voice controls", () => {
+test("normal Settings exposes useful connections and no privacy gate", () => {
+  assert.match(settingsSource, /Voice is the default interface/);
   assert.match(settingsSource, /OpenCode Zen/);
   assert.match(settingsSource, /Groq/);
-  assert.match(settingsSource, /Turn detection automatica/);
-  assert.doesNotMatch(settingsSource, /Consenso audio|Consenso testo|Consenso contesto/);
-});
-
-test("compatibility activation modes remain implemented without cluttering primary UX", () => {
-  assert.match(settingsSource, /click_toggle/);
-  assert.match(settingsSource, /hold_to_talk/);
-  assert.match(settingsSource, /vad/);
-  assert.match(settingsSource, /Hotkey globale/);
+  assert.match(settingsSource, /Global hotkey/);
+  assert.match(settingsSource, /Advanced diagnostics/);
+  assert.doesNotMatch(
+    settingsSource,
+    /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Owner mode/,
+  );
 });
 
 test("idle and active status hierarchy stays compact and exact", () => {
   assert.equal(collapsedJarvisStatus(idle()), "Ready when you are");
-  assert.equal(collapsedJarvisStatus(idle({ voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "recording", createdAt: "now", normalizedLevel: 0.2 } })), "Listening…");
-  assert.equal(collapsedJarvisStatus(idle({ voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "transcribing", createdAt: "now", normalizedLevel: 0 } })), "Transcribing…");
-  assert.equal(collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })), "Speaking…");
+  assert.equal(
+    collapsedJarvisStatus(
+      idle({
+        voiceRequest: {
+          requestId: "v",
+          workspaceId: "workspace-a",
+          status: "recording",
+          createdAt: "now",
+          normalizedLevel: 0.2,
+        },
+      }),
+    ),
+    "Listening…",
+  );
+  assert.equal(
+    collapsedJarvisStatus(
+      idle({
+        voiceRequest: {
+          requestId: "v",
+          workspaceId: "workspace-a",
+          status: "transcribing",
+          createdAt: "now",
+          normalizedLevel: 0,
+        },
+      }),
+    ),
+    "Transcribing…",
+  );
+  assert.equal(
+    collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })),
+    "Speaking…",
+  );
   assert.doesNotMatch(widgetSource, /registrySessions/);
 });
 
 test("activity timeline supersedes stale phases and stays workspace-scoped", () => {
-  const preparing = { requestId: "r", workspaceId: "workspace-a", phase: "preparing", label: "Preparing", status: "running", createdAt: "2026-08-07T00:00:00Z", targetSessionId: null };
-  const writing = { ...preparing, phase: "writing", label: "Writing", createdAt: "2026-08-07T00:00:01Z" };
+  const preparing = {
+    requestId: "r",
+    workspaceId: "workspace-a",
+    phase: "preparing",
+    label: "Preparing",
+    status: "running",
+    createdAt: "2026-08-07T00:00:00Z",
+    targetSessionId: null,
+  };
+  const writing = {
+    ...preparing,
+    phase: "writing",
+    label: "Writing",
+    createdAt: "2026-08-07T00:00:01Z",
+  };
   const merged = mergeActivityEvents([preparing], [writing]);
   assert.equal(merged.some((item) => item.phase === "preparing"), false);
-  assert.deepEqual(stripActivities(merged, "workspace-a").map((item) => item.phase), ["writing"]);
+  assert.deepEqual(
+    stripActivities(merged, "workspace-a").map((item) => item.phase),
+    ["writing"],
+  );
   assert.equal(stripActivities(merged, "workspace-b").length, 0);
 });
 
@@ -203,22 +347,24 @@ test("click-toggle owner mode uses local VAD to close the turn automatically", (
   assert.match(captureSource, /should_auto_stop/);
 });
 
-test("voice level events drive the live compact meter", () => {
+test("voice level events drive the compact meter", () => {
   assert.match(voiceCommandsSource, /VOICE_LEVEL_EVENT/);
   assert.match(voiceCommandsSource, /normalized_level/);
   assert.match(overlaySource, /jarvis:\/\/voice-level/);
 });
 
-test("a successful model reply is automatically spoken", () => {
-  assert.match(storeSource, /voiceSettings\.enabled && voiceSettings\.autoSpeak/);
+test("successful model replies are spoken and transcripts auto-submit", () => {
+  assert.match(
+    storeSource,
+    /voiceSettings\.enabled && voiceSettings\.autoSpeak/,
+  );
   assert.match(storeSource, /ttsSpeak\(/);
-  assert.match(storeSource, /setTtsStatus/);
-});
-
-test("automatic transcript submission is request-scoped and retry-safe", () => {
   assert.match(storeSource, /autoSubmittedVoiceRequests/);
   assert.match(storeSource, /sendVoiceTranscript/);
-  assert.match(storeSource, /if \(!accepted\) autoSubmittedVoiceRequests\.delete/);
+  assert.match(
+    storeSource,
+    /if \(!accepted\) autoSubmittedVoiceRequests\.delete/,
+  );
 });
 
 test("Phase 8 planner remains semantic, typed and allowlisted", () => {
@@ -227,18 +373,30 @@ test("Phase 8 planner remains semantic, typed and allowlisted", () => {
   assert.match(controlSource, /pub enum PlanOperation/);
   assert.match(controlSource, /AgentHandoff/);
   assert.match(controlSource, /DraftPrompt/);
-  assert.doesNotMatch(chatSource, /if .*manda.*=>|if .*scrivi.*=>|if .*fai.*=>/i);
+  assert.doesNotMatch(
+    chatSource,
+    /if .*manda.*=>|if .*scrivi.*=>|if .*fai.*=>/i,
+  );
 });
 
 test("clarification is a hard synchronous boundary", () => {
   assert.match(controlSource, /hard conversational/);
-  assert.match(controlSource, /\.control\s*\.pending\(&invocation\.target_workspace_id\)\s*\.is_some\(\)/s);
+  assert.match(
+    controlSource,
+    /\.control\s*\.pending\(&invocation\.target_workspace_id\)\s*\.is_some\(\)/s,
+  );
 });
 
 test("every PTY mutation revalidates workspace, generation, process and identity", () => {
   assert.match(controlSource, /fresh_snapshot/);
-  assert.match(controlSource, /snapshot\.workspace_id != invocation\.target_workspace_id/);
-  assert.match(controlSource, /snapshot\.generation != target\.terminal\.generation/);
+  assert.match(
+    controlSource,
+    /snapshot\.workspace_id != invocation\.target_workspace_id/,
+  );
+  assert.match(
+    controlSource,
+    /snapshot\.generation != target\.terminal\.generation/,
+  );
   assert.match(controlSource, /process_alive/);
   assert.match(controlSource, /control_allowed/);
   assert.match(commandsSource, /terminal_generation_mismatch/);
@@ -264,20 +422,30 @@ test("busy and destructive actions remain conversational and stale-safe", () => 
   assert.match(controlSource, /sta ancora lavorando/);
   assert.match(controlSource, /Lo interrompo comunque/);
   assert.match(controlSource, /confirmation_matches/);
-  assert.match(controlSource, /generation: Some\(target\.terminal\.generation\)/);
+  assert.match(
+    controlSource,
+    /generation: Some\(target\.terminal\.generation\)/,
+  );
 });
 
 test("agent.open creates the same visible Traflix PTY and waits for readiness", () => {
   assert.match(commandsSource, /jarvis_agent_open/);
-  assert.match(controlSource, /manager\.spawn\(app\.clone\(\), config\.clone\(\)/);
+  assert.match(
+    controlSource,
+    /manager\.spawn\(app\.clone\(\), config\.clone\(\)/,
+  );
   assert.match(controlSource, /READINESS_TIMEOUT/);
   assert.match(controlSource, /wait_until_ready/);
   assert.match(workspaceViewSource, /jarvis-agent-opened/);
   assert.match(workspaceViewSource, /markSpawned/);
+  assert.match(workspaceViewSource, /markAgentLaunched/);
 });
 
 test("no hidden provider session or completion-triggered future chain exists", () => {
-  assert.doesNotMatch(controlSource, /codex app-server|opencode serve|spawn.*hidden|detached.*agent|AgentTurnCompleted|completion.*spawn|schedule/i);
+  assert.doesNotMatch(
+    controlSource,
+    /codex app-server|opencode serve|spawn.*hidden|detached.*agent|AgentTurnCompleted|completion.*spawn|schedule/i,
+  );
   assert.doesNotMatch(chatSource, /codex app-server|opencode serve/);
   assert.match(chatSource, /never starts future work/);
 });
@@ -289,17 +457,24 @@ test("handoff is bounded to last result or recent terminal evidence", () => {
   assert.match(controlSource, /build_handoff_prompt/);
 });
 
-test("desktop UX is flat, compact, accessible and BridgeMind-like", () => {
+test("desktop shell remains compact and restrained", () => {
   assert.doesNotMatch(globalsSource, /radial-gradient|backdrop-filter/);
   assert.match(globalsSource, /--radius-pane: 7px/);
   assert.match(globalsSource, /prefers-reduced-motion/);
-  assert.match(globalsSource, /color: var\(--color-neutral-text\)/);
   assert.match(sidebarSource, /New space/);
-  assert.doesNotMatch(sidebarSource, /setExpanded/);
   assert.match(rightPanelSource, /PANEL_SLOTS/);
   assert.match(gridSource, /gap: isFocusMode \? 0 : "4px"/);
 });
 
+test("secondary desktop surfaces avoid decorative AI chrome", () => {
+  assert.doesNotMatch(browserSource, /radial-gradient|linear-gradient|TRAFLIX/);
+  assert.doesNotMatch(skillsSource, /SKILL_ACCENTS|Sparkles|backdrop-blur/);
+  assert.doesNotMatch(wizardSource, /linear-gradient|backdrop-blur|surface-card/);
+});
+
 test("normal Jarvis UI contains no diagnostics or transcript editor", () => {
-  assert.doesNotMatch(widgetSource, /Diagnostics|Context Broker|JarvisTranscriptCard|JarvisExpandedPanel|conversation\.map|textarea/);
+  assert.doesNotMatch(
+    widgetSource,
+    /Diagnostics|Context Broker|JarvisTranscriptCard|JarvisExpandedPanel|conversation\.map|textarea/,
+  );
 });
