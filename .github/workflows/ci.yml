@@ -76,6 +76,8 @@ jobs:
         working-directory: .
       - run: npm run build
         working-directory: .
+      - run: npm run test:jarvis
+        working-directory: .
       - run: cargo test
 
   build:
