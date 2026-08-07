@@ -12,6 +12,7 @@ const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
+const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
 const windowsTauriConfig = source("../src-tauri/tauri.windows.conf.json");
@@ -59,6 +60,10 @@ test("manual agent catalog is complete while Jarvis advertises only readiness-ve
   for (const manualOnly of ["anti-gravity", "cmdc", "cline"]) {
     assert.doesNotMatch(agentRegistry, new RegExp(`id: "${manualOnly}"\\.into\\(\\)`));
   }
+  assert.match(runtimeDetector, /manual_provider_from_executable/);
+  assert.match(runtimeDetector, /"agy" => Some\("anti-gravity"\.to_string\(\)\)/);
+  assert.match(runtimeDetector, /"cmdc" => Some\("cmdc"\.to_string\(\)\)/);
+  assert.match(runtimeDetector, /"cline" => Some\("cline"\.to_string\(\)\)/);
   assert.match(runtimeDetector, /for manual_only in \["agy", "anti-gravity", "cmdc", "command code", "cline"\]/);
   assert.match(agents, /id: "cmdc"[\s\S]*command: "cmdc"/);
   assert.match(agents, /id: "cline"[\s\S]*command: "cline"/);
@@ -95,6 +100,15 @@ test("chat completion reserves TTS state before IPC so hands-free cannot rearm i
   assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId/);
   assert.match(jarvisStore, /status: "failed"/);
   assert.match(jarvisStore, /code: "tts_failed"/);
+});
+
+test("failed voice transcript submissions stay preserved without automatic retry loops", () => {
+  assert.match(jarvisOverlay, /settingsRecoveryDraftRef/);
+  assert.match(jarvisOverlay, /settingsWasOpenRef/);
+  assert.match(jarvisOverlay, /previousChatFailed/);
+  assert.match(jarvisOverlay, /\(!previousChatFailed \|\| recoveryAllowed\)/);
+  assert.match(jarvisOverlay, /settingsRecoveryDraftRef\.current\.delete\(draft\.requestId\)/);
+  assert.match(jarvisOverlay, /resumeVoiceDraftRef\.current\.has\(draft\.requestId\)/);
 });
 
 test("fresh installations watch the canonical skills directory before the first skill exists", () => {
