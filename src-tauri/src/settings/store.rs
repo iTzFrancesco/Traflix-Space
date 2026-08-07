@@ -268,9 +268,10 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
     }
 
     settings.voice_input.enabled = true;
-    settings.voice_input.activation_mode = VoiceActivationMode::ClickToggle;
     settings.voice_input.auto_submit_transcript = true;
-    settings.voice_input.vad_enabled = true;
+    if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
+        settings.voice_input.vad_enabled = true;
+    }
     settings.voice_input.privacy_consent = true;
     if settings.voice_input.privacy_consent_at.is_none() {
         settings.voice_input.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
@@ -770,9 +771,9 @@ mod tests {
     }
 
     #[test]
-    fn owner_mode_round_trip_normalizes_legacy_activation_policy() {
+    fn owner_mode_round_trip_preserves_explicit_advanced_activation_policy() {
         let mut settings = AppSettings::default();
-        settings.jarvis.voice_input.activation_mode = VoiceActivationMode::Vad;
+        settings.jarvis.voice_input.activation_mode = VoiceActivationMode::HoldToTalk;
         settings.jarvis.voice_input.auto_submit_transcript = false;
         settings.jarvis.voice_input.vad_enabled = false;
         settings.jarvis.voice_input.privacy_consent = false;
@@ -788,10 +789,10 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(
             reloaded.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::ClickToggle
+            VoiceActivationMode::HoldToTalk
         );
         assert!(reloaded.jarvis.voice_input.auto_submit_transcript);
-        assert!(reloaded.jarvis.voice_input.vad_enabled);
+        assert!(!reloaded.jarvis.voice_input.vad_enabled);
         assert!(reloaded.jarvis.voice_input.privacy_consent);
         assert!(reloaded.jarvis.voice_output.stop_on_user_speech);
         assert!(reloaded.jarvis.voice_output.privacy_consent);
