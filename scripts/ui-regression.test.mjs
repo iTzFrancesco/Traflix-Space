@@ -12,6 +12,8 @@ const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
+const jarvisSettingsSource = source("../src/lib/jarvis/settings.ts");
+const rustSettingsSource = source("../src-tauri/src/settings/store.rs");
 const gitChangesSource = source("../src/components/project/ProjectGitChanges.tsx");
 const workspaceViewSource = source("../src/components/workspace/WorkspaceView.tsx");
 const agentLauncherSource = source("../src/lib/agentLauncher.ts");
@@ -156,17 +158,41 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings remain voice-first without old consent UI", () => {
+test("normal Jarvis settings stay voice-first while advanced input modes remain reachable", () => {
   assert.match(settingsSource, /Voice is the default interface/);
-  assert.match(
-    settingsSource,
-    /Turn detection, transcript submission and spoken replies are automatic/,
-  );
+  assert.match(settingsSource, /One click is the default/);
+  assert.match(settingsSource, /Interaction mode/);
+  assert.match(settingsSource, /hold_to_talk/);
+  assert.match(settingsSource, /Voice activity/);
+  assert.match(settingsSource, /Hotkey behavior/);
   assert.match(settingsSource, /Silence before send \(ms\)/);
+  assert.match(settingsSource, /Wait for speech \(s\)/);
   assert.match(settingsSource, /vadPostSpeechMs/);
-  assert.doesNotMatch(settingsSource, /Wait for speech \(s\)/);
+  assert.match(settingsSource, /maxArmedSeconds/);
+  assert.doesNotMatch(settingsSource, /activationMode: "click_toggle" as const/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
+  );
+});
+
+test("owner mode is enforced in both frontend and Rust without deleting hold-to-talk", () => {
+  assert.match(jarvisSettingsSource, /privacyConsent: true/);
+  assert.match(jarvisSettingsSource, /autoSubmitTranscript: true/);
+  assert.match(jarvisSettingsSource, /activationMode !== "hold_to_talk"/);
+  assert.doesNotMatch(
+    jarvisSettingsSource,
+    /activationMode:\s*"click_toggle"[,\n]\s*autoSubmitTranscript/s,
+  );
+  assert.match(rustSettingsSource, /fn enforce_owner_mode/);
+  assert.match(rustSettingsSource, /privacy_consent = true/);
+  assert.match(rustSettingsSource, /auto_submit_transcript = true/);
+  assert.match(
+    rustSettingsSource,
+    /activation_mode != VoiceActivationMode::HoldToTalk/,
+  );
+  assert.match(
+    rustSettingsSource,
+    /owner_mode_round_trip_preserves_explicit_advanced_activation_policy/,
   );
 });
