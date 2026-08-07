@@ -79,11 +79,16 @@ export function WorkspaceView() {
         if (disposed) return;
         const { workspaceId, terminal } = event.payload;
         const loaded = loadedMapRef.current.get(workspaceId);
-        if (!loaded || loaded.terminals.some((item) => item.id === terminal.id)) return;
-        const nextTerminals = [...loaded.terminals, terminal];
-        const nextLayout = computeLayout(nextTerminals.length);
-        if (!useTerminalStore.getState().terminals[terminal.id]) {
-          useTerminalStore.getState().addTerminal({
+        if (!loaded) return;
+
+        // The backend owns the Jarvis open/restart flow: it has already
+        // spawned the visible PTY and launched the provider CLI before this
+        // event is useful to TerminalPane. Mark both facts authoritatively so
+        // the normal frontend agentLaunchQueue never launches the same CLI a
+        // second time when the new pane mounts.
+        const terminalStore = useTerminalStore.getState();
+        if (!terminalStore.terminals[terminal.id]) {
+          terminalStore.addTerminal({
             id: terminal.id,
             workspaceId,
             shell: terminal.shell,
@@ -91,8 +96,21 @@ export function WorkspaceView() {
             title: terminal.title,
             agent: terminal.agentId,
           });
-          useTerminalStore.getState().markSpawned(terminal.id);
         }
+        terminalStore.markSpawned(terminal.id);
+        terminalStore.markAgentLaunched(terminal.id);
+
+        // A restart reuses the existing configured pane. In that case only
+        // refresh its runtime flags above; never duplicate the workspace item.
+        if (loaded.terminals.some((item) => item.id === terminal.id)) {
+          if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+            terminalStore.setActiveTerminal(terminal.id);
+          }
+          return;
+        }
+
+        const nextTerminals = [...loaded.terminals, terminal];
+        const nextLayout = computeLayout(nextTerminals.length);
         if (workspaceTerminalsRef.current.workspaceId === workspaceId) {
           workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
         }
@@ -108,7 +126,7 @@ export function WorkspaceView() {
           agentCount: nextTerminals.filter((item) => item.agentId).length,
         });
         if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
-          useTerminalStore.getState().setActiveTerminal(terminal.id);
+          terminalStore.setActiveTerminal(terminal.id);
         }
       }),
       listen<AgentClosedEvent>("jarvis-agent-closed", (event) => {
