@@ -38,6 +38,9 @@ export interface JarvisSettings {
   voiceOutput: VoiceOutputSettings;
 }
 
+export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";
+export type ShortcutBehavior = "toggle" | "hold";
+
 export interface VoiceInputSettings {
   enabled: boolean;
   provider: "groq";
@@ -48,6 +51,17 @@ export interface VoiceInputSettings {
   autoSubmitTranscript: boolean;
   privacyConsent: boolean;
   privacyConsentAt?: string;
+  activationMode: VoiceActivationMode;
+  globalShortcutEnabled: boolean;
+  globalShortcut: string;
+  shortcutBehavior: ShortcutBehavior;
+  vadEnabled: boolean;
+  vadSpeechThreshold: number;
+  vadStartFrames: number;
+  vadSilenceFrames: number;
+  vadPreRollMs: number;
+  vadPostSpeechMs: number;
+  maxArmedSeconds: number;
 }
 
 export interface VoiceOutputSettings {
@@ -61,6 +75,7 @@ export interface VoiceOutputSettings {
   maxSpokenChars: number;
   privacyConsent: boolean;
   privacyConsentAt?: string;
+  stopOnUserSpeech: boolean;
 }
 
 export interface TextModelSettings {
@@ -84,11 +99,12 @@ export interface AppSettings {
   jarvis: JarvisSettings;
 }
 
-export type VoiceRequestStatus = "idle" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
+export type VoiceRequestStatus = "idle" | "armed" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
 export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
 export interface VoiceErrorView { code: string; message: string; }
-export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; }
-export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; }
+export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; activationMode: VoiceActivationMode; vadState: VadState; }
+export type VadState = "silence" | "maybe_speech" | "speech";
+export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; vadState: VadState; }
 export type TtsStatus = "idle" | "synthesizing" | "playing" | "stopped" | "failed";
 export interface TtsStatusView { requestId?: string; status: TtsStatus; error?: VoiceErrorView; }
 export interface TtsVoice { shortName: string; locale: string; gender?: string; }

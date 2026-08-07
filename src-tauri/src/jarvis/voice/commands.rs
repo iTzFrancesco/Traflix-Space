@@ -1,5 +1,6 @@
 use crate::settings::store::SettingsManager;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
 use super::registry::{friendly_message, VoiceState};
@@ -9,13 +10,33 @@ use super::tts::{
 };
 use super::types::{
     error_view, normalize_max_duration_seconds, TtsSpeakRequest, TtsStatus, TtsStatusView,
-    VoiceCancelRequest, VoiceErrorCode, VoiceErrorView, VoiceInputDevice, VoiceLevelEvent,
-    VoiceRequestStatus, VoiceRequestStatusView, VoiceStartRequest, VoiceStopRequest,
+    VoiceCancelRequest, VoiceCaptureOptions, VoiceErrorCode, VoiceErrorView, VoiceInputDevice,
+    VoiceLevelEvent, VoiceRequestStatus, VoiceRequestStatusView, VoiceStartRequest,
+    VoiceStopRequest,
 };
 
 const VOICE_STATE_EVENT: &str = "jarvis://voice-state";
 const VOICE_LEVEL_EVENT: &str = "jarvis://voice-level";
 const TTS_STATE_EVENT: &str = "jarvis://tts-state";
+
+#[tauri::command]
+pub async fn jarvis_voice_sync_shortcut(
+    app: AppHandle,
+    settings: State<'_, SettingsManager>,
+) -> Result<(), VoiceErrorView> {
+    let configured = settings.get().await;
+    let shortcut = configured.jarvis.voice_input.global_shortcut.trim();
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|_| to_error(VoiceErrorCode::ShortcutUnavailable))?;
+    if !configured.jarvis.enabled || !configured.jarvis.voice_input.global_shortcut_enabled {
+        return Ok(());
+    }
+    validate_shortcut(shortcut).map_err(to_error)?;
+    app.global_shortcut()
+        .register(shortcut)
+        .map_err(|_| to_error(VoiceErrorCode::ShortcutUnavailable))
+}
 
 #[tauri::command]
 pub fn jarvis_voice_list_input_devices(
@@ -36,25 +57,46 @@ pub async fn jarvis_voice_start(
     ensure_input_allowed(&configured.jarvis.voice_input, provider.configured())?;
     let max_duration_seconds =
         normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
+    let input = configured.jarvis.voice_input.clone();
+    let options = VoiceCaptureOptions {
+        activation_mode: input.activation_mode,
+        max_duration_seconds,
+        max_armed_seconds: input.max_armed_seconds,
+        vad_enabled: input.vad_enabled
+            || input.activation_mode == crate::settings::store::VoiceActivationMode::Vad,
+        vad_speech_threshold: input.vad_speech_threshold,
+        vad_start_frames: input.vad_start_frames,
+        vad_silence_frames: input.vad_silence_frames,
+        vad_pre_roll_ms: input.vad_pre_roll_ms,
+        vad_post_speech_ms: input.vad_post_speech_ms,
+    }
+    .bounded();
     let status = state
         .start(
             request.request_id,
             request.workspace_id,
             request.selected_device_id,
-            max_duration_seconds,
+            options,
         )
         .map_err(to_error)?;
     emit_voice_state(&app, &status);
+    let mut watchdog_config = configured.jarvis.voice_input.clone();
+    watchdog_config.max_duration_seconds = max_duration_seconds;
+    watchdog_config.max_armed_seconds = options.max_armed_seconds;
+    let level_config = watchdog_config.clone();
     let event_app = app.clone();
     let event_state = (*state).clone();
     let request_id = status.request_id.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let Some(status) = event_state.snapshot(Some(&request_id)).ok() else {
+            let Ok((status, should_stop)) = event_state.signal(&request_id) else {
                 break;
             };
-            if status.status != VoiceRequestStatus::Recording {
+            if !matches!(
+                status.status,
+                VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
+            ) {
                 break;
             }
             let _ = event_app.emit(
@@ -63,29 +105,56 @@ pub async fn jarvis_voice_start(
                     request_id: request_id.clone(),
                     elapsed_ms: status.duration_ms.unwrap_or_default(),
                     normalized_level: status.normalized_level,
+                    vad_state: status.vad_state,
                 },
             );
+            if should_stop && status.status == VoiceRequestStatus::Recording {
+                let _ = finish_voice_stop(
+                    &event_app,
+                    &event_state,
+                    level_config.clone(),
+                    request_id.clone(),
+                )
+                .await;
+                break;
+            }
         }
     });
     let watchdog_app = app.clone();
     let watchdog_state = (*state).clone();
-    let mut watchdog_config = configured.jarvis.voice_input.clone();
-    watchdog_config.max_duration_seconds = max_duration_seconds;
     let watchdog_request_id = status.request_id.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(max_duration_seconds as u64)).await;
-        if watchdog_state
-            .snapshot(Some(&watchdog_request_id))
-            .map(|current| current.status == VoiceRequestStatus::Recording)
-            .unwrap_or(false)
-        {
-            let _ = finish_voice_stop(
-                &watchdog_app,
-                &watchdog_state,
-                watchdog_config,
-                watchdog_request_id,
-            )
-            .await;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let Ok((current, _)) = watchdog_state.signal(&watchdog_request_id) else {
+                break;
+            };
+            if current.status == VoiceRequestStatus::Armed {
+                if current.duration_ms.unwrap_or_default()
+                    >= watchdog_config.max_armed_seconds as u64 * 1000
+                {
+                    if let Ok(status) = watchdog_state.timeout_armed(&watchdog_request_id) {
+                        emit_voice_state(&watchdog_app, &status);
+                    }
+                    break;
+                }
+            } else if current.status == VoiceRequestStatus::Recording
+                && current.duration_ms.unwrap_or_default() >= max_duration_seconds as u64 * 1000
+            {
+                let _ = finish_voice_stop(
+                    &watchdog_app,
+                    &watchdog_state,
+                    watchdog_config.clone(),
+                    watchdog_request_id.clone(),
+                )
+                .await;
+                break;
+            } else if !matches!(
+                current.status,
+                VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
+            ) {
+                break;
+            }
         }
     });
     Ok(status)
@@ -109,6 +178,15 @@ async fn finish_voice_stop(
     config: crate::settings::store::VoiceInputSettings,
     request_id: String,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
+    if state
+        .snapshot(Some(&request_id))
+        .map(|status| status.status == VoiceRequestStatus::Armed)
+        .unwrap_or(false)
+    {
+        let status = state.stop_armed(&request_id).map_err(to_error)?;
+        emit_voice_state(app, &status);
+        return Ok(status);
+    }
     let (capture, cancellation) = state.begin_stop(&request_id).map_err(to_error)?;
     let audio = capture.stop().map_err(to_error)?;
     if cancellation.is_cancelled() {
@@ -415,6 +493,14 @@ fn debug_helper_path(app: &AppHandle) -> std::path::PathBuf {
 fn to_error(code: VoiceErrorCode) -> VoiceErrorView {
     error_view(code, friendly_message(code))
 }
+
+fn validate_shortcut(shortcut: &str) -> Result<(), VoiceErrorCode> {
+    if shortcut.is_empty() || shortcut.len() > 64 || shortcut.chars().any(|ch| ch.is_control()) {
+        Err(VoiceErrorCode::ShortcutInvalid)
+    } else {
+        Ok(())
+    }
+}
 fn emit_voice_state(app: &AppHandle, status: &VoiceRequestStatusView) {
     let _ = app.emit(VOICE_STATE_EVENT, status);
 }
@@ -424,7 +510,7 @@ fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_input_allowed;
+    use super::{ensure_input_allowed, validate_shortcut};
     use crate::settings::store::VoiceInputSettings;
 
     #[test]
@@ -436,5 +522,13 @@ mod tests {
             ensure_input_allowed(&settings, false).unwrap_err().code,
             "voice_provider_not_configured"
         );
+    }
+
+    #[test]
+    fn shortcut_validation_is_bounded_without_registering_a_real_global_hotkey() {
+        assert!(validate_shortcut("Ctrl+Alt+Space").is_ok());
+        assert!(validate_shortcut("").is_err());
+        assert!(validate_shortcut("Ctrl\nAlt").is_err());
+        assert!(validate_shortcut(&"X".repeat(65)).is_err());
     }
 }

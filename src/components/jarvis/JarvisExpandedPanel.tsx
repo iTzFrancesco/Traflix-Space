@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { JarvisChatPanel } from "./JarvisChatPanel";
-import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceRequestStatusView } from "../../lib/jarvis/types";
+import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
 
 interface JarvisExpandedPanelProps {
   workspaceId: string | null;
@@ -21,6 +21,7 @@ interface JarvisExpandedPanelProps {
   onUpdateAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
   voiceRequest: VoiceRequestStatusView | null;
+  activationMode: VoiceActivationMode;
   onVoiceDiscard: () => void;
   onVoiceCancel: () => void;
   ttsStatus: TtsStatusView;

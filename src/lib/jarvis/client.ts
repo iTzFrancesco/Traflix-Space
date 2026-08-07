@@ -368,6 +368,10 @@ export function voiceListInputDevices(): Promise<VoiceInputDevice[]> {
   return invokeWithTimeout(() => invoke<VoiceInputDevice[]>("jarvis_voice_list_input_devices"), READ_TIMEOUT_MS);
 }
 
+export function voiceSyncShortcut(): Promise<void> {
+  return invokeWithTimeout(() => invoke<void>("jarvis_voice_sync_shortcut"), READ_TIMEOUT_MS);
+}
+
 export function voiceStart(request: { requestId: string; workspaceId: string; selectedDeviceId?: string | null }): Promise<VoiceRequestStatusView> {
   return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_start", { request }), READ_TIMEOUT_MS);
 }

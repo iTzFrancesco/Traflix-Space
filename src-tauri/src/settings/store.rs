@@ -77,6 +77,28 @@ pub struct VoiceInputSettings {
     pub privacy_consent: bool,
     #[serde(default)]
     pub privacy_consent_at: Option<String>,
+    #[serde(default)]
+    pub activation_mode: VoiceActivationMode,
+    #[serde(default)]
+    pub global_shortcut_enabled: bool,
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
+    #[serde(default)]
+    pub shortcut_behavior: ShortcutBehavior,
+    #[serde(default)]
+    pub vad_enabled: bool,
+    #[serde(default = "default_vad_threshold")]
+    pub vad_speech_threshold: f32,
+    #[serde(default = "default_vad_start_frames")]
+    pub vad_start_frames: u16,
+    #[serde(default = "default_vad_silence_frames")]
+    pub vad_silence_frames: u16,
+    #[serde(default = "default_vad_preroll_ms")]
+    pub vad_pre_roll_ms: u32,
+    #[serde(default = "default_vad_post_speech_ms")]
+    pub vad_post_speech_ms: u32,
+    #[serde(default = "default_max_armed_seconds")]
+    pub max_armed_seconds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +124,35 @@ pub struct VoiceOutputSettings {
     pub privacy_consent: bool,
     #[serde(default)]
     pub privacy_consent_at: Option<String>,
+    #[serde(default = "default_true")]
+    pub stop_on_user_speech: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceActivationMode {
+    ClickToggle,
+    HoldToTalk,
+    Vad,
+}
+
+impl Default for VoiceActivationMode {
+    fn default() -> Self {
+        Self::ClickToggle
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutBehavior {
+    Toggle,
+    Hold,
+}
+
+impl Default for ShortcutBehavior {
+    fn default() -> Self {
+        Self::Toggle
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +338,17 @@ impl Default for VoiceInputSettings {
             auto_submit_transcript: false,
             privacy_consent: false,
             privacy_consent_at: None,
+            activation_mode: VoiceActivationMode::default(),
+            global_shortcut_enabled: false,
+            global_shortcut: default_global_shortcut(),
+            shortcut_behavior: ShortcutBehavior::default(),
+            vad_enabled: false,
+            vad_speech_threshold: default_vad_threshold(),
+            vad_start_frames: default_vad_start_frames(),
+            vad_silence_frames: default_vad_silence_frames(),
+            vad_pre_roll_ms: default_vad_preroll_ms(),
+            vad_post_speech_ms: default_vad_post_speech_ms(),
+            max_armed_seconds: default_max_armed_seconds(),
         }
     }
 }
@@ -304,6 +366,7 @@ impl Default for VoiceOutputSettings {
             max_spoken_chars: default_max_spoken_chars(),
             privacy_consent: false,
             privacy_consent_at: None,
+            stop_on_user_speech: true,
         }
     }
 }
@@ -410,6 +473,27 @@ fn default_voice_language() -> String {
 }
 fn default_voice_max_duration() -> u32 {
     45
+}
+fn default_global_shortcut() -> String {
+    "Ctrl+Alt+Space".to_string()
+}
+fn default_vad_threshold() -> f32 {
+    0.018
+}
+fn default_vad_start_frames() -> u16 {
+    3
+}
+fn default_vad_silence_frames() -> u16 {
+    16
+}
+fn default_vad_preroll_ms() -> u32 {
+    250
+}
+fn default_vad_post_speech_ms() -> u32 {
+    650
+}
+fn default_max_armed_seconds() -> u32 {
+    20
 }
 fn default_edge_provider() -> String {
     "edge_tts".to_string()
@@ -535,7 +619,7 @@ impl SettingsManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ModelProvider, VoiceEngine};
+    use super::{AppSettings, ModelProvider, ShortcutBehavior, VoiceActivationMode, VoiceEngine};
 
     #[test]
     fn legacy_settings_migrate_to_open_code_zen_defaults() {
@@ -645,5 +729,33 @@ mod tests {
         );
         assert!(!settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
+    }
+
+    #[test]
+    fn phase_six_voice_settings_round_trip_without_losing_activation_policy() {
+        let mut settings = AppSettings::default();
+        settings.jarvis.voice_input.activation_mode = VoiceActivationMode::Vad;
+        settings.jarvis.voice_input.global_shortcut_enabled = true;
+        settings.jarvis.voice_input.global_shortcut = "Ctrl+Shift+Space".into();
+        settings.jarvis.voice_input.shortcut_behavior = ShortcutBehavior::Hold;
+        settings.jarvis.voice_input.vad_speech_threshold = 0.031;
+        settings.jarvis.voice_output.stop_on_user_speech = false;
+        let reloaded: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.jarvis.voice_input.activation_mode,
+            VoiceActivationMode::Vad
+        );
+        assert!(reloaded.jarvis.voice_input.global_shortcut_enabled);
+        assert_eq!(
+            reloaded.jarvis.voice_input.global_shortcut,
+            "Ctrl+Shift+Space"
+        );
+        assert_eq!(
+            reloaded.jarvis.voice_input.shortcut_behavior,
+            ShortcutBehavior::Hold
+        );
+        assert_eq!(reloaded.jarvis.voice_input.vad_speech_threshold, 0.031);
+        assert!(!reloaded.jarvis.voice_output.stop_on_user_speech);
     }
 }

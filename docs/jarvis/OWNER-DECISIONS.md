@@ -44,3 +44,12 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - Il microfono è click-to-toggle e il transcript è sempre modificabile prima
   dell’invio esplicito alla chat Fase 4. Non sono inclusi wake word, VAD,
   ascolto continuo, full duplex o Gemini Live.
+
+## Fase 6 — Voice Advanced
+
+- Hotkey globale tramite plugin Tauri ufficiale, hold-to-talk e modalità
+  click-toggle compatibili.
+- Energy VAD locale opzionale con pre-roll/post-roll bounded e timeout armed;
+  nessun wake word, ascolto continuo, full duplex o streaming.
+- Groq turbo e Edge TTS restano invariati; nessun nuovo provider e nessuna
+  autonomia agent.

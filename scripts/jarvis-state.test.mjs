@@ -152,7 +152,7 @@ test("voice drafts remain separate when switching between workspaces", () => {
   assert.deepEqual(voiceDraftsForWorkspaces(drafts, "workspace-b").map((draft) => draft.transcript), ["B"]);
 });
 
-test("voice transcript is never auto-submitted and TTS requires separate consent", () => {
+test("voice transcript stays manual by default and TTS requires separate consent", () => {
   assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: false }), false);
   assert.equal(shouldAutoSpeak({ enabled: true, autoSpeak: true, privacyConsent: true, privacyConsentAt: "now" }), true);
   assert.equal(shouldStopTtsBeforeRecording("playing"), true);
@@ -171,4 +171,18 @@ test("voice errors are sanitized and the legacy mute toggle is not presented", (
   assert.doesNotMatch(settingsSource, /Microfono muto/);
   assert.match(settingsSource, /Aggiorna microfoni/);
   assert.match(settingsSource, /Carica voci italiane/);
+});
+
+test("voice advanced settings expose activation modes, hotkey and VAD without phase-seven controls", () => {
+  assert.match(settingsSource, /click_toggle|Click per avviare/);
+  assert.match(settingsSource, /hold_to_talk|Tieni premuto/);
+  assert.match(settingsSource, /VAD locale/);
+  assert.match(settingsSource, /Hotkey globale/);
+  assert.match(settingsSource, /autoSubmitTranscript/);
+});
+
+test("chat surface renders the distinct armed and speech states", () => {
+  assert.match(chatPanelSource, /status === "armed"/);
+  assert.match(chatPanelSource, /Ti ascolto/);
+  assert.match(chatPanelSource, /Trascrivo/);
 });

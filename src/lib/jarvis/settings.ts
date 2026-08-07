@@ -40,6 +40,17 @@ export function defaultJarvisSettings(): JarvisSettings {
       autoSubmitTranscript: false,
       privacyConsent: false,
       privacyConsentAt: undefined,
+      activationMode: "click_toggle",
+      globalShortcutEnabled: false,
+      globalShortcut: "Ctrl+Alt+Space",
+      shortcutBehavior: "toggle",
+      vadEnabled: false,
+      vadSpeechThreshold: 0.018,
+      vadStartFrames: 3,
+      vadSilenceFrames: 16,
+      vadPreRollMs: 250,
+      vadPostSpeechMs: 650,
+      maxArmedSeconds: 20,
     },
     voiceOutput: {
       enabled: true,
@@ -52,6 +63,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       maxSpokenChars: 800,
       privacyConsent: false,
       privacyConsentAt: undefined,
+      stopOnUserSpeech: true,
     },
   };
 }

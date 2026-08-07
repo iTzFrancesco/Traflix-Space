@@ -18,8 +18,9 @@ use std::sync::{
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager, RunEvent,
+    Emitter, Manager, RunEvent,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -37,6 +38,20 @@ fn main() {
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    let state = match event.state {
+                        tauri_plugin_global_shortcut::ShortcutState::Pressed => "pressed",
+                        tauri_plugin_global_shortcut::ShortcutState::Released => "released",
+                    };
+                    let _ = app.emit(
+                        "jarvis://voice-shortcut",
+                        serde_json::json!({ "shortcut": shortcut.to_string(), "state": state }),
+                    );
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -203,6 +218,7 @@ fn main() {
             jarvis::chat::jarvis_reject_action,
             jarvis::chat::jarvis_clear_conversation,
             jarvis::voice::commands::jarvis_voice_list_input_devices,
+            jarvis::voice::commands::jarvis_voice_sync_shortcut,
             jarvis::voice::commands::jarvis_voice_start,
             jarvis::voice::commands::jarvis_voice_stop,
             jarvis::voice::commands::jarvis_voice_cancel,
@@ -243,6 +259,7 @@ fn main() {
             // On real process exit (tray Quit, no-tray window close, OS kill),
             // tear down every PTY/shell so no orphans accumulate.
             if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+                let _ = app.global_shortcut().unregister_all();
                 let voice = app.state::<jarvis::voice::VoiceState>().clone();
                 let manager = app.state::<TerminalManager>();
                 tauri::async_runtime::block_on(async {

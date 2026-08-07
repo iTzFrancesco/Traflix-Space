@@ -1,13 +1,26 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 #[cfg(any(windows, test))]
 use std::time::Instant;
 
-use super::types::{CapturedAudio, VoiceErrorCode, VoiceInputDevice, MAX_RECORDING_MS};
+use super::types::{
+    CapturedAudio, VoiceCaptureOptions, VoiceErrorCode, VoiceInputDevice, MAX_RECORDING_MS,
+};
+use super::vad::{EnergyVad, EnergyVadConfig, VadState};
 
 pub trait AudioCaptureSession: Send {
     fn stop(self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode>;
     fn elapsed_ms(&self) -> u64;
     fn normalized_level(&self) -> f32;
+    fn vad_state(&self) -> VadState {
+        VadState::Silence
+    }
+    fn speech_started(&self) -> bool {
+        true
+    }
+    fn should_auto_stop(&self) -> bool {
+        false
+    }
 }
 
 pub trait AudioCaptureSource: Send + Sync {
@@ -15,7 +28,7 @@ pub trait AudioCaptureSource: Send + Sync {
     fn start(
         &self,
         selected_device_id: Option<&str>,
-        max_duration_seconds: u32,
+        options: VoiceCaptureOptions,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode>;
 }
 
@@ -30,7 +43,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
     fn start(
         &self,
         _selected_device_id: Option<&str>,
-        _max_duration_seconds: u32,
+        _options: VoiceCaptureOptions,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         Err(VoiceErrorCode::DeviceUnavailable)
     }
@@ -63,7 +76,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
     fn start(
         &self,
         selected_device_id: Option<&str>,
-        max_duration_seconds: u32,
+        options: VoiceCaptureOptions,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
         let host = cpal::default_host();
@@ -84,7 +97,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
         let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
             channels,
             sample_rate,
-            max_duration_seconds,
+            options,
         )));
         let callback_buffer = Arc::clone(&buffer);
         let config: cpal::StreamConfig = supported.clone().into();
@@ -161,6 +174,24 @@ impl AudioCaptureSession for CpalCaptureSession {
     fn normalized_level(&self) -> f32 {
         self.buffer.lock().map(|buffer| buffer.level).unwrap_or(0.0)
     }
+    fn vad_state(&self) -> VadState {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.vad_state())
+            .unwrap_or(VadState::Silence)
+    }
+    fn speech_started(&self) -> bool {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.speech_started())
+            .unwrap_or(false)
+    }
+    fn should_auto_stop(&self) -> bool {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.should_auto_stop())
+            .unwrap_or(false)
+    }
 }
 
 struct CaptureBuffer {
@@ -169,11 +200,30 @@ struct CaptureBuffer {
     sample_rate: u32,
     max_samples: usize,
     level: f32,
+    pre_roll: VecDeque<f32>,
+    max_pre_roll_samples: usize,
+    vad: Option<EnergyVad>,
 }
 
 impl CaptureBuffer {
-    fn new(channels: u16, sample_rate: u32, max_duration_seconds: u32) -> Self {
-        let max_seconds = (max_duration_seconds as u64).clamp(1, MAX_RECORDING_MS / 1000);
+    fn new(channels: u16, sample_rate: u32, options: VoiceCaptureOptions) -> Self {
+        let options = options.bounded();
+        let max_seconds = (options.max_duration_seconds as u64).clamp(1, MAX_RECORDING_MS / 1000);
+        let max_pre_roll_samples =
+            (sample_rate as u64 * channels as u64 * options.vad_pre_roll_ms as u64 / 1000) as usize;
+        let vad = if options.activation_mode == crate::settings::store::VoiceActivationMode::Vad
+            || options.vad_enabled
+        {
+            Some(EnergyVad::new(EnergyVadConfig {
+                threshold: options.vad_speech_threshold,
+                start_frames: options.vad_start_frames,
+                silence_frames: options.vad_silence_frames,
+                post_speech_ms: options.vad_post_speech_ms,
+                sample_rate,
+            }))
+        } else {
+            None
+        };
         Self {
             samples: Vec::with_capacity(
                 (sample_rate as u64 * channels as u64 * max_seconds) as usize,
@@ -182,6 +232,9 @@ impl CaptureBuffer {
             sample_rate,
             max_samples: (sample_rate as u64 * channels as u64 * max_seconds) as usize,
             level: 0.0,
+            pre_roll: VecDeque::with_capacity(max_pre_roll_samples),
+            max_pre_roll_samples,
+            vad,
         }
     }
     fn audio(&self) -> CapturedAudio {
@@ -191,15 +244,60 @@ impl CaptureBuffer {
             sample_rate: self.sample_rate,
         }
     }
+    fn vad_state(&self) -> VadState {
+        self.vad
+            .as_ref()
+            .map(EnergyVad::state)
+            .unwrap_or(VadState::Speech)
+    }
+    fn speech_started(&self) -> bool {
+        self.vad
+            .as_ref()
+            .map(EnergyVad::speech_started)
+            .unwrap_or(true)
+    }
+    fn should_auto_stop(&self) -> bool {
+        self.vad
+            .as_ref()
+            .map(EnergyVad::should_stop)
+            .unwrap_or(false)
+    }
 }
 
 fn push_samples<I: IntoIterator<Item = f32>>(buffer: &Arc<Mutex<CaptureBuffer>>, samples: I) {
     if let Ok(mut buffer) = buffer.try_lock() {
-        let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
-        let incoming: Vec<f32> = samples.into_iter().take(remaining).collect();
+        let incoming: Vec<f32> = samples.into_iter().collect();
         buffer.level =
             incoming.iter().map(|sample| sample.abs()).sum::<f32>() / incoming.len().max(1) as f32;
-        buffer.samples.extend(incoming);
+        let speech_started = if let Some(vad) = buffer.vad.as_mut() {
+            vad.process(&incoming);
+            vad.speech_started()
+        } else {
+            true
+        };
+        if buffer.vad.is_some() {
+            if speech_started && buffer.samples.is_empty() {
+                let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
+                let preroll = buffer
+                    .pre_roll
+                    .drain(..)
+                    .take(remaining)
+                    .collect::<Vec<_>>();
+                buffer.samples.extend(preroll);
+            }
+            if speech_started {
+                let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
+                buffer.samples.extend(incoming.into_iter().take(remaining));
+            } else if buffer.max_pre_roll_samples > 0 {
+                buffer.pre_roll.extend(incoming);
+                while buffer.pre_roll.len() > buffer.max_pre_roll_samples {
+                    buffer.pre_roll.pop_front();
+                }
+            }
+        } else {
+            let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
+            buffer.samples.extend(incoming.into_iter().take(remaining));
+        }
     }
 }
 
@@ -221,7 +319,7 @@ impl AudioCaptureSource for FakeCaptureSource {
     fn start(
         &self,
         _selected_device_id: Option<&str>,
-        _max_duration_seconds: u32,
+        _options: VoiceCaptureOptions,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         Ok(Box::new(FakeCaptureSession {
             audio: self.audio.clone(),

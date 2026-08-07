@@ -8,9 +8,10 @@ use tokio_util::sync::CancellationToken;
 use super::capture::{AudioCaptureSession, AudioCaptureSource, PlatformAudioCapture};
 use super::playback::{AudioPlayback, PlatformAudioPlayback};
 use super::types::{
-    error_view, normalize_max_duration_seconds, TtsStatus, TtsStatusView, VoiceErrorCode,
-    VoiceRequestStatus, VoiceRequestStatusView, MAX_VOICE_REQUESTS,
+    error_view, TtsStatus, TtsStatusView, VoiceCaptureOptions, VoiceErrorCode, VoiceRequestStatus,
+    VoiceRequestStatusView, MAX_VOICE_REQUESTS,
 };
+use super::vad::VadState;
 
 struct ActiveVoiceRequest {
     view: VoiceRequestStatusView,
@@ -68,7 +69,7 @@ impl VoiceState {
         request_id: String,
         workspace_id: String,
         selected_device_id: Option<String>,
-        max_duration_seconds: u32,
+        options: VoiceCaptureOptions,
     ) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
         let mut inner = self.inner.lock();
         if inner.requests.values().any(|request| {
@@ -77,26 +78,38 @@ impl VoiceState {
                 VoiceRequestStatus::Recording
                     | VoiceRequestStatus::Stopping
                     | VoiceRequestStatus::Transcribing
+                    | VoiceRequestStatus::Armed
             )
         }) {
             return Err(VoiceErrorCode::AlreadyActive);
         }
-        let capture = self.capture.start(
-            selected_device_id.as_deref(),
-            normalize_max_duration_seconds(max_duration_seconds),
-        )?;
+        let capture = self
+            .capture
+            .start(selected_device_id.as_deref(), options.bounded())?;
         let now = chrono::Utc::now().to_rfc3339();
         let view = VoiceRequestStatusView {
             request_id: request_id.clone(),
             workspace_id,
             selected_device_id,
-            status: VoiceRequestStatus::Recording,
+            status: if options.activation_mode == crate::settings::store::VoiceActivationMode::Vad {
+                VoiceRequestStatus::Armed
+            } else {
+                VoiceRequestStatus::Recording
+            },
             created_at: now.clone(),
             started_at: Some(now),
             duration_ms: Some(0),
             normalized_level: 0.0,
             transcript: None,
             error: None,
+            activation_mode: options.activation_mode,
+            vad_state: if options.activation_mode
+                == crate::settings::store::VoiceActivationMode::Vad
+            {
+                VadState::Silence
+            } else {
+                VadState::Speech
+            },
         };
         inner.requests.insert(
             request_id,
@@ -129,12 +142,7 @@ impl VoiceState {
             .requests
             .get_mut(&id)
             .ok_or(VoiceErrorCode::NotFound)?;
-        if matches!(request.view.status, VoiceRequestStatus::Recording) {
-            if let Some(capture) = request.capture.as_ref() {
-                request.view.duration_ms = Some(capture.elapsed_ms());
-                request.view.normalized_level = capture.normalized_level().clamp(0.0, 1.0);
-            }
-        }
+        refresh_request(request);
         Ok(request.view.clone())
     }
 
@@ -154,13 +162,26 @@ impl VoiceState {
             .requests
             .get_mut(&id)
             .ok_or(VoiceErrorCode::NotFound)?;
-        if matches!(request.view.status, VoiceRequestStatus::Recording) {
-            if let Some(capture) = request.capture.as_ref() {
-                request.view.duration_ms = Some(capture.elapsed_ms());
-                request.view.normalized_level = capture.normalized_level().clamp(0.0, 1.0);
-            }
-        }
+        refresh_request(request);
         Ok(request.view.clone())
+    }
+
+    pub fn signal(
+        &self,
+        request_id: &str,
+    ) -> Result<(VoiceRequestStatusView, bool), VoiceErrorCode> {
+        let mut inner = self.inner.lock();
+        let request = inner
+            .requests
+            .get_mut(request_id)
+            .ok_or(VoiceErrorCode::NotFound)?;
+        refresh_request(request);
+        let should_stop = request
+            .capture
+            .as_ref()
+            .map(|capture| capture.should_auto_stop())
+            .unwrap_or(false);
+        Ok((request.view.clone(), should_stop))
     }
 
     pub fn begin_stop(
@@ -172,6 +193,7 @@ impl VoiceState {
             .requests
             .get_mut(request_id)
             .ok_or(VoiceErrorCode::NotFound)?;
+        refresh_request(request);
         if !matches!(request.view.status, VoiceRequestStatus::Recording) {
             return Err(VoiceErrorCode::InvalidRequest);
         }
@@ -183,6 +205,56 @@ impl VoiceState {
             .ok_or(VoiceErrorCode::InvalidRequest)?;
         request.view.status = VoiceRequestStatus::Transcribing;
         Ok((capture, request.cancellation.clone()))
+    }
+
+    pub fn stop_armed(&self, request_id: &str) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
+        let capture = {
+            let mut inner = self.inner.lock();
+            let request = inner
+                .requests
+                .get_mut(request_id)
+                .ok_or(VoiceErrorCode::NotFound)?;
+            refresh_request(request);
+            if !matches!(request.view.status, VoiceRequestStatus::Armed) {
+                return Err(VoiceErrorCode::InvalidRequest);
+            }
+            request.view.status = VoiceRequestStatus::Stopping;
+            request.cancellation.cancel();
+            request.capture.take()
+        };
+        if let Some(capture) = capture {
+            let _ = capture.stop();
+        }
+        self.finish(request_id, VoiceRequestStatus::Idle, None, None)
+    }
+
+    pub fn timeout_armed(
+        &self,
+        request_id: &str,
+    ) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
+        let capture = {
+            let mut inner = self.inner.lock();
+            let request = inner
+                .requests
+                .get_mut(request_id)
+                .ok_or(VoiceErrorCode::NotFound)?;
+            refresh_request(request);
+            if !matches!(request.view.status, VoiceRequestStatus::Armed) {
+                return Err(VoiceErrorCode::InvalidRequest);
+            }
+            request.view.status = VoiceRequestStatus::Stopping;
+            request.cancellation.cancel();
+            request.capture.take()
+        };
+        if let Some(capture) = capture {
+            let _ = capture.stop();
+        }
+        self.finish(
+            request_id,
+            VoiceRequestStatus::Idle,
+            None,
+            Some(VoiceErrorCode::VadTimeout),
+        )
     }
 
     pub fn finish(
@@ -197,6 +269,18 @@ impl VoiceState {
             .requests
             .get_mut(request_id)
             .ok_or(VoiceErrorCode::NotFound)?;
+        if matches!(
+            request.view.status,
+            VoiceRequestStatus::Idle
+                | VoiceRequestStatus::TranscriptReady
+                | VoiceRequestStatus::Cancelled
+                | VoiceRequestStatus::Failed
+        ) {
+            if request.view.status == status {
+                return Ok(request.view.clone());
+            }
+            return Err(VoiceErrorCode::InvalidTransition);
+        }
         request.view.status = status;
         request.view.transcript = transcript;
         request.view.error = error.map(|code| error_view(code, friendly_message(code)));
@@ -212,6 +296,15 @@ impl VoiceState {
                 .requests
                 .get_mut(request_id)
                 .ok_or(VoiceErrorCode::NotFound)?;
+            if matches!(
+                request.view.status,
+                VoiceRequestStatus::Idle
+                    | VoiceRequestStatus::TranscriptReady
+                    | VoiceRequestStatus::Cancelled
+                    | VoiceRequestStatus::Failed
+            ) {
+                return Err(VoiceErrorCode::InvalidTransition);
+            }
             request.cancellation.cancel();
             (request.capture.take(), request.cancellation.clone())
         };
@@ -328,6 +421,7 @@ impl VoiceState {
                     if matches!(
                         request.view.status,
                         VoiceRequestStatus::Recording
+                            | VoiceRequestStatus::Armed
                             | VoiceRequestStatus::Stopping
                             | VoiceRequestStatus::Transcribing
                     ) {
@@ -370,6 +464,7 @@ fn prune(requests: &mut HashMap<String, ActiveVoiceRequest>) {
             !matches!(
                 request.view.status,
                 VoiceRequestStatus::Recording
+                    | VoiceRequestStatus::Armed
                     | VoiceRequestStatus::Stopping
                     | VoiceRequestStatus::Transcribing
             )
@@ -403,8 +498,33 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
         VoiceErrorCode::AlreadyActive => "È già attiva una registrazione vocale.",
         VoiceErrorCode::NotFound => "Richiesta vocale non trovata.",
         VoiceErrorCode::InvalidRequest => "Richiesta vocale non valida.",
+        VoiceErrorCode::VadTimeout => "Nessuna voce rilevata: microfono riarmato quando vuoi.",
+        VoiceErrorCode::InvalidTransition => "Transizione vocale non valida.",
+        VoiceErrorCode::ShortcutUnavailable => "La scorciatoia globale non è disponibile.",
+        VoiceErrorCode::ShortcutInvalid => "La scorciatoia globale non è valida.",
         VoiceErrorCode::HelperFailed => "Edge TTS non è disponibile.",
         VoiceErrorCode::PlaybackFailed => "Riproduzione audio non disponibile.",
+    }
+}
+
+fn refresh_request(request: &mut ActiveVoiceRequest) {
+    let Some(capture) = request.capture.as_ref() else {
+        return;
+    };
+    let speech_started = capture.speech_started();
+    let elapsed_ms = capture.elapsed_ms();
+    let level = capture.normalized_level().clamp(0.0, 1.0);
+    let vad_state = capture.vad_state();
+    if request.view.status == VoiceRequestStatus::Armed && speech_started {
+        request.view.status = VoiceRequestStatus::Recording;
+    }
+    if matches!(
+        request.view.status,
+        VoiceRequestStatus::Armed | VoiceRequestStatus::Recording
+    ) {
+        request.view.duration_ms = Some(elapsed_ms);
+        request.view.normalized_level = level;
+        request.view.vad_state = vad_state;
     }
 }
 
@@ -414,6 +534,21 @@ mod tests {
     use crate::jarvis::voice::capture::FakeCaptureSource;
     use crate::jarvis::voice::playback::FakePlayback;
     use crate::jarvis::voice::types::CapturedAudio;
+    use crate::settings::store::VoiceActivationMode;
+
+    fn test_options() -> VoiceCaptureOptions {
+        VoiceCaptureOptions {
+            activation_mode: VoiceActivationMode::ClickToggle,
+            max_duration_seconds: 45,
+            max_armed_seconds: 20,
+            vad_enabled: false,
+            vad_speech_threshold: 0.018,
+            vad_start_frames: 3,
+            vad_silence_frames: 16,
+            vad_pre_roll_ms: 250,
+            vad_post_speech_ms: 650,
+        }
+    }
 
     #[test]
     fn registry_keeps_workspace_binding_and_cancel_is_idempotent_at_state_level() {
@@ -428,7 +563,7 @@ mod tests {
             Arc::new(FakePlayback),
         );
         let started = state
-            .start("req".into(), "workspace-a".into(), None, 45)
+            .start("req".into(), "workspace-a".into(), None, test_options())
             .unwrap();
         assert_eq!(started.workspace_id, "workspace-a");
         let _ = state.cancel("req").unwrap();
@@ -493,7 +628,12 @@ mod tests {
             Arc::new(FakePlayback),
         );
         state
-            .start("shutdown-request".into(), "workspace-a".into(), None, 45)
+            .start(
+                "shutdown-request".into(),
+                "workspace-a".into(),
+                None,
+                test_options(),
+            )
             .unwrap();
         let cancelled = state.shutdown().await;
         assert_eq!(cancelled.len(), 1);
@@ -503,5 +643,27 @@ mod tests {
             state.snapshot(Some("shutdown-request")).unwrap().status,
             VoiceRequestStatus::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn vad_request_is_armed_and_shutdown_cancels_it_without_cloud_work() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        let mut options = test_options();
+        options.activation_mode = VoiceActivationMode::Vad;
+        let started = state
+            .start("vad-request".into(), "workspace-a".into(), None, options)
+            .unwrap();
+        assert_eq!(started.status, VoiceRequestStatus::Armed);
+        let cancelled = state.shutdown().await;
+        assert_eq!(cancelled[0].status, VoiceRequestStatus::Cancelled);
     }
 }

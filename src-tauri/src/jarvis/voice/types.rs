@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use super::vad::VadState;
+use crate::settings::store::VoiceActivationMode;
+
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const MIN_RECORDING_MS: u64 = 250;
 pub const MAX_RECORDING_MS: u64 = 45_000;
@@ -23,6 +26,7 @@ pub struct VoiceInputDevice {
 #[serde(rename_all = "snake_case")]
 pub enum VoiceRequestStatus {
     Idle,
+    Armed,
     Recording,
     Stopping,
     Transcribing,
@@ -44,6 +48,8 @@ pub struct VoiceRequestStatusView {
     pub normalized_level: f32,
     pub transcript: Option<String>,
     pub error: Option<VoiceErrorView>,
+    pub activation_mode: VoiceActivationMode,
+    pub vad_state: VadState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +58,7 @@ pub struct VoiceLevelEvent {
     pub request_id: String,
     pub elapsed_ms: u64,
     pub normalized_level: f32,
+    pub vad_state: VadState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +111,35 @@ pub struct VoiceStartRequest {
     pub selected_device_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct VoiceCaptureOptions {
+    pub activation_mode: VoiceActivationMode,
+    pub max_duration_seconds: u32,
+    pub max_armed_seconds: u32,
+    pub vad_enabled: bool,
+    pub vad_speech_threshold: f32,
+    pub vad_start_frames: u16,
+    pub vad_silence_frames: u16,
+    pub vad_pre_roll_ms: u32,
+    pub vad_post_speech_ms: u32,
+}
+
+impl VoiceCaptureOptions {
+    pub fn bounded(self) -> Self {
+        Self {
+            max_duration_seconds: normalize_max_duration_seconds(self.max_duration_seconds),
+            max_armed_seconds: self.max_armed_seconds.clamp(1, 20),
+            vad_enabled: self.vad_enabled,
+            vad_speech_threshold: self.vad_speech_threshold.clamp(0.001, 1.0),
+            vad_start_frames: self.vad_start_frames.clamp(1, 60),
+            vad_silence_frames: self.vad_silence_frames.clamp(1, 120),
+            vad_pre_roll_ms: self.vad_pre_roll_ms.clamp(0, 1_000),
+            vad_post_speech_ms: self.vad_post_speech_ms.clamp(100, 5_000),
+            activation_mode: self.activation_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceStopRequest {
@@ -141,6 +177,10 @@ pub enum VoiceErrorCode {
     AlreadyActive,
     NotFound,
     InvalidRequest,
+    VadTimeout,
+    InvalidTransition,
+    ShortcutUnavailable,
+    ShortcutInvalid,
     HelperFailed,
     PlaybackFailed,
 }
@@ -183,6 +223,10 @@ impl VoiceErrorCode {
             Self::AlreadyActive => "voice_request_active",
             Self::NotFound => "voice_request_not_found",
             Self::InvalidRequest => "voice_invalid_request",
+            Self::VadTimeout => "voice_vad_timeout",
+            Self::InvalidTransition => "voice_invalid_transition",
+            Self::ShortcutUnavailable => "voice_shortcut_unavailable",
+            Self::ShortcutInvalid => "voice_shortcut_invalid",
             Self::HelperFailed => "tts_helper_failed",
             Self::PlaybackFailed => "tts_playback_failed",
         }

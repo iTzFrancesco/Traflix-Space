@@ -3,7 +3,7 @@ import { ArrowUpRight, Bot, ShieldCheck, Square } from "lucide-react";
 import { JarvisChatInput, CancelButton } from "./JarvisChatInput";
 import { JarvisPendingActionCard } from "./JarvisPendingActionCard";
 import { JarvisTranscriptCard } from "./JarvisTranscriptCard";
-import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceRequestStatusView } from "../../lib/jarvis/types";
+import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
 
 interface Props {
   workspaceId: string | null;
@@ -24,6 +24,7 @@ interface Props {
   onUpdateAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
   voiceRequest: VoiceRequestStatusView | null;
+  activationMode: VoiceActivationMode;
   onVoiceDiscard: () => void;
   onVoiceCancel: () => void;
   ttsStatus: TtsStatusView;
@@ -42,7 +43,7 @@ export function JarvisChatPanel(props: Props) {
       {props.chatError && <p className="mt-3 rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{props.chatError}</p>}
       {props.voiceError && <p role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{props.voiceError}</p>}
       {props.voiceRequest && <JarvisTranscriptCard request={props.voiceRequest} activeWorkspace={props.voiceRequest.workspaceId === props.workspaceId} onSend={(text) => props.onSendVoiceTranscript(props.voiceRequest!.requestId, text)} onDiscard={props.onVoiceDiscard} />}
-      {props.voiceRequest && (props.voiceRequest.status === "recording" || props.voiceRequest.status === "transcribing" || props.voiceRequest.status === "stopping") && <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/[0.05] px-3 py-2 text-xs text-neutral-text-muted"><span>{props.voiceRequest.status === "recording" ? `Registrazione ${Math.floor((props.voiceRequest.durationMs ?? 0) / 1000)}s · livello ${Math.round((props.voiceRequest.normalizedLevel ?? 0) * 100)}%` : "Trascrizione in corso…"}</span><button type="button" data-jarvis-control onClick={props.onVoiceCancel} className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-text"><Square size={11} /> Annulla</button></div>}
+      {props.voiceRequest && (props.voiceRequest.status === "armed" || props.voiceRequest.status === "recording" || props.voiceRequest.status === "transcribing" || props.voiceRequest.status === "stopping") && <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/[0.05] px-3 py-2 text-xs text-neutral-text-muted"><span>{props.voiceRequest.status === "armed" ? `In ascolto… ${Math.floor((props.voiceRequest.durationMs ?? 0) / 1000)}s · ${props.voiceRequest.vadState}` : props.voiceRequest.status === "recording" ? `Ti ascolto… ${Math.floor((props.voiceRequest.durationMs ?? 0) / 1000)}s · livello ${Math.round((props.voiceRequest.normalizedLevel ?? 0) * 100)}%` : "Trascrivo…"}</span><button type="button" data-jarvis-control onClick={props.onVoiceCancel} className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-text"><Square size={11} /> Annulla</button></div>}
       {(props.ttsStatus.status === "playing" || props.ttsStatus.status === "synthesizing") && <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/[0.05] px-3 py-2 text-xs text-neutral-text-muted"><span>Sto parlando…</span><button type="button" data-jarvis-control onClick={props.onStopTts} className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-text"><Square size={11} /> Stop</button></div>}
       {props.ttsStatus.status === "failed" && props.ttsStatus.error && <p className="mt-2 rounded-lg border border-warning/30 bg-warning/[0.06] px-3 py-2 text-xs text-warning">La risposta è disponibile, ma la sintesi vocale non è riuscita: {props.ttsStatus.error.message}</p>}
       {props.uiIntents.filter((intent) => intent.workspaceId === props.workspaceId).map((intent) => <button key={intent.id} type="button" onClick={() => props.onOpenTerminal(intent.workspaceId, intent.terminalId, intent.generation)} className="mt-3 inline-flex items-center rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-text">{intent.label}</button>)}

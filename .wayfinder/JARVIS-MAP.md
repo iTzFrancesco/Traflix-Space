@@ -186,3 +186,12 @@ JARVIS-011 ────────────────> session summaries e
 - JARVIS-010: **consolidata** — il registry e i tool Jarvis restano read-only in questa fase.
 - JARVIS-011: **consolidata** — completion aggiorna `waiting` e l’ultimo fallback, senza chiudere la sessione.
 - JARVIS-012: **estesa** — Context Broker live collegato al `AgentSessionRegistry` terminal-based e shell globale visibile.
+
+## Stato Fase 6
+
+- Hotkey globale, hold-to-talk e Energy VAD locale opzionale sono decisioni
+  consolidate sopra la pipeline cloud Fase 5.
+- Click-toggle resta il default; Groq `whisper-large-v3-turbo` e Edge TTS non
+  cambiano.
+- Wake word, ascolto continuo, full duplex, streaming e Fase 7 restano fuori
+  scope.

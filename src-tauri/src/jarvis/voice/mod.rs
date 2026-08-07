@@ -6,5 +6,6 @@ pub mod registry;
 pub mod stt;
 pub mod tts;
 pub mod types;
+pub mod vad;
 
 pub use registry::VoiceState;
