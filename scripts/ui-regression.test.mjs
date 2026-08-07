@@ -111,12 +111,22 @@ test("late workspace loads cannot steal active terminal ownership", () => {
   assert.doesNotMatch(workspaceViewSource, /let cancelled = false/);
 });
 
-test("workspace config LRU eviction never kills live PTYs", () => {
+test("workspace config LRU is PTY-safe, active-safe and self-healing", () => {
   assert.match(workspaceViewSource, /This is only an LRU cache for workspace configuration/);
-  assert.match(workspaceViewSource, /if \(toEvict\) \{\s*next\.delete\(toEvict\)/s);
+  assert.match(workspaceViewSource, /const activeAtCommit = useWorkspaceStore\.getState\(\)\.activeWorkspaceId/);
+  assert.match(workspaceViewSource, /key !== activeAtCommit && key !== id && next\.has\(key\)/);
+  assert.match(workspaceViewSource, /if \(toEvict\) next\.delete\(toEvict\)/);
   assert.doesNotMatch(
     workspaceViewSource,
-    /if \(toEvict\) \{\s*terminalStore\.killWorkspaceTerminals\(toEvict\)/s,
+    /terminalStore\.killWorkspaceTerminals\(toEvict\)/,
+  );
+  assert.match(
+    workspaceViewSource,
+    /!loadedMap\.has\(activeWorkspaceId\)[\s\S]*!loadingRef\.current\.has\(activeWorkspaceId\)[\s\S]*loadWorkspace\(activeWorkspaceId\)/,
+  );
+  assert.match(
+    workspaceViewSource,
+    /\[activeWorkspaceId, loadedMap, loadWorkspace\]/,
   );
 });
 
