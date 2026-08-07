@@ -1,4 +1,7 @@
 {
+  "build": {
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-before-build.ps1"
+  },
   "bundle": {
     "externalBin": ["binaries/jarvis-edge-tts"]
   }
