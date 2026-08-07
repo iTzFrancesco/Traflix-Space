@@ -63,7 +63,7 @@ pub fn read_secret_env(name: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let script = format!(
-            "$v=[Environment]::GetEnvironmentVariable('{}',[EnvironmentVariableTarget]::User); if ($null -ne $v) {{ [Console]::Out.Write($v) }}",
+            "$v=[System.Environment]::GetEnvironmentVariable('{}',[System.EnvironmentVariableTarget]::User); if ($null -ne $v) {{ [Console]::Out.Write($v) }}",
             name
         );
         let output = Command::new("powershell.exe")
@@ -110,12 +110,12 @@ fn validate_secret(value: &str) -> Result<(), String> {
 fn persist_user_secret(name: &str, value: Option<&str>) -> Result<(), String> {
     let script = if value.is_some() {
         format!(
-            "$v=[Console]::In.ReadToEnd(); [Environment]::SetEnvironmentVariable('{}',$v,[EnvironmentVariableTarget]::User)",
+            "$v=[Console]::In.ReadToEnd(); [System.Environment]::SetEnvironmentVariable('{}',$v,[System.EnvironmentVariableTarget]::User)",
             name
         )
     } else {
         format!(
-            "[Environment]::SetEnvironmentVariable('{}',$null,[EnvironmentVariableTarget]::User)",
+            "[System.Environment]::SetEnvironmentVariable('{}',$null,[System.EnvironmentVariableTarget]::User)",
             name
         )
     };
