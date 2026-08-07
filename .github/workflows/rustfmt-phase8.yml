@@ -1,0 +1,33 @@
+name: Phase 8 Rustfmt Fixer
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt:
+    if: github.head_ref == 'feat/jarvis-conversational-agent-control'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust
+        working-directory: src-tauri
+        run: cargo fmt --all
+      - name: Commit formatting
+        shell: pwsh
+        run: |
+          if (-not (git diff --quiet)) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src-tauri
+            git commit -m "style(rust): apply rustfmt to Phase 8"
+            git push origin HEAD:${{ github.head_ref }}
+          }
