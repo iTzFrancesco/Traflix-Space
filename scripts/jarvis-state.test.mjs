@@ -232,7 +232,7 @@ test("Phase 8 planner remains semantic, typed and allowlisted", () => {
 
 test("clarification is a hard synchronous boundary", () => {
   assert.match(controlSource, /hard conversational/);
-  assert.match(controlSource, /state\.control\.pending\(&invocation\.target_workspace_id\)\.is_some\(\)/);
+  assert.match(controlSource, /\.control\s*\.pending\(&invocation\.target_workspace_id\)\s*\.is_some\(\)/s);
 });
 
 test("every PTY mutation revalidates workspace, generation, process and identity", () => {
