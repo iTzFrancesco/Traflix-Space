@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
+import { Blocks, FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useUIStore } from "../../stores/uiStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -12,7 +12,7 @@ const PANEL_SLOTS = [
   { id: "browser", label: "Browser", icon: Globe2 },
   { id: "files", label: "Files", icon: FolderTree },
   { id: "git", label: "Git", icon: GitBranch },
-  { id: "skills", label: "Skills", icon: Sparkles },
+  { id: "skills", label: "Skills", icon: Blocks },
 ] as const;
 
 export function RightPanel() {
@@ -74,7 +74,7 @@ export function RightPanel() {
   if (!isOpen) {
     return (
       <aside className="flex h-full w-10 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Workspace tools">
-        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Apri workspace tools" aria-label="Apri workspace tools">
+        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Open workspace tools" aria-label="Open workspace tools">
           <PanelRightOpen size={15} />
         </button>
       </aside>
@@ -101,7 +101,7 @@ export function RightPanel() {
           <ActiveIcon size={15} className="text-primary" />
           <span className="truncate text-xs font-semibold text-neutral-text">{activeSlot.label}</span>
         </div>
-        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
+        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Close panel" aria-label="Close panel">
           <PanelRightClose size={15} />
         </button>
       </div>
