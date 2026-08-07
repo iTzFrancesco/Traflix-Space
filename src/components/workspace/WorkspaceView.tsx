@@ -189,8 +189,6 @@ export function WorkspaceView() {
     if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
     loadingRef.current.add(id);
 
-    let cancelled = false;
-
     invokeWithTimeout(
       () =>
         invoke<{
@@ -203,8 +201,6 @@ export function WorkspaceView() {
       15000,
     )
       .then((fullConfig) => {
-        if (cancelled) return;
-
         // Registra i terminali nel terminalStore
         const terminalStore = useTerminalStore.getState();
         let firstId: string | null = null;
@@ -222,8 +218,12 @@ export function WorkspaceView() {
           if (!firstId) firstId = tc.id;
         }
 
-        // Auto-attiva il primo terminale
-        if (firstId) {
+        // A late load may populate the cache, but it must never steal the
+        // active terminal from a workspace the user switched to meanwhile.
+        if (
+          firstId &&
+          useWorkspaceStore.getState().activeWorkspaceId === id
+        ) {
           terminalStore.setActiveTerminal(firstId);
         }
 
@@ -279,11 +279,6 @@ export function WorkspaceView() {
       .finally(() => {
         loadingRef.current.delete(id);
       });
-
-    return () => {
-      cancelled = true;
-      loadingRef.current.delete(id);
-    };
   }, []);
 
   // Gestisce la chiusura di un terminale: serializzata per evitare race condition.
