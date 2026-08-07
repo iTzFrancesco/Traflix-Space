@@ -219,10 +219,12 @@ function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input:
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
+  const vadMode = input.activationMode === "vad";
+  const effectiveVadEnabled = vadMode || input.vadEnabled;
   const loadDevices = async () => { setLoadingDevices(true); setVoiceSettingsError(null); try { setDevices(await voiceListInputDevices()); } catch (error) { setVoiceSettingsError(sanitizedVoiceError(error)); } finally { setLoadingDevices(false); } };
   const loadVoices = async () => { setLoadingVoices(true); setVoiceSettingsError(null); try { setVoices(italianVoices(await ttsListVoices())); } catch (error) { setVoiceSettingsError(sanitizedVoiceError(error)); } finally { setLoadingVoices(false); } };
   return <div className="space-y-4 rounded-xl border border-signal/20 bg-signal/[0.04] p-5">
-    <div><h3 className="font-semibold text-neutral-text">Voce Jarvis</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">STT esclusivamente Groq Whisper turbo. TTS esclusivamente Microsoft Edge TTS. Il transcript non viene inviato automaticamente.</p></div>
+    <div><h3 className="font-semibold text-neutral-text">Voce Jarvis</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">STT esclusivamente Groq Whisper turbo. TTS esclusivamente Microsoft Edge TTS. Il transcript resta revisionabile per default; l'invio automatico avviene solo se abiliti esplicitamente l'opzione dedicata.</p></div>
     <div className="grid gap-3 sm:grid-cols-2">
       <ReadOnlyField label="STT" value="Groq · whisper-large-v3-turbo" />
       <ReadOnlyField label="TTS" value="Microsoft Edge TTS" />
@@ -240,11 +242,19 @@ function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input:
       <label className="space-y-1 text-xs text-neutral-text-muted"><span>Comportamento hotkey</span><select value={input.shortcutBehavior} onChange={(event) => onInputChange({ ...input, shortcutBehavior: event.target.value as typeof input.shortcutBehavior })} className="w-full rounded-lg border border-white/10 bg-neutral-bg px-2 py-2 text-sm text-neutral-text"><option value="toggle">Toggle</option><option value="hold">Hold</option></select></label>
       <TextField label="Hotkey globale" value={input.globalShortcut} onChange={(globalShortcut) => onInputChange({ ...input, globalShortcut })} />
     </div>
-    <ToggleRow label="Abilita input vocale" description="Registra solo dopo un click esplicito." checked={input.enabled} onChange={(enabled) => onInputChange({ ...input, enabled })} />
+    <ToggleRow label="Abilita input vocale" description="Il microfono si apre solo dopo un'attivazione esplicita tramite click, hold o hotkey." checked={input.enabled} onChange={(enabled) => onInputChange({ ...input, enabled })} />
     <ToggleRow label="Abilita hotkey globale" description="La scorciatoia viene registrata solo quando Jarvis è attivo." checked={input.globalShortcutEnabled} onChange={(globalShortcutEnabled) => onInputChange({ ...input, globalShortcutEnabled })} />
-    <ToggleRow label="VAD locale" description="Attende localmente la voce e invia audio a Groq solo dopo l'inizio del parlato." checked={input.vadEnabled} onChange={(vadEnabled) => onInputChange({ ...input, vadEnabled })} />
-    {input.vadEnabled && <div className="grid gap-3 sm:grid-cols-2"><TextField label="Sensibilità VAD" value={String(input.vadSpeechThreshold)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, vadSpeechThreshold: Math.max(0.001, Math.min(1, parsed)) }); }} /><TextField label="Attesa massima (s)" value={String(input.maxArmedSeconds)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, maxArmedSeconds: Math.max(1, Math.min(20, Math.floor(parsed))) }); }} /></div>}
+    {vadMode ? (
+      <div className="rounded-lg border border-signal/25 bg-signal/[0.05] px-3 py-2.5">
+        <span className="block text-sm text-neutral-text">VAD locale attivo</span>
+        <span className="mt-0.5 block text-[11px] text-neutral-text-muted">La modalità di attivazione VAD richiede il rilevamento locale della voce, quindi è sempre attivo in questa modalità.</span>
+      </div>
+    ) : (
+      <ToggleRow label="VAD locale assistito" description="Può usare il rilevamento locale della voce anche nelle modalità Click o Hold." checked={input.vadEnabled} onChange={(vadEnabled) => onInputChange({ ...input, vadEnabled })} />
+    )}
+    {effectiveVadEnabled && <div className="grid gap-3 sm:grid-cols-2"><TextField label="Sensibilità VAD" value={String(input.vadSpeechThreshold)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, vadSpeechThreshold: Math.max(0.001, Math.min(1, parsed)) }); }} /><TextField label="Attesa massima (s)" value={String(input.maxArmedSeconds)} onChange={(value) => { const parsed = Number(value); if (Number.isFinite(parsed)) onInputChange({ ...input, maxArmedSeconds: Math.max(1, Math.min(20, Math.floor(parsed))) }); }} /></div>}
     <ToggleRow label="Invio automatico transcript" description="Invia direttamente la trascrizione a Jarvis senza revisione manuale." checked={input.autoSubmitTranscript} onChange={(autoSubmitTranscript) => onInputChange({ ...input, autoSubmitTranscript })} />
+    {input.autoSubmitTranscript && <p className="rounded-lg border border-warning/25 bg-warning/[0.05] px-3 py-2 text-xs text-warning">L'invio automatico salta la revisione manuale del transcript; le Pending Actions restano comunque obbligatorie per le operazioni mutative.</p>}
     <ToggleRow label="Abilita output vocale" description="Consente a Edge TTS di sintetizzare le risposte dopo il consenso separato." checked={output.enabled} onChange={(enabled) => onOutputChange({ ...output, enabled })} />
     <ToggleRow label="Parla automaticamente le risposte" description="Richiede consenso separato per inviare il testo a Edge TTS." checked={output.autoSpeak} onChange={(autoSpeak) => onOutputChange({ ...output, autoSpeak })} />
     <ToggleRow label="Interrompi quando inizi a parlare" description="Ferma sintesi e playback prima di aprire il microfono." checked={output.stopOnUserSpeech} onChange={(stopOnUserSpeech) => onOutputChange({ ...output, stopOnUserSpeech })} />
