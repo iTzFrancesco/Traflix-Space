@@ -122,7 +122,7 @@ export function JarvisGlobalOverlay() {
   }, [loadSettings]);
 
   useEffect(() => {
-    if (!activeWorkspaceId) return;
+    if (!activeWorkspaceId || !settings.jarvis.enabled) return;
     const workspaceId = activeWorkspaceId;
     let disposed = false;
 
@@ -136,6 +136,7 @@ export function JarvisGlobalOverlay() {
       const store = useJarvisStore.getState();
       const draft = store.voiceRequests[workspaceId];
       if (
+        store.settings.jarvis.enabled &&
         draft?.status === "transcript_ready" &&
         Boolean(draft.transcript?.trim()) &&
         store.settings.jarvis.voiceInput.autoSubmitTranscript
@@ -150,7 +151,7 @@ export function JarvisGlobalOverlay() {
     return () => {
       disposed = true;
     };
-  }, [activeWorkspaceId, loadVoiceDraft]);
+  }, [activeWorkspaceId, loadVoiceDraft, settings.jarvis.enabled]);
 
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
