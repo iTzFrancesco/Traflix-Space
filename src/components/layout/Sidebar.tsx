@@ -141,8 +141,8 @@ export function Sidebar() {
   if (isCollapsed) {
     return (
       <>
-        <aside className="flex h-full w-[58px] shrink-0 flex-col items-center border-r border-neutral-border bg-neutral-surface py-2" aria-label="Workspace sidebar">
-          <button type="button" onClick={toggleSidebar} className="ui-icon-button" title="Espandi sidebar" aria-label="Espandi sidebar">
+        <aside className="flex h-full w-[58px] shrink-0 flex-col items-center border-r border-neutral-border bg-neutral-surface py-2" aria-label="Barra laterale degli spazi di lavoro">
+          <button type="button" onClick={toggleSidebar} className="ui-icon-button" title="Espandi barra laterale" aria-label="Espandi barra laterale">
             <PanelLeftOpen size={16} />
           </button>
           <button type="button" onClick={() => setWizardOpen(true)} className="ui-icon-button mt-1 text-primary" title="Nuovo spazio" aria-label="Nuovo spazio">
@@ -173,7 +173,7 @@ export function Sidebar() {
               );
             })}
           </div>
-          {IS_DEV && <span className="mb-1 h-1.5 w-1.5 rounded-full bg-danger" title="Development build" />}
+          {IS_DEV && <span className="mb-1 h-1.5 w-1.5 rounded-full bg-danger" title="Build di sviluppo" />}
         </aside>
         <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
       </>
@@ -188,14 +188,14 @@ export function Sidebar() {
         ref={sidebarRef}
         className="relative flex h-full shrink-0 flex-col border-r border-neutral-border bg-neutral-surface"
         style={{ width }}
-        aria-label="Workspace sidebar"
+        aria-label="Barra laterale degli spazi di lavoro"
       >
         <div onMouseDown={handleResizeMouseDown} className="group absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize" aria-hidden="true">
           <span className="absolute inset-y-0 left-1 w-px bg-transparent transition-colors group-hover:bg-primary/60" />
         </div>
 
         <div className="flex h-[45px] shrink-0 items-center justify-between gap-2 border-b border-neutral-border px-2">
-          <button type="button" onClick={toggleSidebar} className="ui-icon-button h-7 w-7" title="Comprimi sidebar" aria-label="Comprimi sidebar">
+          <button type="button" onClick={toggleSidebar} className="ui-icon-button h-7 w-7" title="Comprimi barra laterale" aria-label="Comprimi barra laterale">
             <PanelLeftClose size={15} />
           </button>
           <button
@@ -204,7 +204,7 @@ export function Sidebar() {
             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/[0.10] bg-white/[0.025] px-2.5 text-[11px] font-semibold text-neutral-text-dim transition-colors hover:border-primary/35 hover:bg-white/[0.05] hover:text-neutral-text"
           >
             <Plus size={13} className="text-primary" />
-            New workspace
+            Nuovo spazio
           </button>
         </div>
 
@@ -220,7 +220,7 @@ export function Sidebar() {
         </button>
 
         <div className="flex items-center justify-between px-3 pb-2 pt-4">
-          <span className="text-[11px] font-semibold text-neutral-text-dim">Workspaces</span>
+          <span className="text-[11px] font-semibold text-neutral-text-dim">Spazi di lavoro</span>
           <span className="font-mono text-[10px] text-neutral-text-muted">{workspaces.length}</span>
         </div>
 
@@ -299,15 +299,15 @@ export function Sidebar() {
                       type="button"
                       onClick={(event) => { event.stopPropagation(); startRename(workspace.id, workspace.name); }}
                       className="ui-icon-button h-7 w-7"
-                      title="Rinomina workspace"
-                      aria-label="Rinomina workspace"
+                      title="Rinomina spazio"
+                      aria-label="Rinomina spazio"
                     ><Pencil size={13} /></button>
                     <button
                       type="button"
                       onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(workspace.id); }}
                       className="ui-icon-button h-7 w-7 hover:text-danger"
-                      title="Elimina workspace"
-                      aria-label="Elimina workspace"
+                      title="Elimina spazio"
+                      aria-label="Elimina spazio"
                     ><Trash2 size={13} /></button>
                   </div>
                 </div>
@@ -317,13 +317,13 @@ export function Sidebar() {
 
           {workspaces.length === 0 && (
             <div className="px-4 py-10 text-center">
-              <p className="text-xs font-medium text-neutral-text-dim">No workspaces yet</p>
-              <p className="mt-1 text-[10px] text-neutral-text-muted">Create one to start a terminal session.</p>
+              <p className="text-xs font-medium text-neutral-text-dim">Nessuno spazio ancora</p>
+              <p className="mt-1 text-[10px] text-neutral-text-muted">Creane uno per avviare una sessione terminale.</p>
             </div>
           )}
         </div>
 
-        {IS_DEV && <div className="border-t border-neutral-border px-3 py-2 text-[9px] font-semibold text-danger">DEV BUILD</div>}
+        {IS_DEV && <div className="border-t border-neutral-border px-3 py-2 text-[9px] font-semibold text-danger">BUILD SVILUPPO</div>}
       </aside>
 
       <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
