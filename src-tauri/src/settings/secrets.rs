@@ -32,6 +32,11 @@ pub fn status() -> JarvisSecretStatus {
     }
 }
 
+pub fn hydrate_process_environment() {
+    let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
+    let _ = read_secret_env(GROQ_API_KEY_ENV);
+}
+
 pub fn set_secret(secret: JarvisSecretId, value: String) -> Result<JarvisSecretStatus, String> {
     validate_secret(&value)?;
     let name = secret_env_name(secret);
@@ -74,8 +79,6 @@ pub fn read_secret_env(name: &str) -> Option<String> {
         if value.trim().is_empty() {
             return None;
         }
-        // Cache the persisted user value in this process so normal provider
-        // requests do not need another registry lookup.
         env::set_var(name, &value);
         return Some(value);
     }
@@ -150,7 +153,5 @@ fn persist_user_secret(name: &str, value: Option<&str>) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> {
-    // Linux/VPS keeps the existing environment-variable behavior. The desktop
-    // UI persistence path is intentionally Windows-only for now.
     Ok(())
 }
