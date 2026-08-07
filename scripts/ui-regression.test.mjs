@@ -12,8 +12,11 @@ const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
+const sidebarSource = source("../src/components/layout/Sidebar.tsx");
+const skillsSource = source("../src/components/skills/SkillsModule.tsx");
 const jarvisSettingsSource = source("../src/lib/jarvis/settings.ts");
 const rustSettingsSource = source("../src-tauri/src/settings/store.rs");
+const voiceTypesSource = source("../src-tauri/src/jarvis/voice/types.rs");
 const gitChangesSource = source("../src/components/project/ProjectGitChanges.tsx");
 const workspaceViewSource = source("../src/components/workspace/WorkspaceView.tsx");
 const agentLauncherSource = source("../src/lib/agentLauncher.ts");
@@ -64,9 +67,44 @@ test("ready voice draft resumes only in its origin workspace, while enabled, and
   assert.match(overlaySource, /draft\?\.status === "transcript_ready"/);
   assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.autoSubmitTranscript/);
   assert.match(overlaySource, /store\.sendVoiceTranscript\(/);
-  assert.match(
-    overlaySource,
-    /\[\s*activeWorkspaceId,\s*loadVoiceDraft,\s*requests,\s*settings\.jarvis\.enabled,\s*\]/s,
+});
+
+test("hands-free Jarvis arms VAD automatically and mute is the primary microphone control", () => {
+  assert.match(jarvisSettingsSource, /activationMode:\s*"vad"/);
+  assert.match(jarvisSettingsSource, /ALWAYS_READY_ARM_SECONDS = 120/);
+  assert.match(voiceTypesSource, /max_armed_seconds: self\.max_armed_seconds\.clamp\(1, 120\)/);
+  assert.match(overlaySource, /const AUTO_ARM_DELAY_MS = 180/);
+  assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
+  assert.match(overlaySource, /store\.startVoice\(\)/);
+  assert.match(overlaySource, /toggleMicrophoneMuted/);
+  assert.match(widgetSource, /onToggleMuted/);
+  assert.match(widgetSource, /MicOff/);
+  assert.match(widgetSource, /Microphone muted/);
+  assert.match(widgetSource, /Always ready · speak normally/);
+  assert.match(widgetSource, /voiceRequest\?\.status === "armed"/);
+  assert.match(widgetSource, /voiceRequest\?\.status === "recording"/);
+  assert.match(widgetSource, /bg-danger\/\[0\.10\] text-danger/);
+});
+
+test("hands-free ambient capture follows workspace focus without stealing an active spoken turn", () => {
+  assert.match(overlaySource, /activeVoiceRequestId/);
+  assert.match(overlaySource, /activeRequest\?\.status !== "armed"/);
+  assert.match(overlaySource, /activeRequest\.workspaceId === activeWorkspaceId/);
+  assert.match(overlaySource, /\.cancelVoice\(\)/);
+  assert.match(overlaySource, /settings\.jarvis\.muted/);
+});
+
+test("Jarvis widget drag mirrors native release semantics instead of sticky pointer capture", () => {
+  assert.match(widgetSource, /const DRAG_HOLD_MS = 220/);
+  assert.match(widgetSource, /window\.addEventListener\("pointermove", handleMove/);
+  assert.match(widgetSource, /window\.addEventListener\("pointerup", handleUp\)/);
+  assert.match(widgetSource, /window\.addEventListener\("pointercancel", handleCancel\)/);
+  assert.match(widgetSource, /window\.addEventListener\("blur", handleCancel\)/);
+  assert.match(widgetSource, /const finish = \(persist: boolean\)/);
+  assert.match(widgetSource, /cleanupListeners\(\)/);
+  assert.doesNotMatch(
+    widgetSource,
+    /element\.setPointerCapture\(event\.pointerId\)/,
   );
 });
 
@@ -158,9 +196,8 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings stay voice-first while advanced input modes remain reachable", () => {
+test("normal Jarvis settings remain voice-first while advanced input modes stay reachable", () => {
   assert.match(settingsSource, /Voice is the default interface/);
-  assert.match(settingsSource, /One click is the default/);
   assert.match(settingsSource, /Interaction mode/);
   assert.match(settingsSource, /hold_to_talk/);
   assert.match(settingsSource, /Voice activity/);
@@ -169,21 +206,17 @@ test("normal Jarvis settings stay voice-first while advanced input modes remain 
   assert.match(settingsSource, /Wait for speech \(s\)/);
   assert.match(settingsSource, /vadPostSpeechMs/);
   assert.match(settingsSource, /maxArmedSeconds/);
-  assert.doesNotMatch(settingsSource, /activationMode: "click_toggle" as const/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
   );
 });
 
-test("owner mode is enforced in both frontend and Rust without deleting hold-to-talk", () => {
+test("owner mode is enforced without deleting hold-to-talk", () => {
   assert.match(jarvisSettingsSource, /privacyConsent: true/);
   assert.match(jarvisSettingsSource, /autoSubmitTranscript: true/);
-  assert.match(jarvisSettingsSource, /activationMode !== "hold_to_talk"/);
-  assert.doesNotMatch(
-    jarvisSettingsSource,
-    /activationMode:\s*"click_toggle"[,\n]\s*autoSubmitTranscript/s,
-  );
+  assert.match(jarvisSettingsSource, /\? "hold_to_talk" : "vad"/);
+  assert.match(jarvisSettingsSource, /activationMode:\s*"vad"/);
   assert.match(rustSettingsSource, /fn enforce_owner_mode/);
   assert.match(rustSettingsSource, /privacy_consent = true/);
   assert.match(rustSettingsSource, /auto_submit_transcript = true/);
@@ -191,8 +224,22 @@ test("owner mode is enforced in both frontend and Rust without deleting hold-to-
     rustSettingsSource,
     /activation_mode != VoiceActivationMode::HoldToTalk/,
   );
-  assert.match(
-    rustSettingsSource,
-    /owner_mode_round_trip_preserves_explicit_advanced_activation_policy/,
-  );
+});
+
+test("skill rows retain stable accent colors without reverting the compact layout", () => {
+  assert.match(skillsSource, /const SKILL_ACCENTS = \[/);
+  assert.match(skillsSource, /#ffb84d/);
+  assert.match(skillsSource, /#55d89b/);
+  assert.match(skillsSource, /#72a8ff/);
+  assert.match(skillsSource, /#ca89ff/);
+  assert.match(skillsSource, /#ff858c/);
+  assert.match(skillsSource, /const accent = getSkillAccent\(skill\.id\)/);
+  assert.match(skillsSource, /backgroundColor: accent\.background/);
+});
+
+test("sidebar new workspace action stays compact and clearly framed", () => {
+  assert.match(sidebarSource, /h-\[45px\]/);
+  assert.match(sidebarSource, /New workspace/);
+  assert.match(sidebarSource, /h-7 items-center gap-1\.5 rounded-md border border-white\/\[0\.10\]/);
+  assert.doesNotMatch(sidebarSource, /New space\s*<\/button>/);
 });
