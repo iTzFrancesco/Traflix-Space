@@ -69,9 +69,8 @@ export const useUIStore = create<UIStore>()(
             390,
           ),
         }),
-      setRightPanelActiveView: (view) => ({
-        rightPanelActiveView: normalizeRightPanelView(view),
-      }),
+      setRightPanelActiveView: (view) =>
+        set({ rightPanelActiveView: normalizeRightPanelView(view) }),
     }),
     {
       name: "traflix-ui",
