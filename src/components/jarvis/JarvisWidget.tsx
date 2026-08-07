@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef } from "react";
-import { LoaderCircle, Mic, Settings, X } from "lucide-react";
+import { LoaderCircle, Mic, Settings, Square, X } from "lucide-react";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
-import { collapsedJarvisStatus, hasOpenActivity, type ActivityCheckpoint } from "../../lib/jarvis/activityState";
-import { isJarvisOwnerModeReady, ownerModeJarvisSettings } from "../../lib/jarvis/settings";
+import {
+  collapsedJarvisStatus,
+  hasOpenActivity,
+  type ActivityCheckpoint,
+} from "../../lib/jarvis/activityState";
+import {
+  isJarvisOwnerModeReady,
+  ownerModeJarvisSettings,
+} from "../../lib/jarvis/settings";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
   JarvisConversationMessage,
@@ -50,27 +57,59 @@ interface JarvisWidgetProps {
 
 type DragIntent = {
   pointerId: number;
+  armed: boolean;
   activated: boolean;
+  startX: number;
+  startY: number;
   offsetX: number;
   offsetY: number;
 };
 
-const DRAG_HOLD_MS = 340;
+const DRAG_HOLD_MS = 380;
+const DRAG_START_DISTANCE = 6;
+const EARLY_MOVE_CANCEL_DISTANCE = 12;
 
 export function JarvisWidget(props: JarvisWidgetProps) {
-  const position = useJarvisStore((state) => state.settings.jarvis.widgetPosition);
+  const position = useJarvisStore(
+    (state) => state.settings.jarvis.widgetPosition,
+  );
   const jarvisSettings = useJarvisStore((state) => state.settings.jarvis);
   const setDragging = useJarvisStore((state) => state.setDragging);
-  const updateWidgetPosition = useJarvisStore((state) => state.updateWidgetPosition);
-  const updateJarvisSettings = useJarvisStore((state) => state.updateJarvisSettings);
+  const updateWidgetPosition = useJarvisStore(
+    (state) => state.updateWidgetPosition,
+  );
+  const updateJarvisSettings = useJarvisStore(
+    (state) => state.updateJarvisSettings,
+  );
   const widgetRef = useRef<HTMLDivElement>(null);
   const dragIntentRef = useRef<DragIntent | null>(null);
   const dragTimerRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const previousVoiceStatusRef = useRef<VoiceRequestStatusView["status"] | null>(null);
+  const previousVoiceStatusRef = useRef<
+    VoiceRequestStatusView["status"] | null
+  >(null);
   const holdPressedRef = useRef(false);
   const onVoiceStopRef = useRef(props.onVoiceStop);
   onVoiceStopRef.current = props.onVoiceStop;
+
+  // The conversational/text machinery stays in the backend/store because
+  // voice turns use it after transcription. This compact component never
+  // renders transcript, chat, pending-action, provider or telemetry panels.
+  void props.conversation;
+  void props.chatError;
+  void props.providerStatus;
+  void props.uiIntents;
+  void props.followUps;
+  void props.onSendMessage;
+  void props.onSendVoiceTranscript;
+  void props.onCancelRequest;
+  void props.onConfirmAction;
+  void props.onRejectAction;
+  void props.onUpdateAction;
+  void props.onOpenTerminal;
+  void props.onVoiceCancel;
+  void props.onVoiceDiscard;
+  void props.onStopTts;
 
   const ownerModeReady = isJarvisOwnerModeReady(jarvisSettings);
 
@@ -101,35 +140,59 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     return () => window.removeEventListener("resize", handleResize);
   }, [position, updateWidgetPosition]);
 
-  useEffect(() => () => {
-    if (dragTimerRef.current !== null) window.clearTimeout(dragTimerRef.current);
-    audioContextRef.current?.close().catch(() => undefined);
-  }, []);
+  useEffect(
+    () => () => {
+      if (dragTimerRef.current !== null) {
+        window.clearTimeout(dragTimerRef.current);
+      }
+      audioContextRef.current?.close().catch(() => undefined);
+    },
+    [],
+  );
 
-  const playCue = useCallback((kind: "start" | "stop") => {
+  const getAudioContext = useCallback(() => {
     try {
-      const WebAudioContext = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!WebAudioContext) return;
+      const WebAudioContext =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!WebAudioContext) return null;
       const context = audioContextRef.current ?? new WebAudioContext();
       audioContextRef.current = context;
       void context.resume();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      const now = context.currentTime;
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(kind === "start" ? 620 : 760, now);
-      oscillator.frequency.exponentialRampToValueAtTime(kind === "start" ? 820 : 520, now + 0.085);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.055, now + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.105);
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start(now);
-      oscillator.stop(now + 0.11);
+      return context;
     } catch {
-      // Audio cues are helpful feedback, never a blocker for the voice flow.
+      return null;
     }
   }, []);
+
+  const playCue = useCallback(
+    (kind: "start" | "stop") => {
+      const context = getAudioContext();
+      if (!context) return;
+      try {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const now = context.currentTime;
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(kind === "start" ? 610 : 790, now);
+        oscillator.frequency.exponentialRampToValueAtTime(
+          kind === "start" ? 860 : 500,
+          now + 0.095,
+        );
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.07, now + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(now);
+        oscillator.stop(now + 0.125);
+      } catch {
+        // Cues are feedback only. Never block the actual microphone flow.
+      }
+    },
+    [getAudioContext],
+  );
 
   useEffect(() => {
     const status = props.voiceRequest?.status ?? null;
@@ -142,21 +205,60 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   }, [playCue, props.voiceRequest?.status]);
 
   const clearDragTimer = () => {
-    if (dragTimerRef.current !== null) {
-      window.clearTimeout(dragTimerRef.current);
-      dragTimerRef.current = null;
+    if (dragTimerRef.current === null) return;
+    window.clearTimeout(dragTimerRef.current);
+    dragTimerRef.current = null;
+  };
+
+  const endDrag = (
+    event: React.PointerEvent<HTMLDivElement>,
+    persist: boolean,
+  ) => {
+    clearDragTimer();
+    const intent = dragIntentRef.current;
+    const element = widgetRef.current;
+    if (element?.hasPointerCapture(event.pointerId)) {
+      element.releasePointerCapture(event.pointerId);
     }
+    dragIntentRef.current = null;
+    if (!intent?.activated || intent.pointerId !== event.pointerId || !element) {
+      return;
+    }
+    delete element.dataset.jarvisDragging;
+    setDragging(false);
+    if (!persist) {
+      applyPosition(element, position);
+      return;
+    }
+    void updateWidgetPosition(
+      clampWidgetPosition(
+        positionFromRect(element.getBoundingClientRect(), {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        }),
+        { width: window.innerWidth, height: window.innerHeight },
+        { width: element.offsetWidth, height: element.offsetHeight },
+      ),
+    );
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.target instanceof Element && event.target.closest("[data-jarvis-control]")) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-jarvis-control]")
+    ) {
+      return;
+    }
     const element = widgetRef.current;
     if (!element) return;
     clearDragTimer();
     const rect = element.getBoundingClientRect();
     dragIntentRef.current = {
       pointerId: event.pointerId,
+      armed: false,
       activated: false,
+      startX: event.clientX,
+      startY: event.clientY,
       offsetX: rect.left + rect.width / 2 - event.clientX,
       offsetY: rect.top + rect.height / 2 - event.clientY,
     };
@@ -164,15 +266,31 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     dragTimerRef.current = window.setTimeout(() => {
       const intent = dragIntentRef.current;
       if (!intent || intent.pointerId !== event.pointerId) return;
-      intent.activated = true;
-      setDragging(true);
-      element.dataset.jarvisDragging = "true";
+      intent.armed = true;
+      dragTimerRef.current = null;
     }, DRAG_HOLD_MS);
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const intent = dragIntentRef.current;
-    if (!intent?.activated || intent.pointerId !== event.pointerId) return;
+    if (!intent || intent.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(
+      event.clientX - intent.startX,
+      event.clientY - intent.startY,
+    );
+
+    // A normal click or a quick small swipe is never interpreted as dragging.
+    if (!intent.armed) {
+      if (distance >= EARLY_MOVE_CANCEL_DISTANCE) clearDragTimer();
+      return;
+    }
+    if (!intent.activated) {
+      if (distance < DRAG_START_DISTANCE) return;
+      intent.activated = true;
+      setDragging(true);
+      if (widgetRef.current) widgetRef.current.dataset.jarvisDragging = "true";
+    }
+
     const element = widgetRef.current;
     if (!element) return;
     const next = clampWidgetPosition(
@@ -186,29 +304,20 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     applyPosition(element, next);
   };
 
-  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    clearDragTimer();
-    const intent = dragIntentRef.current;
-    const element = widgetRef.current;
-    if (element?.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId);
-    dragIntentRef.current = null;
-    if (!intent?.activated || intent.pointerId !== event.pointerId || !element) return;
-    delete element.dataset.jarvisDragging;
-    setDragging(false);
-    void updateWidgetPosition(
-      clampWidgetPosition(
-        positionFromRect(element.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight }),
-        { width: window.innerWidth, height: window.innerHeight },
-        { width: element.offsetWidth, height: element.offsetHeight },
-      ),
-    );
-  };
-
   const activeRequests = Object.values(props.requests).filter(
-    (request) => request.workspaceId === props.workspaceId && (request.status === "running" || request.status === "cancellation_requested"),
+    (request) =>
+      request.workspaceId === props.workspaceId &&
+      (request.status === "running" ||
+        request.status === "cancellation_requested"),
   ).length;
-  const speaking = props.ttsStatus.status === "synthesizing" || props.ttsStatus.status === "playing";
-  const jarvisActive = hasOpenActivity(props.activities, props.workspaceId, props.pendingActions);
+  const speaking =
+    props.ttsStatus.status === "synthesizing" ||
+    props.ttsStatus.status === "playing";
+  const jarvisActive = hasOpenActivity(
+    props.activities,
+    props.workspaceId,
+    props.pendingActions,
+  );
   const rawStatusText = collapsedJarvisStatus({
     workspaceId: props.workspaceId,
     workspaceName: props.workspaceName,
@@ -219,13 +328,26 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     pendingActions: props.pendingActions,
     activities: props.activities,
   });
-  const statusText = props.voiceError && rawStatusText === "Voice error" ? "Setup required" : rawStatusText;
-  const voiceActive = props.voiceRequest?.status === "recording" || props.voiceRequest?.status === "armed";
-  const voiceBusy = props.voiceRequest?.status === "transcribing" || props.voiceRequest?.status === "stopping";
-  const level = Math.max(0, Math.min(1, props.voiceRequest?.normalizedLevel ?? 0));
+  const statusText =
+    props.voiceError && rawStatusText === "Voice error"
+      ? "Audio setup needed"
+      : rawStatusText;
+  const voiceActive =
+    props.voiceRequest?.status === "recording" ||
+    props.voiceRequest?.status === "armed";
+  const voiceBusy =
+    props.voiceRequest?.status === "transcribing" ||
+    props.voiceRequest?.status === "stopping";
+  const level = Math.max(
+    0,
+    Math.min(1, props.voiceRequest?.normalizedLevel ?? 0),
+  );
 
   const handleVoiceClick = async () => {
     if (props.activationMode === "hold_to_talk") return;
+    // Prime WebAudio inside the user gesture. The actual cue is emitted when
+    // the backend confirms that recording started.
+    getAudioContext();
     if (voiceActive) {
       props.onVoiceStop();
       return;
@@ -252,47 +374,78 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     };
   }, [props.activationMode]);
 
-  const handleVoicePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+  const handleVoicePointerDown = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
     if (props.activationMode !== "hold_to_talk") return;
     event.preventDefault();
+    getAudioContext();
     event.currentTarget.setPointerCapture(event.pointerId);
     if (!voiceActive && !voiceBusy && !holdPressedRef.current) {
       holdPressedRef.current = true;
-      void ensureOwnerMode().then(() => props.onVoiceStart()).then(() => {
-        if (!holdPressedRef.current) props.onVoiceStop();
-      });
+      void ensureOwnerMode()
+        .then(() => props.onVoiceStart())
+        .then(() => {
+          if (!holdPressedRef.current) props.onVoiceStop();
+        });
     }
   };
 
-  const handleVoicePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+  const handleVoicePointerUp = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
     if (props.activationMode !== "hold_to_talk") return;
     event.preventDefault();
     const wasPressed = holdPressedRef.current;
     holdPressedRef.current = false;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     if (wasPressed) props.onVoiceStop();
   };
 
   const handleVoiceKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (props.activationMode !== "hold_to_talk" || (event.key !== " " && event.key !== "Enter") || event.repeat) return;
+    if (
+      props.activationMode !== "hold_to_talk" ||
+      (event.key !== " " && event.key !== "Enter") ||
+      event.repeat
+    ) {
+      return;
+    }
     event.preventDefault();
+    getAudioContext();
     if (!voiceActive && !voiceBusy && !holdPressedRef.current) {
       holdPressedRef.current = true;
-      void ensureOwnerMode().then(() => props.onVoiceStart()).then(() => {
-        if (!holdPressedRef.current) props.onVoiceStop();
-      });
+      void ensureOwnerMode()
+        .then(() => props.onVoiceStart())
+        .then(() => {
+          if (!holdPressedRef.current) props.onVoiceStop();
+        });
     }
   };
 
   const handleVoiceKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (props.activationMode !== "hold_to_talk" || (event.key !== " " && event.key !== "Enter")) return;
+    if (
+      props.activationMode !== "hold_to_talk" ||
+      (event.key !== " " && event.key !== "Enter")
+    ) {
+      return;
+    }
     event.preventDefault();
     const wasPressed = holdPressedRef.current;
     holdPressedRef.current = false;
     if (wasPressed) props.onVoiceStop();
   };
 
-  const active = activeRequests > 0 || speaking || jarvisActive || voiceActive || voiceBusy;
+  const active =
+    activeRequests > 0 || speaking || jarvisActive || voiceActive || voiceBusy;
+  const helperText = props.voiceError
+    ? "Open settings to check microphone and API keys"
+    : voiceActive
+      ? "Speak normally · silence sends automatically"
+      : speaking
+        ? "You can interrupt me with the microphone"
+        : props.workspaceName ?? "Jarvis";
 
   return (
     <div
@@ -310,19 +463,21 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        title="Tieni premuto per spostare Jarvis"
+        onPointerUp={(event) => endDrag(event, true)}
+        onPointerCancel={(event) => endDrag(event, false)}
+        title="Hold, then move to reposition Jarvis"
       >
         <JarvisOrb active={active} listening={voiceActive} speaking={speaking} />
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-[13px] font-semibold leading-none text-neutral-text">{statusText}</p>
+            <p className="truncate text-[13px] font-semibold leading-none text-neutral-text">
+              {statusText}
+            </p>
             {voiceActive && <VoiceMeter level={level} />}
           </div>
           <p className="mt-1 truncate text-[10px] leading-none text-neutral-text-muted">
-            {voiceActive ? "Parla normalmente · termino quando fai una pausa" : props.workspaceName ?? "Jarvis"}
+            {helperText}
           </p>
         </div>
 
@@ -338,20 +493,38 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             onKeyDown={handleVoiceKeyDown}
             onKeyUp={handleVoiceKeyUp}
             className={`jarvis-control ${voiceActive ? "jarvis-control--listening" : ""}`}
-            title={voiceActive ? "Sto ascoltando · clicca per terminare ora" : voiceBusy ? "Trascrizione in corso" : "Parla con Jarvis"}
-            aria-label={voiceActive ? "Jarvis sta ascoltando" : voiceBusy ? "Jarvis sta trascrivendo" : "Parla con Jarvis"}
+            title={
+              voiceActive
+                ? "Stop now"
+                : voiceBusy
+                  ? "Transcribing"
+                  : "Talk to Jarvis"
+            }
+            aria-label={
+              voiceActive
+                ? "Stop listening"
+                : voiceBusy
+                  ? "Jarvis is transcribing"
+                  : "Talk to Jarvis"
+            }
             aria-pressed={voiceActive}
             disabled={voiceBusy}
           >
-            {voiceBusy ? <LoaderCircle size={15} className="status-icon--spin" /> : <Mic size={15} />}
+            {voiceBusy ? (
+              <LoaderCircle size={15} className="status-icon--spin" />
+            ) : voiceActive ? (
+              <Square size={13} fill="currentColor" />
+            ) : (
+              <Mic size={15} />
+            )}
           </button>
           <button
             type="button"
             data-jarvis-control
             onClick={props.onOpenSettings}
             className="jarvis-control"
-            title="Impostazioni Jarvis"
-            aria-label="Impostazioni Jarvis"
+            title="Jarvis settings"
+            aria-label="Jarvis settings"
           >
             <Settings size={15} />
           </button>
@@ -360,8 +533,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             data-jarvis-control
             onClick={props.onHide}
             className="jarvis-control"
-            title="Nascondi Jarvis"
-            aria-label="Nascondi Jarvis"
+            title="Hide Jarvis"
+            aria-label="Hide Jarvis"
           >
             <X size={15} />
           </button>
@@ -372,24 +545,27 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 }
 
 function VoiceMeter({ level }: { level: number }) {
-  const scaled = Math.max(0.08, Math.min(1, level * 2.8));
+  const visibleLevel = Math.max(0.08, Math.min(1, level * 3.2));
   return (
     <span className="jarvis-level-meter" aria-hidden="true">
-      {[0.45, 0.78, 1, 0.7].map((weight, index) => (
+      {[0.45, 0.8, 1, 0.68].map((factor, index) => (
         <span
-          key={index}
-          style={{ height: `${Math.max(3, Math.round(3 + 10 * scaled * weight))}px` }}
+          key={factor}
+          style={{
+            transform: `scaleY(${Math.max(0.22, visibleLevel * factor)})`,
+            transitionDelay: `${index * 12}ms`,
+          }}
         />
       ))}
     </span>
   );
 }
 
-function applyPosition(element: HTMLElement, next: WidgetPosition) {
-  element.style.left = `${next.x * 100}%`;
-  element.style.top = `${next.y * 100}%`;
+function applyPosition(element: HTMLElement, position: WidgetPosition) {
+  element.style.left = `${position.x * 100}%`;
+  element.style.top = `${position.y * 100}%`;
 }
 
 function samePosition(left: WidgetPosition, right: WidgetPosition) {
-  return Math.abs(left.x - right.x) < 0.0005 && Math.abs(left.y - right.y) < 0.0005;
+  return Math.abs(left.x - right.x) < 0.0001 && Math.abs(left.y - right.y) < 0.0001;
 }
