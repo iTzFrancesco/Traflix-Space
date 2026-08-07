@@ -312,29 +312,41 @@ function captureScrollPosition(
   scrollPositionRef.current = { followsOutput, offsetFromBottom };
 }
 
+interface TerminalPaneVisibility {
+  focusModeActive: boolean;
+  isFocused: boolean;
+}
+
+/**
+ * xterm can report viewportY=0 while its host window/pane is hidden or being
+ * collapsed by the focus grid. Those events are layout noise, not user
+ * navigation, and must never overwrite the saved follow/history intent.
+ */
+function isTerminalScrollLayoutUsable(
+  term: Terminal,
+  paneVisibilityRef: React.MutableRefObject<TerminalPaneVisibility>,
+  windowFocusedRef: React.MutableRefObject<boolean>,
+): boolean {
+  if (
+    paneVisibilityRef.current.focusModeActive &&
+    !paneVisibilityRef.current.isFocused
+  ) {
+    return false;
+  }
+  if (!windowFocusedRef.current || document.visibilityState === "hidden") {
+    return false;
+  }
+
+  const element = term.element;
+  if (!element?.isConnected || element.offsetParent === null) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 2 && rect.height > 2;
+}
+
 interface TerminalViewportAnchor {
   approximateY: number;
   lineOffset: number;
   text: string;
-}
-
-const RESIZE_SCROLL_SETTLE_MS = 500;
-
-function armResizeScrollBarrier(
-  barrierUntilRef: React.MutableRefObject<number>,
-  barrierTimerRef: React.MutableRefObject<number | null>,
-) {
-  barrierUntilRef.current = Math.max(
-    barrierUntilRef.current,
-    performance.now() + RESIZE_SCROLL_SETTLE_MS,
-  );
-  if (barrierTimerRef.current !== null) {
-    window.clearTimeout(barrierTimerRef.current);
-  }
-  barrierTimerRef.current = window.setTimeout(() => {
-    barrierTimerRef.current = null;
-    barrierUntilRef.current = 0;
-  }, RESIZE_SCROLL_SETTLE_MS);
 }
 
 /** Capture readable content so a column/row reflow can find the same line. */
@@ -488,14 +500,10 @@ function fitAndResizePty(
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
-  resizeScrollBarrierUntilRef: React.MutableRefObject<number>,
-  resizeScrollBarrierTimerRef: React.MutableRefObject<number | null>,
 ) {
-  // xterm can emit internal scroll events while parsing output. Snapshot the
-  // live viewport just before reflow so a resize never restores stale state.
-  if (term.buffer.active.baseY > 0 || scrollPositionRef.current.followsOutput) {
-    captureScrollPosition(term, autoScrollRef, scrollPositionRef);
-  }
+  // The refs are the authoritative viewport intent. xterm can temporarily
+  // report y=0 during a hidden-pane/window reflow, so reading its live ydisp
+  // here would turn follow mode into a false history position.
   const positionBeforeFit = scrollPositionRef.current;
   const viewportAnchor = positionBeforeFit.followsOutput
     ? null
@@ -510,13 +518,6 @@ function fitAndResizePty(
     fitInProgressRef.current = false;
   }
   if (positionBeforeFit.followsOutput) {
-    // Codex performs a second, asynchronous transcript reflow after it
-    // receives terminal_resize. Keep follow mode authoritative while that
-    // repaint clears and rebuilds the PTY scrollback.
-    armResizeScrollBarrier(
-      resizeScrollBarrierUntilRef,
-      resizeScrollBarrierTimerRef,
-    );
     // Following the live stream is the one case where an explicit bottom
     // restore is correct. For a reader in history, xterm's buffer reflow
     // already adjusts ydisp to keep the same content visible. Reapplying the
@@ -544,16 +545,7 @@ function fitAndResizePty(
     programmaticScrollTargetRef.current = null;
   }
   if (term.cols > 0 && term.rows > 0) {
-    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows)
-      .then(() => {
-        if (positionBeforeFit.followsOutput) {
-          armResizeScrollBarrier(
-            resizeScrollBarrierUntilRef,
-            resizeScrollBarrierTimerRef,
-          );
-        }
-      })
-      .catch(() => {});
+    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows).catch(() => {});
   }
 }
 
@@ -655,8 +647,14 @@ export const TerminalPane = memo(function TerminalPane({
   const userScrollIntentRef = useRef(false);
   const programmaticScrollTargetRef = useRef<number | null>(null);
   const fitInProgressRef = useRef(false);
-  const resizeScrollBarrierUntilRef = useRef(0);
-  const resizeScrollBarrierTimerRef = useRef<number | null>(null);
+  const windowFocusedRef = useRef(true);
+  const paneVisibilityRef = useRef<TerminalPaneVisibility>({
+    focusModeActive,
+    isFocused,
+  });
+  paneVisibilityRef.current = { focusModeActive, isFocused };
+  const followBottomRepairFrameRef = useRef<number | null>(null);
+  const followBottomRepairUntilRef = useRef(0);
   const ptyResizeStateRef = useRef<PtyResizeState>({
     pending: null,
     flushing: false,
@@ -671,6 +669,46 @@ export const TerminalPane = memo(function TerminalPane({
   const resizeDebounceRef = useRef<number | null>(null);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null);
+
+  const stabilizeFollowBottom = useCallback((durationMs = 1800) => {
+    followBottomRepairUntilRef.current = Math.max(
+      followBottomRepairUntilRef.current,
+      performance.now() + durationMs,
+    );
+    if (followBottomRepairFrameRef.current !== null) return;
+
+    const run = () => {
+      followBottomRepairFrameRef.current = null;
+      const term = xtermRef.current;
+      if (
+        !term ||
+        performance.now() >= followBottomRepairUntilRef.current ||
+        !scrollPositionRef.current.followsOutput ||
+        userScrollIntentRef.current
+      ) {
+        followBottomRepairUntilRef.current = 0;
+        return;
+      }
+
+      if (
+        isTerminalScrollLayoutUsable(
+          term,
+          paneVisibilityRef,
+          windowFocusedRef,
+        )
+      ) {
+        restoreScrollPosition(
+          term,
+          autoScrollRef,
+          scrollPositionRef,
+          programmaticScrollTargetRef,
+        );
+      }
+      followBottomRepairFrameRef.current = requestAnimationFrame(run);
+    };
+
+    followBottomRepairFrameRef.current = requestAnimationFrame(run);
+  }, []);
 
   const exitCode = useTerminalStore(
     (s) => s.terminals[terminalId]?.exitCode ?? null,
@@ -737,13 +775,14 @@ export const TerminalPane = memo(function TerminalPane({
         programmaticScrollTargetRef,
         ptyResizeStateRef,
         fitInProgressRef,
-        resizeScrollBarrierUntilRef,
-        resizeScrollBarrierTimerRef,
       );
+      if (scrollPositionRef.current.followsOutput) {
+        stabilizeFollowBottom();
+      }
     };
 
     schedule.raf = requestAnimationFrame(run);
-  }, [focusModeActive, isFocused, terminalId]);
+  }, [focusModeActive, isFocused, stabilizeFollowBottom, terminalId]);
 
   useEffect(() => {
     currentCwdRef.current = cwd;
@@ -876,54 +915,76 @@ export const TerminalPane = memo(function TerminalPane({
       // buffer. That is layout work, not user navigation, and must not replace
       // the follow-mode snapshot with a transient viewportY at the top.
       if (fitInProgressRef.current) return;
-      const programmaticTarget = programmaticScrollTargetRef.current;
-      if (programmaticTarget !== null) {
-        if (
-          programmaticTarget === -1 ||
-          programmaticTarget === term.buffer.active.viewportY
-        ) {
-          if (programmaticTarget !== -1) {
-            programmaticScrollTargetRef.current = null;
-          }
-          return;
-        }
-        // A different y can arrive after fit/scrollToLine because xterm emits
-        // internal viewport updates while layout settles. Only an explicit
-        // wheel/key/scrollbar intent is allowed to override the restore.
-        if (!userScrollIntentRef.current) return;
-        programmaticScrollTargetRef.current = null;
+      if (
+        !isTerminalScrollLayoutUsable(
+          term,
+          paneVisibilityRef,
+          windowFocusedRef,
+        )
+      ) {
+        return;
       }
-      if (resizeScrollBarrierUntilRef.current > performance.now()) {
-        if (!userScrollIntentRef.current) {
-          // A Codex transcript reflow can emit a genuine xterm scroll event
-          // while replaying its cleared scrollback. Treat it as layout noise
-          // and keep the user's pre-resize follow intent intact.
+
+      const userInitiated = userScrollIntentRef.current;
+      if (!userInitiated && scrollPositionRef.current.followsOutput) {
+        // Follow mode is authoritative across xterm's asynchronous reflow.
+        // This also repairs a viewport that was moved to line zero while the
+        // window or pane was hidden.
+        if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
+          restoreScrollPosition(
+            term,
+            autoScrollRef,
+            scrollPositionRef,
+            programmaticScrollTargetRef,
+          );
+        } else {
+          autoScrollRef.current = true;
           scrollPositionRef.current = {
             followsOutput: true,
             offsetFromBottom: 0,
           };
-          autoScrollRef.current = true;
-          programmaticScrollTargetRef.current = -1;
-          term.scrollToBottom();
-          programmaticScrollTargetRef.current = term.buffer.active.viewportY;
+          programmaticScrollTargetRef.current = null;
+        }
+        return;
+      }
+
+      // Explicit user navigation always wins over a queued/programmatic
+      // restore, including the sentinel state used by scrollToLine().
+      if (userInitiated) {
+        programmaticScrollTargetRef.current = null;
+      } else {
+        const programmaticTarget = programmaticScrollTargetRef.current;
+        if (programmaticTarget !== null) {
+          if (programmaticTarget === term.buffer.active.viewportY) {
+            programmaticScrollTargetRef.current = null;
+          }
           return;
         }
-        // A real wheel/key/scrollbar action is allowed to leave follow mode
-        // immediately, even while the post-resize repaint is settling.
-        resizeScrollBarrierUntilRef.current = 0;
       }
+
       // Every non-programmatic xterm scroll event is authoritative. Output
       // can change baseY while a reader is in history, and ignoring these
       // events while writes are pending loses the real viewport under load.
       captureScrollPosition(term, autoScrollRef, scrollPositionRef);
       userScrollIntentRef.current = false;
+      if (!scrollPositionRef.current.followsOutput) {
+        followBottomRepairUntilRef.current = 0;
+      }
     });
 
     let disposed = false;
     const scheduleUserScrollCapture = () => {
       requestAnimationFrame(() => {
         if (disposed || xtermRef.current !== term) return;
-        captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+        if (
+          isTerminalScrollLayoutUsable(
+            term,
+            paneVisibilityRef,
+            windowFocusedRef,
+          )
+        ) {
+          captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+        }
         userScrollIntentRef.current = false;
       });
     };
@@ -932,6 +993,7 @@ export const TerminalPane = memo(function TerminalPane({
       // Stop a queued output callback from snapping back before the browser
       // applies this upward wheel movement.
       if (event.deltaY < 0) {
+        followBottomRepairUntilRef.current = 0;
         autoScrollRef.current = false;
         scrollPositionRef.current = {
           followsOutput: false,
@@ -958,6 +1020,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (!["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       userScrollIntentRef.current = true;
       if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
+        followBottomRepairUntilRef.current = 0;
         autoScrollRef.current = false;
       }
       scheduleUserScrollCapture();
@@ -971,6 +1034,7 @@ export const TerminalPane = memo(function TerminalPane({
       // Covers drag of xterm's scrollbar. Suspend immediately so a queued
       // output callback cannot pull the thumb back to the live bottom.
       userScrollIntentRef.current = true;
+      followBottomRepairUntilRef.current = 0;
       autoScrollRef.current = false;
       scrollPositionRef.current = {
         followsOutput: false,
@@ -984,7 +1048,14 @@ export const TerminalPane = memo(function TerminalPane({
 
     return () => {
       disposed = true;
-      if (scrollPositionRef.current.followsOutput || term.buffer.active.baseY > 0) {
+      if (
+        !scrollPositionRef.current.followsOutput &&
+        isTerminalScrollLayoutUsable(
+          term,
+          paneVisibilityRef,
+          windowFocusedRef,
+        )
+      ) {
         captureScrollPosition(term, autoScrollRef, scrollPositionRef);
       }
       useTerminalStore.getState().saveScrollPosition(
@@ -1011,11 +1082,11 @@ export const TerminalPane = memo(function TerminalPane({
         window.clearTimeout(resizeDebounceRef.current);
         resizeDebounceRef.current = null;
       }
-      if (resizeScrollBarrierTimerRef.current !== null) {
-        window.clearTimeout(resizeScrollBarrierTimerRef.current);
-        resizeScrollBarrierTimerRef.current = null;
+      if (followBottomRepairFrameRef.current !== null) {
+        cancelAnimationFrame(followBottomRepairFrameRef.current);
+        followBottomRepairFrameRef.current = null;
       }
-      resizeScrollBarrierUntilRef.current = 0;
+      followBottomRepairUntilRef.current = 0;
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -1089,6 +1160,9 @@ export const TerminalPane = memo(function TerminalPane({
         scrollPositionRef,
         programmaticScrollTargetRef,
       );
+      if (scrollPositionRef.current.followsOutput) {
+        stabilizeFollowBottom(2000);
+      }
       if (termNow.rows > 0) {
         termNow.refresh(0, termNow.rows - 1);
       }
@@ -1169,7 +1243,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     })();
-  }, [terminalId, shell, cwd, agentId, refreshTerminalContext]);
+  }, [terminalId, shell, cwd, agentId, refreshTerminalContext, stabilizeFollowBottom]);
 
   // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
   useEffect(() => {
@@ -1243,6 +1317,41 @@ export const TerminalPane = memo(function TerminalPane({
     scheduleFitAndResize(2);
   }, [focusModeActive, terminalId, scheduleFitAndResize]);
 
+  // Native tray hide/show and application switches can make xterm recalculate
+  // its viewport while it has no usable layout. Re-fit and restore follow mode
+  // after the window becomes interactive again.
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      windowFocusedRef.current = false;
+    };
+    const handleWindowFocus = () => {
+      windowFocusedRef.current = true;
+      requestAnimationFrame(() => {
+        if (focusModeActive && !isFocused) return;
+        scheduleFitAndResize(1);
+        if (scrollPositionRef.current.followsOutput) {
+          stabilizeFollowBottom(2000);
+        }
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        windowFocusedRef.current = false;
+      } else {
+        handleWindowFocus();
+      }
+    };
+
+    window.addEventListener("blur", handleWindowBlur);
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", handleWindowBlur);
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [focusModeActive, isFocused, scheduleFitAndResize, stabilizeFollowBottom]);
+
   // 4a. Output — shared bus + rAF batch (already coalesced in terminalEvents)
   useEffect(() => {
     unsubOutputRef.current?.();
@@ -1272,7 +1381,8 @@ export const TerminalPane = memo(function TerminalPane({
         // previous baseY and leaves the viewport one or more chunks behind.
         // Check the current value so a user scroll during a large agent output
         // is respected instead of being pulled back to the bottom.
-        if (autoScrollRef.current) {
+        if (scrollPositionRef.current.followsOutput && !userScrollIntentRef.current) {
+          autoScrollRef.current = true;
           scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
           if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
             restoreScrollPosition(
@@ -1282,6 +1392,7 @@ export const TerminalPane = memo(function TerminalPane({
               programmaticScrollTargetRef,
             );
           }
+          stabilizeFollowBottom(1200);
         } else {
           // Output changes baseY while a reader stays at an older line. Record
           // the new relative offset so a later resize/remount returns here.
@@ -1293,7 +1404,7 @@ export const TerminalPane = memo(function TerminalPane({
       unsubOutputRef.current?.();
       unsubOutputRef.current = null;
     };
-  }, [terminalId, syncContextFromPowerShellPrompt]);
+  }, [terminalId, stabilizeFollowBottom, syncContextFromPowerShellPrompt]);
 
   // 4b. Exit
   useEffect(() => {
@@ -1403,6 +1514,16 @@ export const TerminalPane = memo(function TerminalPane({
   const agentAttentionRequired = useTerminalStore(
     (s) => s.terminals[terminalId]?.agentAttentionRequired ?? false,
   );
+  const previousAgentStatusRef = useRef(agentStatus);
+  useEffect(() => {
+    const completedNow =
+      agentStatus === "completed" &&
+      previousAgentStatusRef.current !== "completed";
+    previousAgentStatusRef.current = agentStatus;
+    if (completedNow && scrollPositionRef.current.followsOutput) {
+      stabilizeFollowBottom(2000);
+    }
+  }, [agentStatus, stabilizeFollowBottom]);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const workspaceIndex = workspaces.findIndex(
     (workspace) => workspace.id === terminalWorkspaceId,

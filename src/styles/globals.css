@@ -247,3 +247,15 @@ a:not(:disabled),
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 9px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 157, 36, 0.28);
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 157, 36, 0.52);
+}
