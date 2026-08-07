@@ -7,6 +7,7 @@ import { advancedViewVisible, isWorkspaceChatLoading, MAX_COMPLETED_REQUEST_HIST
 import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvis/pendingActionState.ts";
 import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceDraftsForWorkspaces, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
 import { inputDeviceOptions, italianVoices, sanitizedVoiceError } from "../src/lib/jarvis/voiceSettings.ts";
+import { beginVoicePress, releaseVoicePress, shouldStopAfterAsyncStart } from "../src/lib/jarvis/voiceActivation.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
@@ -185,4 +186,39 @@ test("chat surface renders the distinct armed and speech states", () => {
   assert.match(chatPanelSource, /status === "armed"/);
   assert.match(chatPanelSource, /Ti ascolto/);
   assert.match(chatPanelSource, /Trascrivo/);
+});
+
+test("hold release remains pending until async start completes", () => {
+  const press = beginVoicePress(null, 1);
+  assert.ok(press);
+  assert.equal(beginVoicePress(press, 2), null);
+  const released = releaseVoicePress(press);
+  assert.ok(released);
+  assert.equal(shouldStopAfterAsyncStart(released), true);
+  assert.notEqual(released.generation, 2);
+});
+
+test("voice lifecycle uses the global request identity and lost-release guards", () => {
+  const storeSource = readFileSync(new URL("../src/stores/jarvisStore.ts", import.meta.url), "utf8");
+  assert.match(storeSource, /activeVoiceRequestId/);
+  assert.match(storeSource, /voiceStopRequested/);
+  assert.match(widgetSource, /onBlur=\{releaseHeldVoice\}/);
+  assert.match(widgetSource, /onPointerCancel=\{handleVoicePointerUp\}/);
+  assert.match(widgetSource, /document\.addEventListener\("visibilitychange"/);
+});
+
+test("auto-submit releases its in-flight guard when chat is busy", () => {
+  const storeSource = readFileSync(new URL("../src/stores/jarvisStore.ts", import.meta.url), "utf8");
+  assert.match(storeSource, /if \(!accepted\) autoSubmittedVoiceRequests\.delete/);
+  assert.match(storeSource, /activeVoiceRequestId: state\.activeVoiceRequestId === requestId \? null/);
+});
+
+test("VAD and backend event lifecycle are explicit", () => {
+  const commandsSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/commands.rs", import.meta.url), "utf8");
+  const registrySource = readFileSync(new URL("../src-tauri/src/jarvis/voice/registry.rs", import.meta.url), "utf8");
+  const captureSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/capture.rs", import.meta.url), "utf8");
+  assert.match(commandsSource, /status_changed/);
+  assert.match(commandsSource, /emit_voice_state\(app, &transcribing\)/);
+  assert.match(registrySource, /pub struct VoiceSignal/);
+  assert.match(captureSource, /fn failure\(&self\)/);
 });

@@ -12,6 +12,9 @@ pub trait AudioCaptureSession: Send {
     fn stop(self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode>;
     fn elapsed_ms(&self) -> u64;
     fn normalized_level(&self) -> f32;
+    fn failure(&self) -> Option<VoiceErrorCode> {
+        None
+    }
     fn vad_state(&self) -> VadState {
         VadState::Silence
     }
@@ -105,7 +108,10 @@ impl AudioCaptureSource for PlatformAudioCapture {
             cpal::SampleFormat::F32 => device.build_input_stream(
                 &config,
                 move |data: &[f32], _| push_samples(&callback_buffer, data.iter().copied()),
-                |_error| {},
+                {
+                    let error_buffer = Arc::clone(&buffer);
+                    move |_error| record_failure(&error_buffer)
+                },
                 None,
             ),
             cpal::SampleFormat::I16 => {
@@ -119,7 +125,10 @@ impl AudioCaptureSource for PlatformAudioCapture {
                                 .map(|sample| super::audio::normalize_i16(*sample)),
                         )
                     },
-                    |_error| {},
+                    {
+                        let error_buffer = Arc::clone(&buffer);
+                        move |_error| record_failure(&error_buffer)
+                    },
                     None,
                 )
             }
@@ -134,7 +143,10 @@ impl AudioCaptureSource for PlatformAudioCapture {
                                 .map(|sample| super::audio::normalize_u16(*sample)),
                         )
                     },
-                    |_error| {},
+                    {
+                        let error_buffer = Arc::clone(&buffer);
+                        move |_error| record_failure(&error_buffer)
+                    },
                     None,
                 )
             }
@@ -165,8 +177,15 @@ impl AudioCaptureSession for CpalCaptureSession {
         self.stream.take();
         self.buffer
             .lock()
-            .map(|buffer| buffer.audio())
+            .map(|buffer| {
+                if let Some(error) = buffer.failure {
+                    Err(error)
+                } else {
+                    Ok(buffer.audio())
+                }
+            })
             .map_err(|_| VoiceErrorCode::DeviceUnavailable)
+            .and_then(|result| result)
     }
     fn elapsed_ms(&self) -> u64 {
         self.started_at.elapsed().as_millis() as u64
@@ -192,6 +211,9 @@ impl AudioCaptureSession for CpalCaptureSession {
             .map(|buffer| buffer.should_auto_stop())
             .unwrap_or(false)
     }
+    fn failure(&self) -> Option<VoiceErrorCode> {
+        self.buffer.lock().ok().and_then(|buffer| buffer.failure)
+    }
 }
 
 struct CaptureBuffer {
@@ -203,6 +225,7 @@ struct CaptureBuffer {
     pre_roll: VecDeque<f32>,
     max_pre_roll_samples: usize,
     vad: Option<EnergyVad>,
+    failure: Option<VoiceErrorCode>,
 }
 
 impl CaptureBuffer {
@@ -220,6 +243,7 @@ impl CaptureBuffer {
                 silence_frames: options.vad_silence_frames,
                 post_speech_ms: options.vad_post_speech_ms,
                 sample_rate,
+                channels,
             }))
         } else {
             None
@@ -235,6 +259,7 @@ impl CaptureBuffer {
             pre_roll: VecDeque::with_capacity(max_pre_roll_samples),
             max_pre_roll_samples,
             vad,
+            failure: None,
         }
     }
     fn audio(&self) -> CapturedAudio {
@@ -261,6 +286,13 @@ impl CaptureBuffer {
             .as_ref()
             .map(EnergyVad::should_stop)
             .unwrap_or(false)
+    }
+}
+
+#[cfg(windows)]
+fn record_failure(buffer: &Arc<Mutex<CaptureBuffer>>) {
+    if let Ok(mut buffer) = buffer.lock() {
+        buffer.failure = Some(VoiceErrorCode::DeviceUnavailable);
     }
 }
 
@@ -307,6 +339,25 @@ pub struct FakeCaptureSource {
 }
 
 #[cfg(test)]
+pub struct FailingCaptureSource {
+    pub error: VoiceErrorCode,
+}
+
+#[cfg(test)]
+impl AudioCaptureSource for FailingCaptureSource {
+    fn list_input_devices(&self) -> Result<Vec<VoiceInputDevice>, VoiceErrorCode> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        _selected_device_id: Option<&str>,
+        _options: VoiceCaptureOptions,
+    ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
+        Ok(Box::new(FailingCaptureSession { error: self.error }))
+    }
+}
+
+#[cfg(test)]
 impl AudioCaptureSource for FakeCaptureSource {
     fn list_input_devices(&self) -> Result<Vec<VoiceInputDevice>, VoiceErrorCode> {
         Ok(vec![VoiceInputDevice {
@@ -332,6 +383,27 @@ impl AudioCaptureSource for FakeCaptureSource {
 struct FakeCaptureSession {
     audio: CapturedAudio,
     started_at: Instant,
+}
+
+#[cfg(test)]
+struct FailingCaptureSession {
+    error: VoiceErrorCode,
+}
+
+#[cfg(test)]
+impl AudioCaptureSession for FailingCaptureSession {
+    fn stop(self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode> {
+        Err(self.error)
+    }
+    fn elapsed_ms(&self) -> u64 {
+        0
+    }
+    fn normalized_level(&self) -> f32 {
+        0.0
+    }
+    fn failure(&self) -> Option<VoiceErrorCode> {
+        Some(self.error)
+    }
 }
 
 #[cfg(test)]

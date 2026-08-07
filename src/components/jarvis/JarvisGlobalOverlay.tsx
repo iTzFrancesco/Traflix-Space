@@ -7,6 +7,7 @@ import { SettingsModal } from "../layout/SettingsModal";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { beginVoicePress, releaseVoicePress, type VoicePress } from "../../lib/jarvis/voiceActivation";
 import { JarvisWidget } from "./JarvisWidget";
 
 export function JarvisGlobalOverlay() {
@@ -57,7 +58,8 @@ export function JarvisGlobalOverlay() {
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
   const setTtsStatus = useJarvisStore((state) => state.setTtsStatus);
   const stopTts = useJarvisStore((state) => state.stopTts);
-  const shortcutPressedRef = useRef(false);
+  const shortcutPressedRef = useRef<VoicePress | null>(null);
+  const shortcutGenerationRef = useRef(0);
   const registryRequestRef = useRef(0);
   const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
   const conversationForWorkspace = useMemo(() => conversation.filter((message) => message.workspaceId === activeWorkspaceId), [activeWorkspaceId, conversation]);
@@ -104,12 +106,15 @@ export function JarvisGlobalOverlay() {
       listen<{ shortcut: string; state: "pressed" | "released" }>("jarvis://voice-shortcut", (event) => {
         if (disposed) return;
         const currentSettings = useJarvisStore.getState().settings.jarvis.voiceInput;
-        if (!useJarvisStore.getState().settings.jarvis.enabled || !currentSettings.globalShortcutEnabled) { shortcutPressedRef.current = false; return; }
-        const activeId = useWorkspaceStore.getState().activeWorkspaceId;
-        const current = activeId ? useJarvisStore.getState().voiceRequests[activeId] : undefined;
+        if (!useJarvisStore.getState().settings.jarvis.enabled || !currentSettings.globalShortcutEnabled) { shortcutPressedRef.current = null; return; }
+        const activeRequestId = useJarvisStore.getState().activeVoiceRequestId;
+        const current = activeRequestId
+          ? Object.values(useJarvisStore.getState().voiceRequests).find((request) => request.requestId === activeRequestId)
+          : undefined;
         if (event.payload.state === "pressed") {
-          if (shortcutPressedRef.current) return;
-          shortcutPressedRef.current = true;
+          const press = beginVoicePress(shortcutPressedRef.current, ++shortcutGenerationRef.current);
+          if (!press) return;
+          shortcutPressedRef.current = press;
           if (currentSettings.shortcutBehavior === "hold") {
             if (!current || (current.status !== "recording" && current.status !== "armed" && current.status !== "transcribing" && current.status !== "stopping")) void startVoice();
           } else if (current?.status === "recording" || current?.status === "armed") {
@@ -118,8 +123,9 @@ export function JarvisGlobalOverlay() {
             void startVoice();
           }
         } else {
-          shortcutPressedRef.current = false;
-          if (currentSettings.shortcutBehavior === "hold" && (current?.status === "recording" || current?.status === "armed")) void stopVoice();
+          const press = releaseVoicePress(shortcutPressedRef.current);
+          shortcutPressedRef.current = null;
+          if (press && currentSettings.shortcutBehavior === "hold") void stopVoice();
         }
       }),
     ]);
@@ -129,10 +135,9 @@ export function JarvisGlobalOverlay() {
   useEffect(() => {
     const releaseHeldVoice = () => {
       const currentSettings = useJarvisStore.getState().settings.jarvis.voiceInput;
-      const activeId = useWorkspaceStore.getState().activeWorkspaceId;
-      const current = activeId ? useJarvisStore.getState().voiceRequests[activeId] : undefined;
-      shortcutPressedRef.current = false;
-      if (currentSettings.shortcutBehavior === "hold" && (current?.status === "recording" || current?.status === "armed")) void stopVoice();
+      const press = releaseVoicePress(shortcutPressedRef.current);
+      shortcutPressedRef.current = null;
+      if (press && currentSettings.shortcutBehavior === "hold") void stopVoice();
     };
     window.addEventListener("blur", releaseHeldVoice);
     document.addEventListener("visibilitychange", releaseHeldVoice);

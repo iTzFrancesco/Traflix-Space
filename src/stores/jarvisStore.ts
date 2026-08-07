@@ -74,6 +74,9 @@ interface JarvisStore {
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
   voiceRequests: Record<string, VoiceRequestStatusView>;
+  activeVoiceRequestId: string | null;
+  voiceStopRequested: boolean;
+  voiceCancelRequested: boolean;
   voiceLevel: VoiceLevelEvent | null;
   ttsStatus: TtsStatusView;
   voiceError: string | null;
@@ -140,6 +143,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
   voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
+  activeVoiceRequestId: null,
+  voiceStopRequested: false,
+  voiceCancelRequested: false,
   voiceError: null,
 
   loadSettings: async () => {
@@ -240,10 +246,11 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
   startVoice: async () => {
+    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!workspaceId || get().activeVoiceRequestId) return;
+    const requestId = crypto.randomUUID();
+    set({ activeVoiceRequestId: requestId, voiceStopRequested: false, voiceCancelRequested: false, voiceError: null });
     try {
-      set({ voiceError: null });
-      const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-      if (!workspaceId) return;
       if (get().settings.jarvis.voiceOutput.stopOnUserSpeech && (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing")) {
         const stopped = await ttsStop();
         get().setTtsStatus(stopped);
@@ -251,16 +258,59 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
           throw new Error("La riproduzione vocale non si è arrestata.");
         }
       }
-      const requestId = crypto.randomUUID();
       const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
+      const stopAfterStart = get().voiceStopRequested;
+      const cancelAfterStart = get().voiceCancelRequested;
       set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: null }));
+      if (cancelAfterStart) {
+        await get().cancelVoice();
+      } else if (stopAfterStart) {
+        await get().stopVoice();
+      }
     } catch (error) {
-      set({ voiceError: sanitizedVoiceError(error) });
+      set((state) => state.activeVoiceRequestId === requestId
+        ? { activeVoiceRequestId: null, voiceStopRequested: false, voiceCancelRequested: false, voiceError: sanitizedVoiceError(error) }
+        : { voiceError: sanitizedVoiceError(error) });
     }
   },
-  stopVoice: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; set((state) => ({ voiceRequests: { ...state.voiceRequests, [workspaceId]: { ...state.voiceRequests[workspaceId], status: "stopping" } } })); const status = await voiceStop(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: status.error ? sanitizedVoiceError(status.error) : null })); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
-  cancelVoice: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: status.error ? sanitizedVoiceError(status.error) : null })); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
-  discardVoiceTranscript: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests }; }); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
+  stopVoice: async () => {
+    const requestId = get().activeVoiceRequestId;
+    if (!requestId) return;
+    const current = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
+    if (!current) {
+      set({ voiceStopRequested: true });
+      return;
+    }
+    try {
+      set({ voiceError: null, voiceStopRequested: false });
+      set((state) => ({ voiceRequests: { ...state.voiceRequests, [current.workspaceId]: { ...current, status: "stopping" } } }));
+      const status = await voiceStop(requestId);
+      set((state) => ({
+        voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status },
+        activeVoiceRequestId: status.status === "transcript_ready" || status.status === "cancelled" || status.status === "failed" || status.status === "idle" ? null : state.activeVoiceRequestId,
+        voiceError: status.error ? sanitizedVoiceError(status.error) : null,
+      }));
+    } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); }
+  },
+  cancelVoice: async () => {
+    const requestId = get().activeVoiceRequestId;
+    if (!requestId) return;
+    const current = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
+    if (!current) {
+      set({ voiceCancelRequested: true });
+      return;
+    }
+    try {
+      set({ voiceError: null, voiceCancelRequested: false });
+      const status = await voiceCancel(requestId);
+      set((state) => ({
+        voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status },
+        activeVoiceRequestId: status.status === "cancelled" || status.status === "failed" || status.status === "idle" ? null : state.activeVoiceRequestId,
+        voiceError: status.error ? sanitizedVoiceError(status.error) : null,
+      }));
+    } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); }
+  },
+  discardVoiceTranscript: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests, activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId }; }); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
   sendVoiceTranscript: async (requestId, text) => {
     const origin = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
     const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
@@ -268,7 +318,11 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     const accepted = await get().sendMessage(text);
     if (!accepted) return false;
     await voiceDiscardTranscript(requestId);
-    set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[origin.workspaceId]; return { voiceRequests }; });
+    set((state) => {
+      const voiceRequests = { ...state.voiceRequests };
+      delete voiceRequests[origin.workspaceId];
+      return { voiceRequests, activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId };
+    });
     return true;
   },
   loadVoiceDraft: async (workspaceId) => {
@@ -278,7 +332,12 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         const voiceRequests = { ...state.voiceRequests };
         if (status) voiceRequests[workspaceId] = status;
         else delete voiceRequests[workspaceId];
-        return { voiceRequests };
+        return {
+          voiceRequests,
+          activeVoiceRequestId: status && ["armed", "recording", "stopping", "transcribing"].includes(status.status)
+            ? status.requestId
+            : state.activeVoiceRequestId,
+        };
       });
     } catch { /* preserve the last valid draft during a transient IPC failure */ }
   },
@@ -293,12 +352,19 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         && useWorkspaceStore.getState().activeWorkspaceId === voiceRequest.workspaceId
         && !isWorkspaceChatLoading(state.requests, voiceRequest.workspaceId)
         && !autoSubmittedVoiceRequests.has(voiceRequest.requestId);
-      return { voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest }, voiceError: voiceRequest.error?.code === "voice_vad_timeout" ? null : voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError };
+      const terminal = ["idle", "transcript_ready", "cancelled", "failed"].includes(voiceRequest.status);
+      return {
+        voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest },
+        activeVoiceRequestId: terminal && state.activeVoiceRequestId === voiceRequest.requestId ? null : state.activeVoiceRequestId ?? (terminal ? null : voiceRequest.requestId),
+        voiceError: voiceRequest.error?.code === "voice_vad_timeout" ? null : voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError,
+      };
     });
     if (shouldAutoSubmit && !autoSubmittedVoiceRequests.has(voiceRequest.requestId)) {
       autoSubmittedVoiceRequests.add(voiceRequest.requestId);
       while (autoSubmittedVoiceRequests.size > 128) autoSubmittedVoiceRequests.delete(autoSubmittedVoiceRequests.values().next().value as string);
-      void get().sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript ?? "");
+      void get().sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript ?? "").then((accepted) => {
+        if (!accepted) autoSubmittedVoiceRequests.delete(voiceRequest.requestId);
+      }).catch(() => undefined);
     }
   },
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),

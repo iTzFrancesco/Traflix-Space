@@ -1,6 +1,8 @@
 use crate::settings::store::SettingsManager;
+use parking_lot::Mutex;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
 use super::registry::{friendly_message, VoiceState};
@@ -26,16 +28,11 @@ pub async fn jarvis_voice_sync_shortcut(
 ) -> Result<(), VoiceErrorView> {
     let configured = settings.get().await;
     let shortcut = configured.jarvis.voice_input.global_shortcut.trim();
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|_| to_error(VoiceErrorCode::ShortcutUnavailable))?;
-    if !configured.jarvis.enabled || !configured.jarvis.voice_input.global_shortcut_enabled {
-        return Ok(());
-    }
-    validate_shortcut(shortcut).map_err(to_error)?;
-    app.global_shortcut()
-        .register(shortcut)
-        .map_err(|_| to_error(VoiceErrorCode::ShortcutUnavailable))
+    let enabled =
+        configured.jarvis.enabled && configured.jarvis.voice_input.global_shortcut_enabled;
+    let mut registered = registered_shortcut().lock();
+    let registrar = TauriShortcutRegistrar { app: &app };
+    reconcile_shortcut(&registrar, &mut registered, enabled, shortcut).map_err(to_error)
 }
 
 #[tauri::command]
@@ -90,9 +87,13 @@ pub async fn jarvis_voice_start(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let Ok((status, should_stop)) = event_state.signal(&request_id) else {
+            let Ok(signal) = event_state.signal(&request_id) else {
                 break;
             };
+            let status = signal.status;
+            if signal.status_changed {
+                emit_voice_state(&event_app, &status);
+            }
             if !matches!(
                 status.status,
                 VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
@@ -108,7 +109,7 @@ pub async fn jarvis_voice_start(
                     vad_state: status.vad_state,
                 },
             );
-            if should_stop && status.status == VoiceRequestStatus::Recording {
+            if signal.should_stop && status.status == VoiceRequestStatus::Recording {
                 let _ = finish_voice_stop(
                     &event_app,
                     &event_state,
@@ -126,9 +127,13 @@ pub async fn jarvis_voice_start(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let Ok((current, _)) = watchdog_state.signal(&watchdog_request_id) else {
+            let Ok(signal) = watchdog_state.signal(&watchdog_request_id) else {
                 break;
             };
+            let current = signal.status;
+            if signal.status_changed {
+                emit_voice_state(&watchdog_app, &current);
+            }
             if current.status == VoiceRequestStatus::Armed {
                 if current.duration_ms.unwrap_or_default()
                     >= watchdog_config.max_armed_seconds as u64 * 1000
@@ -178,17 +183,46 @@ async fn finish_voice_stop(
     config: crate::settings::store::VoiceInputSettings,
     request_id: String,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
-    if state
-        .snapshot(Some(&request_id))
-        .map(|status| status.status == VoiceRequestStatus::Armed)
-        .unwrap_or(false)
-    {
+    let signal = state.signal(&request_id).map_err(to_error)?;
+    if signal.status_changed {
+        emit_voice_state(app, &signal.status);
+    }
+    if signal.status.status == VoiceRequestStatus::Failed {
+        return Ok(signal.status);
+    }
+    if signal.status.status == VoiceRequestStatus::Armed {
         let status = state.stop_armed(&request_id).map_err(to_error)?;
         emit_voice_state(app, &status);
         return Ok(status);
     }
-    let (capture, cancellation) = state.begin_stop(&request_id).map_err(to_error)?;
-    let audio = capture.stop().map_err(to_error)?;
+    let (capture, cancellation, transcribing) = match state.begin_stop(&request_id) {
+        Ok(result) => result,
+        Err(VoiceErrorCode::InvalidRequest) => {
+            let current = state.snapshot(Some(&request_id)).map_err(to_error)?;
+            if matches!(
+                current.status,
+                VoiceRequestStatus::Transcribing
+                    | VoiceRequestStatus::TranscriptReady
+                    | VoiceRequestStatus::Cancelled
+                    | VoiceRequestStatus::Failed
+            ) {
+                return Ok(current);
+            }
+            return Err(to_error(VoiceErrorCode::InvalidRequest));
+        }
+        Err(code) => return Err(to_error(code)),
+    };
+    emit_voice_state(app, &transcribing);
+    let audio = match capture.stop() {
+        Ok(audio) => audio,
+        Err(code) => {
+            let status = state
+                .finish(&request_id, VoiceRequestStatus::Failed, None, Some(code))
+                .map_err(to_error)?;
+            emit_voice_state(app, &status);
+            return Ok(status);
+        }
+    };
     if cancellation.is_cancelled() {
         let status = state
             .finish(
@@ -497,9 +531,75 @@ fn to_error(code: VoiceErrorCode) -> VoiceErrorView {
 fn validate_shortcut(shortcut: &str) -> Result<(), VoiceErrorCode> {
     if shortcut.is_empty() || shortcut.len() > 64 || shortcut.chars().any(|ch| ch.is_control()) {
         Err(VoiceErrorCode::ShortcutInvalid)
+    } else if shortcut.parse::<Shortcut>().is_err() {
+        Err(VoiceErrorCode::ShortcutInvalid)
     } else {
         Ok(())
     }
+}
+
+trait ShortcutRegistrar {
+    fn register(&self, shortcut: &str) -> Result<(), VoiceErrorCode>;
+    fn unregister(&self, shortcut: &str) -> Result<(), VoiceErrorCode>;
+}
+
+struct TauriShortcutRegistrar<'a> {
+    app: &'a AppHandle,
+}
+
+impl ShortcutRegistrar for TauriShortcutRegistrar<'_> {
+    fn register(&self, shortcut: &str) -> Result<(), VoiceErrorCode> {
+        let shortcut = shortcut
+            .parse::<Shortcut>()
+            .map_err(|_| VoiceErrorCode::ShortcutInvalid)?;
+        self.app
+            .global_shortcut()
+            .register(shortcut)
+            .map_err(|_| VoiceErrorCode::ShortcutUnavailable)
+    }
+
+    fn unregister(&self, shortcut: &str) -> Result<(), VoiceErrorCode> {
+        let shortcut = shortcut
+            .parse::<Shortcut>()
+            .map_err(|_| VoiceErrorCode::ShortcutInvalid)?;
+        self.app
+            .global_shortcut()
+            .unregister(shortcut)
+            .map_err(|_| VoiceErrorCode::ShortcutUnavailable)
+    }
+}
+
+fn reconcile_shortcut<R: ShortcutRegistrar>(
+    registrar: &R,
+    registered: &mut Option<String>,
+    enabled: bool,
+    requested: &str,
+) -> Result<(), VoiceErrorCode> {
+    if !enabled {
+        if let Some(previous) = registered.clone() {
+            registrar.unregister(&previous)?;
+            *registered = None;
+        }
+        return Ok(());
+    }
+    validate_shortcut(requested)?;
+    if registered.as_deref() == Some(requested) {
+        return Ok(());
+    }
+    registrar.register(requested)?;
+    if let Some(previous) = registered.as_deref() {
+        if let Err(error) = registrar.unregister(previous) {
+            let _ = registrar.unregister(requested);
+            return Err(error);
+        }
+    }
+    *registered = Some(requested.to_string());
+    Ok(())
+}
+
+fn registered_shortcut() -> &'static Mutex<Option<String>> {
+    static REGISTERED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    REGISTERED.get_or_init(|| Mutex::new(None))
 }
 fn emit_voice_state(app: &AppHandle, status: &VoiceRequestStatusView) {
     let _ = app.emit(VOICE_STATE_EVENT, status);
@@ -510,8 +610,41 @@ fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_input_allowed, validate_shortcut};
+    use super::{ensure_input_allowed, reconcile_shortcut, validate_shortcut, ShortcutRegistrar};
+    use crate::jarvis::voice::types::VoiceErrorCode;
     use crate::settings::store::VoiceInputSettings;
+
+    struct MockShortcutRegistrar {
+        fail_register: bool,
+        fail_unregister: bool,
+        operations: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ShortcutRegistrar for MockShortcutRegistrar {
+        fn register(&self, shortcut: &str) -> Result<(), VoiceErrorCode> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(format!("register:{shortcut}"));
+            if self.fail_register {
+                Err(VoiceErrorCode::ShortcutUnavailable)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn unregister(&self, shortcut: &str) -> Result<(), VoiceErrorCode> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(format!("unregister:{shortcut}"));
+            if self.fail_unregister {
+                Err(VoiceErrorCode::ShortcutUnavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
 
     #[test]
     fn missing_groq_key_is_rejected_before_capture() {
@@ -529,6 +662,49 @@ mod tests {
         assert!(validate_shortcut("Ctrl+Alt+Space").is_ok());
         assert!(validate_shortcut("").is_err());
         assert!(validate_shortcut("Ctrl\nAlt").is_err());
+        assert!(validate_shortcut("not-a-shortcut").is_err());
         assert!(validate_shortcut(&"X".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn shortcut_registration_keeps_previous_on_conflict_and_invalid_input() {
+        let conflict = MockShortcutRegistrar {
+            fail_register: true,
+            fail_unregister: false,
+            operations: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut registered = Some("Ctrl+Alt+Space".to_string());
+        assert_eq!(
+            reconcile_shortcut(&conflict, &mut registered, true, "Ctrl+Shift+Space"),
+            Err(VoiceErrorCode::ShortcutUnavailable)
+        );
+        assert_eq!(registered.as_deref(), Some("Ctrl+Alt+Space"));
+
+        let valid = MockShortcutRegistrar {
+            fail_register: false,
+            fail_unregister: false,
+            operations: std::sync::Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            reconcile_shortcut(&valid, &mut registered, true, "invalid"),
+            Err(VoiceErrorCode::ShortcutInvalid)
+        );
+        assert_eq!(registered.as_deref(), Some("Ctrl+Alt+Space"));
+    }
+
+    #[test]
+    fn shortcut_disable_unregisters_only_the_jarvis_shortcut() {
+        let registrar = MockShortcutRegistrar {
+            fail_register: false,
+            fail_unregister: false,
+            operations: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut registered = Some("Ctrl+Alt+Space".to_string());
+        reconcile_shortcut(&registrar, &mut registered, false, "ignored").unwrap();
+        assert_eq!(registered, None);
+        assert_eq!(
+            registrar.operations.lock().unwrap().as_slice(),
+            ["unregister:Ctrl+Alt+Space"]
+        );
     }
 }

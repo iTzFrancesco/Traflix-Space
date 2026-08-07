@@ -15,6 +15,7 @@ pub struct EnergyVadConfig {
     pub silence_frames: u16,
     pub post_speech_ms: u32,
     pub sample_rate: u32,
+    pub channels: u16,
 }
 
 impl EnergyVadConfig {
@@ -25,6 +26,7 @@ impl EnergyVadConfig {
             silence_frames: self.silence_frames.clamp(1, 120),
             post_speech_ms: self.post_speech_ms.clamp(100, 5_000),
             sample_rate: self.sample_rate.max(1),
+            channels: self.channels.max(1),
         }
     }
 }
@@ -35,7 +37,7 @@ pub struct EnergyVad {
     state: VadState,
     speech_frames: u16,
     silence_frames: u16,
-    silence_samples: u64,
+    silence_audio_frames: u64,
     speech_started: bool,
     should_stop: bool,
 }
@@ -47,7 +49,7 @@ impl EnergyVad {
             state: VadState::Silence,
             speech_frames: 0,
             silence_frames: 0,
-            silence_samples: 0,
+            silence_audio_frames: 0,
             speech_started: false,
             should_stop: false,
         }
@@ -66,7 +68,7 @@ impl EnergyVad {
         if rms >= self.config.threshold {
             self.speech_frames = self.speech_frames.saturating_add(1);
             self.silence_frames = 0;
-            self.silence_samples = 0;
+            self.silence_audio_frames = 0;
             self.state = if self.speech_frames >= self.config.start_frames {
                 self.speech_started = true;
                 VadState::Speech
@@ -75,10 +77,13 @@ impl EnergyVad {
             };
         } else if self.speech_started {
             self.silence_frames = self.silence_frames.saturating_add(1);
-            self.silence_samples = self.silence_samples.saturating_add(samples.len() as u64);
+            let audio_frames = (samples.len() as u64)
+                .div_ceil(self.config.channels as u64)
+                .max(1);
+            self.silence_audio_frames = self.silence_audio_frames.saturating_add(audio_frames);
             self.state = VadState::Silence;
             let silence_ms =
-                self.silence_samples.saturating_mul(1_000) / self.config.sample_rate as u64;
+                self.silence_audio_frames.saturating_mul(1_000) / self.config.sample_rate as u64;
             if self.silence_frames >= self.config.silence_frames
                 && silence_ms >= self.config.post_speech_ms as u64
             {
@@ -115,6 +120,7 @@ mod tests {
             silence_frames: 3,
             post_speech_ms: 20,
             sample_rate: 1_000,
+            channels: 1,
         })
     }
 
@@ -156,6 +162,7 @@ mod tests {
             silence_frames: u16::MAX,
             post_speech_ms: 0,
             sample_rate: 0,
+            channels: 0,
         }
         .bounded();
         assert_eq!(config.threshold, 1.0);
@@ -163,5 +170,31 @@ mod tests {
         assert_eq!(config.silence_frames, 120);
         assert_eq!(config.post_speech_ms, 100);
         assert_eq!(config.sample_rate, 1);
+        assert_eq!(config.channels, 1);
+    }
+
+    #[test]
+    fn mono_and_stereo_have_the_same_post_speech_timing() {
+        fn reaches_stop(channels: u16) -> bool {
+            let mut detector = EnergyVad::new(EnergyVadConfig {
+                threshold: 0.018,
+                start_frames: 1,
+                silence_frames: 1,
+                post_speech_ms: 650,
+                sample_rate: 1_000,
+                channels,
+            });
+            let speech = vec![0.2; 100 * channels as usize];
+            detector.process(&speech);
+            for _ in 0..6 {
+                detector.process(&vec![0.0; 100 * channels as usize]);
+            }
+            assert!(!detector.should_stop());
+            detector.process(&vec![0.0; 100 * channels as usize]);
+            detector.should_stop()
+        }
+
+        assert_eq!(reaches_stop(1), reaches_stop(2));
+        assert!(reaches_stop(1));
     }
 }

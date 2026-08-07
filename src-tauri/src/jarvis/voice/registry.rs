@@ -28,6 +28,12 @@ struct VoiceRegistryInner {
     tts_finished: Arc<Notify>,
 }
 
+pub struct VoiceSignal {
+    pub status: VoiceRequestStatusView,
+    pub should_stop: bool,
+    pub status_changed: bool,
+}
+
 #[derive(Clone)]
 pub struct VoiceState {
     inner: Arc<Mutex<VoiceRegistryInner>>,
@@ -166,28 +172,67 @@ impl VoiceState {
         Ok(request.view.clone())
     }
 
-    pub fn signal(
-        &self,
-        request_id: &str,
-    ) -> Result<(VoiceRequestStatusView, bool), VoiceErrorCode> {
-        let mut inner = self.inner.lock();
-        let request = inner
-            .requests
-            .get_mut(request_id)
-            .ok_or(VoiceErrorCode::NotFound)?;
-        refresh_request(request);
-        let should_stop = request
-            .capture
-            .as_ref()
-            .map(|capture| capture.should_auto_stop())
-            .unwrap_or(false);
-        Ok((request.view.clone(), should_stop))
+    pub fn signal(&self, request_id: &str) -> Result<VoiceSignal, VoiceErrorCode> {
+        let (signal, capture_to_stop) = {
+            let mut inner = self.inner.lock();
+            let request = inner
+                .requests
+                .get_mut(request_id)
+                .ok_or(VoiceErrorCode::NotFound)?;
+            let previous_status = request.view.status.clone();
+            let capture_failure = request
+                .capture
+                .as_ref()
+                .and_then(|capture| capture.failure());
+            if let Some(error) = capture_failure {
+                request.cancellation.cancel();
+                request.view.status = VoiceRequestStatus::Failed;
+                request.view.transcript = None;
+                request.view.error = Some(error_view(error, friendly_message(error)));
+                request.view.duration_ms =
+                    request.capture.as_ref().map(|capture| capture.elapsed_ms());
+                let capture = request.capture.take();
+                let signal = VoiceSignal {
+                    status: request.view.clone(),
+                    should_stop: false,
+                    status_changed: previous_status != VoiceRequestStatus::Failed,
+                };
+                prune(&mut inner.requests);
+                (signal, capture)
+            } else {
+                let changed = refresh_request(request);
+                let should_stop = request
+                    .capture
+                    .as_ref()
+                    .map(|capture| capture.should_auto_stop())
+                    .unwrap_or(false);
+                (
+                    VoiceSignal {
+                        status: request.view.clone(),
+                        should_stop,
+                        status_changed: changed,
+                    },
+                    None,
+                )
+            }
+        };
+        if let Some(capture) = capture_to_stop {
+            let _ = capture.stop();
+        }
+        Ok(signal)
     }
 
     pub fn begin_stop(
         &self,
         request_id: &str,
-    ) -> Result<(Box<dyn AudioCaptureSession>, CancellationToken), VoiceErrorCode> {
+    ) -> Result<
+        (
+            Box<dyn AudioCaptureSession>,
+            CancellationToken,
+            VoiceRequestStatusView,
+        ),
+        VoiceErrorCode,
+    > {
         let mut inner = self.inner.lock();
         let request = inner
             .requests
@@ -204,7 +249,7 @@ impl VoiceState {
             .take()
             .ok_or(VoiceErrorCode::InvalidRequest)?;
         request.view.status = VoiceRequestStatus::Transcribing;
-        Ok((capture, request.cancellation.clone()))
+        Ok((capture, request.cancellation.clone(), request.view.clone()))
     }
 
     pub fn stop_armed(&self, request_id: &str) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
@@ -507,9 +552,10 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
     }
 }
 
-fn refresh_request(request: &mut ActiveVoiceRequest) {
+fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
+    let previous_status = request.view.status.clone();
     let Some(capture) = request.capture.as_ref() else {
-        return;
+        return false;
     };
     let speech_started = capture.speech_started();
     let elapsed_ms = capture.elapsed_ms();
@@ -526,12 +572,13 @@ fn refresh_request(request: &mut ActiveVoiceRequest) {
         request.view.normalized_level = level;
         request.view.vad_state = vad_state;
     }
+    request.view.status != previous_status
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jarvis::voice::capture::FakeCaptureSource;
+    use crate::jarvis::voice::capture::{FailingCaptureSource, FakeCaptureSource};
     use crate::jarvis::voice::playback::FakePlayback;
     use crate::jarvis::voice::types::CapturedAudio;
     use crate::settings::store::VoiceActivationMode;
@@ -613,6 +660,61 @@ mod tests {
         assert_eq!(playing.request_id.as_deref(), Some("tts"));
         let idle = state.set_tts_for("tts", TtsStatus::Idle, None).unwrap();
         assert_eq!(idle.status, TtsStatus::Idle);
+    }
+
+    #[test]
+    fn vad_signal_reports_armed_to_recording_and_transcribing() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        let mut options = test_options();
+        options.activation_mode = VoiceActivationMode::Vad;
+        options.vad_enabled = true;
+        let armed = state
+            .start("vad-request".into(), "workspace-a".into(), None, options)
+            .unwrap();
+        assert_eq!(armed.status, VoiceRequestStatus::Armed);
+        let signal = state.signal("vad-request").unwrap();
+        assert_eq!(signal.status.status, VoiceRequestStatus::Recording);
+        assert!(signal.status_changed);
+        let (_capture, _token, transcribing) = state.begin_stop("vad-request").unwrap();
+        assert_eq!(transcribing.status, VoiceRequestStatus::Transcribing);
+    }
+
+    #[test]
+    fn capture_failure_is_reported_before_any_transcription() {
+        let state = VoiceState::new(
+            Arc::new(FailingCaptureSource {
+                error: VoiceErrorCode::DeviceUnavailable,
+            }),
+            Arc::new(FakePlayback),
+        );
+        state
+            .start(
+                "failed-request".into(),
+                "workspace-a".into(),
+                None,
+                test_options(),
+            )
+            .unwrap();
+        let signal = state.signal("failed-request").unwrap();
+        assert_eq!(signal.status.status, VoiceRequestStatus::Failed);
+        assert!(signal.status_changed);
+        assert_eq!(
+            signal
+                .status
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("audio_device_unavailable")
+        );
     }
 
     #[tokio::test]

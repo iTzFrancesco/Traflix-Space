@@ -29,7 +29,13 @@ continuo permanente è attivo.
 
 La macchina Rust è autoritativa: `idle → armed → recording → stopping →
 transcribing → transcript_ready`, con cancellazione da ogni stato. Ogni
-richiesta ha un solo completamento; i draft restano isolati per workspace.
+transizione `armed → recording` e `recording → transcribing` viene emessa al
+frontend prima dell'aggiornamento successivo di livello o dell'attesa Groq.
+L'identità attiva è il `requestId`, non la workspace visualizzata: un release
+dopo uno switch ferma la richiesta originaria. Press/release rapidi e perdita
+di focus lasciano una richiesta pendente deterministica, con completamento
+idempotente; un errore del device porta a `failed` senza inviare audio parziale.
+Ogni richiesta ha un solo completamento; i draft restano isolati per workspace.
 
 ## Turn-taking e privacy
 
@@ -41,7 +47,8 @@ ascolta mentre Jarvis parla senza un'azione dell'utente.
 valido nella workspace originale e non bypassa mai Pending Actions o i limiti
 della Fase 4. VAD, audio e pre-roll non sono persistiti; il consenso input e
 output resta separato. Gli eventi frontend includono solo livello bounded e
-stato VAD, mai PCM/WAV.
+stato VAD, mai PCM/WAV. Il VAD conta frame audio reali e quindi mantiene gli
+stessi tempi su input mono e stereo.
 
 ## Limiti e cosa resta fuori
 
