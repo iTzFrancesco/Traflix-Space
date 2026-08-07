@@ -11,6 +11,7 @@ marcare una voce come superata tramite sola review statica.
 - [ ] Si sente un breve cue audio quando il backend conferma l'inizio dell'ascolto.
 - [ ] La barra passa a `Listening…` e il meter reagisce realmente al microfono.
 - [ ] Dopo aver parlato, una pausa naturale fa scattare il VAD e chiude il turno automaticamente.
+- [ ] Modificare `Silence before send (ms)` cambia realmente il tempo di pausa prima dell'auto-stop.
 - [ ] Si sente un breve cue audio alla fine dell'ascolto, anche quando lo stop arriva dal VAD.
 - [ ] La barra passa a `Transcribing…` senza mostrare `trascrizione pronta` o `invia alla chat`.
 - [ ] La trascrizione viene inviata automaticamente a Jarvis.
@@ -52,7 +53,13 @@ marcare una voce come superata tramite sola review statica.
 - [ ] Terminal pane attivo è leggibile senza glow o card decoration invasiva.
 - [ ] Right panel, Browser, Skills e Git condividono la stessa gerarchia visiva.
 - [ ] New workspace wizard resta rapido e leggibile a 1–8 terminali.
+- [ ] Un vecchio preset con oltre 8 terminali viene normalizzato e non rompe il wizard.
+- [ ] Un vecchio valore localStorage della right-panel view non produce un pannello vuoto.
+- [ ] Larghezze sidebar/right-panel persistite fuori range vengono ricondotte ai limiti supportati.
 - [ ] Settings resta utilizzabile a risoluzioni ridotte e non espone diagnostica salvo richiesta.
+- [ ] Tab e Shift+Tab restano dentro Settings/New Workspace finché il modal è aperto.
+- [ ] Esc chiude il modal e il focus torna al controllo che lo aveva aperto.
+- [ ] Toast di errore/warning vengono annunciati come alert senza doppio annuncio.
 - [ ] Modal, toast, focus ring e stato disabled sono leggibili da tastiera.
 - [ ] `prefers-reduced-motion` non lascia animazioni indispensabili alla comprensione.
 
