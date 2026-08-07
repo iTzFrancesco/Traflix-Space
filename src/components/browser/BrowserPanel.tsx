@@ -3,7 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Webview } from "@tauri-apps/api/webview";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
-import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, RotateCw, Undo2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Globe2,
+  LoaderCircle,
+  RotateCw,
+  Undo2,
+} from "lucide-react";
 import { invokeWithTimeout } from "../../lib/timeout";
 
 interface BrowserUrlChanged {
@@ -87,7 +94,11 @@ export function BrowserPanel() {
       if (!previous || previous.x !== bounds.x || previous.y !== bounds.y) {
         await webview.setPosition(new LogicalPosition(bounds.x, bounds.y));
       }
-      if (!previous || previous.width !== bounds.width || previous.height !== bounds.height) {
+      if (
+        !previous ||
+        previous.width !== bounds.width ||
+        previous.height !== bounds.height
+      ) {
         await webview.setSize(new LogicalSize(bounds.width, bounds.height));
       }
       lastBoundsRef.current = bounds;
@@ -97,7 +108,7 @@ export function BrowserPanel() {
       }
     } catch (reason) {
       if (aliveRef.current && currentUrlRef.current) {
-        setError(reason instanceof Error ? reason.message : "Pagina non disponibile");
+        setError(reason instanceof Error ? reason.message : "Page unavailable");
       }
     }
   }, []);
@@ -117,36 +128,44 @@ export function BrowserPanel() {
 
     const initialize = async () => {
       try {
-        unlisten = await listen<BrowserUrlChanged>("browser-url-changed", (event) => {
-          if (!aliveRef.current) return;
-          const nextUrl = event.payload.url === "about:blank" ? "" : event.payload.url;
-          updateCurrentUrl(nextUrl);
-          setLoading(event.payload.loading);
-          requestBoundsSync();
-        });
+        unlisten = await listen<BrowserUrlChanged>(
+          "browser-url-changed",
+          (event) => {
+            if (!aliveRef.current) return;
+            const nextUrl =
+              event.payload.url === "about:blank" ? "" : event.payload.url;
+            updateCurrentUrl(nextUrl);
+            setLoading(event.payload.loading);
+            requestBoundsSync();
+          },
+        );
 
         await invokeWithTimeout(() => invoke("browser_create"), 10000);
         if (!aliveRef.current) {
-          await invokeWithTimeout(() => invoke("browser_close"), 3000).catch(() => undefined);
+          await invokeWithTimeout(() => invoke("browser_close"), 3000).catch(
+            () => undefined,
+          );
           return;
         }
 
         const webview = await Webview.getByLabel("browser");
-        if (!webview) throw new Error("WebView2 Browser non disponibile");
+        if (!webview) throw new Error("WebView2 browser unavailable");
         webviewRef.current = webview;
         setReady(true);
         requestBoundsSync();
       } catch (reason) {
         if (aliveRef.current) {
           setLoading(false);
-          setError(reason instanceof Error ? reason.message : "Impossibile inizializzare il Browser");
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Unable to initialize browser",
+          );
         }
       }
     };
 
-    resizeObserver = new ResizeObserver(() => {
-      requestBoundsSync();
-    });
+    resizeObserver = new ResizeObserver(requestBoundsSync);
     if (viewportRef.current) resizeObserver.observe(viewportRef.current);
     window.addEventListener("resize", requestBoundsSync);
     void initialize();
@@ -155,14 +174,18 @@ export function BrowserPanel() {
       aliveRef.current = false;
       resizeObserver?.disconnect();
       window.removeEventListener("resize", requestBoundsSync);
-      if (layoutFrameRef.current !== null) window.cancelAnimationFrame(layoutFrameRef.current);
+      if (layoutFrameRef.current !== null) {
+        window.cancelAnimationFrame(layoutFrameRef.current);
+      }
       layoutFrameRef.current = null;
       unlisten?.();
       webviewRef.current = null;
       nativeVisibleRef.current = false;
       lastBoundsRef.current = null;
       setReady(false);
-      void invokeWithTimeout(() => invoke("browser_close"), 3000).catch(() => undefined);
+      void invokeWithTimeout(() => invoke("browser_close"), 3000).catch(
+        () => undefined,
+      );
     };
   }, [requestBoundsSync, updateCurrentUrl]);
 
@@ -185,7 +208,7 @@ export function BrowserPanel() {
     try {
       await invokeWithTimeout(() => invoke(command), 10000);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Operazione Browser non riuscita");
+      setError(reason instanceof Error ? reason.message : "Browser action failed");
     }
   };
 
@@ -197,7 +220,7 @@ export function BrowserPanel() {
       await invokeWithTimeout(() => invoke("browser_reset"), 10000);
     } catch (reason) {
       setLoading(false);
-      setError(reason instanceof Error ? reason.message : "Reset Browser non riuscito");
+      setError(reason instanceof Error ? reason.message : "Browser reset failed");
     }
   };
 
@@ -205,91 +228,158 @@ export function BrowserPanel() {
     event.preventDefault();
     const normalized = normalizeUrl(address);
     if (!normalized) {
-      setError("Inserisci un URL http:// o https:// valido");
+      setError("Enter a valid http:// or https:// URL");
       return;
     }
     setError(null);
     setLoading(true);
     try {
-      await invokeWithTimeout(() => invoke("browser_navigate", { url: normalized }), 10000);
+      await invokeWithTimeout(
+        () => invoke("browser_navigate", { url: normalized }),
+        10000,
+      );
       setAddress(normalized);
     } catch (reason) {
       setLoading(false);
-      setError(reason instanceof Error ? reason.message : "Navigazione non riuscita");
+      setError(reason instanceof Error ? reason.message : "Navigation failed");
     }
   };
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#0b0d0b]" aria-label="Browser integrato" aria-busy={loading}>
-      <div className="shrink-0 border-b border-white/[0.08] bg-[#181b18] px-3 py-2">
-        <div className="flex items-center gap-1.5">
-          <button type="button" disabled={!ready} onClick={() => void runCommand("browser_back")} className="ui-icon-button h-7 w-7 shrink-0 disabled:pointer-events-none disabled:opacity-35" title="Indietro" aria-label="Indietro">
+    <section
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-darkest"
+      aria-label="Integrated browser"
+      aria-busy={loading}
+    >
+      <div className="shrink-0 border-b border-neutral-border bg-neutral-surface px-2.5 py-2">
+        <div className="flex items-center gap-1">
+          <BrowserButton
+            label="Back"
+            disabled={!ready}
+            onClick={() => void runCommand("browser_back")}
+          >
             <ArrowLeft size={14} />
-          </button>
-          <button type="button" disabled={!ready} onClick={() => void runCommand("browser_forward")} className="ui-icon-button h-7 w-7 shrink-0 disabled:pointer-events-none disabled:opacity-35" title="Avanti" aria-label="Avanti">
+          </BrowserButton>
+          <BrowserButton
+            label="Forward"
+            disabled={!ready}
+            onClick={() => void runCommand("browser_forward")}
+          >
             <ArrowRight size={14} />
-          </button>
+          </BrowserButton>
+
           <form className="min-w-0 flex-1" onSubmit={submitAddress}>
-            <div className="flex h-8 items-center rounded-lg border border-white/[0.13] bg-[#0e100e] px-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] transition-colors focus-within:border-primary/60 focus-within:bg-[#111410] focus-within:ring-1 focus-within:ring-primary/20">
+            <div className="flex h-8 items-center border border-neutral-border bg-neutral-darkest px-2.5 focus-within:border-primary/60">
               <input
                 ref={addressInputRef}
                 value={address}
                 onChange={(event) => setAddress(event.target.value)}
-                placeholder="localhost:3000 o dominio.com"
-                aria-label="URL del browser"
+                placeholder="localhost:3000 or domain.com"
+                aria-label="Browser URL"
                 spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent text-[0.72rem] text-neutral-text outline-none placeholder:text-neutral-text-muted"
+                className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-neutral-text outline-none placeholder:text-neutral-text-muted"
               />
-              <button type="submit" disabled={!ready} className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-text-muted transition-colors hover:bg-white/[0.07] hover:text-primary disabled:pointer-events-none disabled:opacity-35" title="Vai all'URL" aria-label="Vai all'URL">
-                {loading ? <LoaderCircle size={12} className="animate-spin" /> : <Globe2 size={12} />}
+              <button
+                type="submit"
+                disabled={!ready}
+                className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center text-neutral-text-muted hover:text-primary disabled:pointer-events-none disabled:opacity-35"
+                title="Open URL"
+                aria-label="Open URL"
+              >
+                {loading ? (
+                  <LoaderCircle size={12} className="status-icon--spin" />
+                ) : (
+                  <Globe2 size={12} />
+                )}
               </button>
             </div>
           </form>
-          <button type="button" disabled={!ready} onClick={() => void runCommand("browser_reload")} className="ui-icon-button h-7 w-7 shrink-0 disabled:pointer-events-none disabled:opacity-35" title="Aggiorna pagina" aria-label="Aggiorna pagina">
-            <RotateCw size={13} className={loading ? "animate-spin" : ""} />
-          </button>
-          <button type="button" disabled={!ready} onClick={() => void resetBrowser()} className="ui-icon-button h-7 w-7 shrink-0 disabled:pointer-events-none disabled:opacity-35" title="Reset Browser" aria-label="Reset Browser">
+
+          <BrowserButton
+            label="Reload"
+            disabled={!ready}
+            onClick={() => void runCommand("browser_reload")}
+          >
+            <RotateCw size={13} className={loading ? "status-icon--spin" : ""} />
+          </BrowserButton>
+          <BrowserButton
+            label="Reset browser"
+            disabled={!ready}
+            onClick={() => void resetBrowser()}
+          >
             <Undo2 size={13} />
-          </button>
+          </BrowserButton>
         </div>
+
         {error && (
-          <div className="mt-2 flex items-center gap-2 rounded-md border border-danger/20 bg-danger/[0.06] px-2 py-1.5 text-[0.62rem] text-danger" role="alert" title={error}>
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
+          <div
+            className="mt-2 flex items-center gap-2 border-l-2 border-danger px-2 py-1 text-[10px] text-danger"
+            role="alert"
+            title={error}
+          >
             <span className="min-w-0 flex-1 truncate">{error}</span>
           </div>
         )}
       </div>
 
-      <div ref={viewportRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[#090b09]" aria-label="Viewport Browser">
+      <div
+        ref={viewportRef}
+        className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-neutral-darkest"
+        aria-label="Browser viewport"
+      >
         {!currentUrl && (
-          <div className="absolute inset-0 overflow-hidden bg-[radial-gradient(circle_at_50%_32%,rgba(232,93,4,0.1),transparent_40%),linear-gradient(135deg,#090b09_0%,#0b0e0b_100%)] px-4 py-6">
-            <div className="pointer-events-none absolute -right-20 top-[-80px] h-48 w-48 rounded-full border border-primary/[0.09]" />
-            <div className="pointer-events-none absolute -right-10 top-[-45px] h-28 w-28 rounded-full border border-primary/[0.08]" />
-            <div className="relative flex h-full items-center justify-center">
-              <div className="w-full max-w-[330px] rounded-2xl border border-white/[0.11] bg-[#111511]/90 p-5 shadow-[0_24px_70px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-sm">
-                <div className="flex flex-col items-center text-center">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-black text-neutral-bg shadow-[0_8px_20px_rgba(232,93,4,0.22)]">T</div>
-                  <p className="mt-3 text-[0.68rem] font-extrabold tracking-[0.14em] text-neutral-text">TRAFLIX</p>
-                  <h2 className="mt-5 font-display text-[1.55rem] font-extrabold leading-[1.02] tracking-[-0.045em] text-neutral-text">
-                    Apri una pagina.
-                  </h2>
-                  <p className="mt-2 text-[0.7rem] text-neutral-text-muted">Inserisci un URL.</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      addressInputRef.current?.focus();
-                      addressInputRef.current?.select();
-                    }}
-                    className="mt-5 rounded-lg bg-primary px-3.5 py-2 text-[0.65rem] font-bold text-neutral-bg shadow-[0_8px_20px_rgba(232,93,4,0.18)] transition-all hover:-translate-y-0.5 hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                  >
-                    Apri URL
-                  </button>
-                </div>
-              </div>
+          <div className="absolute inset-0 flex items-center justify-center px-6">
+            <div className="max-w-[280px] text-center">
+              <Globe2
+                size={24}
+                strokeWidth={1.4}
+                className="mx-auto text-neutral-text-muted"
+              />
+              <h2 className="mt-4 text-sm font-semibold text-neutral-text">
+                Open a page
+              </h2>
+              <p className="mt-1.5 text-xs leading-relaxed text-neutral-text-muted">
+                Enter a local or remote URL in the address bar.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  addressInputRef.current?.focus();
+                  addressInputRef.current?.select();
+                }}
+                className="secondary-button mt-4"
+              >
+                Focus address bar
+              </button>
             </div>
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+function BrowserButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="ui-icon-button h-7 w-7 shrink-0 disabled:pointer-events-none disabled:opacity-35"
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
   );
 }
