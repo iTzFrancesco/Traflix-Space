@@ -1,7 +1,6 @@
 import type {
   AgentActivityEvent,
   AgentActivityKind,
-  AgentSessionContext,
   JarvisRequestState,
   PendingAction,
   TtsStatusView,
@@ -37,10 +36,30 @@ function checkpointKey(event: ActivityCheckpoint): string {
 const openStatuses = new Set<CheckpointStatus>(["running", "waiting_confirmation"]);
 const terminalStatuses = new Set<CheckpointStatus>(["done", "failed"]);
 
+function hasPendingActionForCheckpoint(event: ActivityCheckpoint, pendingActions: PendingAction[]): boolean {
+  return pendingActions.some(
+    (action) =>
+      action.status === "pending" &&
+      action.invocation.requestId === event.requestId &&
+      action.invocation.targetWorkspaceId === event.workspaceId,
+  );
+}
+
+function isEffectiveOpenCheckpoint(event: ActivityCheckpoint, pendingActions: PendingAction[]): boolean {
+  if (event.status === "running") return true;
+  if (event.status === "waiting_confirmation") {
+    return hasPendingActionForCheckpoint(event, pendingActions);
+  }
+  return false;
+}
+
 /**
  * Merge incoming checkpoints into the bounded per-workspace view.
  * - Deduplicates by `requestId:phase:targetSessionId` keeping the newest.
- * - A terminal event (done/failed) supersedes any open event of the same key.
+ * - A newer phase supersedes older open phases of the same request, preventing
+ *   stale "Preparing…" / "Waiting…" rows after the request moves on.
+ * - Terminal events remain briefly available to the expanded recent-activity
+ *   strip, but never keep the compact widget busy.
  * - The view is capped at `MAX_ACTIVITY_EVENTS` (newest kept).
  */
 export function mergeActivityEvents(
@@ -48,11 +67,27 @@ export function mergeActivityEvents(
   incoming: ActivityCheckpoint[],
 ): ActivityCheckpoint[] {
   const byKey = new Map<string, ActivityCheckpoint>();
-  for (const event of [...current, ...incoming]) {
+  for (const event of current) byKey.set(checkpointKey(event), event);
+
+  const orderedIncoming = [...incoming].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  for (const event of orderedIncoming) {
     const key = checkpointKey(event);
     const existing = byKey.get(key);
-    if (!existing || existing.createdAt <= event.createdAt) byKey.set(key, event);
+    if (existing && existing.createdAt > event.createdAt) continue;
+
+    for (const [candidateKey, candidate] of byKey) {
+      if (
+        candidateKey !== key &&
+        candidate.requestId === event.requestId &&
+        openStatuses.has(candidate.status) &&
+        candidate.createdAt <= event.createdAt
+      ) {
+        byKey.delete(candidateKey);
+      }
+    }
+    byKey.set(key, event);
   }
+
   const merged = [...byKey.values()].sort(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) ||
@@ -62,26 +97,55 @@ export function mergeActivityEvents(
 }
 
 /**
- * The strip shows open (running / waiting confirmation) checkpoints for the
- * workspace, newest first, capped at `MAX_ACTIVITY_STRIP`. Terminal events are
- * pruned immediately: the strip is ephemeral, not a log.
+ * Expanded-panel activity is a tiny current/recent view, not a log. It may
+ * show recent done/failed checkpoints as well as currently open ones. A stale
+ * waiting-confirmation checkpoint is hidden as soon as its Pending Action is
+ * no longer pending.
  */
 export function stripActivities(
   events: ActivityCheckpoint[],
   workspaceId: string | null,
+  pendingActions: PendingAction[] = [],
 ): ActivityCheckpoint[] {
+  if (!workspaceId) return [];
   return events
     .filter(
       (event) =>
-        event.workspaceId === workspaceId && openStatuses.has(event.status),
+        event.workspaceId === workspaceId &&
+        (event.status !== "waiting_confirmation" || hasPendingActionForCheckpoint(event, pendingActions)),
     )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, MAX_ACTIVITY_STRIP);
 }
 
-/** True when at least one open checkpoint is visible for the workspace. */
-export function hasOpenActivity(events: ActivityCheckpoint[], workspaceId: string | null): boolean {
-  return stripActivities(events, workspaceId).length > 0;
+/** True when Jarvis itself has a live checkpoint for the workspace. */
+export function hasOpenActivity(
+  events: ActivityCheckpoint[],
+  workspaceId: string | null,
+  pendingActions: PendingAction[] = [],
+): boolean {
+  if (!workspaceId) return false;
+  return events.some(
+    (event) =>
+      event.workspaceId === workspaceId && isEffectiveOpenCheckpoint(event, pendingActions),
+  );
+}
+
+/** Newest live Jarvis checkpoint label for the compact bar. */
+export function currentActivityLabel(
+  events: ActivityCheckpoint[],
+  workspaceId: string | null,
+  pendingActions: PendingAction[] = [],
+): string | null {
+  if (!workspaceId) return null;
+  return (
+    events
+      .filter(
+        (event) =>
+          event.workspaceId === workspaceId && isEffectiveOpenCheckpoint(event, pendingActions),
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.label ?? null
+  );
 }
 
 export function hasTerminalStatus(status: CheckpointStatus): boolean {
@@ -125,13 +189,14 @@ export interface CollapsedStatusInput {
   ttsStatus: TtsStatusView;
   requests: Record<string, JarvisRequestState>;
   pendingActions: PendingAction[];
-  registrySessions: AgentSessionContext[];
+  activities: ActivityCheckpoint[];
 }
 
 /**
- * Collapsed widget status text. Priority: voice error → no workspace → voice
- * active → agent working → pending confirmation → LLM thinking → TTS speaking
- * → idle. Never shows agent names or counts ("Codex ready" is forbidden).
+ * The compact bar represents Jarvis, never the agent registry. Agent sessions
+ * can be working in the background while the bar remains idle. Priority:
+ * voice error → no workspace → voice → Jarvis checkpoint → pending action →
+ * LLM thinking → TTS → exact idle copy "Ready when you are".
  */
 export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   const {
@@ -142,29 +207,27 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
     ttsStatus,
     requests,
     pendingActions,
-    registrySessions,
+    activities,
   } = input;
-  if (voiceError) return "Errore voce";
-  if (!workspaceName || !workspaceId) return "Seleziona una workspace";
-  if (voiceRequest?.status === "recording") return "Ti ascolto…";
-  if (voiceRequest?.status === "armed") return "In ascolto…";
-  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Trascrivo…";
-  const agentWorking = registrySessions.some(
-    (session) =>
-      session.ref.workspaceId === workspaceId &&
-      (session.state === "working" || session.state === "starting"),
-  );
-  if (agentWorking) return "L'agente sta lavorando…";
+  if (voiceError) return "Voice error";
+  if (!workspaceName || !workspaceId) return "Select a workspace";
+  if (voiceRequest?.status === "recording" || voiceRequest?.status === "armed") return "Listening…";
+  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Transcribing…";
+
+  const activityLabel = currentActivityLabel(activities, workspaceId, pendingActions);
+  if (activityLabel) return activityLabel;
+
   const hasPending = pendingActions.some(
     (action) => action.status === "pending" && action.invocation.targetWorkspaceId === workspaceId,
   );
-  if (hasPending) return "Conferma richiesta";
+  if (hasPending) return "Waiting for confirmation…";
+
   const thinking = Object.values(requests).some(
     (request) =>
       request.workspaceId === workspaceId &&
       (request.status === "running" || request.status === "cancellation_requested"),
   );
-  if (thinking) return "Jarvis sta pensando…";
-  if (ttsStatus.status === "synthesizing" || ttsStatus.status === "playing") return "Sto parlando…";
-  return "Pronto quando vuoi";
+  if (thinking) return "Thinking…";
+  if (ttsStatus.status === "synthesizing" || ttsStatus.status === "playing") return "Speaking…";
+  return "Ready when you are";
 }
