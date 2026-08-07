@@ -196,16 +196,18 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings remain voice-first while advanced input modes stay reachable", () => {
-  assert.match(settingsSource, /Voice is the default interface/);
-  assert.match(settingsSource, /Interaction mode/);
+test("normal Jarvis settings stay hands-free, localized and keep hold-to-talk reachable", () => {
+  assert.match(settingsSource, /La voce è l'interfaccia principale/);
+  assert.match(settingsSource, /Modalità di interazione/);
+  assert.match(settingsSource, /Sempre in ascolto/);
   assert.match(settingsSource, /hold_to_talk/);
-  assert.match(settingsSource, /Voice activity/);
-  assert.match(settingsSource, /Hotkey behavior/);
-  assert.match(settingsSource, /Silence before send \(ms\)/);
-  assert.match(settingsSource, /Wait for speech \(s\)/);
+  assert.match(settingsSource, /Tieni premuto per parlare/);
+  assert.match(settingsSource, /Comportamento scorciatoia/);
+  assert.match(settingsSource, /Silenzio prima dell'invio \(ms\)/);
+  assert.match(settingsSource, /Attesa massima della voce \(s\)/);
   assert.match(settingsSource, /vadPostSpeechMs/);
   assert.match(settingsSource, /maxArmedSeconds/);
+  assert.doesNotMatch(settingsSource, /value: "click_toggle"/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
