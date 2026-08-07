@@ -62,9 +62,12 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
   adapter provider in questa fase.
 - Il task corrente è effimero e bounded (2048 byte), con provenance
   (`user`/`jarvis`/`system`), confidence e untrusted. Solo input committed
-  (Enter) può diventare un task; ricostruzioni non affidabili non producono
-  task inventati. I comandi di lancio agent sono startup, non task; `/model`,
-  `/help`, `/clear` sono attività ma non sostituiscono il task.
+  (Enter) può diventare un task; una riga resa non ricostruibile da frecce,
+  editing complesso o overflow resta invalida fino al successivo Enter/Ctrl+C,
+  così nessun suffisso viene scambiato per un task. I comandi di lancio agent
+  sono startup, non task; `/model`, `/help`, `/clear` sono attività ma non
+  sostituiscono il task né trasformano da soli una sessione `waiting` in
+  `working`.
 - La timeline delle attività è bounded (32 eventi, kind semantici), con
   `lastActivityAt` throttled (1s output, 10s working). `agent.activity` è
   read-only con limit default 8 e max 16.
@@ -74,11 +77,18 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - Completion osserva `completed_at` e porta la sessione a `waiting`; l'uscita
   aggiunge `exited`. Un'interruzione non completa mai il task senza prova.
 - I checkpoint `jarvis://activity` sono deterministici, generati dal backend
-  e mai dal modello; label senza terminalId/generation/IPC/JSON.
-- Widget collassato: nessun nome/conteggio agente; stato compatto con
-  priorità voce → agente → conferma → thinking → TTS → "Pronto quando vuoi".
-- Strip attività effimera nel pannello espanso (max 3), mai un messaggio di
-  conversazione. Nessun dashboard agent nella UI normale: la diagnostica
-  resta in Impostazioni → Advanced.
+  e mai dal modello; label senza terminalId/generation/IPC/JSON. Le fasi più
+  nuove supersedono i checkpoint aperti più vecchi della stessa richiesta e
+  una conferma non più pending non resta visibile come stato bloccato.
+- **La barra compatta rappresenta esclusivamente Jarvis, non il registry**:
+  non osserva lo stato `working/waiting` degli agenti. Durante un'azione può
+  mostrare checkpoint Jarvis come `Checking Codex…`, `Reading last result…`,
+  `Waiting for confirmation…` o `Writing to Codex…`; quando Jarvis non sta
+  facendo nulla torna esattamente a **`Ready when you are`** anche se uno o più
+  agenti continuano a lavorare nei loro terminali.
+- La strip del pannello espanso mostra al massimo 3 checkpoint correnti/recenti
+  (anche `done`/`failed`) e non è mai un messaggio di conversazione. Nessun
+  dashboard agent nella UI normale: la diagnostica resta in Impostazioni →
+  Advanced.
 - Nessuna persistenza per task, timeline e attività; la Fase 8 resta fuori
   scope.
