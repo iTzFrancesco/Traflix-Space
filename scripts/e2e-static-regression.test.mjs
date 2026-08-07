@@ -5,7 +5,9 @@ import test from "node:test";
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const terminalStore = source("../src/stores/terminalStore.ts");
+const agents = source("../src/lib/agents.ts");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
+const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
@@ -27,6 +29,14 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   assert.match(agentLauncher, /live\.agentLaunched/);
   assert.match(agentLauncher, /liveStore\.markAgentLaunched\(terminalId\)/);
   assert.match(agentLauncher, /agentLaunchQueue\.enqueue\(terminalId, agentId\)/);
+});
+
+test("Command Code stays launchable and identifiable across frontend and Jarvis backend", () => {
+  assert.match(agents, /id: "cmdc"/);
+  assert.match(agents, /command: "cmdc"/);
+  assert.match(runtimeDetector, /"cmdc"/);
+  assert.match(runtimeDetector, /"command code" \| "command-code" => "cmdc"/);
+  assert.match(runtimeDetector, /"cmdc\\r\\n"/);
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
