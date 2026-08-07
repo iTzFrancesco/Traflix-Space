@@ -92,3 +92,24 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
   Advanced.
 - Nessuna persistenza per task, timeline e attività; la Fase 8 resta fuori
   scope.
+
+## Fase 8 — Conversational Agent Control & Handoffs
+
+- Jarvis è **reactive, not proactive**: risponde solo a una richiesta
+  dell'utente e non avvia lavoro, review, notifiche o catene future da solo.
+- Un comando esplicito autorizza la normale mutazione richiesta dopo piano
+  typed e validazione backend. Non viene mostrata una confirmation card.
+- Ambiguità, provider mancante, agente busy e distruttive contro sessioni
+  working restano domande nella conversazione. La conferma distruttiva è legata
+  a workspace, terminal ID, generation e operation; ogni esecuzione ricontrolla
+  liveness e generation.
+- Il perimetro è la workspace catturata dall'invocazione corrente. Titoli
+  terminale user-controlled sono read-only semantic hints.
+- La PTY visibile resta il canale canonico. Nessun hidden agent, app-server,
+  `opencode serve` o provider fallback silenzioso.
+- Il contesto automatico è bounded: registry, task, result, Markdown consentito
+  e tail terminale untrusted fino a 100 righe/12 KiB. Gli handoff sono
+  sintetizzati entro 6 KiB e non scansionano automaticamente il source code.
+- Il completamento di un agente non attiva alcuna azione Jarvis. Una nuova
+  catena richiede una nuova richiesta dell'utente.
+- La validazione Windows della Fase 8 è **PENDING**.

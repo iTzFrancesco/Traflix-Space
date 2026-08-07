@@ -193,6 +193,29 @@ JARVIS-011 ────────────────> session summaries e
 - autenticazione/token provider;
 - push, PR e modifica di `.wayfinder/MAP.md`.
 
+## Stato Fase 8 — Conversational Agent Control & Handoffs
+
+- **Decisione:** Jarvis è un controller conversazionale reattivo, non un
+  orchestratore autonomo. Un piano typed può eseguire soltanto la richiesta
+  esplicita corrente; nessuna catena viene avviata al completion di un agente.
+- **Authority:** il modello propone `ConversationalPlan`; il backend Rust
+  valida allowlist, workspace corrente, provider, target, generation, liveness
+  e identità prima di toccare una PTY.
+- **Target:** registry Fase 7 → titolo terminale read-only → task → result →
+  tail bounded. Un pareggio produce clarification, mai una scelta casuale.
+- **Scope:** ogni invocazione è immutabilmente legata alla workspace attiva;
+  non esistono letture, spawn, send o handoff cross-workspace impliciti.
+- **PTY:** agenti reali restano terminali visibili Traflix. Nessun hidden
+  process, `codex app-server`, `opencode serve` o provider fallback.
+- **Authorization:** send/open espliciti non usano Pending Action card.
+  Ambiguità e busy sono domande conversazionali; una distruttiva su sessione
+  working richiede conferma conversazionale stale-safe.
+- **Contesto:** `agent.tail` è untrusted, con provenance, default 40 righe,
+  massimo 100 righe/12 KiB. Gli handoff preferiscono last result e restano
+  entro 6 KiB di contesto; il source code non viene scansionato automaticamente.
+- **Validation:** la checklist Windows è **PENDING** in
+  `docs/jarvis/PHASE-8-WINDOWS-VALIDATION.md`.
+
 ## Stato Fase 2 — decisioni owner consolidate
 
 - JARVIS-001: **approvata** — Jarvis globale, target workspace catturato per invocazione e nessun merge implicito.

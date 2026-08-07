@@ -7,6 +7,8 @@ import type {
   AgentActivityEvent,
   AgentMessage,
   AgentResult,
+  AgentOpenResult,
+  AgentTail,
   AgentSessionContext,
   AgentSessionRef,
   ContextPackageV1,
@@ -86,6 +88,22 @@ export function terminalList(
         requestId,
       }),
     READ_TIMEOUT_MS,
+  );
+}
+
+export function agentOpen(
+  invocation: InvocationBinding,
+  provider: string,
+  initialPrompt?: string,
+): Promise<ToolEnvelope<AgentOpenResult>> {
+  return invokeWithTimeout(
+    () =>
+      invoke<ToolEnvelope<AgentOpenResult>>("jarvis_agent_open", {
+        invocation,
+        provider,
+        initialPrompt,
+      }),
+    MODEL_TIMEOUT_MS,
   );
 }
 
@@ -179,6 +197,25 @@ export function agentActivity(
         limit,
         requestId,
       }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function agentTail(
+  workspaceId: string,
+  terminalId: string,
+  generation: number,
+  maxLines = 40,
+  requestId = crypto.randomUUID(),
+): Promise<ToolEnvelope<AgentTail>> {
+  return invokeWithTimeout(
+    () => invoke<ToolEnvelope<AgentTail>>("jarvis_agent_tail", {
+      workspaceId,
+      terminalId,
+      generation,
+      maxLines,
+      requestId,
+    }),
     READ_TIMEOUT_MS,
   );
 }

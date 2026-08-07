@@ -120,6 +120,7 @@ impl CommandInputBuffer {
 
 pub struct TerminalSession {
     pub id: String,
+    pub title: String,
     pub shell: String,
     pub cwd: std::sync::Mutex<String>,
     pub pty: Option<Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send>>>>,
@@ -165,9 +166,17 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    pub fn new(id: String, shell: String, cwd: String, cols: u16, rows: u16) -> Self {
+    pub fn new(
+        id: String,
+        title: String,
+        shell: String,
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
         Self {
             id,
+            title,
             shell,
             cwd: std::sync::Mutex::new(cwd),
             pty: None,
@@ -812,6 +821,7 @@ mod tests {
     fn make_session() -> TerminalSession {
         TerminalSession::new(
             "terminal-test".to_string(),
+            "Terminal".to_string(),
             "shell".to_string(),
             ".".to_string(),
             80,

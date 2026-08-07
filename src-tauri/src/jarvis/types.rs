@@ -149,6 +149,9 @@ pub struct DocumentationExcerpt {
 pub struct TerminalSummary {
     pub terminal_id: String,
     pub workspace_id: String,
+    /// User-controlled terminal title. Jarvis may use it as a semantic hint,
+    /// but never changes it.
+    pub title: String,
     pub shell: String,
     pub cwd: String,
     pub active: bool,
@@ -161,6 +164,21 @@ pub struct TerminalSummary {
     pub detection_confidence: f32,
     pub identity_warnings: Vec<String>,
     pub generation: u64,
+    pub provenance: Provenance,
+}
+
+/// A bounded, untrusted tail of the visible terminal output. This is a
+/// diagnostic/context signal only; it is never treated as authorization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTail {
+    pub workspace_id: String,
+    pub terminal_id: String,
+    pub generation: u64,
+    pub content: String,
+    pub max_lines: usize,
+    pub max_bytes: usize,
+    pub truncated: bool,
     pub provenance: Provenance,
 }
 

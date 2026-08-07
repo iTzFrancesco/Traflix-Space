@@ -151,8 +151,18 @@ impl TerminalManager {
                         .to_string();
 
                     let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
-                    let mut session =
-                        TerminalSession::new(id.clone(), shell, cwd, initial_cols, initial_rows);
+                    let mut session = TerminalSession::new(
+                        id.clone(),
+                        if config.title.trim().is_empty() {
+                            "Terminal".to_string()
+                        } else {
+                            config.title.clone()
+                        },
+                        shell,
+                        cwd,
+                        initial_cols,
+                        initial_rows,
+                    );
                     session.generation = generation;
                     session.is_agent_terminal = config.agent_id.is_some();
                     session.agent_id = config.agent_id.clone();

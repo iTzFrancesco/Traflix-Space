@@ -1,7 +1,9 @@
 use crate::jarvis::agent_registry::{IdentityDecision, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
-use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
+use crate::jarvis::tools::{
+    apply_workspace_titles, list_terminals_for_workspace, JarvisState, JarvisToolService,
+};
 use crate::jarvis::types::{
-    AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
+    AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, AgentTail,
     ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth,
     TerminalSummary, ToolEnvelope, WorkspaceSummary,
 };
@@ -9,6 +11,54 @@ use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::{WorkspaceConfig, WorkspaceRegistry};
 use chrono::Utc;
 use tauri::{AppHandle, Manager};
+
+#[tauri::command]
+pub async fn jarvis_agent_open(
+    app: AppHandle,
+    invocation: InvocationBinding,
+    provider: String,
+    initial_prompt: Option<String>,
+) -> Result<ToolEnvelope<crate::jarvis::control::AgentOpenResult>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    if invocation.target_workspace_id.trim().is_empty() {
+        return Err(JarvisErrorEnvelope::new(
+            "workspace_required",
+            "workspace is required",
+            Some(invocation.request_id),
+            None,
+            observed_at,
+        ));
+    }
+    let workspace = load_workspace(
+        &app.state::<WorkspaceRegistry>(),
+        &invocation.target_workspace_id,
+        Some(invocation.request_id.clone()),
+        &invocation.created_at,
+    )
+    .await?;
+    let result = crate::jarvis::control::open_agent_for_invocation(
+        &app,
+        &workspace,
+        &invocation,
+        &provider,
+        initial_prompt,
+    )
+    .await
+    .map_err(|message| {
+        JarvisErrorEnvelope::new(
+            "agent_open_failed",
+            message,
+            Some(invocation.request_id.clone()),
+            Some(invocation.target_workspace_id.clone()),
+            &observed_at,
+        )
+    })?;
+    Ok(ToolEnvelope {
+        data: result,
+        provenance: crate::jarvis::types::Provenance::trusted("agent-open", &observed_at),
+        warnings: Vec::new(),
+    })
+}
 
 #[tauri::command]
 pub async fn jarvis_workspace_list(
@@ -29,7 +79,7 @@ pub async fn jarvis_terminal_list(
 ) -> Result<ToolEnvelope<Vec<TerminalSummary>>, JarvisErrorEnvelope> {
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
-    let _workspace = load_workspace(
+    let workspace = load_workspace(
         &workspace_registry,
         &workspace_id,
         request_id.clone(),
@@ -37,7 +87,8 @@ pub async fn jarvis_terminal_list(
     )
     .await?;
     let manager = app.state::<TerminalManager>();
-    let terminals = list_terminals_for_workspace(&manager, &workspace_id, &observed_at).await;
+    let mut terminals = list_terminals_for_workspace(&manager, &workspace_id, &observed_at).await;
+    apply_workspace_titles(&mut terminals, &workspace);
     JarvisToolService::new(&app.state::<JarvisState>().broker).terminal_list(
         &workspace_id,
         terminals,
@@ -191,6 +242,95 @@ pub async fn jarvis_agent_activity(
         request_id,
         &observed_at,
     )
+}
+
+/// Read only the bounded tail of one live agent terminal. The terminal and
+/// generation are revalidated here so a stale conversational plan cannot
+/// read or act on a reused PTY identity.
+#[tauri::command]
+pub async fn jarvis_agent_tail(
+    app: AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    generation: u64,
+    max_lines: Option<usize>,
+    request_id: Option<String>,
+) -> Result<ToolEnvelope<AgentTail>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    let workspace_registry = app.state::<WorkspaceRegistry>();
+    load_workspace(
+        &workspace_registry,
+        &workspace_id,
+        request_id.clone(),
+        &observed_at,
+    )
+    .await?;
+    let snapshot = app
+        .state::<TerminalManager>()
+        .get_agent_snapshot(&terminal_id)
+        .await
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?
+        .ok_or_else(|| {
+            JarvisErrorEnvelope::new(
+                "terminal_not_found",
+                "terminal not found",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?;
+    if snapshot.workspace_id != workspace_id || snapshot.generation != generation {
+        return Err(JarvisErrorEnvelope::new(
+            "terminal_generation_mismatch",
+            "terminal generation is no longer current",
+            request_id,
+            Some(workspace_id),
+            &observed_at,
+        ));
+    }
+    if !snapshot.is_agent_terminal {
+        return Err(JarvisErrorEnvelope::new(
+            "terminal_not_agent",
+            "terminal is not a recognized agent session",
+            request_id,
+            Some(workspace_id),
+            &observed_at,
+        ));
+    }
+    let raw = app
+        .state::<TerminalManager>()
+        .get_recent_normalized_terminal_text(&terminal_id, crate::jarvis::control::MAX_TAIL_BYTES)
+        .await
+        .map_err(|_| {
+            JarvisErrorEnvelope::new(
+                "terminal_tail_unavailable",
+                "terminal tail unavailable",
+                request_id.clone(),
+                Some(workspace_id.clone()),
+                &observed_at,
+            )
+        })?;
+    let tail = crate::jarvis::control::build_tail(
+        &workspace_id,
+        &terminal_id,
+        generation,
+        &raw.content,
+        max_lines.unwrap_or(crate::jarvis::control::DEFAULT_TAIL_LINES),
+        raw.truncated,
+    );
+    Ok(ToolEnvelope {
+        data: tail,
+        provenance: crate::jarvis::types::Provenance::untrusted("terminal-tail", &observed_at),
+        warnings: Vec::new(),
+    })
 }
 
 #[tauri::command]

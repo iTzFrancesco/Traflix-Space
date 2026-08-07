@@ -10,6 +10,8 @@ pub struct AgentDefinition {
     pub env: std::collections::HashMap<String, String>,
     pub icon: String,
     pub color: String,
+    /// Bounded screen hints used only by the conversational readiness probe.
+    pub readiness_hints: Vec<String>,
 }
 
 pub struct AgentRegistry {
@@ -35,16 +37,18 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#06b6d4".into(),
+                    readiness_hints: vec![],
                 },
                 AgentDefinition {
                     id: "claude".into(),
-                    name: "Claude".into(),
+                    name: "Claude Code".into(),
                     description: "Agente AI Claude di Anthropic".into(),
                     command: "claude".into(),
                     args: vec![],
                     env: std::collections::HashMap::new(),
                     icon: "MessageSquare".into(),
                     color: "#d97757".into(),
+                    readiness_hints: vec!["❯".into(), "anthropic".into()],
                 },
                 AgentDefinition {
                     id: "codex".into(),
@@ -55,6 +59,7 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#6b46c1".into(),
+                    readiness_hints: vec!["›".into(), "shortcuts".into(), "openai".into()],
                 },
                 AgentDefinition {
                     id: "opencode".into(),
@@ -65,6 +70,7 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Terminal".into(),
                     color: "#22c55e".into(),
+                    readiness_hints: vec!["help".into(), "open files".into(), "build".into()],
                 },
                 AgentDefinition {
                     id: "pi".into(),
@@ -75,6 +81,7 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#a855f7".into(),
+                    readiness_hints: vec!["assistant".into(), "tools".into(), "model".into()],
                 },
                 AgentDefinition {
                     id: "cmdc".into(),
@@ -85,6 +92,7 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Terminal".into(),
                     color: "#3a86ff".into(),
+                    readiness_hints: vec![],
                 },
                 AgentDefinition {
                     id: "freebuff".into(),
@@ -95,6 +103,7 @@ impl AgentRegistry {
                     env: std::collections::HashMap::new(),
                     icon: "Bot".into(),
                     color: "#f72585".into(),
+                    readiness_hints: vec!["assistant".into(), "tools".into(), "ready".into()],
                 },
             ],
         }
@@ -102,7 +111,8 @@ impl AgentRegistry {
 
     #[allow(dead_code)]
     pub fn get_agent(&self, id: &str) -> Option<&AgentDefinition> {
-        self.agents.iter().find(|a| a.id == id)
+        let normalized = crate::jarvis::runtime_detector::normalize_provider(id)?;
+        self.agents.iter().find(|a| a.id == normalized)
     }
 
     pub fn list(&self) -> Vec<serde_json::Value> {
@@ -117,6 +127,7 @@ impl AgentRegistry {
                     "args": a.args,
                     "icon": a.icon,
                     "color": a.color,
+                    "readinessHints": a.readiness_hints,
 
                 })
             })

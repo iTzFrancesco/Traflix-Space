@@ -23,6 +23,7 @@ pub struct JarvisState {
     pub model: Arc<dyn JarvisModelProvider>,
     pub actions: Arc<PendingActionRegistry>,
     pub chat_requests: Arc<ChatRequestRegistry>,
+    pub control: Arc<crate::jarvis::control::ConversationalControlState>,
 }
 
 impl Default for JarvisState {
@@ -37,6 +38,7 @@ impl Default for JarvisState {
             model: Arc::new(OpenCodeZenProvider::default()),
             actions: Arc::new(PendingActionRegistry::default()),
             chat_requests: Arc::new(ChatRequestRegistry::default()),
+            control: Arc::new(crate::jarvis::control::ConversationalControlState::default()),
         }
     }
 }
@@ -413,6 +415,7 @@ pub async fn list_terminals_for_workspace(
         terminals.push(TerminalSummary {
             terminal_id: session.id.clone(),
             workspace_id: workspace_id.to_string(),
+            title: session.title.clone(),
             shell: session.shell.clone(),
             cwd,
             active: session.active,
@@ -434,6 +437,20 @@ pub async fn list_terminals_for_workspace(
     }
     terminals.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
     terminals
+}
+
+/// Overlay the persisted user title onto live PTY metadata. Jarvis reads the
+/// title as a semantic hint only; it never writes or normalizes it.
+pub fn apply_workspace_titles(terminals: &mut [TerminalSummary], workspace: &WorkspaceConfig) {
+    for terminal in terminals {
+        if let Some(config) = workspace
+            .terminals
+            .iter()
+            .find(|config| config.id == terminal.terminal_id)
+        {
+            terminal.title = config.title.clone();
+        }
+    }
 }
 
 fn source_error(

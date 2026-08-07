@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::Utc;
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -97,6 +98,37 @@ pub async fn update_workspace(
 
     info!(%id, "Workspace aggiornato");
     Ok(config)
+}
+
+/// Persist a user-requested terminal title so Jarvis can use the same
+/// read-only semantic hint that the visible title bar shows.
+#[tauri::command]
+pub async fn update_terminal_title(
+    app: AppHandle,
+    workspace_id: String,
+    terminal_id: String,
+    title: String,
+) -> Result<WorkspaceConfig, String> {
+    let title = title.trim();
+    if title.is_empty() || title.len() > 200 || title.chars().any(char::is_control) {
+        return Err("Titolo terminale non valido".to_string());
+    }
+    let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
+    let mut workspace = registry
+        .get(&workspace_id)
+        .await
+        .ok_or_else(|| "Workspace non trovata".to_string())?;
+    let terminal = workspace
+        .terminals
+        .iter_mut()
+        .find(|terminal| terminal.id == terminal_id)
+        .ok_or_else(|| "Terminale non trovato".to_string())?;
+    terminal.title = title.to_string();
+    workspace.updated_at = Utc::now().to_rfc3339();
+    registry.insert(workspace.clone()).await;
+    registry.save().await?;
+    Ok(workspace)
 }
 
 #[tauri::command]

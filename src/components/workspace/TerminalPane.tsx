@@ -1433,11 +1433,20 @@ export const TerminalPane = memo(function TerminalPane({
 
   const handleRenameSubmit = useCallback(() => {
     const trimmed = editValue.trim();
-    if (trimmed) {
+    if (trimmed && trimmed !== displayTitle) {
       useTerminalStore.getState().renameTerminal(terminalId, trimmed);
+      void invokeWithTimeout(
+        () =>
+          invoke("update_terminal_title", {
+            workspaceId: terminalWorkspaceId,
+            terminalId,
+            title: trimmed,
+          }),
+        10000,
+      ).catch(() => undefined);
     }
     setEditing(false);
-  }, [editValue, terminalId]);
+  }, [displayTitle, editValue, terminalId, terminalWorkspaceId]);
 
   const handleRenameKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {

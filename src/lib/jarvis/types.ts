@@ -191,6 +191,8 @@ export interface DocumentationExcerpt {
 export interface TerminalSummary {
   terminalId: string;
   workspaceId: string;
+  /** User-controlled title; Jarvis treats it as a read-only semantic hint. */
+  title: string;
   shell: string;
   cwd: string;
   active: boolean;
@@ -204,6 +206,24 @@ export interface TerminalSummary {
   identityWarnings: string[];
   generation: number;
   provenance: Provenance;
+}
+
+export interface AgentTail {
+  workspaceId: string;
+  terminalId: string;
+  generation: number;
+  content: string;
+  maxLines: number;
+  maxBytes: number;
+  truncated: boolean;
+  provenance: Provenance;
+}
+
+export interface AgentOpenResult {
+  provider: string;
+  terminalId: string;
+  generation: number;
+  initialPromptSent: boolean;
 }
 
 export type AgentInteractionSource = "user" | "jarvis" | "system";

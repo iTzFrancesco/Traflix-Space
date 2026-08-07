@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { TerminalSquare, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
@@ -26,6 +27,17 @@ interface LoadedWorkspace {
 interface TerminalCloseRequest {
   terminalId: string;
   token: number;
+}
+
+interface AgentOpenedEvent {
+  workspaceId: string;
+  terminal: TerminalConfig;
+}
+
+interface AgentClosedEvent {
+  workspaceId: string;
+  terminalId: string;
+  generation: number;
 }
 
 export function WorkspaceView() {
@@ -57,6 +69,77 @@ export function WorkspaceView() {
     workspaceId: string | null;
     terminals: TerminalConfig[];
   }>({ workspaceId: null, terminals: [] });
+
+  // Jarvis opens/closes through the backend so the same visible PTY can be
+  // registered in the frontend without a second spawn or hidden process.
+  useEffect(() => {
+    let disposed = false;
+    const listeners = Promise.all([
+      listen<AgentOpenedEvent>("jarvis-agent-opened", (event) => {
+        if (disposed) return;
+        const { workspaceId, terminal } = event.payload;
+        const loaded = loadedMapRef.current.get(workspaceId);
+        if (!loaded || loaded.terminals.some((item) => item.id === terminal.id)) return;
+        const nextTerminals = [...loaded.terminals, terminal];
+        const nextLayout = computeLayout(nextTerminals.length);
+        if (!useTerminalStore.getState().terminals[terminal.id]) {
+          useTerminalStore.getState().addTerminal({
+            id: terminal.id,
+            workspaceId,
+            shell: terminal.shell,
+            cwd: terminal.cwd,
+            title: terminal.title,
+            agent: terminal.agentId,
+          });
+          useTerminalStore.getState().markSpawned(terminal.id);
+        }
+        if (workspaceTerminalsRef.current.workspaceId === workspaceId) {
+          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
+        }
+        setLoadedMap((previous) => {
+          const current = previous.get(workspaceId);
+          if (!current || current.terminals.some((item) => item.id === terminal.id)) return previous;
+          const next = new Map(previous);
+          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: nextLayout });
+          return next;
+        });
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: nextTerminals.length,
+          agentCount: nextTerminals.filter((item) => item.agentId).length,
+        });
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+          useTerminalStore.getState().setActiveTerminal(terminal.id);
+        }
+      }),
+      listen<AgentClosedEvent>("jarvis-agent-closed", (event) => {
+        if (disposed) return;
+        const { workspaceId, terminalId } = event.payload;
+        useSkillStore.getState().clearPendingDrop(terminalId);
+        useTerminalStore.getState().removeTerminal(terminalId);
+        const loaded = loadedMapRef.current.get(workspaceId);
+        if (!loaded) return;
+        const nextTerminals = loaded.terminals.filter((item) => item.id !== terminalId);
+        if (workspaceTerminalsRef.current.workspaceId === workspaceId) {
+          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
+        }
+        setLoadedMap((previous) => {
+          const current = previous.get(workspaceId);
+          if (!current) return previous;
+          const next = new Map(previous);
+          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: computeLayout(nextTerminals.length) });
+          return next;
+        });
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: nextTerminals.length,
+          agentCount: nextTerminals.filter((item) => item.agentId).length,
+        });
+      }),
+    ]);
+    return () => {
+      disposed = true;
+      void listeners.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => undefined);
+    };
+  }, []);
 
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === s.activeWorkspaceId),

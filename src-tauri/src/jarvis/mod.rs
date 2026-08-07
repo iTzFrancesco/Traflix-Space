@@ -6,6 +6,7 @@ pub mod chat;
 pub mod checkpoints;
 pub mod commands;
 pub mod context_broker;
+pub mod control;
 pub mod documentation;
 pub mod memory;
 pub mod model;

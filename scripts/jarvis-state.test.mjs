@@ -14,10 +14,14 @@ const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisCha
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../src/components/layout/SettingsModal.tsx", import.meta.url), "utf8");
 const stripSource = readFileSync(new URL("../src/components/jarvis/JarvisActivityStrip.tsx", import.meta.url), "utf8");
+const activityStateSource = readFileSync(new URL("../src/lib/jarvis/activityState.ts", import.meta.url), "utf8");
 const overlaySource = readFileSync(new URL("../src/components/jarvis/JarvisGlobalOverlay.tsx", import.meta.url), "utf8");
 const expandedSource = readFileSync(new URL("../src/components/jarvis/JarvisExpandedPanel.tsx", import.meta.url), "utf8");
 const registrySource = readFileSync(new URL("../src-tauri/src/jarvis/agent_registry.rs", import.meta.url), "utf8");
 const chatBackendSource = readFileSync(new URL("../src-tauri/src/jarvis/chat.rs", import.meta.url), "utf8");
+const controlSource = readFileSync(new URL("../src-tauri/src/jarvis/control.rs", import.meta.url), "utf8");
+const commandsSource = readFileSync(new URL("../src-tauri/src/jarvis/commands.rs", import.meta.url), "utf8");
+const workspaceViewSource = readFileSync(new URL("../src/components/workspace/WorkspaceView.tsx", import.meta.url), "utf8");
 const checkpointsSource = readFileSync(new URL("../src-tauri/src/jarvis/checkpoints.rs", import.meta.url), "utf8");
 
 function session({ id, terminalId, generation, state = "waiting", updatedAt, provider = "codex", result = null }) {
@@ -371,4 +375,91 @@ test("task text and timeline bounds are enforced in the registry", () => {
 test("expanded panel shows the strip without converting it into chat messages", () => {
   assert.match(expandedSource, /activities: ActivityCheckpoint\[\]/);
   assert.doesNotMatch(expandedSource, /activity.*role.*user/);
+});
+
+// ---- Phase 8: conversational agent control -------------------------------
+
+test("explicit normal sends use the typed planner and no Pending Action card", () => {
+  assert.match(chatBackendSource, /conversational\.plan/);
+  assert.match(chatBackendSource, /execute_plan\(/);
+  assert.doesNotMatch(chatBackendSource, /is_mutating_tool/);
+  assert.doesNotMatch(chatPanelSource, /JarvisPendingActionCard/);
+  assert.doesNotMatch(chatPanelSource, /pending action card/i);
+});
+
+test("the planner is semantic and backend operations are allowlisted", () => {
+  assert.match(controlSource, /pub enum PlanOperation/);
+  assert.match(controlSource, /AgentHandoff/);
+  assert.match(controlSource, /DraftPrompt/);
+  assert.match(chatBackendSource, /Interpret natural language semantically/);
+  assert.doesNotMatch(chatBackendSource, /if .*manda.*=>|if .*scrivi.*=>|if .*fai.*=>/i);
+});
+
+test("current workspace and generation are revalidated before PTY access", () => {
+  assert.match(controlSource, /workspace\.id != invocation\.target_workspace_id/);
+  assert.match(controlSource, /snapshot\.workspace_id != invocation\.target_workspace_id/);
+  assert.match(controlSource, /snapshot\.generation != target\.terminal\.generation/);
+  assert.match(controlSource, /control_allowed/);
+  assert.match(commandsSource, /terminal_generation_mismatch/);
+});
+
+test("target resolution uses read-only title, task, result and bounded tail", () => {
+  assert.match(controlSource, /terminal\.title/);
+  assert.match(controlSource, /session\.current_task/);
+  assert.match(controlSource, /session\.last_result/);
+  assert.match(controlSource, /read_agent_tail/);
+  assert.match(controlSource, /TargetResolution::Ambiguous/);
+  assert.match(controlSource, /MAX_TAIL_BYTES: usize = 12 \* 1024/);
+  assert.match(controlSource, /MAX_TAIL_LINES: usize = 100/);
+  assert.match(controlSource, /Provenance::untrusted\("terminal-tail"/);
+});
+
+test("busy, missing-provider and destructive decisions stay conversational", () => {
+  assert.match(controlSource, /sta ancora lavorando/);
+  assert.match(controlSource, /Quale agente vuoi aprire/);
+  assert.match(controlSource, /confirmation_matches/);
+  assert.match(controlSource, /busy_override_matches/);
+  assert.match(chatBackendSource, /allowBusy/);
+  assert.match(controlSource, /kind: PendingConversationKind::Confirmation/);
+  assert.match(controlSource, /generation: Some\(target\.terminal\.generation\)/);
+  assert.match(controlSource, /la generazione o la workspace del terminale è cambiata/);
+});
+
+test("agent.open registers a normal visible PTY and waits for bounded readiness", () => {
+  assert.match(commandsSource, /jarvis_agent_open/);
+  assert.match(controlSource, /manager\.spawn\(app\.clone\(\), config\.clone\(\)/);
+  assert.match(controlSource, /jarvis-agent-opened/);
+  assert.match(controlSource, /READINESS_TIMEOUT/);
+  assert.match(controlSource, /wait_until_ready/);
+  assert.match(controlSource, /TerminalInputOrigin::Internal/);
+  assert.doesNotMatch(controlSource, /app-server|opencode serve/);
+  assert.match(workspaceViewSource, /jarvis-agent-opened/);
+  assert.match(workspaceViewSource, /markSpawned/);
+});
+
+test("draft, handoff, failure stop and provider policy are explicit", () => {
+  assert.match(controlSource, /PlanOperation::DraftPrompt/);
+  assert.match(controlSource, /MAX_HANDOFF_CONTEXT_BYTES: usize = 6 \* 1024/);
+  assert.match(controlSource, /source_evidence/);
+  assert.match(controlSource, /build_handoff_prompt/);
+  assert.match(controlSource, /provider non supportato/);
+  assert.match(controlSource, /typed_plan_rejected/);
+  assert.doesNotMatch(controlSource, /fallback.*provider|provider.*fallback/i);
+});
+
+test("no future completion chain or spontaneous Jarvis notification is introduced", () => {
+  assert.match(chatBackendSource, /never starts future work/);
+  assert.doesNotMatch(controlSource, /AgentTurnCompleted|completion.*spawn|schedule/i);
+  assert.match(chatPanelSource, /Se manca una scelta, te la chiedo qui/);
+  assert.match(activityStateSource, /Ready when you are/);
+});
+
+test("Phase 8 documentation keeps Windows validation pending", () => {
+  const phase8 = readFileSync(new URL("../docs/jarvis/PHASE-8.md", import.meta.url), "utf8");
+  const windows = readFileSync(new URL("../docs/jarvis/PHASE-8-WINDOWS-VALIDATION.md", import.meta.url), "utf8");
+  const decisions = readFileSync(new URL("../docs/jarvis/OWNER-DECISIONS.md", import.meta.url), "utf8");
+  assert.match(phase8, /reattivo|reactive/i);
+  assert.match(phase8, /PENDING/);
+  assert.match(windows, /Stato: PENDING/);
+  assert.match(decisions, /Fase 8/);
 });

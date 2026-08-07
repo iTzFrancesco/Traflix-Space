@@ -1,8 +1,6 @@
-import { useMemo } from "react";
 import { ArrowUpRight, Bot, ShieldCheck, Square } from "lucide-react";
 import { JarvisChatInput, CancelButton } from "./JarvisChatInput";
 import { JarvisActivityStrip } from "./JarvisActivityStrip";
-import { JarvisPendingActionCard } from "./JarvisPendingActionCard";
 import { JarvisTranscriptCard } from "./JarvisTranscriptCard";
 import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
@@ -35,12 +33,11 @@ interface Props {
 }
 
 export function JarvisChatPanel(props: Props) {
-  const pending = useMemo(() => props.pendingActions.filter((action) => action.status === "pending" && action.invocation.targetWorkspaceId === props.workspaceId), [props.pendingActions, props.workspaceId]);
   return (
     <div className="p-4">
       <JarvisActivityStrip activities={props.activities} workspaceId={props.workspaceId} pendingActions={props.pendingActions} />
       <div className="max-h-[min(420px,56vh)] space-y-3 overflow-y-auto pr-1">
-        {props.conversation.length === 0 && <div className="rounded-xl border border-primary/20 bg-primary/[0.06] p-4"><p className="text-sm font-semibold text-neutral-text">Sono Jarvis.</p><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">Posso leggere Markdown consentito, osservare agenti e preparare operazioni da confermare. Questa conversazione resta nella workspace {props.workspaceName ?? "attiva"}.</p></div>}
+        {props.conversation.length === 0 && <div className="rounded-xl border border-primary/20 bg-primary/[0.06] p-4"><p className="text-sm font-semibold text-neutral-text">Sono Jarvis.</p><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">Posso leggere il contesto consentito e controllare gli agenti della workspace {props.workspaceName ?? "attiva"}. Se manca una scelta, te la chiedo qui.</p></div>}
         {props.conversation.map((message) => <div key={message.id} className={message.role === "user" ? "ml-10 rounded-xl bg-primary/[0.14] px-3 py-2" : "mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2"}><p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-text">{message.content}</p>{message.provider && <p className="mt-1 text-[10px] text-neutral-text-muted">{message.provider}</p>}</div>)}
         {props.requests.map((request) => <div key={request.requestId} className="mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-xs text-neutral-text-muted"><div className="flex items-center justify-between gap-2"><span className="inline-flex items-center gap-1"><Bot size={13} /> {request.status === "cancellation_requested" ? "Annullamento…" : request.status === "running" ? "Jarvis sta pensando…" : request.status}</span>{(request.status === "running" || request.status === "cancellation_requested") && <CancelButton onCancel={() => props.onCancelRequest(request.requestId)} />}</div>{request.error && <p className="mt-1 text-danger">{request.error}</p>}</div>)}
       </div>
@@ -52,8 +49,7 @@ export function JarvisChatPanel(props: Props) {
       {props.ttsStatus.status === "failed" && props.ttsStatus.error && <p className="mt-2 rounded-lg border border-warning/30 bg-warning/[0.06] px-3 py-2 text-xs text-warning">La risposta è disponibile, ma la sintesi vocale non è riuscita: {props.ttsStatus.error.message}</p>}
       {props.uiIntents.filter((intent) => intent.workspaceId === props.workspaceId).map((intent) => <button key={intent.id} type="button" onClick={() => props.onOpenTerminal(intent.workspaceId, intent.terminalId, intent.generation)} className="mt-3 inline-flex items-center rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-text">{intent.label}</button>)}
       {props.followUps.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{props.followUps.map((followUp) => <button key={followUp} type="button" onClick={() => props.onSendMessage(followUp)} className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-neutral-text-muted hover:border-primary/50 hover:text-neutral-text">{followUp}</button>)}</div>}
-      {pending.length > 0 && <div className="mt-3 space-y-2"><p className="eyebrow text-primary">Conferme richieste</p>{pending.map((action) => <JarvisPendingActionCard key={action.id} action={action} onConfirm={props.onConfirmAction} onReject={props.onRejectAction} onUpdate={props.onUpdateAction} />)}</div>}
-      <div className="mt-3 flex items-center gap-2 text-[10px] text-neutral-text-muted"><ShieldCheck size={13} className="text-signal" /> Le operazioni mutative richiedono sempre conferma.</div>
+      <div className="mt-3 flex items-center gap-2 text-[10px] text-neutral-text-muted"><ShieldCheck size={13} className="text-signal" /> Le richieste esplicite vengono validate prima di agire; le ambiguità restano conversazionali.</div>
       <JarvisChatInput disabled={!props.workspaceId || props.requests.some((request) => request.status === "running" || request.status === "cancellation_requested")} onSend={props.onSendMessage} />
       {props.providerStatus && <p className="mt-2 text-[10px] text-neutral-text-muted">{props.providerStatus.primaryModelAvailable ? props.providerStatus.primaryModel : props.providerStatus.fallbackModel}{props.providerStatus.configured ? "" : " · provider non configurato"}</p>}
       {/* Intent is rendered by the chat response in future messages; the
