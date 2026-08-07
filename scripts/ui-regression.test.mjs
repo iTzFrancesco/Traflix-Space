@@ -96,6 +96,15 @@ test("late workspace loads cannot steal active terminal ownership", () => {
   assert.doesNotMatch(workspaceViewSource, /let cancelled = false/);
 });
 
+test("workspace config LRU eviction never kills live PTYs", () => {
+  assert.match(workspaceViewSource, /This is only an LRU cache for workspace configuration/);
+  assert.match(workspaceViewSource, /if \(toEvict\) \{\s*next\.delete\(toEvict\)/s);
+  assert.doesNotMatch(
+    workspaceViewSource,
+    /if \(toEvict\) \{\s*terminalStore\.killWorkspaceTerminals\(toEvict\)/s,
+  );
+});
+
 test("frontend agent launch is deduplicated and rolls back after bounded write failures", () => {
   assert.match(agentLauncherSource, /MAX_LAUNCH_ATTEMPTS = 2/);
   assert.match(agentLauncherSource, /queuedTerminals = new Set<string>/);
