@@ -6,18 +6,15 @@ const OWNER_MODE_MARKER = "owner-mode";
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
  * runs in owner mode: network consent, transcript submission and spoken
  * replies are always enabled. One-click + local VAD is the default interaction,
- * while explicit advanced activation choices (for example hold-to-talk) remain
- * valid and are not silently rewritten.
+ * while explicit advanced activation choices remain valid.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
+  const activationMode = settings.voiceInput.activationMode;
   const voiceInput = {
     ...settings.voiceInput,
     enabled: true,
     autoSubmitTranscript: true,
-    vadEnabled:
-      settings.voiceInput.activationMode === "click_toggle"
-        ? true
-        : settings.voiceInput.vadEnabled,
+    vadEnabled: activationMode !== "hold_to_talk",
     privacyConsent: true,
     privacyConsentAt: settings.voiceInput.privacyConsentAt || OWNER_MODE_MARKER,
   };
@@ -42,13 +39,13 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
 }
 
 export function isJarvisOwnerModeReady(settings: JarvisSettings): boolean {
+  const expectedVad = settings.voiceInput.activationMode !== "hold_to_talk";
   return Boolean(
     settings.textModel.privacyConsent &&
       settings.textModel.privacyConsentAt &&
       settings.voiceInput.enabled &&
       settings.voiceInput.autoSubmitTranscript &&
-      (settings.voiceInput.activationMode !== "click_toggle" ||
-        settings.voiceInput.vadEnabled) &&
+      settings.voiceInput.vadEnabled === expectedVad &&
       settings.voiceInput.privacyConsent &&
       settings.voiceInput.privacyConsentAt &&
       settings.voiceOutput.enabled &&
