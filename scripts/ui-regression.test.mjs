@@ -83,6 +83,9 @@ test("normal Jarvis settings remain voice-first without old consent UI", () => {
     settingsSource,
     /Turn detection, transcript submission and spoken replies are automatic/,
   );
+  assert.match(settingsSource, /Silence before send \(ms\)/);
+  assert.match(settingsSource, /vadPostSpeechMs/);
+  assert.doesNotMatch(settingsSource, /Wait for speech \(s\)/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
