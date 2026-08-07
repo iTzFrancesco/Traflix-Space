@@ -1,20 +1,36 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
 use super::types::{VoiceErrorCode, MAX_MP3_BYTES};
 
 const MAX_HELPER_OUTPUT_BYTES: usize = 64 * 1024;
 const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const HELPER_QUEUE_DEPTH: usize = 4;
 
 pub type TtsFuture = Pin<Box<dyn Future<Output = Result<PathBuf, VoiceErrorCode>> + Send>>;
+
+type HelperSender = mpsc::Sender<HelperRequest>;
+
+enum HelperRequest {
+    Run {
+        payload: String,
+        cancellation: CancellationToken,
+        response: oneshot::Sender<Result<Vec<u8>, VoiceErrorCode>>,
+    },
+    Shutdown {
+        response: oneshot::Sender<()>,
+    },
+}
 
 pub trait TextToSpeechProvider: Send + Sync {
     fn speak(
@@ -33,6 +49,7 @@ pub trait TextToSpeechProvider: Send + Sync {
 #[derive(Clone)]
 pub struct EdgeTextToSpeechProvider {
     helper: EdgeHelper,
+    worker: Arc<AsyncMutex<Option<HelperSender>>>,
 }
 
 #[derive(Clone)]
@@ -45,6 +62,7 @@ impl EdgeTextToSpeechProvider {
     pub fn new(helper_path: PathBuf) -> Self {
         Self {
             helper: EdgeHelper::Python(helper_path),
+            worker: Arc::new(AsyncMutex::new(None)),
         }
     }
 
@@ -55,7 +73,109 @@ impl EdgeTextToSpeechProvider {
     pub fn release(app: tauri::AppHandle) -> Self {
         Self {
             helper: EdgeHelper::Sidecar(app),
+            worker: Arc::new(AsyncMutex::new(None)),
         }
+    }
+
+    pub async fn prewarm(&self) -> Result<(), VoiceErrorCode> {
+        let bytes = self
+            .run_helper(
+                r#"{"action":"ping"}"#.to_string(),
+                CancellationToken::new(),
+            )
+            .await?;
+        let result: HelperResult =
+            serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
+        if result.ok {
+            Ok(())
+        } else {
+            Err(VoiceErrorCode::HelperFailed)
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        let sender = self.worker.lock().await.take();
+        let Some(sender) = sender else {
+            return;
+        };
+        let (response, finished) = oneshot::channel();
+        if sender
+            .send(HelperRequest::Shutdown { response })
+            .await
+            .is_ok()
+        {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), finished).await;
+        }
+    }
+
+    async fn worker_sender(&self) -> Result<HelperSender, VoiceErrorCode> {
+        let mut worker = self.worker.lock().await;
+        if let Some(sender) = worker.as_ref() {
+            if !sender.is_closed() {
+                return Ok(sender.clone());
+            }
+        }
+        let sender = spawn_helper_worker(self.helper.clone()).await?;
+        *worker = Some(sender.clone());
+        Ok(sender)
+    }
+
+    async fn reset_worker(&self) {
+        self.worker.lock().await.take();
+    }
+
+    async fn run_helper(
+        &self,
+        payload: String,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<u8>, VoiceErrorCode> {
+        for attempt in 0..2 {
+            if cancellation.is_cancelled() {
+                return Err(VoiceErrorCode::Cancelled);
+            }
+            let sender = self.worker_sender().await?;
+            let (response, result) = oneshot::channel();
+            if sender
+                .send(HelperRequest::Run {
+                    payload: payload.clone(),
+                    cancellation: cancellation.clone(),
+                    response,
+                })
+                .await
+                .is_err()
+            {
+                self.reset_worker().await;
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(VoiceErrorCode::HelperFailed);
+            }
+            match result.await {
+                Ok(Ok(bytes)) => return Ok(bytes),
+                Ok(Err(VoiceErrorCode::Cancelled)) => return Err(VoiceErrorCode::Cancelled),
+                Ok(Err(_)) | Err(_) if attempt == 0 => {
+                    self.reset_worker().await;
+                }
+                Ok(Err(code)) => return Err(code),
+                Err(_) => return Err(VoiceErrorCode::HelperFailed),
+            }
+        }
+        Err(VoiceErrorCode::HelperFailed)
+    }
+
+    pub async fn list_voices(&self) -> Result<Vec<TtsVoiceInfo>, VoiceErrorCode> {
+        let bytes = self
+            .run_helper(
+                r#"{"action":"listVoices"}"#.to_string(),
+                CancellationToken::new(),
+            )
+            .await?;
+        let result: VoiceListResult =
+            serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
+        if !result.ok {
+            return Err(VoiceErrorCode::HelperFailed);
+        }
+        Ok(result.voices.unwrap_or_default())
     }
 }
 
@@ -71,14 +191,14 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
         max_chars: usize,
         cancellation: CancellationToken,
     ) -> TtsFuture {
-        let helper = self.helper.clone();
+        let provider = self.clone();
         Box::pin(async move {
             let text =
                 sanitize_for_speech(&text, max_chars).ok_or(VoiceErrorCode::InvalidRequest)?;
             let output_path = temp_audio_path(&request_id);
             let result = async {
                 let payload = serde_json::json!({ "requestId": request_id, "text": text, "voice": voice, "rate": rate, "volume": volume, "pitch": pitch, "outputPath": output_path }).to_string();
-                let stdout_bytes = helper.run(payload, cancellation.clone()).await?;
+                let stdout_bytes = provider.run_helper(payload, cancellation.clone()).await?;
                 let result: HelperResult =
                     serde_json::from_slice(&stdout_bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
                 if !result.ok {
@@ -96,7 +216,8 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
                     return Err(VoiceErrorCode::HelperFailed);
                 }
                 Ok(canonical)
-            }.await;
+            }
+            .await;
             if result.is_err() {
                 cleanup_temp_file(&output_path);
             }
@@ -105,87 +226,74 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
     }
 }
 
-impl EdgeHelper {
-    async fn run(
-        &self,
-        payload: String,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<u8>, VoiceErrorCode> {
-        match self {
-            EdgeHelper::Python(path) => {
-                run_python_helper(path.clone(), payload, cancellation).await
-            }
-            EdgeHelper::Sidecar(app) => {
-                run_sidecar_helper(app.clone(), payload, cancellation).await
-            }
-        }
+async fn spawn_helper_worker(helper: EdgeHelper) -> Result<HelperSender, VoiceErrorCode> {
+    match helper {
+        EdgeHelper::Python(path) => spawn_python_worker(path).await,
+        EdgeHelper::Sidecar(app) => spawn_sidecar_worker(app).await,
     }
 }
 
-impl EdgeTextToSpeechProvider {
-    pub async fn list_voices(&self) -> Result<Vec<TtsVoiceInfo>, VoiceErrorCode> {
-        let payload = r#"{"action":"listVoices"}"#.to_string();
-        let bytes = self.helper.run(payload, CancellationToken::new()).await?;
-        let result: VoiceListResult =
-            serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
-        if !result.ok {
-            return Err(VoiceErrorCode::HelperFailed);
-        }
-        Ok(result.voices.unwrap_or_default())
-    }
-}
-
-async fn run_python_helper(
-    helper_path: PathBuf,
-    payload: String,
-    cancellation: CancellationToken,
-) -> Result<Vec<u8>, VoiceErrorCode> {
+async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, VoiceErrorCode> {
     let mut child = helper_command(helper_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|_| VoiceErrorCode::HelperFailed)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin
-            .write_all(format!("{payload}\n").as_bytes())
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
-            return Err(VoiceErrorCode::HelperFailed);
+    let mut stdin = child.stdin.take().ok_or(VoiceErrorCode::HelperFailed)?;
+    let stdout = child.stdout.take().ok_or(VoiceErrorCode::HelperFailed)?;
+    let mut lines = BufReader::new(stdout).lines();
+    let (sender, mut requests) = mpsc::channel::<HelperRequest>(HELPER_QUEUE_DEPTH);
+
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                HelperRequest::Run {
+                    payload,
+                    cancellation,
+                    response,
+                } => {
+                    if stdin.write_all(payload.as_bytes()).await.is_err()
+                        || stdin.write_all(b"\n").await.is_err()
+                        || stdin.flush().await.is_err()
+                    {
+                        let _ = response.send(Err(VoiceErrorCode::HelperFailed));
+                        break;
+                    }
+                    let result = tokio::select! {
+                        _ = cancellation.cancelled() => {
+                            let _ = child.kill().await;
+                            Err(VoiceErrorCode::Cancelled)
+                        }
+                        result = tokio::time::timeout(HELPER_TIMEOUT, lines.next_line()) => {
+                            match result {
+                                Ok(Ok(Some(line))) if line.len() <= MAX_HELPER_OUTPUT_BYTES => Ok(line.into_bytes()),
+                                _ => {
+                                    let _ = child.kill().await;
+                                    Err(VoiceErrorCode::HelperFailed)
+                                }
+                            }
+                        }
+                    };
+                    let fatal = result.is_err();
+                    let _ = response.send(result);
+                    if fatal {
+                        break;
+                    }
+                }
+                HelperRequest::Shutdown { response } => {
+                    let _ = child.kill().await;
+                    let _ = response.send(());
+                    return;
+                }
+            }
         }
-    }
-    let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill().await;
-        return Err(VoiceErrorCode::HelperFailed);
-    };
-    let status = tokio::select! {
-        _ = cancellation.cancelled() => { let _ = child.kill().await; return Err(VoiceErrorCode::Cancelled); },
-        result = tokio::time::timeout(HELPER_TIMEOUT, child.wait()) => match result {
-            Ok(Ok(status)) => status,
-            _ => { let _ = child.kill().await; return Err(VoiceErrorCode::HelperFailed); }
-        }
-    };
-    let mut bytes = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        stdout.read_to_end(&mut bytes),
-    )
-    .await
-    .map_err(|_| VoiceErrorCode::HelperFailed)?
-    .map_err(|_| VoiceErrorCode::HelperFailed)?;
-    if !status.success() || bytes.len() > MAX_HELPER_OUTPUT_BYTES {
-        return Err(VoiceErrorCode::HelperFailed);
-    }
-    Ok(bytes)
+    });
+    Ok(sender)
 }
 
-async fn run_sidecar_helper(
-    app: tauri::AppHandle,
-    payload: String,
-    cancellation: CancellationToken,
-) -> Result<Vec<u8>, VoiceErrorCode> {
+async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, VoiceErrorCode> {
     let command = app
         .shell()
         .sidecar("jarvis-edge-tts")
@@ -193,63 +301,98 @@ async fn run_sidecar_helper(
         .set_raw_out(true);
     let (mut events, child) = command.spawn().map_err(|_| VoiceErrorCode::HelperFailed)?;
     let mut child = Some(child);
-    if child
-        .as_mut()
-        .expect("sidecar child exists")
-        .write(format!("{payload}\n").as_bytes())
-        .is_err()
-    {
-        if let Some(child) = child.take() {
-            let _ = child.kill();
-        }
-        return Err(VoiceErrorCode::HelperFailed);
-    }
-    let result = tokio::time::timeout(HELPER_TIMEOUT, async {
-        let mut stdout = Vec::new();
-        loop {
-            tokio::select! {
-                _ = cancellation.cancelled() => {
-                    if let Some(child) = child.take() { let _ = child.kill(); }
-                    return Err(VoiceErrorCode::Cancelled);
+    let (sender, mut requests) = mpsc::channel::<HelperRequest>(HELPER_QUEUE_DEPTH);
+
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                HelperRequest::Run {
+                    payload,
+                    cancellation,
+                    response,
+                } => {
+                    let Some(running) = child.as_mut() else {
+                        let _ = response.send(Err(VoiceErrorCode::HelperFailed));
+                        break;
+                    };
+                    if running.write(payload.as_bytes()).is_err()
+                        || running.write(b"\n").is_err()
+                    {
+                        if let Some(running) = child.take() {
+                            let _ = running.kill();
+                        }
+                        let _ = response.send(Err(VoiceErrorCode::HelperFailed));
+                        break;
+                    }
+
+                    let result = tokio::time::timeout(HELPER_TIMEOUT, async {
+                        let mut stdout = Vec::new();
+                        loop {
+                            tokio::select! {
+                                _ = cancellation.cancelled() => {
+                                    if let Some(running) = child.take() { let _ = running.kill(); }
+                                    return Err(VoiceErrorCode::Cancelled);
+                                }
+                                event = events.recv() => match event {
+                                    Some(CommandEvent::Stdout(bytes)) => {
+                                        if stdout.len().saturating_add(bytes.len()) > MAX_HELPER_OUTPUT_BYTES {
+                                            if let Some(running) = child.take() { let _ = running.kill(); }
+                                            return Err(VoiceErrorCode::HelperFailed);
+                                        }
+                                        stdout.extend_from_slice(&bytes);
+                                        if let Some(newline) = stdout.iter().position(|byte| *byte == b'\n') {
+                                            stdout.truncate(newline);
+                                            return Ok(stdout);
+                                        }
+                                    }
+                                    Some(CommandEvent::Terminated(_)) => {
+                                        let _ = child.take();
+                                        return Err(VoiceErrorCode::HelperFailed);
+                                    }
+                                    Some(CommandEvent::Error(_)) => {
+                                        if let Some(running) = child.take() { let _ = running.kill(); }
+                                        return Err(VoiceErrorCode::HelperFailed);
+                                    }
+                                    Some(CommandEvent::Stderr(_)) => {}
+                                    None => {
+                                        if let Some(running) = child.take() { let _ = running.kill(); }
+                                        return Err(VoiceErrorCode::HelperFailed);
+                                    }
+                                    Some(_) => {}
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                    let result = match result {
+                        Ok(result) => result,
+                        Err(_) => {
+                            if let Some(running) = child.take() {
+                                let _ = running.kill();
+                            }
+                            Err(VoiceErrorCode::HelperFailed)
+                        }
+                    };
+                    let fatal = result.is_err();
+                    let _ = response.send(result);
+                    if fatal {
+                        break;
+                    }
                 }
-                event = events.recv() => match event {
-                    Some(CommandEvent::Stdout(bytes)) => {
-                        if stdout.len().saturating_add(bytes.len()) > MAX_HELPER_OUTPUT_BYTES {
-                            if let Some(child) = child.take() { let _ = child.kill(); }
-                            return Err(VoiceErrorCode::HelperFailed);
-                        }
-                        stdout.extend_from_slice(&bytes);
+                HelperRequest::Shutdown { response } => {
+                    if let Some(running) = child.take() {
+                        let _ = running.kill();
                     }
-                    Some(CommandEvent::Terminated(status)) => {
-                        let _ = child.take();
-                        if !status.code.is_some_and(|code| code == 0) || stdout.len() > MAX_HELPER_OUTPUT_BYTES {
-                            return Err(VoiceErrorCode::HelperFailed);
-                        }
-                        return Ok(stdout);
-                    }
-                    Some(CommandEvent::Error(_)) => {
-                        if let Some(child) = child.take() { let _ = child.kill(); }
-                        return Err(VoiceErrorCode::HelperFailed);
-                    }
-                    Some(CommandEvent::Stderr(_)) => {}
-                    None => {
-                        if let Some(child) = child.take() { let _ = child.kill(); }
-                        return Err(VoiceErrorCode::HelperFailed);
-                    }
-                    Some(_) => {}
+                    let _ = response.send(());
+                    return;
                 }
             }
         }
-    }).await;
-    match result {
-        Ok(result) => result,
-        Err(_) => {
-            if let Some(child) = child.take() {
-                let _ = child.kill();
-            }
-            Err(VoiceErrorCode::HelperFailed)
+        if let Some(running) = child.take() {
+            let _ = running.kill();
         }
-    }
+    });
+    Ok(sender)
 }
 
 #[derive(Debug, Deserialize)]
