@@ -37,7 +37,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       language: "it",
       maxDurationSeconds: 45,
       selectedInputDeviceId: undefined,
-      autoSubmitTranscript: false,
+      autoSubmitTranscript: true,
       privacyConsent: false,
       privacyConsentAt: undefined,
       activationMode: "click_toggle",
