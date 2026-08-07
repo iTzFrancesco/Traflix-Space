@@ -12,6 +12,7 @@ const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
+const gitChangesSource = source("../src/components/project/ProjectGitChanges.tsx");
 
 const obsoleteJarvisUi = [
   "../src/components/jarvis/JarvisExpandedPanel.tsx",
@@ -68,6 +69,14 @@ test("persisted workspace presets are bounded before the wizard consumes them", 
   assert.match(presetStoreSource, /boundedAgentCounts/);
   assert.match(presetStoreSource, /merge: \(persisted, current\)/);
   assert.match(presetStoreSource, /filter\(\(preset\): preset is Preset/);
+});
+
+test("Git rows keep staged and worktree diff sides distinct", () => {
+  assert.match(gitChangesSource, /interface SelectedGitRow/);
+  assert.match(gitChangesSource, /function availableSide/);
+  assert.match(gitChangesSource, /selectChange\(change, staged\)/);
+  assert.match(gitChangesSource, /stagedRow \? "staged" : "worktree"/);
+  assert.match(gitChangesSource, /selectedRow\.side === rowSide/);
 });
 
 test("compact Jarvis microphone meter has real geometry", () => {
