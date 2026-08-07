@@ -1,16 +1,32 @@
 import { useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
-  FileText,
   GripVertical,
   RefreshCw,
   Search,
+  Sparkles,
   Star,
   TerminalSquare,
   X,
 } from "lucide-react";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useSkillStore, useSortedSkills } from "../../stores/skillStore";
+
+const SKILL_ACCENTS = [
+  { background: "rgba(255, 157, 36, 0.15)", color: "#ffb84d" },
+  { background: "rgba(85, 216, 155, 0.13)", color: "#55d89b" },
+  { background: "rgba(114, 168, 255, 0.15)", color: "#72a8ff" },
+  { background: "rgba(202, 137, 255, 0.15)", color: "#ca89ff" },
+  { background: "rgba(255, 98, 107, 0.14)", color: "#ff858c" },
+];
+
+function getSkillAccent(id: string) {
+  const hash = [...id].reduce(
+    (total, character) => total + character.charCodeAt(0),
+    0,
+  );
+  return SKILL_ACCENTS[hash % SKILL_ACCENTS.length];
+}
 
 type SkillDragMode = "reorder" | "terminal";
 
@@ -293,7 +309,10 @@ export function SkillsModule() {
             ))}
           </div>
         ) : error ? (
-          <div className="border-l-2 border-danger px-3 py-2 text-xs leading-relaxed text-neutral-text-dim" role="alert">
+          <div
+            className="border-l-2 border-danger px-3 py-2 text-xs leading-relaxed text-neutral-text-dim"
+            role="alert"
+          >
             <p>{error}</p>
             <button
               type="button"
@@ -309,101 +328,108 @@ export function SkillsModule() {
               <>No skill matches “{searchQuery}”.</>
             ) : (
               <>
-                No skills found in <code className="text-neutral-text-dim">.agents/skills</code>
+                No skills found in{" "}
+                <code className="text-neutral-text-dim">.agents/skills</code>
               </>
             )}
           </div>
         ) : (
           <div role="list" aria-label="Skills">
-            {visibleSkills.map((skill) => (
-              <div
-                key={skill.id}
-                data-skill-row-id={skill.id}
-                className={`group relative flex min-h-14 items-start gap-2 border-b border-neutral-border-light px-1.5 py-2 transition-colors ${
-                  draggingSkillId === skill.id
-                    ? "bg-primary/[0.08]"
-                    : dragOverSkillId === skill.id
-                      ? "bg-primary/[0.10]"
-                      : "hover:bg-white/[0.025]"
-                }`}
-                role="listitem"
-              >
-                <FileText
-                  size={14}
-                  className={`mt-0.5 shrink-0 ${
-                    skill.isFavorite ? "text-primary" : "text-neutral-text-muted"
+            {visibleSkills.map((skill) => {
+              const accent = getSkillAccent(skill.id);
+              return (
+                <div
+                  key={skill.id}
+                  data-skill-row-id={skill.id}
+                  className={`group relative flex min-h-14 items-start gap-2 border-b border-neutral-border-light px-1.5 py-2 transition-colors ${
+                    draggingSkillId === skill.id
+                      ? "bg-primary/[0.08]"
+                      : dragOverSkillId === skill.id
+                        ? "bg-primary/[0.10]"
+                        : "hover:bg-white/[0.025]"
                   }`}
-                  aria-hidden="true"
-                />
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-xs font-medium text-neutral-text">
-                      {skill.name}
-                    </span>
-                    {skill.isFavorite && (
-                      <Star
-                        size={10}
-                        className="shrink-0 text-primary"
-                        fill="currentColor"
-                        aria-label="Favorite"
-                      />
-                    )}
-                  </div>
-                  <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-neutral-text-muted">
-                    {skill.description || "No description."}
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 items-center gap-0.5">
-                  <button
-                    type="button"
-                    onPointerDown={(event) =>
-                      startPointerDrag(event, "reorder", skill.id, skill.name)
-                    }
-                    className="ui-icon-button h-7 w-7 touch-none cursor-grab active:cursor-grabbing"
-                    title={`Reorder ${skill.name}`}
-                    aria-label={`Reorder ${skill.name}`}
-                  >
-                    <GripVertical size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onPointerDown={(event) =>
-                      startPointerDrag(event, "terminal", skill.id, skill.name)
-                    }
-                    className="ui-icon-button h-7 w-7 touch-none cursor-grab active:cursor-grabbing"
-                    title={`Drag ${skill.name} to a terminal`}
-                    aria-label={`Drag ${skill.name} to a terminal`}
-                  >
-                    <TerminalSquare size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleFavorite(skill.id);
+                  role="listitem"
+                >
+                  <div
+                    className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                    style={{
+                      backgroundColor: accent.background,
+                      color: accent.color,
                     }}
-                    className={`ui-icon-button h-7 w-7 ${
-                      skill.isFavorite ? "text-primary" : ""
-                    }`}
-                    title={
-                      skill.isFavorite ? "Remove favorite" : "Add favorite"
-                    }
-                    aria-label={
-                      skill.isFavorite
-                        ? `Remove ${skill.name} from favorites`
-                        : `Add ${skill.name} to favorites`
-                    }
+                    aria-hidden="true"
                   >
-                    <Star
-                      size={13}
-                      fill={skill.isFavorite ? "currentColor" : "none"}
-                    />
-                  </button>
+                    <Sparkles size={13} />
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-xs font-medium text-neutral-text">
+                        {skill.name}
+                      </span>
+                      {skill.isFavorite && (
+                        <Star
+                          size={10}
+                          className="shrink-0 text-primary"
+                          fill="currentColor"
+                          aria-label="Favorite"
+                        />
+                      )}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-neutral-text-muted">
+                      {skill.description || "No description."}
+                    </p>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      onPointerDown={(event) =>
+                        startPointerDrag(event, "reorder", skill.id, skill.name)
+                      }
+                      className="ui-icon-button h-7 w-7 touch-none cursor-grab active:cursor-grabbing"
+                      title={`Reorder ${skill.name}`}
+                      aria-label={`Reorder ${skill.name}`}
+                    >
+                      <GripVertical size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onPointerDown={(event) =>
+                        startPointerDrag(event, "terminal", skill.id, skill.name)
+                      }
+                      className="ui-icon-button h-7 w-7 touch-none cursor-grab active:cursor-grabbing"
+                      title={`Drag ${skill.name} to a terminal`}
+                      aria-label={`Drag ${skill.name} to a terminal`}
+                    >
+                      <TerminalSquare size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleFavorite(skill.id);
+                      }}
+                      className={`ui-icon-button h-7 w-7 ${
+                        skill.isFavorite ? "text-primary" : ""
+                      }`}
+                      title={
+                        skill.isFavorite ? "Remove favorite" : "Add favorite"
+                      }
+                      aria-label={
+                        skill.isFavorite
+                          ? `Remove ${skill.name} from favorites`
+                          : `Add ${skill.name} to favorites`
+                      }
+                    >
+                      <Star
+                        size={13}
+                        fill={skill.isFavorite ? "currentColor" : "none"}
+                      />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
