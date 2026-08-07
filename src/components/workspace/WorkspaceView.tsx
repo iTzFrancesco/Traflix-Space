@@ -630,16 +630,18 @@ export function WorkspaceView() {
     return (
       <>
         <div className="flex h-full items-center justify-center bg-neutral-darkest px-8">
-          <div className="max-w-sm text-center tab-slide-in">
-            <TerminalSquare size={24} strokeWidth={1.4} className="mx-auto text-neutral-text-muted" />
+          <div className="w-full max-w-sm text-center tab-slide-in">
+            <div className="flex justify-center">
+              <TerminalSquare size={24} strokeWidth={1.4} className="text-neutral-text-muted" />
+            </div>
             <h2 className="mt-4 font-display text-base font-semibold tracking-[-0.02em] text-neutral-text">
-              No workspace open
+              Nessuno spazio di lavoro aperto
             </h2>
             <p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-neutral-text-muted">
-              Select a workspace from the sidebar or create one to start working.
+              Seleziona uno spazio dalla barra laterale oppure creane uno per iniziare.
             </p>
             <button type="button" onClick={() => setWizardOpen(true)} className="primary-button mt-5">
-              <Plus size={14} /> New space
+              <Plus size={14} /> Nuovo spazio
             </button>
           </div>
         </div>
