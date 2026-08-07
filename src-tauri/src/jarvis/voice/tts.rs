@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -20,6 +20,7 @@ const HELPER_QUEUE_DEPTH: usize = 4;
 pub type TtsFuture = Pin<Box<dyn Future<Output = Result<PathBuf, VoiceErrorCode>> + Send>>;
 
 type HelperSender = mpsc::Sender<HelperRequest>;
+type SharedWorker = Arc<AsyncMutex<Option<HelperSender>>>;
 
 enum HelperRequest {
     Run {
@@ -30,6 +31,27 @@ enum HelperRequest {
     Shutdown {
         response: oneshot::Sender<()>,
     },
+}
+
+fn shared_worker() -> SharedWorker {
+    static WORKER: OnceLock<SharedWorker> = OnceLock::new();
+    Arc::clone(WORKER.get_or_init(|| Arc::new(AsyncMutex::new(None))))
+}
+
+async fn shutdown_shared_worker() {
+    let worker = shared_worker();
+    let sender = worker.lock().await.take();
+    let Some(sender) = sender else {
+        return;
+    };
+    let (response, finished) = oneshot::channel();
+    if sender
+        .send(HelperRequest::Shutdown { response })
+        .await
+        .is_ok()
+    {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), finished).await;
+    }
 }
 
 pub trait TextToSpeechProvider: Send + Sync {
@@ -49,7 +71,7 @@ pub trait TextToSpeechProvider: Send + Sync {
 #[derive(Clone)]
 pub struct EdgeTextToSpeechProvider {
     helper: EdgeHelper,
-    worker: Arc<AsyncMutex<Option<HelperSender>>>,
+    worker: SharedWorker,
 }
 
 #[derive(Clone)]
@@ -62,7 +84,7 @@ impl EdgeTextToSpeechProvider {
     pub fn new(helper_path: PathBuf) -> Self {
         Self {
             helper: EdgeHelper::Python(helper_path),
-            worker: Arc::new(AsyncMutex::new(None)),
+            worker: shared_worker(),
         }
     }
 
@@ -73,7 +95,7 @@ impl EdgeTextToSpeechProvider {
     pub fn release(app: tauri::AppHandle) -> Self {
         Self {
             helper: EdgeHelper::Sidecar(app),
-            worker: Arc::new(AsyncMutex::new(None)),
+            worker: shared_worker(),
         }
     }
 
@@ -94,18 +116,7 @@ impl EdgeTextToSpeechProvider {
     }
 
     pub async fn shutdown(&self) {
-        let sender = self.worker.lock().await.take();
-        let Some(sender) = sender else {
-            return;
-        };
-        let (response, finished) = oneshot::channel();
-        if sender
-            .send(HelperRequest::Shutdown { response })
-            .await
-            .is_ok()
-        {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), finished).await;
-        }
+        shutdown_shared_worker().await;
     }
 
     async fn worker_sender(&self) -> Result<HelperSender, VoiceErrorCode> {
@@ -177,6 +188,33 @@ impl EdgeTextToSpeechProvider {
         }
         Ok(result.voices.unwrap_or_default())
     }
+}
+
+#[cfg(debug_assertions)]
+fn runtime_prewarm_provider(app: &tauri::AppHandle) -> EdgeTextToSpeechProvider {
+    let helper_path = std::env::var("TRAF_EDGE_TTS_HELPER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/jarvis-edge-tts.py")
+        });
+    let _ = app;
+    EdgeTextToSpeechProvider::debug(helper_path)
+}
+
+#[cfg(not(debug_assertions))]
+fn runtime_prewarm_provider(app: &tauri::AppHandle) -> EdgeTextToSpeechProvider {
+    EdgeTextToSpeechProvider::release(app.clone())
+}
+
+pub fn prewarm_runtime(app: tauri::AppHandle) {
+    let provider = runtime_prewarm_provider(&app);
+    tauri::async_runtime::spawn(async move {
+        let _ = provider.prewarm().await;
+    });
+}
+
+pub async fn shutdown_runtime() {
+    shutdown_shared_worker().await;
 }
 
 impl TextToSpeechProvider for EdgeTextToSpeechProvider {
