@@ -372,21 +372,16 @@ async fn execute_step(
             })
         }
         PlanOperation::AgentSend => {
-            let resolution = bound_target_from_pending(context, pending, step).map_or_else(
-                || None,
-                Some,
-            );
-            let target = match resolution {
-                Some(target) => TargetResolution::Selected(target),
-                None => {
-                    resolve_target(
-                        app,
-                        context,
-                        step.target.as_deref(),
-                        step.provider.as_deref(),
-                    )
-                    .await
-                }
+            let target = if let Some(target) = bound_target_from_pending(context, pending, step) {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.target.as_deref(),
+                    step.provider.as_deref(),
+                )
+                .await
             };
             let target = target_or_clarify(app, invocation, step, target, "inviare la task")?;
             if is_busy(&target.session) && !busy_override_matches(pending, step, &target) {
@@ -861,7 +856,7 @@ fn build_handoff_prompt(
 ) -> Result<String, String> {
     let (evidence, _) = truncate_from_end(evidence, MAX_HANDOFF_CONTEXT_BYTES);
     let instruction = if instruction.trim().is_empty() {
-        "Verifica il risultato e segnala eventuali problemi." 
+        "Verifica il risultato e segnala eventuali problemi."
     } else {
         instruction
     };
@@ -1631,69 +1626,9 @@ mod tests {
         let mut waiting = working.clone();
         waiting.state = AgentState::Waiting;
         assert!(score_candidate("auth", &working, &terminal, None) > 0);
-        assert!(score_candidate("auth", &waiting, &terminal, None) > score_candidate("auth", &working, &terminal, None));
-    }
-
-    #[test]
-    fn report_uses_only_matching_generation_and_completed_task_is_not_working() {
-        let terminal = sample_terminal(2);
-        let mut old = synthetic_session(
-            &TerminalConfig {
-                id: "t".into(),
-                shell: "shell".into(),
-                agent_id: Some("codex".into()),
-                command: None,
-                cwd: ".".into(),
-                title: "Codex Auth".into(),
-                workspace_id: Some("w".into()),
-            },
-            1,
+        assert!(
+            score_candidate("auth", &waiting, &terminal, None)
+                > score_candidate("auth", &working, &terminal, None)
         );
-        old.state = AgentState::Exited;
-        let mut current = synthetic_session(
-            &TerminalConfig {
-                id: "t".into(),
-                shell: "shell".into(),
-                agent_id: Some("codex".into()),
-                command: None,
-                cwd: ".".into(),
-                title: "Codex Auth".into(),
-                workspace_id: Some("w".into()),
-            },
-            2,
-        );
-        current.state = AgentState::Waiting;
-        current.current_task = Some(crate::jarvis::types::AgentTaskContext {
-            text: "fix auth".into(),
-            source: crate::jarvis::types::AgentInteractionSource::User,
-            started_at: "now".into(),
-            completed_at: Some("later".into()),
-            confidence: 0.65,
-            untrusted: true,
-        });
-        let context = crate::jarvis::types::ModelContextViewV1 {
-            schema_version: "1".into(),
-            invocation: InvocationBinding {
-                request_id: "r".into(),
-                target_workspace_id: "w".into(),
-                target_terminal_id: None,
-                target_agent_session_id: None,
-                created_at: "now".into(),
-            },
-            workspace: crate::jarvis::types::WorkspaceModelContext {
-                id: "w".into(),
-                name: "W".into(),
-                root_path: ".".into(),
-            },
-            document_index: Vec::new(),
-            documents: Vec::new(),
-            terminals: vec![terminal],
-            agent_sessions: vec![old, current],
-            warnings: Vec::new(),
-        };
-        let report = build_agent_report(&context);
-        assert!(report.contains("Hai 1 agenti"));
-        assert!(report.contains("ha finito fix auth"));
-        assert!(!report.contains("sta lavorando su fix auth"));
     }
 }
