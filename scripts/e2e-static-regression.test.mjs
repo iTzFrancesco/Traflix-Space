@@ -32,15 +32,24 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   assert.match(agentLauncher, /agentLaunchQueue\.enqueue\(terminalId, agentId\)/);
 });
 
-test("Command Code and Cline stay aligned across launcher, backend catalog and Jarvis identity", () => {
-  for (const provider of ["cmdc", "cline"]) {
+test("selectable agent catalog stays aligned across launcher, backend catalog and Jarvis identity", () => {
+  for (const provider of [
+    "anti-gravity",
+    "claude",
+    "codex",
+    "opencode",
+    "pi",
+    "cmdc",
+    "cline",
+    "freebuff",
+  ]) {
     assert.match(agents, new RegExp(`id: "${provider}"`));
     assert.match(agentRegistry, new RegExp(`id: "${provider}"\\.into\\(\\)`));
     assert.match(runtimeDetector, new RegExp(`"${provider}"`));
   }
-  assert.match(agents, /command: "cmdc"/);
-  assert.match(agents, /command: "cline"/);
+  assert.match(runtimeDetector, /"agy" \| "anti gravity" \| "antigravity" => "anti-gravity"/);
   assert.match(runtimeDetector, /"command code" \| "command-code" => "cmdc"/);
+  assert.match(runtimeDetector, /"agy\\r\\n"/);
   assert.match(runtimeDetector, /"cmdc\\r\\n"/);
   assert.match(runtimeDetector, /"cline\\r\\n"/);
 });
