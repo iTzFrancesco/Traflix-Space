@@ -92,11 +92,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const onVoiceStopRef = useRef(props.onVoiceStop);
   onVoiceStopRef.current = props.onVoiceStop;
 
-  // The conversational/text machinery stays in the backend/store because
-  // voice turns use it after transcription. This compact component never
-  // renders transcript, chat, pending-action, provider or telemetry panels.
+  // Voice is the product surface. These compatibility props remain wired to
+  // the underlying conversational engine, but this component never renders a
+  // transcript/chat/provider/debug drawer.
   void props.conversation;
-  void props.chatError;
   void props.providerStatus;
   void props.uiIntents;
   void props.followUps;
@@ -279,7 +278,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
       event.clientY - intent.startY,
     );
 
-    // A normal click or a quick small swipe is never interpreted as dragging.
     if (!intent.armed) {
       if (distance >= EARLY_MOVE_CANCEL_DISTANCE) clearDragTimer();
       return;
@@ -313,6 +311,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const speaking =
     props.ttsStatus.status === "synthesizing" ||
     props.ttsStatus.status === "playing";
+  const ttsFailed = props.ttsStatus.status === "failed";
   const jarvisActive = hasOpenActivity(
     props.activities,
     props.workspaceId,
@@ -328,10 +327,13 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     pendingActions: props.pendingActions,
     activities: props.activities,
   });
-  const statusText =
-    props.voiceError && rawStatusText === "Voice error"
-      ? "Audio setup needed"
-      : rawStatusText;
+  const statusText = props.voiceError
+    ? "Audio setup needed"
+    : props.chatError
+      ? "Jarvis unavailable"
+      : ttsFailed
+        ? "Voice unavailable"
+        : rawStatusText;
   const voiceActive =
     props.voiceRequest?.status === "recording" ||
     props.voiceRequest?.status === "armed";
@@ -440,12 +442,16 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const active =
     activeRequests > 0 || speaking || jarvisActive || voiceActive || voiceBusy;
   const helperText = props.voiceError
-    ? "Open settings to check microphone and API keys"
-    : voiceActive
-      ? "Speak normally · silence sends automatically"
-      : speaking
-        ? "You can interrupt me with the microphone"
-        : props.workspaceName ?? "Jarvis";
+    ? "Open settings to check microphone and Groq"
+    : props.chatError
+      ? "Retry, or check OpenCode Zen in settings"
+      : ttsFailed
+        ? "Check voice output in settings"
+        : voiceActive
+          ? "Speak normally · silence sends automatically"
+          : speaking
+            ? "You can interrupt me with the microphone"
+            : props.workspaceName ?? "Jarvis";
 
   return (
     <div
@@ -522,7 +528,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             type="button"
             data-jarvis-control
             onClick={props.onOpenSettings}
-            className="jarvis-control"
+            className={`jarvis-control ${props.voiceError || props.chatError || ttsFailed ? "text-warning" : ""}`}
             title="Jarvis settings"
             aria-label="Jarvis settings"
           >
@@ -567,5 +573,8 @@ function applyPosition(element: HTMLElement, position: WidgetPosition) {
 }
 
 function samePosition(left: WidgetPosition, right: WidgetPosition) {
-  return Math.abs(left.x - right.x) < 0.0001 && Math.abs(left.y - right.y) < 0.0001;
+  return (
+    Math.abs(left.x - right.x) < 0.0001 &&
+    Math.abs(left.y - right.y) < 0.0001
+  );
 }
