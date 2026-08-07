@@ -29,13 +29,14 @@ interface NewSpaceWizardProps {
   onClose: () => void;
 }
 
-const STEPS = ["Folder", "Terminals", "Agents", "Review"] as const;
+const STEPS = ["Cartella", "Terminali", "Agenti", "Riepilogo"] as const;
 
 const agentIcons: Record<string, typeof Bot> = {
   opencode: Terminal,
   "anti-gravity": Bot,
   claude: Bot,
   codex: Bot,
+  cmdc: Terminal,
   cline: Bot,
   freebuff: Bot,
   pi: Bot,
@@ -147,8 +148,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       setFolderPath(path);
       setPresetSourceId(null);
     } catch (error) {
-      console.error("Folder selection failed:", error);
-      addToast({ type: "error", message: "Unable to open the folder picker" });
+      console.error("Selezione cartella fallita:", error);
+      addToast({ type: "error", message: "Impossibile aprire il selettore cartelle" });
     }
   };
 
@@ -165,14 +166,14 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const savePreset = () => {
     if (!folderPath) return;
     const payload = {
-      name: workspaceName || "Workspace",
+      name: workspaceName || "Spazio di lavoro",
       folderPath,
       terminalCount,
       agentCounts: supportedAgentCounts(agentCounts),
     };
     if (presetSourceId) {
       updatePreset(presetSourceId, payload);
-      addToast({ type: "success", message: "Preset updated" });
+      addToast({ type: "success", message: "Preset aggiornato" });
       return;
     }
     addPreset({
@@ -180,21 +181,21 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       ...payload,
       createdAt: new Date().toISOString(),
     });
-    addToast({ type: "success", message: "Preset saved" });
+    addToast({ type: "success", message: "Preset salvato" });
   };
 
   const saveAsNewPreset = () => {
     if (!folderPath) return;
     addPreset({
       id: crypto.randomUUID(),
-      name: workspaceName || "Workspace",
+      name: workspaceName || "Spazio di lavoro",
       folderPath,
       terminalCount,
       agentCounts: supportedAgentCounts(agentCounts),
       createdAt: new Date().toISOString(),
     });
     setPresetSourceId(null);
-    addToast({ type: "success", message: "New preset saved" });
+    addToast({ type: "success", message: "Nuovo preset salvato" });
   };
 
   const handleCreate = async () => {
@@ -222,8 +223,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             command: null,
             cwd: folderPath,
             title: agentId
-              ? AGENTS.find((agent) => agent.id === agentId)?.name ?? "Terminal"
-              : "Terminal",
+              ? AGENTS.find((agent) => agent.id === agentId)?.name ?? "Terminale"
+              : "Terminale",
           };
         },
       );
@@ -258,8 +259,8 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       setActiveWorkspace(workspace.id);
       handleClose();
     } catch (error) {
-      console.error("Workspace creation failed:", error);
-      addToast({ type: "error", message: "Unable to create the workspace" });
+      console.error("Creazione spazio di lavoro fallita:", error);
+      addToast({ type: "error", message: "Impossibile creare lo spazio di lavoro" });
     } finally {
       setCreating(false);
     }
@@ -271,7 +272,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
     <Modal
       open={open}
       onClose={handleClose}
-      title="New workspace"
+      title="Nuovo spazio di lavoro"
       width="max-w-[680px]"
     >
       <div className="flex min-h-[440px] flex-col">
@@ -303,7 +304,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               onLoadPreset={loadPreset}
               onDeletePreset={(preset) => {
                 removePreset(preset.id);
-                addToast({ type: "info", message: `Preset “${preset.name}” removed` });
+                addToast({ type: "info", message: `Preset “${preset.name}” rimosso` });
               }}
             />
           )}
@@ -342,7 +343,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
             disabled={step === 1 || creating}
             className="secondary-button"
           >
-            <ChevronLeft size={14} /> Back
+            <ChevronLeft size={14} /> Indietro
           </button>
 
           {step < STEPS.length ? (
@@ -352,7 +353,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               disabled={!canContinue}
               className="primary-button"
             >
-              Continue <ChevronRight size={14} />
+              Continua <ChevronRight size={14} />
             </button>
           ) : (
             <button
@@ -361,7 +362,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               disabled={!folderPath || creating}
               className="primary-button"
             >
-              {creating ? "Creating…" : "Create workspace"}
+              {creating ? "Creazione…" : "Crea spazio"}
               {!creating && <Check size={14} />}
             </button>
           )}
@@ -387,9 +388,9 @@ function FolderStep({
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-base font-semibold text-neutral-text">Project folder</h3>
+        <h3 className="text-base font-semibold text-neutral-text">Cartella progetto</h3>
         <p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">
-          Every terminal in this workspace starts here.
+          Ogni terminale di questo spazio di lavoro partirà da questa cartella.
         </p>
       </div>
 
@@ -397,18 +398,18 @@ function FolderStep({
         <div className="flex h-10 min-w-0 flex-1 items-center gap-2 border border-neutral-border bg-neutral-surface px-3">
           <FolderOpen size={15} className="shrink-0 text-primary" />
           <span className={`truncate font-mono text-[11px] ${folderPath ? "text-neutral-text-dim" : "text-neutral-text-muted"}`}>
-            {folderPath || "Choose a project folder"}
+            {folderPath || "Scegli una cartella progetto"}
           </span>
         </div>
         <button type="button" onClick={onSelectFolder} className="primary-button h-10">
-          Browse
+          Sfoglia
         </button>
       </div>
 
       {presets.length > 0 && (
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-neutral-text-dim">Saved presets</span>
+            <span className="text-[11px] font-semibold text-neutral-text-dim">Preset salvati</span>
             <span className="font-mono text-[10px] text-neutral-text-muted">{presets.length}</span>
           </div>
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
@@ -426,15 +427,15 @@ function FolderStep({
                     {preset.name}
                   </p>
                   <p className="mt-0.5 truncate font-mono text-[10px] text-neutral-text-muted">
-                    {preset.folderPath} · {preset.terminalCount} terminals
+                    {preset.folderPath} · {preset.terminalCount} terminali
                   </p>
                 </button>
                 <button
                   type="button"
                   onClick={() => onDeletePreset(preset)}
                   className="ui-icon-button h-8 w-8 opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  title={`Remove ${preset.name}`}
-                  aria-label={`Remove ${preset.name}`}
+                  title={`Rimuovi ${preset.name}`}
+                  aria-label={`Rimuovi ${preset.name}`}
                 >
                   <Trash2 size={13} />
                 </button>
@@ -458,9 +459,9 @@ function TerminalStep({
   return (
     <div className="space-y-7">
       <div>
-        <h3 className="text-base font-semibold text-neutral-text">How many terminals?</h3>
+        <h3 className="text-base font-semibold text-neutral-text">Quanti terminali?</h3>
         <p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">
-          Start small. You can add terminals at any time.
+          Parti con pochi terminali. Potrai aggiungerne altri in qualsiasi momento.
         </p>
       </div>
 
@@ -470,7 +471,7 @@ function TerminalStep({
           onClick={() => onChange(count - 1)}
           disabled={count <= 1}
           className="ui-icon-button h-9 w-9"
-          aria-label="Remove terminal"
+          aria-label="Rimuovi terminale"
         >
           <Minus size={15} />
         </button>
@@ -482,7 +483,7 @@ function TerminalStep({
           onClick={() => onChange(count + 1)}
           disabled={count >= 8}
           className="ui-icon-button h-9 w-9"
-          aria-label="Add terminal"
+          aria-label="Aggiungi terminale"
         >
           <Plus size={15} />
         </button>
@@ -530,9 +531,9 @@ function AgentStep({
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h3 className="text-base font-semibold text-neutral-text">Preload agents</h3>
+          <h3 className="text-base font-semibold text-neutral-text">Precarica agenti</h3>
           <p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">
-            Optional. Empty terminals remain normal PowerShell sessions.
+            Facoltativo. I terminali senza agente restano normali sessioni PowerShell.
           </p>
         </div>
         <span className="font-mono text-[10px] text-neutral-text-muted">
@@ -555,14 +556,14 @@ function AgentStep({
                 onClick={() => onFill(agent.id)}
                 className="text-[10px] font-medium text-neutral-text-muted hover:text-primary"
               >
-                Fill all
+                Riempi tutti
               </button>
               <button
                 type="button"
                 onClick={() => onChange(agent.id, -1)}
                 disabled={count === 0}
                 className="ui-icon-button h-8 w-8"
-                aria-label={`Remove ${agent.name}`}
+                aria-label={`Rimuovi ${agent.name}`}
               >
                 <Minus size={13} />
               </button>
@@ -574,7 +575,7 @@ function AgentStep({
                 onClick={() => onChange(agent.id, 1)}
                 disabled={assignedCount >= terminalCount}
                 className="ui-icon-button h-8 w-8"
-                aria-label={`Add ${agent.name}`}
+                aria-label={`Aggiungi ${agent.name}`}
               >
                 <Plus size={13} />
               </button>
@@ -613,7 +614,7 @@ function ReviewStep({
     <div className="space-y-6">
       <div>
         <h3 className="text-base font-semibold text-neutral-text">
-          {workspaceName || "Workspace"}
+          {workspaceName || "Spazio di lavoro"}
         </h3>
         <p className="mt-1 truncate font-mono text-[11px] text-neutral-text-muted" title={folderPath}>
           {folderPath}
@@ -621,21 +622,21 @@ function ReviewStep({
       </div>
 
       <dl className="divide-y divide-neutral-border border-y border-neutral-border text-xs">
-        <SummaryRow label="Terminals" value={String(terminalCount)} />
+        <SummaryRow label="Terminali" value={String(terminalCount)} />
         <SummaryRow label="Layout" value={`${nextLayout.rows}×${nextLayout.cols}`} />
         <SummaryRow
-          label="Agents"
-          value={assignments.length > 0 ? assignments.join(" · ") : "None preloaded"}
+          label="Agenti"
+          value={assignments.length > 0 ? assignments.join(" · ") : "Nessuno precaricato"}
         />
       </dl>
 
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={onSavePreset} className="secondary-button">
-          <Save size={13} /> {presetSourceId ? "Update preset" : "Save preset"}
+          <Save size={13} /> {presetSourceId ? "Aggiorna preset" : "Salva preset"}
         </button>
         {presetSourceId && (
           <button type="button" onClick={onSaveAsNewPreset} className="secondary-button">
-            <Plus size={13} /> Save as new
+            <Plus size={13} /> Salva come nuovo
           </button>
         )}
       </div>
