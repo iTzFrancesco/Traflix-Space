@@ -133,6 +133,8 @@ pub struct VoiceOutputSettings {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceActivationMode {
+    // Retained for backwards-compatible deserialization. Owner-mode migration
+    // normalizes this legacy push-to-toggle policy to hands-free VAD.
     ClickToggle,
     HoldToTalk,
     Vad,
@@ -140,7 +142,7 @@ pub enum VoiceActivationMode {
 
 impl Default for VoiceActivationMode {
     fn default() -> Self {
-        Self::ClickToggle
+        Self::Vad
     }
 }
 
@@ -269,6 +271,9 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
 
     settings.voice_input.enabled = true;
     settings.voice_input.auto_submit_transcript = true;
+    if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
+        settings.voice_input.activation_mode = VoiceActivationMode::Vad;
+    }
     settings.voice_input.vad_enabled =
         settings.voice_input.activation_mode != VoiceActivationMode::HoldToTalk;
     settings.voice_input.privacy_consent = true;
@@ -364,7 +369,7 @@ impl Default for VoiceInputSettings {
             auto_submit_transcript: true,
             privacy_consent: true,
             privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
-            activation_mode: VoiceActivationMode::ClickToggle,
+            activation_mode: VoiceActivationMode::Vad,
             global_shortcut_enabled: false,
             global_shortcut: default_global_shortcut(),
             shortcut_behavior: ShortcutBehavior::default(),
@@ -519,7 +524,7 @@ fn default_vad_post_speech_ms() -> u32 {
     650
 }
 fn default_max_armed_seconds() -> u32 {
-    20
+    120
 }
 fn default_edge_provider() -> String {
     "edge_tts".to_string()
@@ -660,8 +665,9 @@ mod tests {
         assert!(settings.jarvis.voice_input.vad_enabled);
         assert_eq!(
             settings.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::ClickToggle
+            VoiceActivationMode::Vad
         );
+        assert_eq!(settings.jarvis.voice_input.max_armed_seconds, 120);
         assert_eq!(settings.jarvis.voice_output.provider, "edge_tts");
         assert!(settings.jarvis.voice_output.privacy_consent);
         assert_eq!(settings.jarvis.voice_engine, VoiceEngine::Standard);
@@ -760,8 +766,9 @@ mod tests {
         assert!(settings.jarvis.voice_input.privacy_consent);
         assert_eq!(
             settings.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::ClickToggle
+            VoiceActivationMode::Vad
         );
+        assert_eq!(settings.jarvis.voice_input.max_armed_seconds, 120);
         assert!(settings.jarvis.voice_output.enabled);
         assert!(settings.jarvis.voice_output.auto_speak);
         assert!(settings.jarvis.voice_output.stop_on_user_speech);
@@ -770,7 +777,16 @@ mod tests {
     }
 
     #[test]
-    fn owner_mode_round_trip_preserves_explicit_advanced_activation_policy() {
+    fn owner_mode_migrates_click_toggle_but_preserves_hold_to_talk() {
+        let mut click_settings = AppSettings::default();
+        click_settings.jarvis.voice_input.activation_mode = VoiceActivationMode::ClickToggle;
+        let click_reloaded: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&click_settings).unwrap()).unwrap();
+        assert_eq!(
+            click_reloaded.jarvis.voice_input.activation_mode,
+            VoiceActivationMode::Vad
+        );
+
         let mut settings = AppSettings::default();
         settings.jarvis.voice_input.activation_mode = VoiceActivationMode::HoldToTalk;
         settings.jarvis.voice_input.auto_submit_transcript = false;
