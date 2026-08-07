@@ -108,7 +108,7 @@ export function BrowserPanel() {
       }
     } catch (reason) {
       if (aliveRef.current && currentUrlRef.current) {
-        setError(reason instanceof Error ? reason.message : "Page unavailable");
+        setError(reason instanceof Error ? reason.message : "Pagina non disponibile");
       }
     }
   }, []);
@@ -149,7 +149,7 @@ export function BrowserPanel() {
         }
 
         const webview = await Webview.getByLabel("browser");
-        if (!webview) throw new Error("WebView2 browser unavailable");
+        if (!webview) throw new Error("Browser WebView2 non disponibile");
         webviewRef.current = webview;
         setReady(true);
         requestBoundsSync();
@@ -159,7 +159,7 @@ export function BrowserPanel() {
           setError(
             reason instanceof Error
               ? reason.message
-              : "Unable to initialize browser",
+              : "Impossibile inizializzare il browser",
           );
         }
       }
@@ -208,7 +208,7 @@ export function BrowserPanel() {
     try {
       await invokeWithTimeout(() => invoke(command), 10000);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Browser action failed");
+      setError(reason instanceof Error ? reason.message : "Azione browser non riuscita");
     }
   };
 
@@ -220,7 +220,7 @@ export function BrowserPanel() {
       await invokeWithTimeout(() => invoke("browser_reset"), 10000);
     } catch (reason) {
       setLoading(false);
-      setError(reason instanceof Error ? reason.message : "Browser reset failed");
+      setError(reason instanceof Error ? reason.message : "Ripristino browser non riuscito");
     }
   };
 
@@ -228,7 +228,7 @@ export function BrowserPanel() {
     event.preventDefault();
     const normalized = normalizeUrl(address);
     if (!normalized) {
-      setError("Enter a valid http:// or https:// URL");
+      setError("Inserisci un URL http:// o https:// valido");
       return;
     }
     setError(null);
@@ -241,27 +241,27 @@ export function BrowserPanel() {
       setAddress(normalized);
     } catch (reason) {
       setLoading(false);
-      setError(reason instanceof Error ? reason.message : "Navigation failed");
+      setError(reason instanceof Error ? reason.message : "Navigazione non riuscita");
     }
   };
 
   return (
     <section
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-darkest"
-      aria-label="Integrated browser"
+      aria-label="Browser integrato"
       aria-busy={loading}
     >
       <div className="shrink-0 border-b border-neutral-border bg-neutral-surface px-2.5 py-2">
         <div className="flex items-center gap-1">
           <BrowserButton
-            label="Back"
+            label="Indietro"
             disabled={!ready}
             onClick={() => void runCommand("browser_back")}
           >
             <ArrowLeft size={14} />
           </BrowserButton>
           <BrowserButton
-            label="Forward"
+            label="Avanti"
             disabled={!ready}
             onClick={() => void runCommand("browser_forward")}
           >
@@ -274,8 +274,8 @@ export function BrowserPanel() {
                 ref={addressInputRef}
                 value={address}
                 onChange={(event) => setAddress(event.target.value)}
-                placeholder="localhost:3000 or domain.com"
-                aria-label="Browser URL"
+                placeholder="localhost:3000 oppure dominio.com"
+                aria-label="URL browser"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-neutral-text outline-none placeholder:text-neutral-text-muted"
               />
@@ -283,8 +283,8 @@ export function BrowserPanel() {
                 type="submit"
                 disabled={!ready}
                 className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center text-neutral-text-muted hover:text-primary disabled:pointer-events-none disabled:opacity-35"
-                title="Open URL"
-                aria-label="Open URL"
+                title="Apri URL"
+                aria-label="Apri URL"
               >
                 {loading ? (
                   <LoaderCircle size={12} className="status-icon--spin" />
@@ -296,14 +296,14 @@ export function BrowserPanel() {
           </form>
 
           <BrowserButton
-            label="Reload"
+            label="Ricarica"
             disabled={!ready}
             onClick={() => void runCommand("browser_reload")}
           >
             <RotateCw size={13} className={loading ? "status-icon--spin" : ""} />
           </BrowserButton>
           <BrowserButton
-            label="Reset browser"
+            label="Ripristina browser"
             disabled={!ready}
             onClick={() => void resetBrowser()}
           >
@@ -325,7 +325,7 @@ export function BrowserPanel() {
       <div
         ref={viewportRef}
         className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-neutral-darkest"
-        aria-label="Browser viewport"
+        aria-label="Area browser"
       >
         {!currentUrl && (
           <div className="absolute inset-0 flex items-center justify-center px-6">
@@ -336,10 +336,10 @@ export function BrowserPanel() {
                 className="mx-auto text-neutral-text-muted"
               />
               <h2 className="mt-4 text-sm font-semibold text-neutral-text">
-                Open a page
+                Apri una pagina
               </h2>
               <p className="mt-1.5 text-xs leading-relaxed text-neutral-text-muted">
-                Enter a local or remote URL in the address bar.
+                Inserisci un URL locale o remoto nella barra degli indirizzi.
               </p>
               <button
                 type="button"
@@ -349,7 +349,7 @@ export function BrowserPanel() {
                 }}
                 className="secondary-button mt-4"
               >
-                Focus address bar
+                Vai alla barra indirizzi
               </button>
             </div>
           </div>
