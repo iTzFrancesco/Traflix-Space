@@ -82,6 +82,11 @@ fn main() {
             app.manage(project::watcher::ProjectWatcherRegistry::default());
             app.manage(agent_events::AgentEventRegistry::default());
 
+            // Edge TTS is process-based. Warm it outside the user's first
+            // spoken turn so Python/PyInstaller startup + import are not paid
+            // after Jarvis has already produced a reply.
+            jarvis::voice::tts::prewarm_runtime(app.handle().clone());
+
             // Agent hooks/plugins forward normalized turn-complete events to
             // this local Windows named pipe. The listener is best-effort and
             // never participates in the agent's execution path.
@@ -272,6 +277,7 @@ fn main() {
                 let manager = app.state::<TerminalManager>();
                 tauri::async_runtime::block_on(async {
                     let _ = voice.shutdown().await;
+                    jarvis::voice::tts::shutdown_runtime().await;
                     manager.kill_all().await;
                 });
             }
