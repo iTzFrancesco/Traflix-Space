@@ -2,6 +2,8 @@
 
 Questa checklist non è stata eseguita sulla VPS Linux.
 
+**Stato owner (2026-08-07): validazione manuale Windows differita perché al momento non è disponibile un ambiente fisico per eseguirla. La Fase 6 può proseguire come code-complete verso la Fase 7, ma nessun punto seguente deve essere considerato superato finché non viene provato realmente su Windows.**
+
 - [ ] avviare Tauri Windows con consenso Groq/Edge TTS configurato;
 - [ ] click-toggle: start, stop, transcript e draft modificabile;
 - [ ] hold-to-talk con mouse, uscita dal bottone e pointer capture;
