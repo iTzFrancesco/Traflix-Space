@@ -72,6 +72,7 @@ fn main() {
     builder
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
+            settings::secrets::hydrate_process_environment();
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(jarvis::JarvisState::default());
@@ -236,6 +237,9 @@ fn main() {
             jarvis::voice::commands::jarvis_tts_list_voices,
             settings::commands::get_settings,
             settings::commands::set_settings,
+            settings::commands::jarvis_secret_status,
+            settings::commands::jarvis_set_secret,
+            settings::commands::jarvis_clear_secret,
             browser::browser_create,
             browser::browser_navigate,
             browser::browser_reload,
