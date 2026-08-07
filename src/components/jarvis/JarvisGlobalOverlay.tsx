@@ -64,6 +64,7 @@ export function JarvisGlobalOverlay() {
   const shortcutPressedRef = useRef<VoicePress | null>(null);
   const shortcutGenerationRef = useRef(0);
   const registryRequestRef = useRef(0);
+  const resumeVoiceDraftRef = useRef<Set<string>>(new Set());
   const workspace = workspaces.find(
     (candidate) => candidate.id === activeWorkspaceId,
   );
@@ -135,23 +136,36 @@ export function JarvisGlobalOverlay() {
       }
       const store = useJarvisStore.getState();
       const draft = store.voiceRequests[workspaceId];
+      const chatBusy = Object.values(store.requests).some(
+        (request) =>
+          request.workspaceId === workspaceId &&
+          (request.status === "running" ||
+            request.status === "cancellation_requested"),
+      );
       if (
         store.settings.jarvis.enabled &&
         draft?.status === "transcript_ready" &&
         Boolean(draft.transcript?.trim()) &&
-        store.settings.jarvis.voiceInput.autoSubmitTranscript
+        store.settings.jarvis.voiceInput.autoSubmitTranscript &&
+        !chatBusy &&
+        !resumeVoiceDraftRef.current.has(draft.requestId)
       ) {
-        void store.sendVoiceTranscript(
-          draft.requestId,
-          draft.transcript ?? "",
-        );
+        resumeVoiceDraftRef.current.add(draft.requestId);
+        void store
+          .sendVoiceTranscript(draft.requestId, draft.transcript ?? "")
+          .finally(() => resumeVoiceDraftRef.current.delete(draft.requestId));
       }
     });
 
     return () => {
       disposed = true;
     };
-  }, [activeWorkspaceId, loadVoiceDraft, settings.jarvis.enabled]);
+  }, [
+    activeWorkspaceId,
+    loadVoiceDraft,
+    requests,
+    settings.jarvis.enabled,
+  ]);
 
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
