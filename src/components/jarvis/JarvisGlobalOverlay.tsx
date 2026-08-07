@@ -18,6 +18,8 @@ import {
 } from "../../lib/jarvis/voiceActivation";
 import { JarvisWidget } from "./JarvisWidget";
 
+const AUTO_ARM_DELAY_MS = 180;
+
 export function JarvisGlobalOverlay() {
   const workspaces = useWorkspaceStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -118,6 +120,20 @@ export function JarvisGlobalOverlay() {
     }
   }, [setContext, setContextStatus]);
 
+  const toggleMicrophoneMuted = useCallback(async () => {
+    const store = useJarvisStore.getState();
+    const nextMuted = !store.settings.jarvis.muted;
+    if (nextMuted && store.activeVoiceRequestId) {
+      try {
+        await store.cancelVoice();
+      } catch {
+        // Mute still wins even if an already-finished request races the cancel.
+      }
+      store.clearVoiceError();
+    }
+    await store.toggleMuted();
+  }, []);
+
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
@@ -165,6 +181,74 @@ export function JarvisGlobalOverlay() {
     loadVoiceDraft,
     requests,
     settings.jarvis.enabled,
+  ]);
+
+  // Hands-free mode: while unmuted, keep a VAD capture armed in the focused
+  // workspace. Armed is intentionally visually neutral; only actual detected
+  // speech changes the request to Recording and turns the widget green.
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !settings.jarvis.enabled ||
+      settings.jarvis.muted ||
+      settings.jarvis.voiceInput.activationMode !== "vad" ||
+      settingsOpen
+    ) {
+      return;
+    }
+    if (
+      voiceRequest &&
+      ["armed", "recording", "stopping", "transcribing", "transcript_ready"].includes(
+        voiceRequest.status,
+      )
+    ) {
+      return;
+    }
+    const chatBusy = Object.values(requests).some(
+      (request) =>
+        request.workspaceId === activeWorkspaceId &&
+        (request.status === "running" || request.status === "cancellation_requested"),
+    );
+    const ttsBusy =
+      ttsStatus.status === "synthesizing" || ttsStatus.status === "playing";
+    if (chatBusy || ttsBusy) return;
+
+    const workspaceId = activeWorkspaceId;
+    const timer = window.setTimeout(() => {
+      const store = useJarvisStore.getState();
+      if (
+        useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
+        !store.settings.jarvis.enabled ||
+        store.settings.jarvis.muted ||
+        store.settings.jarvis.voiceInput.activationMode !== "vad" ||
+        store.settingsOpen ||
+        store.activeVoiceRequestId
+      ) {
+        return;
+      }
+      const liveChatBusy = Object.values(store.requests).some(
+        (request) =>
+          request.workspaceId === workspaceId &&
+          (request.status === "running" ||
+            request.status === "cancellation_requested"),
+      );
+      const liveTtsBusy =
+        store.ttsStatus.status === "synthesizing" ||
+        store.ttsStatus.status === "playing";
+      if (!liveChatBusy && !liveTtsBusy) void store.startVoice();
+    }, AUTO_ARM_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeWorkspaceId,
+    requests,
+    settings.jarvis.enabled,
+    settings.jarvis.muted,
+    settings.jarvis.voiceInput.activationMode,
+    settingsOpen,
+    ttsStatus.status,
+    voiceRequest?.requestId,
+    voiceRequest?.status,
   ]);
 
   useEffect(() => {
@@ -235,6 +319,17 @@ export function JarvisGlobalOverlay() {
             return;
           }
 
+          if (
+            currentSettings.activationMode === "vad" &&
+            currentSettings.shortcutBehavior === "toggle"
+          ) {
+            if (event.payload.state === "pressed") {
+              void toggleMicrophoneMuted();
+            }
+            shortcutPressedRef.current = null;
+            return;
+          }
+
           const activeRequestId = store.activeVoiceRequestId;
           const current = activeRequestId
             ? Object.values(store.voiceRequests).find(
@@ -293,6 +388,7 @@ export function JarvisGlobalOverlay() {
     setVoiceRequest,
     startVoice,
     stopVoice,
+    toggleMicrophoneMuted,
   ]);
 
   useEffect(() => {
@@ -324,12 +420,14 @@ export function JarvisGlobalOverlay() {
         requests={requests}
         chatError={chatError}
         voiceError={voiceError}
+        muted={settings.jarvis.muted}
         voiceRequest={voiceRequest}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}
         activities={activities}
         onOpenSettings={() => setSettingsOpen(true)}
         onHide={() => void useJarvisStore.getState().hideJarvis()}
+        onToggleMuted={() => toggleMicrophoneMuted()}
         onVoiceStart={() => startVoice()}
         onVoiceStop={() => void stopVoice()}
       />
