@@ -1,7 +1,24 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type RightPanelView = string | null;
+export type RightPanelView = "browser" | "files" | "git" | "skills" | null;
+
+const MIN_SIDEBAR_WIDTH = 260;
+const MAX_SIDEBAR_WIDTH = 380;
+const MIN_RIGHT_PANEL_WIDTH = 330;
+const MAX_RIGHT_PANEL_WIDTH = 520;
+
+function clamp(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, value))
+    : fallback;
+}
+
+function normalizeRightPanelView(value: unknown): RightPanelView {
+  return value === "browser" || value === "files" || value === "git" || value === "skills"
+    ? value
+    : null;
+}
 
 interface UIStore {
   isCollapsed: boolean;
@@ -39,10 +56,22 @@ export const useUIStore = create<UIStore>()(
       closeModal: () => set({ activeModal: null }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       setWizardOpen: (open) => set({ wizardOpen: open }),
-      setSidebarWidth: (width) => set({ sidebarWidth: width }),
-      toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
-      setRightPanelWidth: (width) => set({ rightPanelWidth: width }),
-      setRightPanelActiveView: (view) => set({ rightPanelActiveView: view }),
+      setSidebarWidth: (width) =>
+        set({ sidebarWidth: clamp(width, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, 300) }),
+      toggleRightPanel: () =>
+        set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
+      setRightPanelWidth: (width) =>
+        set({
+          rightPanelWidth: clamp(
+            width,
+            MIN_RIGHT_PANEL_WIDTH,
+            MAX_RIGHT_PANEL_WIDTH,
+            390,
+          ),
+        }),
+      setRightPanelActiveView: (view) => ({
+        rightPanelActiveView: normalizeRightPanelView(view),
+      }),
     }),
     {
       name: "traflix-ui",
@@ -53,6 +82,34 @@ export const useUIStore = create<UIStore>()(
         rightPanelOpen: state.rightPanelOpen,
         rightPanelActiveView: state.rightPanelActiveView,
       }),
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<UIStore>;
+        return {
+          ...current,
+          ...saved,
+          isCollapsed:
+            typeof saved.isCollapsed === "boolean"
+              ? saved.isCollapsed
+              : current.isCollapsed,
+          rightPanelOpen:
+            typeof saved.rightPanelOpen === "boolean"
+              ? saved.rightPanelOpen
+              : current.rightPanelOpen,
+          sidebarWidth: clamp(
+            saved.sidebarWidth,
+            MIN_SIDEBAR_WIDTH,
+            MAX_SIDEBAR_WIDTH,
+            current.sidebarWidth,
+          ),
+          rightPanelWidth: clamp(
+            saved.rightPanelWidth,
+            MIN_RIGHT_PANEL_WIDTH,
+            MAX_RIGHT_PANEL_WIDTH,
+            current.rightPanelWidth,
+          ),
+          rightPanelActiveView: normalizeRightPanelView(saved.rightPanelActiveView),
+        };
+      },
     },
   ),
 );
