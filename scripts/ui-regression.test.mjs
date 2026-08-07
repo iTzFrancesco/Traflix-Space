@@ -79,6 +79,13 @@ test("Git rows keep staged and worktree diff sides distinct", () => {
   assert.match(gitChangesSource, /selectedRow\.side === rowSide/);
 });
 
+test("Git drafts and destructive confirmations cannot leak across workspaces", () => {
+  assert.match(
+    gitChangesSource,
+    /useEffect\(\(\) => \{\s*setCommitMessage\(""\);\s*setPendingDiscard\(null\);\s*setSelectedRow\(null\);\s*\}, \[workspaceId\]\)/s,
+  );
+});
+
 test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(widgetSource, /VoiceMeter/);
   assert.match(globalsSource, /\.jarvis-level-meter > span[\s\S]*height: 12px/);
