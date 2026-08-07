@@ -24,7 +24,13 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             output = str(Path(temp) / "voice.mp3")
             with patch.dict(sys.modules, {"edge_tts": fake}), patch("sys.stdout") as stdout:
                 await MODULE._speak({"text": "Ciao Jarvis", "outputPath": output, "voice": "it-IT-DiegoNeural"})
-            communicate.save.assert_awaited_once_with(output)
+            communicate.save.assert_awaited_once()
+            actual_output = Path(communicate.save.await_args.args[0])
+            self.assertEqual(actual_output.name, "voice.mp3")
+            # Windows may expose the temp directory through either its 8.3
+            # alias (RUNNER~1) or the expanded path. Compare directory identity
+            # instead of string spelling so both refer to the same safe temp dir.
+            self.assertTrue(actual_output.parent.samefile(Path(temp)))
             payload = json.loads(stdout.write.call_args.args[0])
             self.assertTrue(payload["ok"])
 
