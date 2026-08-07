@@ -26,19 +26,12 @@ impl Default for AgentRegistry {
 
 impl AgentRegistry {
     pub fn new() -> Self {
+        // Only providers with a bounded, evidence-based readiness contract
+        // belong to the Jarvis control registry. The frontend wizard may offer
+        // additional manual PTY agents; Jarvis must not pretend those are ready
+        // or controllable until a reliable readiness signal is defined.
         Self {
             agents: vec![
-                AgentDefinition {
-                    id: "anti-gravity".into(),
-                    name: "Anti-Gravity".into(),
-                    description: "Agente AGY anti-gravity".into(),
-                    command: "agy".into(),
-                    args: vec![],
-                    env: std::collections::HashMap::new(),
-                    icon: "Bot".into(),
-                    color: "#06b6d4".into(),
-                    readiness_hints: vec![],
-                },
                 AgentDefinition {
                     id: "claude".into(),
                     name: "Claude Code".into(),
@@ -82,28 +75,6 @@ impl AgentRegistry {
                     icon: "Bot".into(),
                     color: "#a855f7".into(),
                     readiness_hints: vec!["assistant".into(), "tools".into(), "model".into()],
-                },
-                AgentDefinition {
-                    id: "cmdc".into(),
-                    name: "Command Code".into(),
-                    description: "Agente AI Command Code".into(),
-                    command: "cmdc".into(),
-                    args: vec![],
-                    env: std::collections::HashMap::new(),
-                    icon: "Terminal".into(),
-                    color: "#3a86ff".into(),
-                    readiness_hints: vec![],
-                },
-                AgentDefinition {
-                    id: "cline".into(),
-                    name: "Cline".into(),
-                    description: "Agente AI Cline".into(),
-                    command: "cline".into(),
-                    args: vec![],
-                    env: std::collections::HashMap::new(),
-                    icon: "Bot".into(),
-                    color: "#6366f1".into(),
-                    readiness_hints: vec![],
                 },
                 AgentDefinition {
                     id: "freebuff".into(),
