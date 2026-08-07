@@ -19,11 +19,27 @@ pub fn normalize_provider(value: &str) -> Option<String> {
         .map(|provider| (*provider).to_string())
 }
 
+fn manual_provider_from_executable(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "agy" => Some("anti-gravity".to_string()),
+        "cmdc" => Some("cmdc".to_string()),
+        "cline" => Some("cline".to_string()),
+        _ => None,
+    }
+}
+
+fn provider_from_executable(value: &str) -> Option<String> {
+    normalize_provider(value).or_else(|| manual_provider_from_executable(value))
+}
+
 /// Detect only the executable token of a complete shell command.
 ///
 /// The PTY input path feeds this function only after its command buffer has
 /// observed Enter. Keeping the parser here line-oriented also prevents words
 /// in prompts, arguments, or arbitrary output from becoming agent identity.
+/// Manual-only agents are recognized here so their launch command is never
+/// misclassified as a task; `normalize_provider` deliberately does not promote
+/// them to readiness-verified Jarvis providers.
 pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
     let normalized_input = input.replace("\u{1b}[200~", "").replace("\u{1b}[201~", "");
     let line = normalized_input
@@ -43,7 +59,7 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
                     token = tokens.next();
                     break;
                 }
-                if normalized.as_deref().and_then(normalize_provider).is_some() {
+                if normalized.as_deref().and_then(provider_from_executable).is_some() {
                     break;
                 }
                 if !value.starts_with('-') {
@@ -51,16 +67,16 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
                 }
                 token = tokens.next();
             }
-            token.and_then(|value| normalize_executable(value))
+            token.and_then(normalize_executable)
         }
         "deno" => {
             // `deno run npm:codex` and `deno codex` are both common wrappers.
             next_provider_token(&mut tokens)
         }
-        provider => normalize_provider(provider),
+        provider => provider_from_executable(provider),
     }?;
 
-    normalize_provider(&candidate).map(|provider| AgentDetection {
+    provider_from_executable(&candidate).map(|provider| AgentDetection {
         provider,
         source: "command-observed".to_string(),
         confidence: 0.7,
@@ -73,11 +89,11 @@ fn next_provider_token<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Option
         if candidate.starts_with('-') || candidate == "run" || candidate == "exec" {
             continue;
         }
-        if normalize_provider(&candidate).is_some() {
+        if provider_from_executable(&candidate).is_some() {
             return Some(candidate);
         }
         // A wrapper's first non-flag token is the executable. If it is not a
-        // supported provider, do not search arbitrary arguments for a name.
+        // known provider, do not search arbitrary arguments for a name.
         return None;
     }
     None
@@ -96,7 +112,8 @@ fn normalize_executable(value: &str) -> Option<String> {
 
 /// Inspect a process tree on Windows. This compatibility helper is kept for
 /// callers that need one root; the live terminal manager uses the bulk async
-/// service below so a single CIM snapshot serves all terminals.
+/// service below so a single CIM snapshot serves all terminals. Process-tree
+/// promotion remains limited to readiness-verified providers.
 #[cfg(windows)]
 pub fn detect_from_process_tree(root_pid: Option<u32>) -> Option<AgentDetection> {
     let root_pid = root_pid?;
@@ -213,12 +230,15 @@ mod tests {
     use super::{detect_from_command, normalize_provider};
 
     #[test]
-    fn recognizes_supported_commands_without_classifying_powershell() {
+    fn recognizes_launch_commands_without_classifying_arbitrary_shell_text() {
         for command in [
+            "agy\r\n",
             "codex --resume\r\n",
             "npx -y opencode\r\n",
             "pnpm exec claude\r\n",
             "bunx pi\r\n",
+            "cmdc\r\n",
+            "cline\r\n",
             "uvx freebuff\r\n",
             "deno run codex\r\n",
             "deno run npm:codex\r\n",
@@ -232,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_names_are_bounded_to_readiness_verified_runtime_agents() {
+    fn provider_normalization_is_bounded_to_readiness_verified_runtime_agents() {
         assert_eq!(normalize_provider("Pi").as_deref(), Some("pi"));
         assert_eq!(normalize_provider("freebuff").as_deref(), Some("freebuff"));
         for manual_only in ["agy", "anti-gravity", "cmdc", "command code", "cline"] {
