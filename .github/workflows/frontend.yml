@@ -23,6 +23,10 @@ jobs:
         with:
           node-version: "24"
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm install
       - run: npm run build
       - run: npm run test:jarvis
+      - run: python -m unittest scripts/test_jarvis_edge_tts.py
