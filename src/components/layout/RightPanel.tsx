@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Blocks, FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen } from "lucide-react";
-import { useUIStore } from "../../stores/uiStore";
+import { useUIStore, type RightPanelView } from "../../stores/uiStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ProjectGitChanges } from "../project/ProjectGitChanges";
@@ -35,7 +35,7 @@ export function RightPanel() {
     if (isOpen && !activeView) setActiveView("files");
   }, [activeView, isOpen, setActiveView]);
 
-  const changePanelView = (view: string) => {
+  const changePanelView = (view: Exclude<RightPanelView, null>) => {
     if (view === activeView) return;
     if (activeWorkspaceId) clearSelection(activeWorkspaceId);
     setActiveView(view);
@@ -119,6 +119,7 @@ export function RightPanel() {
               }`}
               title={label}
               aria-label={label}
+              aria-pressed={active}
             >
               <Icon size={12} />
               <span>{label}</span>
