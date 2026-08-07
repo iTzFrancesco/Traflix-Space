@@ -1,24 +1,40 @@
 #!/usr/bin/env python3
-"""Minimal Edge TTS helper.
+"""Minimal persistent Edge TTS helper.
 
-The process receives exactly one JSON object on stdin and emits one bounded
-JSON result. It has no access to Jarvis settings, workspace files or API keys.
+The process reads one bounded JSON request per stdin line and emits exactly one
+bounded JSON result per request. It has no access to Jarvis settings, workspace
+files or API keys. Keeping the process alive avoids paying Python/PyInstaller
+startup and import cost for every spoken reply.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
+
+_EDGE_TTS: ModuleType | None = None
 
 
 def _result(ok: bool, **fields: object) -> None:
     payload = {"ok": ok, **fields}
     sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
     sys.stdout.flush()
+
+
+def _load_edge_tts() -> ModuleType | None:
+    global _EDGE_TTS
+    if _EDGE_TTS is not None:
+        return _EDGE_TTS
+    try:
+        import edge_tts  # type: ignore
+    except ImportError:
+        return None
+    _EDGE_TTS = edge_tts
+    return _EDGE_TTS
 
 
 def _safe_output_path(raw: object) -> Path:
@@ -30,9 +46,8 @@ def _safe_output_path(raw: object) -> Path:
 
 
 async def _speak(payload: dict[str, object]) -> None:
-    try:
-        import edge_tts  # type: ignore
-    except ImportError:
+    edge_tts = _load_edge_tts()
+    if edge_tts is None:
         _result(False, error="edge_tts_unavailable")
         return
 
@@ -57,11 +72,18 @@ async def _speak(payload: dict[str, object]) -> None:
 
 
 async def _list_voices() -> None:
+    edge_tts = _load_edge_tts()
+    if edge_tts is None:
+        _result(False, error="edge_tts_unavailable")
+        return
     try:
-        import edge_tts  # type: ignore
         voices = await edge_tts.list_voices()
         bounded = [
-            {"shortName": str(item.get("ShortName", "")), "locale": str(item.get("Locale", "")), "gender": item.get("Gender")}
+            {
+                "shortName": str(item.get("ShortName", "")),
+                "locale": str(item.get("Locale", "")),
+                "gender": item.get("Gender"),
+            }
             for item in voices
             if str(item.get("Locale", "")).lower().startswith("it-")
         ][:64]
@@ -70,17 +92,40 @@ async def _list_voices() -> None:
         _result(False, error="edge_tts_voice_list_failed")
 
 
-async def main() -> None:
-    try:
-        payload = json.loads(sys.stdin.readline())
-        if not isinstance(payload, dict):
-            raise ValueError("invalid request")
-        if payload.get("action") == "listVoices":
-            await _list_voices()
+async def _handle(payload: dict[str, object]) -> bool:
+    action = payload.get("action")
+    if action == "quit":
+        _result(True)
+        return False
+    if action == "ping":
+        if _load_edge_tts() is None:
+            _result(False, error="edge_tts_unavailable")
         else:
-            await _speak(payload)
-    except Exception:
-        _result(False, error="invalid_request")
+            _result(True)
+        return True
+    if action == "listVoices":
+        await _list_voices()
+    else:
+        await _speak(payload)
+    return True
+
+
+async def main() -> None:
+    # Requests are intentionally serialized. Jarvis only has one spoken reply
+    # at a time, and sequential processing keeps cancellation/process ownership
+    # simple while retaining the warm interpreter and imported edge_tts module.
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError("invalid request")
+            if not await _handle(payload):
+                break
+        except Exception:
+            _result(False, error="invalid_request")
 
 
 if __name__ == "__main__":
