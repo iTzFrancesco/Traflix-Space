@@ -25,13 +25,16 @@ esistono sessioni agent nascoste o parallele, nessun `codex app-server`, nessun
 - L'InputTracker ricostruisce soltanto la riga di input corrente per
   `(terminalId, generation)`: caratteri UTF-8 stampabili, backspace, Enter
   (commit), bracketed paste (`\x1b[200~` … `\x1b[201~`), Ctrl+C e Delete
-  (`\x1b[3~`). Frecce, Home/End, sequenze Alt e buffer oltre 8 KiB rendono la
-  riga inaffidabile: viene scartata, mai inventata.
+  (`\x1b[3~`). Frecce, Home/End, sequenze Alt, altri controlli non
+  ricostruibili e buffer oltre 8 KiB invalidano l'intera riga fino al
+  successivo Enter/Ctrl+C: non si riprende mai a raccogliere un suffisso che
+  potrebbe diventare un task falso.
 - Solo l'input committed (Enter) diventa un task. Output del terminale non
   raggiunge mai il tracker. I comandi di lancio agent (rilevati da
   `detect_from_command`) sono startup della sessione, non task.
 - I comandi locali `/model`, `/help`, `/clear` diventano attività ma non
-  sostituiscono mai il task corrente.
+  sostituiscono mai il task corrente e non cambiano da soli `waiting` in
+  `working`.
 
 ## 3. Timeline delle attività
 
@@ -74,18 +77,35 @@ esistono sessioni agent nascoste o parallele, nessun `codex app-server`, nessun
   `sent`). Le label sono leggibili e non contengono mai terminalId, generation,
   IPC o JSON.
 - Gli eventi sono generati dal backend, mai dal modello, e non sono persistiti.
+- Una fase nuova supersede i checkpoint aperti più vecchi della stessa
+  richiesta. Un `waiting_confirmation` è considerato attivo solo finché esiste
+  davvero la corrispondente Pending Action, così rifiuto/conferma non possono
+  lasciare la UI bloccata su uno stato stale.
 
 ## 7. Widget collassato
 
-- Stato compatto con priorità: errore voce → nessuna workspace → voce attiva →
-  agente al lavoro → conferma richiesta → Jarvis sta pensando → sto parlando →
-  "Pronto quando vuoi". Nessun nome/conteggio agente ("Codex ready" è vietato).
+La barra compatta rappresenta **Jarvis**, non il registry degli agenti. Non
+legge lo stato `working`, `waiting` o `starting` per decidere il testo mostrato:
+un Codex può lavorare per minuti mentre Jarvis resta semplicemente disponibile.
+
+Priorità: errore voce → nessuna workspace → voce → checkpoint Jarvis →
+conferma richiesta → Jarvis thinking → TTS → idle.
+
+L'idle è esattamente:
+
+`Ready when you are`
+
+Durante il lavoro può mostrare label deterministiche come `Checking Codex…`,
+`Reading last result…`, `Preparing message…`, `Waiting for confirmation…`,
+`Writing to Codex…`, poi torna all'idle. Nessun nome/conteggio agente viene
+mostrato come monitoraggio persistente.
 
 ## 8. Pannello espanso
 
-- Strip attività effimera (max 3 eventi aperti, running/waiting) sopra la
-  conversazione: non è un messaggio di conversazione e sparisce appena il
-  checkpoint termina.
+- Strip attività effimera con al massimo 3 checkpoint correnti/recenti sopra
+  la conversazione. Può mostrare anche un recente `done`/`failed` (es. `✓ Sent.`)
+  ma non è un log persistente.
+- I checkpoint non diventano messaggi della conversazione.
 
 ## 9. Diagnostica
 
