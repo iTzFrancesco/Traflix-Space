@@ -1,13 +1,5 @@
 import { useEffect, useRef } from "react";
-import {
-  Globe2,
-  FolderTree,
-  GitBranch,
-  PanelRightClose,
-  PanelRightOpen,
-  Sparkles,
-} from "lucide-react";
-import { motion } from "framer-motion";
+import { FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
 import { useUIStore } from "../../stores/uiStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -17,17 +9,15 @@ import { SkillsModule } from "../skills/SkillsModule";
 import { BrowserPanel } from "../browser/BrowserPanel";
 
 const PANEL_SLOTS = [
-  { id: "browser", label: "Browser", icon: Globe2, available: true },
-  { id: "files", label: "Files", icon: FolderTree, available: true },
-  { id: "git", label: "Git changes", icon: GitBranch, available: true },
-  { id: "skills", label: "Skills", icon: Sparkles, available: true },
+  { id: "browser", label: "Browser", icon: Globe2 },
+  { id: "files", label: "Files", icon: FolderTree },
+  { id: "git", label: "Git", icon: GitBranch },
+  { id: "skills", label: "Skills", icon: Sparkles },
 ] as const;
 
 export function RightPanel() {
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
-  const workspace = useWorkspaceStore((state) =>
-    state.workspaces.find((item) => item.id === state.activeWorkspaceId),
-  );
+  const workspace = useWorkspaceStore((state) => state.workspaces.find((item) => item.id === state.activeWorkspaceId));
   const isOpen = useUIStore((state) => state.rightPanelOpen);
   const width = useUIStore((state) => state.rightPanelWidth);
   const activeView = useUIStore((state) => state.rightPanelActiveView);
@@ -36,10 +26,6 @@ export function RightPanel() {
   const setActiveView = useUIStore((state) => state.setRightPanelActiveView);
   const clearSelection = useProjectStore((state) => state.clearSelection);
   const panelRef = useRef<HTMLElement>(null);
-  const showFiles = !activeView || activeView === "files";
-  const showGitChanges = activeView === "git";
-  const showSkills = activeView === "skills";
-  const showBrowser = activeView === "browser";
 
   useEffect(() => {
     if (activeWorkspaceId) clearSelection(activeWorkspaceId);
@@ -65,137 +51,102 @@ export function RightPanel() {
     event.preventDefault();
     const element = panelRef.current;
     if (!element) return;
-
     const startX = event.clientX;
     const startWidth = element.getBoundingClientRect().width;
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      const nextWidth = Math.max(380, Math.min(560, startWidth + startX - moveEvent.clientX));
+    const handleMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.max(330, Math.min(520, startWidth + startX - moveEvent.clientX));
       element.style.width = `${nextWidth}px`;
     };
-    const handleMouseUp = () => {
+    const handleUp = () => {
       const finalWidth = Number.parseFloat(element.style.width);
       if (Number.isFinite(finalWidth)) setPanelWidth(Math.round(finalWidth));
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
     };
-
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
   };
 
   if (!isOpen) {
     return (
-      <aside
-        className="flex h-full w-12 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-3"
-        aria-label="Pannello workspace"
-      >
-        <button
-          type="button"
-          onClick={openPanel}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-primary transition-colors hover:bg-primary/[0.12]"
-          title="Apri file explorer"
-          aria-label="Apri file explorer"
-        >
-          <PanelRightOpen size={17} />
+      <aside className="flex h-full w-10 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Workspace tools">
+        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Apri workspace tools" aria-label="Apri workspace tools">
+          <PanelRightOpen size={15} />
         </button>
       </aside>
     );
   }
 
+  const panelWidth = Math.max(330, Math.min(520, width));
+  const activeSlot = PANEL_SLOTS.find((slot) => slot.id === activeView) ?? PANEL_SLOTS[1];
+  const ActiveIcon = activeSlot.icon;
+
   return (
-    <motion.aside
+    <aside
       ref={panelRef}
-      initial={{ width: 0, opacity: 0 }}
-      animate={{ width, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 420, damping: 38 }}
-      className="relative flex h-full min-w-[380px] shrink-0 flex-col border-l border-neutral-border bg-neutral-surface"
-      style={{ width: `${Math.max(400, width)}px` }}
-      aria-label="Pannello workspace"
+      className="relative flex h-full shrink-0 flex-col border-l border-neutral-border bg-neutral-surface"
+      style={{ width: panelWidth, minWidth: 330 }}
+      aria-label="Workspace tools"
     >
-      <div
-        onMouseDown={handleResizeMouseDown}
-        className="group absolute -left-2 top-0 z-20 h-full w-2 cursor-col-resize"
-        aria-hidden="true"
-      >
-        <span className="absolute inset-y-2 left-0 w-px bg-neutral-border transition-all group-hover:w-0.5 group-hover:bg-primary" />
+      <div onMouseDown={handleResizeMouseDown} className="group absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize" aria-hidden="true">
+        <span className="absolute inset-y-0 right-1 w-px bg-transparent transition-colors group-hover:bg-primary/60" />
       </div>
 
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] px-3">
+      <div className="flex h-[49px] shrink-0 items-center justify-between border-b border-neutral-border px-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/[0.12] text-primary">
-            <FolderTree size={15} />
-          </div>
-          <span className="truncate text-xs font-bold tracking-wide text-neutral-text">Workspace</span>
+          <ActiveIcon size={15} className="text-primary" />
+          <span className="truncate text-xs font-semibold text-neutral-text">{activeSlot.label}</span>
         </div>
-        <button
-          type="button"
-          onClick={togglePanel}
-          className="ui-icon-button h-8 w-8"
-          title="Chiudi pannello"
-          aria-label="Chiudi pannello"
-        >
+        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
           <PanelRightClose size={15} />
         </button>
       </div>
 
-      <div className="flex shrink-0 gap-1 border-b border-white/[0.06] px-3 py-2">
-        {PANEL_SLOTS.map(({ id, label, icon: Icon, available }) => {
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-neutral-border px-2">
+        {PANEL_SLOTS.map(({ id, label, icon: Icon }) => {
           const active = activeView === id;
           return (
             <button
               key={id}
               type="button"
-              disabled={!available}
-              onClick={() => available && changePanelView(id)}
-              className={`flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2 text-[0.66rem] font-semibold transition-colors ${
-                active
-                  ? "border-primary/70 bg-primary/[0.13] text-neutral-text"
-                  : available
-                    ? "border-transparent text-neutral-text-muted hover:border-white/[0.08] hover:bg-white/[0.04] hover:text-neutral-text"
-                    : "cursor-not-allowed border-transparent text-neutral-text-muted/30"
+              onClick={() => changePanelView(id)}
+              className={`flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-[10px] font-semibold transition-colors ${
+                active ? "bg-white/[0.07] text-neutral-text" : "text-neutral-text-muted hover:bg-white/[0.04] hover:text-neutral-text-dim"
               }`}
-              title={available ? label : `${label} — in arrivo`}
-              aria-label={available ? label : `${label} — in arrivo`}
+              title={label}
+              aria-label={label}
             >
-              <Icon size={13} />
-              <span className="hidden xl:inline">{label}</span>
+              <Icon size={12} />
+              <span>{label}</span>
             </button>
           );
         })}
       </div>
 
-      {showBrowser ? (
-        <div className="flex min-h-0 min-w-0 flex-1">
-          <BrowserPanel />
-        </div>
-      ) : showSkills ? (
+      {activeView === "browser" ? (
+        <div className="flex min-h-0 min-w-0 flex-1"><BrowserPanel /></div>
+      ) : activeView === "skills" ? (
         <SkillsModule />
       ) : activeWorkspaceId && workspace ? (
         <>
-          <div className={showFiles ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-            <ProjectExplorer
-              workspaceId={activeWorkspaceId}
-              workspaceName={workspace.name}
-              rootPath={workspace.rootPath}
-            />
+          <div className={activeView === "files" || !activeView ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+            <ProjectExplorer workspaceId={activeWorkspaceId} workspaceName={workspace.name} rootPath={workspace.rootPath} />
           </div>
-          <div className={showGitChanges ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+          <div className={activeView === "git" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
             <ProjectGitChanges workspaceId={activeWorkspaceId} workspaceName={workspace.name} />
           </div>
         </>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-          <FolderTree size={28} className="mb-3 text-neutral-text-muted" strokeWidth={1.3} />
-          <p className="text-sm font-semibold text-neutral-text">Nessuna workspace</p>
-          <p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">
-            Apri una workspace per esplorarne i file.
-          </p>
+          <FolderTree size={22} className="mb-2 text-neutral-text-muted" strokeWidth={1.4} />
+          <p className="text-xs font-semibold text-neutral-text">No workspace selected</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-neutral-text-muted">Select a workspace to inspect its files and changes.</p>
         </div>
       )}
-    </motion.aside>
+    </aside>
   );
 }
