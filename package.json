@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test:jarvis": "node --import tsx --test scripts/jarvis-state.test.mjs scripts/ui-regression.test.mjs",
+    "test:jarvis": "node --import tsx --test scripts/jarvis-state.test.mjs scripts/ui-regression.test.mjs scripts/jarvis-voice-perf-regression.test.mjs",
     "test:agent-notifications": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\agent-notifications\\test-adapters.ps1",
     "tauri": "tauri",
     "build:clean": "tauri build && cargo sweep --stale",
