@@ -49,11 +49,7 @@ const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
   persistent: false,
 };
 
-export function SettingsModal({
-  open,
-  onClose,
-  advanced,
-}: SettingsModalProps) {
+export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
@@ -71,9 +67,10 @@ export function SettingsModal({
   const [error, setError] = useState<string | null>(null);
   const [secretStatus, setSecretStatus] =
     useState<JarvisSecretStatus>(EMPTY_SECRET_STATUS);
-  const [secretDrafts, setSecretDrafts] = useState<
-    Record<JarvisSecretId, string>
-  >({ open_code_zen: "", groq: "" });
+  const [secretDrafts, setSecretDrafts] = useState<Record<JarvisSecretId, string>>({
+    open_code_zen: "",
+    groq: "",
+  });
   const [secretBusy, setSecretBusy] = useState<JarvisSecretId | null>(null);
 
   useEffect(() => {
@@ -167,7 +164,12 @@ export function SettingsModal({
   const jarvis = draft.jarvis;
 
   return (
-    <Modal open={open} onClose={onClose} title="Jarvis settings" width="max-w-[700px]">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Jarvis settings"
+      width="max-w-[700px]"
+    >
       <div className="space-y-7">
         <header>
           <p className="text-sm font-semibold text-neutral-text">
@@ -299,8 +301,8 @@ export function SettingsModal({
           </p>
         )}
         {saved && (
-          <p className="flex items-center gap-2 text-xs text-signal">
-            <Check size={14} /> Settings saved
+          <p className="flex items-center gap-2 text-xs text-signal" role="status">
+            <Check size={14} aria-hidden="true" /> Settings saved
           </p>
         )}
 
@@ -372,18 +374,15 @@ function CredentialField({
         <KeyRound size={14} className="shrink-0 text-neutral-text-muted" />
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <p className="truncate text-xs font-medium text-neutral-text">
-              {label}
-            </p>
+            <p className="truncate text-xs font-medium text-neutral-text">{label}</p>
             <span
-              className={
-                configured ? "status-dot status-dot--ok" : "status-dot"
-              }
-              aria-label={configured ? "Configured" : "Not configured"}
+              className={configured ? "status-dot status-dot--ok" : "status-dot"}
+              title={configured ? "Configured" : "Not configured"}
+              aria-hidden="true"
             />
           </div>
           <p className="truncate text-[10px] text-neutral-text-muted">
-            {description}
+            {description} · {configured ? "configured" : "not configured"}
           </p>
         </div>
       </div>
@@ -395,7 +394,10 @@ function CredentialField({
           spellCheck={false}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder={configured ? "Paste a new key to replace it" : "Paste API key"}
+          placeholder={
+            configured ? "Paste a new key to replace it" : "Paste API key"
+          }
+          aria-label={`${label} API key`}
           className="field-input min-w-0 flex-1"
         />
         <button
@@ -438,9 +440,7 @@ function VoiceOptions({
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingVoices, setLoadingVoices] = useState(false);
-  const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(
-    null,
-  );
+  const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
 
   const normalizedInput = {
     ...input,
@@ -527,10 +527,7 @@ function VoiceOptions({
             <select
               value={normalizedOutput.voice}
               onChange={(event) =>
-                onOutputChange({
-                  ...normalizedOutput,
-                  voice: event.target.value,
-                })
+                onOutputChange({ ...normalizedOutput, voice: event.target.value })
               }
               className="field-input min-w-0 flex-1"
             >
@@ -596,14 +593,14 @@ function VoiceOptions({
             }}
           />
           <TextField
-            label="Wait for speech (s)"
-            value={String(normalizedInput.maxArmedSeconds)}
+            label="Silence before send (ms)"
+            value={String(normalizedInput.vadPostSpeechMs)}
             onChange={(value) => {
               const parsed = Number(value);
               if (Number.isFinite(parsed)) {
                 onInputChange({
                   ...normalizedInput,
-                  maxArmedSeconds: Math.max(1, Math.min(20, Math.floor(parsed))),
+                  vadPostSpeechMs: Math.max(100, Math.min(5000, Math.floor(parsed))),
                 });
               }
             }}
