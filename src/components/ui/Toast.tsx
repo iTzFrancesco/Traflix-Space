@@ -21,10 +21,15 @@ export function ToastContainer() {
   const reduceMotion = useReducedMotion();
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(400px,calc(100vw-32px))] flex-col gap-2">
+    <div
+      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(400px,calc(100vw-32px))] flex-col gap-2"
+      aria-live="polite"
+      aria-relevant="additions text"
+    >
       <AnimatePresence mode="popLayout">
         {toasts.map((toast) => {
           const Icon = iconMap[toast.type];
+          const urgent = toast.type === "error" || toast.type === "warning";
           return (
             <motion.div
               key={toast.id}
@@ -34,9 +39,16 @@ export function ToastContainer() {
               exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 14 }}
               transition={{ duration: reduceMotion ? 0 : 0.14, ease: "easeOut" }}
               className="pointer-events-auto flex items-start gap-2.5 rounded-md border border-neutral-border bg-neutral-elevated px-3 py-2.5 shadow-[0_8px_24px_rgba(0,0,0,0.28)]"
+              role={urgent ? "alert" : "status"}
             >
-              <Icon size={16} className={`mt-0.5 shrink-0 ${colorMap[toast.type]}`} />
-              <p className="min-w-0 flex-1 text-xs leading-relaxed text-neutral-text">{toast.message}</p>
+              <Icon
+                size={16}
+                className={`mt-0.5 shrink-0 ${colorMap[toast.type]}`}
+                aria-hidden="true"
+              />
+              <p className="min-w-0 flex-1 text-xs leading-relaxed text-neutral-text">
+                {toast.message}
+              </p>
               {toast.action && (
                 <button
                   type="button"
@@ -49,7 +61,13 @@ export function ToastContainer() {
                   {toast.action.label}
                 </button>
               )}
-              <button type="button" onClick={() => removeToast(toast.id)} className="ui-icon-button h-6 w-6 shrink-0" title="Chiudi" aria-label="Chiudi notifica">
+              <button
+                type="button"
+                onClick={() => removeToast(toast.id)}
+                className="ui-icon-button h-6 w-6 shrink-0"
+                title="Chiudi"
+                aria-label="Chiudi notifica"
+              >
                 <X size={12} />
               </button>
             </motion.div>
