@@ -43,7 +43,7 @@ test("voice widget contract no longer carries dead drawer state", () => {
   assert.match(overlaySource, /loadVoiceDraft/);
 });
 
-test("ready voice draft resumes only after its origin workspace is focused and Jarvis is enabled", () => {
+test("ready voice draft resumes only in its origin workspace, while enabled, and retries without duplicate sends", () => {
   assert.match(
     overlaySource,
     /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled\) return/,
@@ -52,10 +52,20 @@ test("ready voice draft resumes only after its origin workspace is focused and J
     overlaySource,
     /useWorkspaceStore\.getState\(\)\.activeWorkspaceId !== workspaceId/,
   );
-  assert.match(overlaySource, /store\.settings\.jarvis\.enabled/);
+  assert.match(overlaySource, /resumeVoiceDraftRef = useRef<Set<string>>/);
+  assert.match(overlaySource, /const chatBusy = Object\.values\(store\.requests\)\.some/);
+  assert.match(overlaySource, /request\.status === "running"/);
+  assert.match(overlaySource, /request\.status === "cancellation_requested"/);
+  assert.match(overlaySource, /!resumeVoiceDraftRef\.current\.has\(draft\.requestId\)/);
+  assert.match(overlaySource, /resumeVoiceDraftRef\.current\.add\(draft\.requestId\)/);
+  assert.match(overlaySource, /\.finally\(\(\) => resumeVoiceDraftRef\.current\.delete\(draft\.requestId\)\)/);
   assert.match(overlaySource, /draft\?\.status === "transcript_ready"/);
   assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.autoSubmitTranscript/);
   assert.match(overlaySource, /store\.sendVoiceTranscript\(/);
+  assert.match(
+    overlaySource,
+    /\[\s*activeWorkspaceId,\s*loadVoiceDraft,\s*requests,\s*settings\.jarvis\.enabled,\s*\]/s,
+  );
 });
 
 test("modal traps keyboard focus and restores the previous control", () => {
