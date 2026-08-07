@@ -4,12 +4,24 @@ const OWNER_MODE_MARKER = "owner-mode";
 
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
- * runs in owner mode: voice input, automatic turn handling, transcript submit
- * and spoken replies are always enabled. The legacy consent fields stay in
- * the persisted schema for backwards compatibility with the Rust contracts,
- * but they are an internal invariant rather than user-facing settings.
+ * runs in owner mode: network consent, transcript submission and spoken
+ * replies are always enabled. One-click + local VAD is the default interaction,
+ * while explicit advanced activation choices (for example hold-to-talk) remain
+ * valid and are not silently rewritten.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
+  const voiceInput = {
+    ...settings.voiceInput,
+    enabled: true,
+    autoSubmitTranscript: true,
+    vadEnabled:
+      settings.voiceInput.activationMode === "click_toggle"
+        ? true
+        : settings.voiceInput.vadEnabled,
+    privacyConsent: true,
+    privacyConsentAt: settings.voiceInput.privacyConsentAt || OWNER_MODE_MARKER,
+  };
+
   return {
     ...settings,
     textModel: {
@@ -17,15 +29,7 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
       privacyConsent: true,
       privacyConsentAt: settings.textModel.privacyConsentAt || OWNER_MODE_MARKER,
     },
-    voiceInput: {
-      ...settings.voiceInput,
-      enabled: true,
-      activationMode: "click_toggle",
-      autoSubmitTranscript: true,
-      vadEnabled: true,
-      privacyConsent: true,
-      privacyConsentAt: settings.voiceInput.privacyConsentAt || OWNER_MODE_MARKER,
-    },
+    voiceInput,
     voiceOutput: {
       ...settings.voiceOutput,
       enabled: true,
@@ -42,9 +46,9 @@ export function isJarvisOwnerModeReady(settings: JarvisSettings): boolean {
     settings.textModel.privacyConsent &&
       settings.textModel.privacyConsentAt &&
       settings.voiceInput.enabled &&
-      settings.voiceInput.activationMode === "click_toggle" &&
       settings.voiceInput.autoSubmitTranscript &&
-      settings.voiceInput.vadEnabled &&
+      (settings.voiceInput.activationMode !== "click_toggle" ||
+        settings.voiceInput.vadEnabled) &&
       settings.voiceInput.privacyConsent &&
       settings.voiceInput.privacyConsentAt &&
       settings.voiceOutput.enabled &&
