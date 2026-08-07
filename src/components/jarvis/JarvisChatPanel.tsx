@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { Bot, Settings2, Square } from "lucide-react";
 import { JarvisChatInput, CancelButton } from "./JarvisChatInput";
 import { JarvisTranscriptCard } from "./JarvisTranscriptCard";
+import { useJarvisStore } from "../../stores/jarvisStore";
 import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
 
@@ -32,13 +34,13 @@ interface Props {
 }
 
 export function JarvisChatPanel(props: Props) {
+  const textConsent = useJarvisStore((state) => state.settings.jarvis.textModel.privacyConsent);
+  const loadProviderStatus = useJarvisStore((state) => state.loadProviderStatus);
+  useEffect(() => { void loadProviderStatus(); }, [loadProviderStatus]);
+
   const recentConversation = props.conversation.slice(-4);
   const chatBusy = props.requests.some((request) => request.status === "running" || request.status === "cancellation_requested");
-  const textReady = Boolean(
-    props.workspaceId &&
-    props.providerStatus?.configured &&
-    props.providerStatus.privacyConsent,
-  );
+  const textReady = Boolean(props.workspaceId && props.providerStatus?.configured && textConsent);
 
   return (
     <div className="space-y-3 p-3">
