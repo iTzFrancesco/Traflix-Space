@@ -897,10 +897,14 @@ async fn execute_read_tool(
         );
     }
     let result = match call.function.name.as_str() {
-        "workspace.overview" => {
-            let registry = app.state::<WorkspaceRegistry>();
-            match registry.load().await { Ok(()) => serde_json::to_value(registry.get_all().await.iter().map(|item| json!({"id":item.id,"name":item.name,"terminalCount":item.terminals.len()})).collect::<Vec<_>>()).unwrap_or_else(|_| json!([])), Err(_) => json!({"error":"workspace registry unavailable"}) }
-        }
+        // Model-visible workspace metadata is intentionally restricted to the
+        // invocation workspace. Jarvis may not enumerate or merge unrelated
+        // workspace names/counts while deciding what to do in the focused one.
+        "workspace.overview" => json!({
+            "id": workspace.id,
+            "name": workspace.name,
+            "terminalCount": workspace.terminals.len()
+        }),
         "terminal.list" => {
             serde_json::to_value(context.terminals.clone()).unwrap_or_else(|_| json!([]))
         }
@@ -1096,7 +1100,7 @@ fn tool_definitions() -> Vec<ModelToolDefinition> {
                 "additionalProperties":false
             }),
         ),
-        read_tool("workspace.overview", "List workspace names and bounded terminal counts.", json!({"type":"object","properties":{},"additionalProperties":false})),
+        read_tool("workspace.overview", "Read bounded metadata for the invocation workspace only.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("terminal.list", "List terminals in the invocation workspace.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("agent.list", "List agent sessions and bounded state.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("agent.status", "Read bounded agent status.", json!({"type":"object","properties":{"agentSessionId":{"type":"string"}},"required":["agentSessionId"],"additionalProperties":false})),
