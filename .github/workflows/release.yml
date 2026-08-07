@@ -58,16 +58,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
-      - name: Build current Edge TTS sidecar
-        shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-jarvis-edge-tts-sidecar.ps1 -Python python
-      - name: Verify Edge TTS sidecar exists
-        shell: pwsh
-        run: |
-          $sidecar = ".\src-tauri\binaries\jarvis-edge-tts-x86_64-pc-windows-msvc.exe"
-          if (-not (Test-Path -LiteralPath $sidecar)) {
-            throw "Missing release sidecar: $sidecar"
-          }
+      # tauri.windows.conf.json runs scripts/tauri-before-build.ps1, which
+      # regenerates the current persistent Edge TTS sidecar and builds the UI.
       - run: npm run tauri build
       - uses: softprops/action-gh-release@v2
         with:
