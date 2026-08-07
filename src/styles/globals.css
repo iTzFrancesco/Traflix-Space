@@ -315,7 +315,7 @@ a:not(:disabled),
   cursor: default;
 }
 
-.jarvis-pill[data-jarvis-dragging="true"] {
+[data-jarvis-dragging="true"] .jarvis-pill {
   cursor: grabbing;
   transform: scale(1.01);
   border-color: oklch(0.74 0.16 63 / 0.52);
@@ -406,9 +406,11 @@ a:not(:disabled),
 
 .jarvis-level-meter > span {
   width: 2px;
+  height: 12px;
   border-radius: 99px;
   background: var(--color-signal);
-  transition: height 65ms linear;
+  transform-origin: center;
+  transition: transform 65ms linear;
 }
 
 /* Agent attention is informative, not a glowing dashboard. */
