@@ -8,10 +8,17 @@ import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvi
 import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceDraftsForWorkspaces, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
 import { inputDeviceOptions, italianVoices, sanitizedVoiceError } from "../src/lib/jarvis/voiceSettings.ts";
 import { beginVoicePress, releaseVoicePress, shouldStopAfterAsyncStart } from "../src/lib/jarvis/voiceActivation.ts";
+import { collapsedJarvisStatus, MAX_ACTIVITY_EVENTS, MAX_ACTIVITY_STRIP, mergeActivityEvents, stripActivities } from "../src/lib/jarvis/activityState.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../src/components/layout/SettingsModal.tsx", import.meta.url), "utf8");
+const stripSource = readFileSync(new URL("../src/components/jarvis/JarvisActivityStrip.tsx", import.meta.url), "utf8");
+const overlaySource = readFileSync(new URL("../src/components/jarvis/JarvisGlobalOverlay.tsx", import.meta.url), "utf8");
+const expandedSource = readFileSync(new URL("../src/components/jarvis/JarvisExpandedPanel.tsx", import.meta.url), "utf8");
+const registrySource = readFileSync(new URL("../src-tauri/src/jarvis/agent_registry.rs", import.meta.url), "utf8");
+const chatBackendSource = readFileSync(new URL("../src-tauri/src/jarvis/chat.rs", import.meta.url), "utf8");
+const checkpointsSource = readFileSync(new URL("../src-tauri/src/jarvis/checkpoints.rs", import.meta.url), "utf8");
 
 function session({ id, terminalId, generation, state = "waiting", updatedAt, provider = "codex", result = null }) {
   return {
@@ -221,4 +228,153 @@ test("VAD and backend event lifecycle are explicit", () => {
   assert.match(commandsSource, /emit_voice_state\(app, &transcribing\)/);
   assert.match(registrySource, /pub struct VoiceSignal/);
   assert.match(captureSource, /fn failure\(&self\)/);
+});
+
+// ---- Phase 7: agent session intelligence ----------------------------------
+
+function checkpoint({ requestId, phase, label, status, createdAt, workspaceId = "workspace-a", targetSessionId = null }) {
+  return { requestId, phase, label, status, createdAt, workspaceId, targetSessionId };
+}
+
+function idleStatusInput(overrides = {}) {
+  return {
+    workspaceId: "workspace-a",
+    workspaceName: "Test",
+    voiceError: null,
+    voiceRequest: null,
+    ttsStatus: { status: "idle" },
+    requests: {},
+    pendingActions: [],
+    registrySessions: [],
+    ...overrides,
+  };
+}
+
+function registrySession(overrides = {}) {
+  return {
+    ref: {
+      agentSessionId: "codex-1",
+      provider: "codex",
+      resolvedProvider: "codex",
+      workspaceId: "workspace-a",
+      terminalId: "t-1",
+      generation: 1,
+      createdAt: "now",
+      updatedAt: "now",
+    },
+    state: "waiting",
+    ...overrides,
+  };
+}
+
+test("collapsed widget is Ready when idle and never shows agent names or counts", () => {
+  assert.equal(collapsedJarvisStatus(idleStatusInput()), "Pronto quando vuoi");
+  const working = collapsedJarvisStatus(idleStatusInput({ registrySessions: [registrySession({ state: "working" }), registrySession({ state: "starting", ref: { ...registrySession().ref, agentSessionId: "pi-1", provider: "pi", resolvedProvider: "pi" } })] }));
+  assert.equal(working, "L'agente sta lavorando…");
+  assert.doesNotMatch(working, /codex|Codex|pi|count|agenti/i);
+});
+
+test("collapsed priority is voice, then agent, then pending, then thinking, then TTS", () => {
+  const base = idleStatusInput();
+  assert.equal(collapsedJarvisStatus({ ...base, voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "recording", createdAt: "now", normalizedLevel: 0 } }), "Ti ascolto…");
+  assert.equal(collapsedJarvisStatus({ ...base, pendingActions: [{ id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a" } }] }), "Conferma richiesta");
+  assert.equal(collapsedJarvisStatus({ ...base, requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } } }), "Jarvis sta pensando…");
+  assert.equal(collapsedJarvisStatus({ ...base, ttsStatus: { status: "playing" } }), "Sto parlando…");
+  assert.equal(collapsedJarvisStatus({ ...base, voiceError: "errore" }), "Errore voce");
+  assert.equal(collapsedJarvisStatus({ ...base, workspaceId: null, workspaceName: null }), "Seleziona una workspace");
+});
+
+test("agent pending state wins over thinking while a confirmation is requested", () => {
+  const input = idleStatusInput({
+    pendingActions: [{ id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a" } }],
+    requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } },
+  });
+  assert.equal(collapsedJarvisStatus(input), "Conferma richiesta");
+});
+
+test("checkpoints merge deduplicates by request, phase and target and stay bounded", () => {
+  const running = checkpoint({ requestId: "req-1", phase: "writing", label: "Writing to Codex…", status: "running", createdAt: "2026-08-07T00:00:00Z" });
+  const done = checkpoint({ requestId: "req-1", phase: "writing", label: "Sent.", status: "done", createdAt: "2026-08-07T00:00:01Z" });
+  const merged = mergeActivityEvents([running], [done, running]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "done");
+  assert.equal(merged[0].label, "Sent.");
+});
+
+test("checkpoint view is bounded and only open events are visible in the strip", () => {
+  const events = [];
+  for (let index = 0; index < MAX_ACTIVITY_EVENTS + 8; index += 1) {
+    events.push(checkpoint({ requestId: `req-${index}`, phase: "writing", label: `L${index}`, status: index % 2 ? "done" : "running", createdAt: `2026-08-07T00:${String(index).padStart(2, "0")}:00Z` }));
+  }
+  const merged = mergeActivityEvents([], events);
+  assert.equal(merged.length, MAX_ACTIVITY_EVENTS);
+  const strip = stripActivities(merged, "workspace-a");
+  assert.ok(strip.length <= MAX_ACTIVITY_STRIP);
+  assert.ok(strip.every((event) => event.status === "running" || event.status === "waiting_confirmation"));
+});
+
+test("activity strip is isolated per workspace and never a conversation message", () => {
+  const events = [
+    checkpoint({ requestId: "req-a", phase: "writing", label: "A", status: "running", createdAt: "2026-08-07T00:00:00Z", workspaceId: "workspace-a" }),
+    checkpoint({ requestId: "req-b", phase: "writing", label: "B", status: "running", createdAt: "2026-08-07T00:00:01Z", workspaceId: "workspace-b" }),
+  ];
+  assert.deepEqual(stripActivities(events, "workspace-a").map((event) => event.label), ["A"]);
+  assert.deepEqual(stripActivities(events, "workspace-b").map((event) => event.label), ["B"]);
+  assert.equal(stripActivities(events, null).length, 0);
+  // The strip is a separate ephemeral element, not a conversation message.
+  assert.match(stripSource, /JarvisActivityStrip/);
+  assert.doesNotMatch(stripSource, /role === "user"|role === "assistant"/);
+  assert.match(chatPanelSource, /JarvisActivityStrip/);
+});
+
+test("checkpoints are backend-deterministic and labels never leak terminal identity", () => {
+  assert.match(checkpointsSource, /jarvis:\/\/activity/);
+  assert.match(checkpointsSource, /pub fn emit_checkpoint/);
+  assert.doesNotMatch(checkpointsSource, /terminal_id/);
+  assert.match(chatBackendSource, /emit_checkpoint\(/);
+  assert.doesNotMatch(chatBackendSource, /format!\("Writing to \{terminal/);
+  assert.match(overlaySource, /listen<ActivityCheckpoint>\("jarvis:\/\/activity"/);
+});
+
+test("jarvis provenance is registered only after a successful PTY write", () => {
+  assert.match(chatBackendSource, /observe_jarvis_send\(&snapshot, text, &now\(\)\)/);
+  assert.match(chatBackendSource, /if written\.is_ok\(\)/);
+  assert.match(chatBackendSource, /write_typed\(/);
+  assert.match(chatBackendSource, /TerminalInputOrigin::JarvisPrompt/);
+  assert.match(chatBackendSource, /TerminalInputOrigin::JarvisAbort/);
+  assert.match(registrySource, /observe_abort/);
+  assert.match(registrySource, /never mark the task completed/);
+});
+
+test("agent.activity tool is read-only and bounded, never an app-server adapter", () => {
+  assert.match(chatBackendSource, /read_tool\("agent\.activity"/);
+  assert.match(chatBackendSource, /MAX_ACTIVITY_LIMIT/);
+  assert.match(chatBackendSource, /DEFAULT_ACTIVITY_LIMIT/);
+  assert.doesNotMatch(chatBackendSource, /codex app-server|opencode serve|provider adapter/);
+  const commandsSource = readFileSync(new URL("../src-tauri/src/jarvis/commands.rs", import.meta.url), "utf8");
+  assert.match(commandsSource, /jarvis_agent_activity/);
+  const clientSource = readFileSync(new URL("../src/lib/jarvis/client.ts", import.meta.url), "utf8");
+  assert.match(clientSource, /function agentActivity\(/);
+  const typesSource = readFileSync(new URL("../src/lib/jarvis/types.ts", import.meta.url), "utf8");
+  assert.match(typesSource, /AgentActivityEvent/);
+  assert.match(typesSource, /currentTask/);
+  assert.match(typesSource, /lastActivityAt/);
+});
+
+test("no hidden provider sessions exist: Jarvis only writes into the shared PTY", () => {
+  assert.doesNotMatch(chatBackendSource, /codex app-server|opencode serve/);
+  assert.doesNotMatch(chatBackendSource, /spawn.*hidden|detached.*agent/i);
+  assert.doesNotMatch(widgetSource, /registrySessions\.filter/);
+});
+
+test("task text and timeline bounds are enforced in the registry", () => {
+  assert.match(registrySource, /MAX_TASK_TEXT_BYTES: usize = 2048/);
+  assert.match(registrySource, /MAX_ACTIVITY_TIMELINE: usize = 32/);
+  assert.match(registrySource, /MAX_ACTIVITY_LIMIT: usize = 16/);
+  assert.match(registrySource, /DEFAULT_ACTIVITY_LIMIT: usize = 8/);
+});
+
+test("expanded panel shows the strip without converting it into chat messages", () => {
+  assert.match(expandedSource, /activities: ActivityCheckpoint\[\]/);
+  assert.doesNotMatch(expandedSource, /activity.*role.*user/);
 });

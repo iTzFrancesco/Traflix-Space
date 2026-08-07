@@ -1,7 +1,8 @@
 use crate::jarvis::agent_registry::AgentSessionRegistry;
 use crate::jarvis::types::{
-    AgentCompletionNotification, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
-    AgentState, AgentTurnContext, Provenance,
+    AgentActivityEvent, AgentCompletionNotification, AgentMessage, AgentResult,
+    AgentSessionContext, AgentSessionRef, AgentState, AgentTaskContext, AgentTurnContext,
+    Provenance,
 };
 #[cfg(test)]
 use std::collections::HashMap;
@@ -40,6 +41,9 @@ pub struct AgentStatusSnapshot {
     pub provenance: Provenance,
     pub confidence: f32,
     pub warnings: Vec<String>,
+    pub current_task: Option<AgentTaskContext>,
+    pub last_activity_at: Option<String>,
+    pub activity_timeline: Vec<AgentActivityEvent>,
 }
 
 pub trait AgentContextSource: Send + Sync {
@@ -56,6 +60,11 @@ pub trait AgentContextSource: Send + Sync {
         &self,
         session: &AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError>;
+    fn get_activity(
+        &self,
+        session: &AgentSessionRef,
+        limit: usize,
+    ) -> Result<Vec<AgentActivityEvent>, AgentSourceError>;
 }
 
 #[derive(Clone)]
@@ -87,6 +96,9 @@ impl AgentContextSource for LiveAgentContextSource {
             provenance: status.provenance,
             confidence: status.confidence,
             warnings: status.warnings,
+            current_task: status.current_task,
+            last_activity_at: status.last_activity_at,
+            activity_timeline: status.activity_timeline,
         })
     }
 
@@ -102,6 +114,14 @@ impl AgentContextSource for LiveAgentContextSource {
         _session: &AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError> {
         Err(AgentSourceError::messages_unavailable())
+    }
+
+    fn get_activity(
+        &self,
+        session: &AgentSessionRef,
+        limit: usize,
+    ) -> Result<Vec<AgentActivityEvent>, AgentSourceError> {
+        self.registry.activity(session, limit)
     }
 }
 
@@ -135,6 +155,16 @@ impl AgentContextSource for EmptyAgentContextSource {
         &self,
         _session: &AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError> {
+        Err(AgentSourceError::unavailable(
+            "no live agent source configured",
+        ))
+    }
+
+    fn get_activity(
+        &self,
+        _session: &AgentSessionRef,
+        _limit: usize,
+    ) -> Result<Vec<AgentActivityEvent>, AgentSourceError> {
         Err(AgentSourceError::unavailable(
             "no live agent source configured",
         ))
@@ -223,6 +253,9 @@ impl AgentContextSource for FakeAgentContextSource {
             provenance: Provenance::untrusted("fake-agent", "2026-08-06T00:00:00Z"),
             confidence: 1.0,
             warnings: Vec::new(),
+            current_task: None,
+            last_activity_at: None,
+            activity_timeline: Vec::new(),
         })
     }
 
@@ -238,6 +271,16 @@ impl AgentContextSource for FakeAgentContextSource {
         session: &AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError> {
         Ok(self.find(session)?.messages)
+    }
+
+    fn get_activity(
+        &self,
+        _session: &AgentSessionRef,
+        _limit: usize,
+    ) -> Result<Vec<AgentActivityEvent>, AgentSourceError> {
+        Err(AgentSourceError::unavailable(
+            "fake source does not expose activity",
+        ))
     }
 }
 
@@ -263,5 +306,7 @@ pub fn context_from_status(
         provenance: status.provenance,
         confidence: status.confidence,
         warnings: status.warnings,
+        current_task: status.current_task,
+        last_activity_at: status.last_activity_at,
     }
 }

@@ -1,15 +1,31 @@
-use crate::jarvis::runtime_detector::normalize_provider;
+use crate::jarvis::runtime_detector::{detect_from_command, normalize_provider};
 use crate::jarvis::types::{
-    AgentCompletionNotification, AgentResult, AgentSessionRef, AgentState, AgentTurnContext,
-    Provenance,
+    AgentActivityEvent, AgentActivityKind, AgentCompletionNotification, AgentInteractionSource,
+    AgentResult, AgentSessionRef, AgentState, AgentTaskContext, AgentTurnContext, Provenance,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub const MAX_TERMINAL_FALLBACK_BYTES: usize = 32 * 1024;
+pub const MAX_TASK_TEXT_BYTES: usize = 2048;
+pub const MAX_ACTIVITY_TIMELINE: usize = 32;
+const MAX_ACTIVITY_EXCERPT_BYTES: usize = 160;
+const MAX_INPUT_BUFFER_BYTES: usize = 8 * 1024;
+const MAX_INPUT_TRACKERS: usize = 128;
+/// `agent.activity` limit bounds: default 8, hard maximum 16.
+pub const MAX_ACTIVITY_LIMIT: usize = 16;
+pub const DEFAULT_ACTIVITY_LIMIT: usize = 8;
 const MAX_RETAINED_SESSIONS: usize = 256;
 const MAX_TERMINAL_HISTORY: usize = 20;
 const MAX_COMPLETION_KEYS: usize = 4096;
+/// Output-driven `lastActivityAt`/`working` updates are throttled to at most
+/// one per second per session so PTY chunks never grow the timeline.
+const OUTPUT_ACTIVITY_THROTTLE_SECS: u64 = 1;
+/// A `working` activity is only appended when the previous one is older than
+/// this window, otherwise it would dominate the bounded timeline.
+const WORKING_ACTIVITY_MIN_GAP_SECS: u64 = 10;
+static NEXT_ACTIVITY_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalAgentSnapshot {
@@ -49,6 +65,9 @@ pub struct AgentRegistryStatus {
     pub provenance: Provenance,
     pub confidence: f32,
     pub warnings: Vec<String>,
+    pub current_task: Option<AgentTaskContext>,
+    pub last_activity_at: Option<String>,
+    pub activity_timeline: Vec<AgentActivityEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +81,18 @@ struct AgentSessionRecord {
     provenance: Provenance,
     confidence: f32,
     warnings: Vec<String>,
+    current_task: Option<AgentTaskContext>,
+    last_activity_at: Option<String>,
+    activity_timeline: VecDeque<AgentActivityEvent>,
+}
+
+impl AgentSessionRecord {
+    fn push_activity(&mut self, event: AgentActivityEvent) {
+        self.activity_timeline.push_back(event);
+        while self.activity_timeline.len() > MAX_ACTIVITY_TIMELINE {
+            self.activity_timeline.pop_front();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +146,141 @@ pub struct AgentSessionRegistry {
     completion_keys: Mutex<BoundedCompletionKeys>,
     identity_decisions: Mutex<HashMap<IdentityDecisionKey, IdentityDecision>>,
     selected_session: Mutex<Option<String>>,
+    input_trackers: Mutex<HashMap<(String, u64), InputTracker>>,
+}
+
+/// Bounded per-`(terminalId, generation)` tracker that reconstructs only the
+/// current input line of the shared visible TUI. It never treats terminal
+/// output as input (output never reaches this tracker) and it never invents a
+/// task when reconstruction is not reliable.
+#[derive(Debug, Clone, Default)]
+struct InputTracker {
+    text: String,
+    escape: Vec<u8>,
+    bracketed_paste: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrackerSignal {
+    /// Enter/CR committed a non-empty, reliably reconstructed input line.
+    Committed(String),
+    /// Ctrl+C observed; the current line (if any) was reset.
+    Interrupted,
+}
+
+impl InputTracker {
+    fn reset(&mut self) {
+        self.text.clear();
+        self.escape.clear();
+        self.bracketed_paste = false;
+    }
+
+    fn pop_char(&mut self) {
+        self.text.pop();
+    }
+
+    fn push_char(&mut self, ch: char) {
+        if self.text.len() + ch.len_utf8() > MAX_INPUT_BUFFER_BYTES {
+            // The line is too long to reconstruct reliably: drop it so we
+            // never invent a task from a truncated buffer.
+            self.reset();
+            return;
+        }
+        self.text.push(ch);
+    }
+
+    fn flush_printable(&mut self, printable: &mut Vec<u8>) {
+        if printable.is_empty() {
+            return;
+        }
+        for ch in String::from_utf8_lossy(&printable).chars() {
+            self.push_char(ch);
+        }
+        printable.clear();
+    }
+
+    fn finish_escape(&mut self, printable: &mut Vec<u8>) {
+        let escape = std::mem::take(&mut self.escape);
+        match escape.as_slice() {
+            b"\x1b[200~" => self.bracketed_paste = true,
+            b"\x1b[201~" => self.bracketed_paste = false,
+            b"\x1b[3~" => {
+                // Delete without cursor position: treated like backspace so
+                // stale text cannot become a task.
+                self.flush_printable(printable);
+                self.pop_char();
+            }
+            _ => {
+                // Arrow keys, Home/End, Alt sequences and other editing move
+                // the cursor in ways this bounded tracker cannot reconstruct.
+                // The line becomes unreliable: drop it instead of inventing a
+                // task from an edited buffer.
+                self.flush_printable(printable);
+                self.reset();
+            }
+        }
+    }
+
+    fn feed(&mut self, data: &[u8]) -> Vec<TrackerSignal> {
+        let mut signals = Vec::new();
+        let mut printable: Vec<u8> = Vec::new();
+        for &byte in data {
+            if !self.escape.is_empty() {
+                self.escape.push(byte);
+                if self.escape.len() > 32 {
+                    self.escape.clear();
+                    self.flush_printable(&mut printable);
+                    self.reset();
+                } else if self.escape.len() >= 3 && (0x40..=0x7e).contains(&byte) {
+                    self.finish_escape(&mut printable);
+                }
+                continue;
+            }
+            if byte == 0x1b {
+                self.flush_printable(&mut printable);
+                self.escape.push(byte);
+                continue;
+            }
+            match byte {
+                b'\r' | b'\n' => {
+                    self.flush_printable(&mut printable);
+                    if self.bracketed_paste {
+                        // Pasted content may contain newlines; the paste block
+                        // commits only after its closing marker plus Enter.
+                        self.text.push('\n');
+                    } else if !self.text.is_empty() {
+                        let text = std::mem::take(&mut self.text);
+                        self.escape.clear();
+                        signals.push(TrackerSignal::Committed(text));
+                    } else {
+                        self.escape.clear();
+                    }
+                }
+                b'\x08' | b'\x7f' => {
+                    self.flush_printable(&mut printable);
+                    self.pop_char();
+                }
+                0x03 => {
+                    self.flush_printable(&mut printable);
+                    let had_line = !self.text.is_empty() || self.bracketed_paste;
+                    self.reset();
+                    if had_line {
+                        signals.push(TrackerSignal::Interrupted);
+                    }
+                }
+                _ if byte.is_ascii_control() => {
+                    // Other control characters (e.g. Tab used for completion)
+                    // cannot be reconstructed faithfully: the line becomes
+                    // unreliable and is dropped.
+                    self.flush_printable(&mut printable);
+                    self.reset();
+                }
+                _ => printable.push(byte),
+            }
+        }
+        self.flush_printable(&mut printable);
+        signals
+    }
 }
 
 impl AgentSessionRegistry {
@@ -181,6 +347,8 @@ impl AgentSessionRegistry {
                     provider_turn_id: None,
                     created_at: observed_at.to_string(),
                     updated_at: observed_at.to_string(),
+                    current_task: None,
+                    last_activity_at: None,
                 },
                 objective: None,
                 state,
@@ -190,6 +358,9 @@ impl AgentSessionRegistry {
                 provenance: registry_provenance(observed_at),
                 confidence: 0.75,
                 warnings: identity.identity_warnings.clone(),
+                current_task: None,
+                last_activity_at: None,
+                activity_timeline: VecDeque::new(),
             }
         });
         update_identity_from_snapshot(record, terminal, &identity);
@@ -225,7 +396,272 @@ impl AgentSessionRegistry {
         if let Some(record) = sessions.get_mut(&reference.agent_session_id) {
             record.state = AgentState::Working;
             record.reference.updated_at = observed_at.to_string();
+            record.last_activity_at = Some(observed_at.to_string());
         }
+    }
+
+    /// Observe raw bytes typed/pasted by the user into the shared visible TUI.
+    /// Only committed (Enter) input can become a task; output never reaches
+    /// this method. Jarvis writes use [`Self::observe_jarvis_send`] instead so
+    /// their provenance stays distinct.
+    pub fn observe_user_input(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        data: &[u8],
+        observed_at: &str,
+    ) {
+        let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
+            return;
+        };
+        let Ok(mut trackers) = self.input_trackers.lock() else {
+            return;
+        };
+        let key = (terminal.terminal_id.clone(), terminal.generation);
+        let tracker = trackers.entry(key.clone()).or_default();
+        let signals = tracker.feed(data);
+        if trackers.len() > MAX_INPUT_TRACKERS {
+            self.prune_input_trackers_locked(&mut trackers);
+        }
+        drop(trackers);
+
+        for signal in signals {
+            match signal {
+                TrackerSignal::Committed(text) => {
+                    if is_agent_launch_command(&text) {
+                        // Launching the CLI is session startup, not a task.
+                        continue;
+                    }
+                    let local_command = is_local_agent_command(&text);
+                    let excerpt = bounded_excerpt(&text, MAX_ACTIVITY_EXCERPT_BYTES);
+                    let Ok(mut sessions) = self.sessions.lock() else {
+                        return;
+                    };
+                    let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
+                        continue;
+                    };
+                    record.state = AgentState::Working;
+                    record.reference.updated_at = observed_at.to_string();
+                    record.last_activity_at = Some(observed_at.to_string());
+                    if local_command {
+                        // Slash commands are real activity but never replace
+                        // the main task.
+                        record.push_activity(activity_event(
+                            AgentActivityKind::PromptSubmitted,
+                            AgentInteractionSource::User,
+                            observed_at,
+                            Some(excerpt),
+                            0.7,
+                            true,
+                        ));
+                    } else {
+                        record.current_task = Some(AgentTaskContext {
+                            text: bounded_task_text(&text),
+                            source: AgentInteractionSource::User,
+                            started_at: observed_at.to_string(),
+                            completed_at: None,
+                            confidence: 0.65,
+                            untrusted: true,
+                        });
+                        record.push_activity(activity_event(
+                            AgentActivityKind::PromptSubmitted,
+                            AgentInteractionSource::User,
+                            observed_at,
+                            Some(excerpt),
+                            0.65,
+                            true,
+                        ));
+                    }
+                    sync_reference_enrichment(record);
+                }
+                TrackerSignal::Interrupted => {
+                    let Ok(mut sessions) = self.sessions.lock() else {
+                        return;
+                    };
+                    let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
+                        continue;
+                    };
+                    record.last_activity_at = Some(observed_at.to_string());
+                    // A Ctrl+C may abort a running turn or only clear the
+                    // line; without proof we never mark the task completed.
+                    record.push_activity(activity_event(
+                        AgentActivityKind::Interrupted,
+                        AgentInteractionSource::User,
+                        observed_at,
+                        None,
+                        0.6,
+                        true,
+                    ));
+                    sync_reference_enrichment(record);
+                }
+            }
+        }
+    }
+
+    /// Record a task originated by Jarvis. The caller must invoke this only
+    /// AFTER a successful PTY write of a confirmed Pending Action; generation
+    /// and liveness are re-validated by the caller before the write.
+    pub fn observe_jarvis_send(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        text: &str,
+        observed_at: &str,
+    ) {
+        let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
+            return;
+        };
+        let excerpt = bounded_excerpt(text, MAX_ACTIVITY_EXCERPT_BYTES);
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
+            return;
+        };
+        record.state = AgentState::Working;
+        record.reference.updated_at = observed_at.to_string();
+        record.last_activity_at = Some(observed_at.to_string());
+        record.current_task = Some(AgentTaskContext {
+            text: bounded_task_text(text),
+            source: AgentInteractionSource::Jarvis,
+            started_at: observed_at.to_string(),
+            completed_at: None,
+            // The backend knows exactly which bytes were written.
+            confidence: 0.95,
+            untrusted: false,
+        });
+        record.push_activity(activity_event(
+            AgentActivityKind::PromptSubmitted,
+            AgentInteractionSource::Jarvis,
+            observed_at,
+            Some(excerpt),
+            0.95,
+            false,
+        ));
+        sync_reference_enrichment(record);
+    }
+
+    /// Record a confirmed, successfully written `agent.abort` (Ctrl+C). The
+    /// task is intentionally NOT marked completed: without proof, we only
+    /// record the interruption.
+    pub fn observe_abort(&self, terminal: &TerminalAgentSnapshot, observed_at: &str) {
+        let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
+            return;
+        };
+        if let Ok(mut trackers) = self.input_trackers.lock() {
+            trackers.remove(&(terminal.terminal_id.clone(), terminal.generation));
+        }
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
+            return;
+        };
+        record.last_activity_at = Some(observed_at.to_string());
+        record.push_activity(activity_event(
+            AgentActivityKind::Interrupted,
+            AgentInteractionSource::Jarvis,
+            observed_at,
+            None,
+            0.9,
+            false,
+        ));
+        sync_reference_enrichment(record);
+    }
+
+    /// Throttled (max once per second per session) update of `lastActivityAt`
+    /// from terminal output. Output is never stored and never becomes a task.
+    pub fn observe_output(&self, terminal_id: &str, generation: u64, observed_at: &str) {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        for record in sessions.values_mut() {
+            if record.reference.terminal_id.as_deref() != Some(terminal_id)
+                || record.reference.generation != generation
+                || record.state == AgentState::Exited
+            {
+                continue;
+            }
+            let due = record.last_activity_at.as_deref().is_none_or(|last| {
+                seconds_since(last, observed_at) >= OUTPUT_ACTIVITY_THROTTLE_SECS
+            });
+            if due {
+                record.last_activity_at = Some(observed_at.to_string());
+            }
+            break;
+        }
+    }
+
+    /// Append a throttled `working` activity while the user is actively
+    /// typing into a session that already has a task.
+    pub fn observe_user_typing(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        data: &[u8],
+        observed_at: &str,
+    ) {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        let Some(record) = sessions.values_mut().find(|record| {
+            record.reference.terminal_id.as_deref() == Some(terminal.terminal_id.as_str())
+                && record.reference.generation == terminal.generation
+        }) else {
+            return;
+        };
+        if record.current_task.is_none() || data.is_empty() {
+            return;
+        }
+        record.last_activity_at = Some(observed_at.to_string());
+        let working_due = record.activity_timeline.back().map_or(true, |last| {
+            last.kind != AgentActivityKind::Working
+                || seconds_since(&last.occurred_at, observed_at) >= WORKING_ACTIVITY_MIN_GAP_SECS
+        });
+        if working_due {
+            record.push_activity(activity_event(
+                AgentActivityKind::Working,
+                AgentInteractionSource::User,
+                observed_at,
+                None,
+                0.5,
+                true,
+            ));
+        }
+    }
+
+    pub fn activity(
+        &self,
+        reference: &AgentSessionRef,
+        limit: usize,
+    ) -> Result<Vec<AgentActivityEvent>, crate::jarvis::agent_adapter::AgentSourceError> {
+        let limit = limit.clamp(1, MAX_ACTIVITY_LIMIT);
+        let sessions = self.sessions.lock().map_err(|_| {
+            crate::jarvis::agent_adapter::AgentSourceError::unavailable("registry lock unavailable")
+        })?;
+        let record = sessions
+            .get(&reference.agent_session_id)
+            .filter(|record| record.reference.workspace_id == reference.workspace_id)
+            .ok_or_else(|| crate::jarvis::agent_adapter::AgentSourceError {
+                code: "agent_session_not_found".to_string(),
+                message: "agent session not found".to_string(),
+            })?;
+        Ok(record
+            .activity_timeline
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    fn prune_input_trackers_locked(&self, trackers: &mut HashMap<(String, u64), InputTracker>) {
+        let Ok(sessions) = self.sessions.lock() else {
+            return;
+        };
+        trackers.retain(|(terminal_id, generation), _| {
+            sessions.values().any(|record| {
+                record.reference.terminal_id.as_deref() == Some(terminal_id.as_str())
+                    && record.reference.generation == *generation
+            })
+        });
     }
 
     pub fn observe_completion(
@@ -289,6 +725,19 @@ impl AgentSessionRegistry {
         }
         record.reference.updated_at = observed_at.to_string();
         record.state = AgentState::Waiting;
+        record.last_activity_at = Some(observed_at.to_string());
+        if let Some(task) = record.current_task.as_mut() {
+            task.completed_at = Some(observed_at.to_string());
+        }
+        record.push_activity(activity_event(
+            AgentActivityKind::CompletionObserved,
+            AgentInteractionSource::System,
+            observed_at,
+            None,
+            1.0,
+            true,
+        ));
+        sync_reference_enrichment(record);
         record.last_turn = Some(AgentTurnContext {
             turn_id: observation.provider_turn_id,
             state: AgentState::Waiting,
@@ -305,6 +754,14 @@ impl AgentSessionRegistry {
         let result_available = result.is_some();
         if result_available {
             record.last_result = result;
+            record.push_activity(activity_event(
+                AgentActivityKind::ResultAvailable,
+                AgentInteractionSource::System,
+                observed_at,
+                None,
+                0.35,
+                true,
+            ));
         }
         if result_available {
             push_warning(
@@ -331,6 +788,16 @@ impl AgentSessionRegistry {
             {
                 record.state = AgentState::Exited;
                 record.reference.updated_at = observed_at.to_string();
+                record.last_activity_at = Some(observed_at.to_string());
+                record.push_activity(activity_event(
+                    AgentActivityKind::Exited,
+                    AgentInteractionSource::System,
+                    observed_at,
+                    None,
+                    1.0,
+                    true,
+                ));
+                sync_reference_enrichment(record);
             }
         }
         self.prune_sessions_locked(&mut sessions);
@@ -405,6 +872,9 @@ impl AgentSessionRegistry {
             provenance: record.provenance.clone(),
             confidence: record.confidence,
             warnings: record.warnings.clone(),
+            current_task: record.current_task.clone(),
+            last_activity_at: record.last_activity_at.clone(),
+            activity_timeline: record.activity_timeline.iter().cloned().collect(),
         })
     }
 
@@ -711,7 +1181,91 @@ fn mark_previous_generations_exited(
         {
             record.state = AgentState::Exited;
             record.reference.updated_at = observed_at.to_string();
+            record.last_activity_at = Some(observed_at.to_string());
+            record.push_activity(activity_event(
+                AgentActivityKind::Exited,
+                AgentInteractionSource::System,
+                observed_at,
+                None,
+                1.0,
+                true,
+            ));
+            sync_reference_enrichment(record);
         }
+    }
+}
+
+fn sync_reference_enrichment(record: &mut AgentSessionRecord) {
+    record.reference.current_task = record.current_task.clone();
+    record.reference.last_activity_at = record.last_activity_at.clone();
+}
+
+fn activity_event(
+    kind: AgentActivityKind,
+    source: AgentInteractionSource,
+    occurred_at: &str,
+    text_excerpt: Option<String>,
+    confidence: f32,
+    untrusted: bool,
+) -> AgentActivityEvent {
+    AgentActivityEvent {
+        id: format!(
+            "activity:{}-{}",
+            std::process::id(),
+            NEXT_ACTIVITY_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+        kind,
+        source,
+        occurred_at: occurred_at.to_string(),
+        text_excerpt,
+        confidence,
+        untrusted,
+    }
+}
+
+fn bounded_task_text(text: &str) -> String {
+    bounded_excerpt(text, MAX_TASK_TEXT_BYTES)
+}
+
+fn bounded_excerpt(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// A committed line that launches an agent CLI is session startup, never a
+/// task. Reuses the runtime detector so the rule matches identity exactly.
+fn is_agent_launch_command(text: &str) -> bool {
+    detect_from_command(text).is_some()
+}
+
+/// Local TUI commands may become activity events but never replace the main
+/// task: `/model`, `/help`, `/clear`.
+fn is_local_agent_command(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or_default();
+    let token = first
+        .strip_prefix('/')
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+    matches!(token.as_str(), "model" | "help" | "clear")
+}
+
+/// Approximate seconds between two RFC3339 timestamps produced by the same
+/// clock. Used only for throttling decisions, never for absolute time.
+fn seconds_since(earlier: &str, later: &str) -> u64 {
+    let parse = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|dt| dt.timestamp())
+    };
+    match (parse(earlier), parse(later)) {
+        (Some(a), Some(b)) => (b - a).max(0) as u64,
+        _ => u64::MAX,
     }
 }
 
@@ -762,10 +1316,14 @@ fn push_warning(warnings: &mut Vec<String>, warning: &str) {
 #[cfg(test)]
 mod tests {
     use super::super::agent_adapter::{AgentContextSource, LiveAgentContextSource};
-    use super::super::types::{AgentResult, AgentState, Provenance};
+    use super::super::types::{
+        AgentActivityKind, AgentInteractionSource, AgentResult, AgentState, AgentTaskContext,
+        Provenance,
+    };
     use super::{
         fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation,
-        TerminalAgentSnapshot,
+        TerminalAgentSnapshot, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT, MAX_ACTIVITY_TIMELINE,
+        MAX_TASK_TEXT_BYTES,
     };
 
     fn terminal(generation: u64, alive: bool) -> TerminalAgentSnapshot {
@@ -1103,5 +1661,403 @@ mod tests {
 
         registry.reconcile(&[], "third");
         assert_eq!(registry.status(&session).unwrap().state, AgentState::Exited);
+    }
+
+    // ---- Phase 7: agent session intelligence -----------------------------
+
+    fn task_of(status: &super::AgentRegistryStatus) -> &AgentTaskContext {
+        status
+            .current_task
+            .as_ref()
+            .expect("expected a current task")
+    }
+
+    fn commit(
+        registry: &AgentSessionRegistry,
+        terminal: &TerminalAgentSnapshot,
+        text: &str,
+        at: &str,
+    ) {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(b'\r');
+        registry.observe_user_input(terminal, &bytes, at);
+    }
+
+    #[test]
+    fn user_committed_input_becomes_a_user_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(&registry, &terminal, "fix the bug", "2026-08-07T00:00:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        let task = task_of(&status);
+        assert_eq!(task.text, "fix the bug");
+        assert_eq!(task.source, AgentInteractionSource::User);
+        assert_eq!(task.confidence, 0.65);
+        assert!(task.untrusted);
+        assert!(task.completed_at.is_none());
+        assert_eq!(status.state, AgentState::Working);
+        assert!(status.activity_timeline.iter().any(|event| {
+            event.kind == AgentActivityKind::PromptSubmitted
+                && event.source == AgentInteractionSource::User
+                && event.text_excerpt.as_deref() == Some("fix the bug")
+        }));
+        assert_eq!(
+            session.current_task.as_ref().map(|task| task.text.as_str()),
+            Some("fix the bug")
+        );
+    }
+
+    #[test]
+    fn jarvis_send_registers_a_trusted_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        started(&registry, 1);
+        registry.observe_jarvis_send(&terminal, "refactor the module\n", "2026-08-07T00:00:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        let task = task_of(&status);
+        assert_eq!(task.source, AgentInteractionSource::Jarvis);
+        assert_eq!(task.confidence, 0.95);
+        assert!(!task.untrusted);
+        assert_eq!(task.text, "refactor the module\n");
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.source == AgentInteractionSource::Jarvis && !event.untrusted));
+    }
+
+    #[test]
+    fn without_successful_write_or_commit_no_task_is_registered() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        started(&registry, 1);
+
+        // A partial line never becomes a task.
+        registry.observe_user_input(&terminal, b"draft", "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+
+        // A send that never reached the PTY (failed pending action) leaves no task.
+        let registry = AgentSessionRegistry::default();
+        started(&registry, 1);
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+    }
+
+    #[test]
+    fn backspace_reconstructs_the_committed_line() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        registry.observe_user_input(&terminal, b"fixx\x08 the bug\r", "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(
+            task_of(&registry.status(&session).unwrap()).text,
+            "fix the bug"
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_commits_multiline_input() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        registry.observe_user_input(
+            &terminal,
+            b"\x1b[200~first\nsecond\x1b[201~\r",
+            "2026-08-07T00:00:00Z",
+        );
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(
+            task_of(&registry.status(&session).unwrap()).text,
+            "first\nsecond"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_interrupts_without_inventing_a_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        registry.observe_user_input(&terminal, b"half a line\x03", "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        assert!(status.current_task.is_none());
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.kind == AgentActivityKind::Interrupted));
+
+        // The tracker still works after the interruption.
+        commit(&registry, &terminal, "next task", "2026-08-07T00:01:00Z");
+        assert_eq!(
+            task_of(&registry.status(&session).unwrap()).text,
+            "next task"
+        );
+    }
+
+    #[test]
+    fn local_commands_are_activity_but_never_replace_the_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(
+            &registry,
+            &terminal,
+            "refactor the core",
+            "2026-08-07T00:00:00Z",
+        );
+        commit(&registry, &terminal, "/model", "2026-08-07T00:01:00Z");
+        commit(&registry, &terminal, "/help", "2026-08-07T00:02:00Z");
+        commit(&registry, &terminal, "/clear", "2026-08-07T00:03:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        assert_eq!(task_of(&status).text, "refactor the core");
+        let prompts = status
+            .activity_timeline
+            .iter()
+            .filter(|event| event.kind == AgentActivityKind::PromptSubmitted)
+            .count();
+        assert_eq!(prompts, 4);
+    }
+
+    #[test]
+    fn agent_launch_command_is_session_startup_not_a_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(&registry, &terminal, "codex", "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+    }
+
+    #[test]
+    fn output_never_becomes_a_task_and_is_throttled() {
+        let registry = AgentSessionRegistry::default();
+        started(&registry, 1);
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+
+        registry.observe_output("terminal-1", 1, "2026-08-07T00:00:00Z");
+        assert_eq!(
+            registry
+                .status(&session)
+                .unwrap()
+                .last_activity_at
+                .as_deref(),
+            Some("2026-08-07T00:00:00Z")
+        );
+        assert!(registry.status(&session).unwrap().current_task.is_none());
+
+        // Within the 1s throttle the timestamp is not advanced.
+        registry.observe_output("terminal-1", 1, "2026-08-07T00:00:00.500Z");
+        assert_eq!(
+            registry
+                .status(&session)
+                .unwrap()
+                .last_activity_at
+                .as_deref(),
+            Some("2026-08-07T00:00:00Z")
+        );
+        registry.observe_output("terminal-1", 1, "2026-08-07T00:00:01.100Z");
+        assert_eq!(
+            registry
+                .status(&session)
+                .unwrap()
+                .last_activity_at
+                .as_deref(),
+            Some("2026-08-07T00:00:01.100Z")
+        );
+    }
+
+    #[test]
+    fn task_text_and_timeline_are_bounded() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        let long_text = format!("\u{1f600} {}", "x".repeat(3000));
+        commit(&registry, &terminal, &long_text, "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        let task = task_of(&status);
+        assert!(task.text.len() <= MAX_TASK_TEXT_BYTES);
+
+        // Flood the timeline beyond the bound.
+        for index in 0..40 {
+            registry.observe_jarvis_send(
+                &terminal,
+                &format!("prompt {index}"),
+                &format!("2026-08-07T00:{:02}:00Z", index),
+            );
+        }
+        let timeline = &registry.status(&session).unwrap().activity_timeline;
+        assert!(timeline.len() <= MAX_ACTIVITY_TIMELINE);
+    }
+
+    #[test]
+    fn generation_and_workspace_isolate_tasks_and_activity() {
+        let registry = AgentSessionRegistry::default();
+        let first = terminal(1, true);
+        commit(
+            &registry,
+            &first,
+            "task in generation 1",
+            "2026-08-07T00:00:00Z",
+        );
+
+        let mut other = terminal(1, true);
+        other.terminal_id = "terminal-2".to_string();
+        other.workspace_id = "workspace-b".to_string();
+        commit(
+            &registry,
+            &other,
+            "task in workspace b",
+            "2026-08-07T00:00:10Z",
+        );
+
+        let second_generation = terminal(2, true);
+        commit(
+            &registry,
+            &second_generation,
+            "task in generation 2",
+            "2026-08-07T00:00:20Z",
+        );
+
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert_eq!(sessions.len(), 2);
+        let first_status = registry.status(&sessions[0]).unwrap();
+        let second_status = registry.status(&sessions[1]).unwrap();
+        assert_eq!(task_of(&first_status).text, "task in generation 1");
+        assert_eq!(task_of(&second_status).text, "task in generation 2");
+        assert_eq!(first_status.state, AgentState::Exited);
+
+        // Workspace isolation: the activity lookup of session A rejects a
+        // reference forged for another workspace.
+        let mut forged = sessions[0].clone();
+        forged.workspace_id = "workspace-b".to_string();
+        assert!(registry.activity(&forged, DEFAULT_ACTIVITY_LIMIT).is_err());
+
+        let workspace_b = registry.list_sessions("workspace-b").unwrap();
+        assert_eq!(workspace_b.len(), 1);
+        assert_eq!(
+            task_of(&registry.status(&workspace_b[0]).unwrap()).text,
+            "task in workspace b"
+        );
+    }
+
+    #[test]
+    fn activity_lookup_is_bounded() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        for index in 0..20 {
+            registry.observe_jarvis_send(
+                &terminal,
+                &format!("prompt {index}"),
+                &format!("2026-08-07T00:{:02}:00Z", index),
+            );
+        }
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(
+            registry.activity(&session, 100).unwrap().len(),
+            MAX_ACTIVITY_LIMIT
+        );
+        assert_eq!(registry.activity(&session, 0).unwrap().len(), 1);
+        assert_eq!(registry.activity(&session, 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn completion_marks_the_task_completed_but_keeps_the_session_open() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(&registry, &terminal, "fix the bug", "2026-08-07T00:00:00Z");
+        assert!(registry.observe_completion(
+            &terminal,
+            CompletionObservation {
+                provider: "codex".to_string(),
+                event_id: Some("event-done".to_string()),
+                provider_session_id: None,
+                provider_turn_id: None,
+                occurred_at: None,
+            },
+            Some(AgentResult {
+                content: "done".to_string(),
+                truncated: false,
+                untrusted: true,
+                provenance: Provenance::untrusted("terminal-fallback", "now"),
+            }),
+            "2026-08-07T00:01:00Z",
+        ));
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
+        assert_eq!(
+            task_of(&status).completed_at.as_deref(),
+            Some("2026-08-07T00:01:00Z")
+        );
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.kind == AgentActivityKind::CompletionObserved));
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.kind == AgentActivityKind::ResultAvailable));
+        assert_eq!(
+            registry.last_result(&session).unwrap().unwrap().content,
+            "done"
+        );
+
+        // A later task restarts the cycle; completion again marks it done.
+        commit(&registry, &terminal, "second task", "2026-08-07T00:02:00Z");
+        assert!(registry
+            .status(&session)
+            .unwrap()
+            .current_task
+            .as_ref()
+            .unwrap()
+            .completed_at
+            .is_none());
+    }
+
+    #[test]
+    fn abort_records_jarvis_interruption_without_completing_the_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(
+            &registry,
+            &terminal,
+            "long running task",
+            "2026-08-07T00:00:00Z",
+        );
+        registry.observe_abort(&terminal, "2026-08-07T00:01:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        let task = task_of(&status);
+        assert!(task.completed_at.is_none());
+        assert!(status.activity_timeline.iter().any(|event| {
+            event.kind == AgentActivityKind::Interrupted
+                && event.source == AgentInteractionSource::Jarvis
+                && !event.untrusted
+        }));
+        assert_eq!(
+            status.last_activity_at.as_deref(),
+            Some("2026-08-07T00:01:00Z")
+        );
+    }
+
+    #[test]
+    fn session_exit_adds_an_exited_activity_without_touching_the_task() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(&registry, &terminal, "final task", "2026-08-07T00:00:00Z");
+        registry.observe_terminal_exit("terminal-1", 1, "2026-08-07T00:01:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        assert_eq!(status.state, AgentState::Exited);
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.kind == AgentActivityKind::Exited));
+        assert!(task_of(&status).completed_at.is_none());
     }
 }

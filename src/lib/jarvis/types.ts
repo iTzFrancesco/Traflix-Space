@@ -206,6 +206,37 @@ export interface TerminalSummary {
   provenance: Provenance;
 }
 
+export type AgentInteractionSource = "user" | "jarvis" | "system";
+
+export type AgentActivityKind =
+  | "prompt_submitted"
+  | "working"
+  | "completion_observed"
+  | "result_available"
+  | "interrupted"
+  | "exited";
+
+/** Current operational task of an agent session, reconstructed from the shared visible PTY. */
+export interface AgentTaskContext {
+  text: string;
+  source: AgentInteractionSource;
+  startedAt: string;
+  completedAt?: string;
+  confidence: number;
+  untrusted: boolean;
+}
+
+/** One bounded event of the semantic activity timeline of an agent session. */
+export interface AgentActivityEvent {
+  id: string;
+  kind: AgentActivityKind;
+  source: AgentInteractionSource;
+  occurredAt: string;
+  textExcerpt?: string;
+  confidence: number;
+  untrusted: boolean;
+}
+
 export interface AgentSessionRef {
   agentSessionId: string;
   provider: string;
@@ -223,6 +254,8 @@ export interface AgentSessionRef {
   providerTurnId?: string;
   createdAt: string;
   updatedAt: string;
+  currentTask?: AgentTaskContext;
+  lastActivityAt?: string;
 }
 
 export interface AgentTurnContext {
@@ -269,6 +302,8 @@ export interface AgentSessionContext {
   lastTurn?: AgentTurnContext;
   lastResult?: AgentResult;
   completionNotification?: AgentCompletionNotification;
+  currentTask?: AgentTaskContext;
+  lastActivityAt?: string;
   messages?: AgentMessage[];
   provenance: Provenance;
   confidence: number;

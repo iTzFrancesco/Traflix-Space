@@ -297,6 +297,9 @@ impl TerminalSession {
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 32768];
             let mut natural_exit = false;
+            // Output-driven `lastActivityAt` updates are throttled to at most
+            // one per second so PTY chunks never touch the registry per chunk.
+            let mut last_output_observe: Option<std::time::Instant> = None;
 
             loop {
                 if stop.load(Ordering::Acquire) {
@@ -346,6 +349,22 @@ impl TerminalSession {
                         sequence,
                     },
                 );
+
+                if registry_is_agent_terminal {
+                    let due = last_output_observe.map_or(true, |instant| {
+                        instant.elapsed() >= std::time::Duration::from_secs(1)
+                    });
+                    if due {
+                        last_output_observe = Some(std::time::Instant::now());
+                        if let Some(state) = app_reader.try_state::<crate::jarvis::JarvisState>() {
+                            state.registry.observe_output(
+                                &id,
+                                registry_generation,
+                                &chrono::Utc::now().to_rfc3339(),
+                            );
+                        }
+                    }
+                }
             }
 
             if natural_exit {

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { JarvisChatPanel } from "./JarvisChatPanel";
+import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
 
 interface JarvisExpandedPanelProps {
@@ -26,6 +27,7 @@ interface JarvisExpandedPanelProps {
   onVoiceCancel: () => void;
   ttsStatus: TtsStatusView;
   onStopTts: () => void;
+  activities: ActivityCheckpoint[];
 }
 
 export function JarvisExpandedPanel(props: JarvisExpandedPanelProps) {

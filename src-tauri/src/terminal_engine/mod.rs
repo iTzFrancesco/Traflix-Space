@@ -35,6 +35,20 @@ pub struct TerminalManager {
     detector_started: std::sync::atomic::AtomicBool,
 }
 
+/// Who wrote bytes into a PTY. The registry uses this to keep user prompts,
+/// Jarvis follow-ups and backend control signals provenance-distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalInputOrigin {
+    /// Typed/pasted by the user in the shared visible TUI.
+    User,
+    /// Jarvis follow-up written after a confirmed Pending Action.
+    JarvisPrompt,
+    /// Backend-generated Ctrl+C (confirmed `agent.abort`).
+    JarvisAbort,
+    /// Internal writes that must not be observed as user input.
+    Internal,
+}
+
 /// Current terminal location and the branch resolved for that exact location.
 /// Keeping the two values together prevents the title bar from showing a branch
 /// that belongs to a previous directory after rapid `cd` commands.
@@ -189,6 +203,21 @@ impl TerminalManager {
     }
 
     pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
+        self.write_typed(app, id, data, TerminalInputOrigin::User)
+            .await
+    }
+
+    /// Write into the PTY and observe the write according to its origin.
+    /// User writes feed the bounded input tracker (a task is registered only
+    /// when Enter commits a reliable line); Jarvis writes are registered by
+    /// the caller with the exact text after this call succeeds.
+    pub async fn write_typed(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        data: &[u8],
+        origin: TerminalInputOrigin,
+    ) -> Result<(), String> {
         let session = self
             .sessions
             .get(id)
@@ -219,7 +248,16 @@ impl TerminalManager {
 
         drop(session);
         if agent_snapshot.is_agent_terminal {
-            notify_agent_input(&app, &agent_snapshot);
+            match origin {
+                TerminalInputOrigin::User => notify_agent_user_input(&app, &agent_snapshot, data),
+                TerminalInputOrigin::JarvisAbort => {
+                    notify_agent_abort(&app, &agent_snapshot);
+                }
+                TerminalInputOrigin::JarvisPrompt | TerminalInputOrigin::Internal => {
+                    // Jarvis tasks are registered by chat.rs only after this
+                    // call succeeds, with the exact validated text.
+                }
+            }
         }
         Ok(())
     }
@@ -867,11 +905,23 @@ fn notify_agent_started(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
     }
 }
 
-fn notify_agent_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+fn notify_agent_user_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot, data: &[u8]) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        let observed_at = chrono::Utc::now().to_rfc3339();
+        state
+            .registry
+            .observe_user_input(snapshot, data, &observed_at);
+        state
+            .registry
+            .observe_user_typing(snapshot, data, &observed_at);
+    }
+}
+
+fn notify_agent_abort(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
     if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
         state
             .registry
-            .observe_input(snapshot, &chrono::Utc::now().to_rfc3339());
+            .observe_abort(snapshot, &chrono::Utc::now().to_rfc3339());
     }
 }
 

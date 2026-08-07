@@ -4,6 +4,7 @@ import { invokeWithTimeout } from "../timeout";
 import type {
   ActiveWorkspaceCapture,
   AppSettings,
+  AgentActivityEvent,
   AgentMessage,
   AgentResult,
   AgentSessionContext,
@@ -158,6 +159,24 @@ export function agentGetMessages(
       invoke<ToolEnvelope<AgentMessage[]>>("jarvis_agent_get_messages", {
         workspaceId,
         agentSessionId,
+        requestId,
+      }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function agentActivity(
+  workspaceId: string,
+  agentSessionId: string,
+  limit = 8,
+  requestId = crypto.randomUUID(),
+): Promise<ToolEnvelope<AgentActivityEvent[]>> {
+  return invokeWithTimeout(
+    () =>
+      invoke<ToolEnvelope<AgentActivityEvent[]>>("jarvis_agent_activity", {
+        workspaceId,
+        agentSessionId,
+        limit,
         requestId,
       }),
     READ_TIMEOUT_MS,

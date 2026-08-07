@@ -108,6 +108,8 @@ fn fake_session(
             provider_turn_id: None,
             created_at: "2026-08-06T00:00:00Z".to_string(),
             updated_at: "2026-08-06T00:00:00Z".to_string(),
+            current_task: None,
+            last_activity_at: None,
         },
         objective: Some("Synthetic objective".to_string()),
         state,
@@ -706,6 +708,14 @@ impl AgentContextSource for FailingSource {
         &self,
         _session: &super::types::AgentSessionRef,
     ) -> Result<Vec<AgentMessage>, AgentSourceError> {
+        Err(AgentSourceError::unavailable("synthetic source failure"))
+    }
+
+    fn get_activity(
+        &self,
+        _session: &super::types::AgentSessionRef,
+        _limit: usize,
+    ) -> Result<Vec<super::types::AgentActivityEvent>, AgentSourceError> {
         Err(AgentSourceError::unavailable("synthetic source failure"))
     }
 }

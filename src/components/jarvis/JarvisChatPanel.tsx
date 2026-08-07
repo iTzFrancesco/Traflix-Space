@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import { ArrowUpRight, Bot, ShieldCheck, Square } from "lucide-react";
 import { JarvisChatInput, CancelButton } from "./JarvisChatInput";
+import { JarvisActivityStrip } from "./JarvisActivityStrip";
 import { JarvisPendingActionCard } from "./JarvisPendingActionCard";
 import { JarvisTranscriptCard } from "./JarvisTranscriptCard";
+import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView } from "../../lib/jarvis/types";
 
 interface Props {
@@ -29,12 +31,14 @@ interface Props {
   onVoiceCancel: () => void;
   ttsStatus: TtsStatusView;
   onStopTts: () => void;
+  activities: ActivityCheckpoint[];
 }
 
 export function JarvisChatPanel(props: Props) {
   const pending = useMemo(() => props.pendingActions.filter((action) => action.status === "pending" && action.invocation.targetWorkspaceId === props.workspaceId), [props.pendingActions, props.workspaceId]);
   return (
     <div className="p-4">
+      <JarvisActivityStrip activities={props.activities} workspaceId={props.workspaceId} />
       <div className="max-h-[min(420px,56vh)] space-y-3 overflow-y-auto pr-1">
         {props.conversation.length === 0 && <div className="rounded-xl border border-primary/20 bg-primary/[0.06] p-4"><p className="text-sm font-semibold text-neutral-text">Sono Jarvis.</p><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">Posso leggere Markdown consentito, osservare agenti e preparare operazioni da confermare. Questa conversazione resta nella workspace {props.workspaceName ?? "attiva"}.</p></div>}
         {props.conversation.map((message) => <div key={message.id} className={message.role === "user" ? "ml-10 rounded-xl bg-primary/[0.14] px-3 py-2" : "mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2"}><p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-text">{message.content}</p>{message.provider && <p className="mt-1 text-[10px] text-neutral-text-muted">{message.provider}</p>}</div>)}

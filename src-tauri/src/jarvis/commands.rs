@@ -1,9 +1,9 @@
-use crate::jarvis::agent_registry::IdentityDecision;
+use crate::jarvis::agent_registry::{IdentityDecision, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
-    AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
-    InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth, TerminalSummary,
-    ToolEnvelope, WorkspaceSummary,
+    AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
+    ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth,
+    TerminalSummary, ToolEnvelope, WorkspaceSummary,
 };
 use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::{WorkspaceConfig, WorkspaceRegistry};
@@ -158,6 +158,36 @@ pub async fn jarvis_agent_get_messages(
     JarvisToolService::new(&app.state::<JarvisState>().broker).agent_messages(
         &workspace_id,
         &agent_session_id,
+        request_id,
+        &observed_at,
+    )
+}
+
+#[tauri::command]
+pub async fn jarvis_agent_activity(
+    app: AppHandle,
+    workspace_id: String,
+    agent_session_id: String,
+    request_id: Option<String>,
+    limit: Option<u8>,
+) -> Result<ToolEnvelope<Vec<AgentActivityEvent>>, JarvisErrorEnvelope> {
+    let observed_at = now();
+    let workspace_registry = app.state::<WorkspaceRegistry>();
+    load_workspace(
+        &workspace_registry,
+        &workspace_id,
+        request_id.clone(),
+        &observed_at,
+    )
+    .await?;
+    let limit = limit
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_ACTIVITY_LIMIT)
+        .clamp(1, MAX_ACTIVITY_LIMIT);
+    JarvisToolService::new(&app.state::<JarvisState>().broker).agent_activity(
+        &workspace_id,
+        &agent_session_id,
+        limit,
         request_id,
         &observed_at,
     )

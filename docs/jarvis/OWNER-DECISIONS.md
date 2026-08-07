@@ -53,3 +53,32 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
   nessun wake word, ascolto continuo, full duplex o streaming.
 - Groq turbo e Edge TTS restano invariati; nessun nuovo provider e nessuna
   autonomia agent.
+
+## Fase 7 — Agent Session Intelligence
+
+- **PTY-first confermato**: l'utente resta l'operatore primario della TUI
+  visibile; Jarvis osserva la stessa sessione e scrive nello stesso PTY via
+  Pending Actions confermate. Niente `codex app-server`, `opencode serve` o
+  adapter provider in questa fase.
+- Il task corrente è effimero e bounded (2048 byte), con provenance
+  (`user`/`jarvis`/`system`), confidence e untrusted. Solo input committed
+  (Enter) può diventare un task; ricostruzioni non affidabili non producono
+  task inventati. I comandi di lancio agent sono startup, non task; `/model`,
+  `/help`, `/clear` sono attività ma non sostituiscono il task.
+- La timeline delle attività è bounded (32 eventi, kind semantici), con
+  `lastActivityAt` throttled (1s output, 10s working). `agent.activity` è
+  read-only con limit default 8 e max 16.
+- La provenance Jarvis è registrata solo dopo una scrittura PTY riuscita
+  (`agent.send` → `observe_jarvis_send`, confidence 0.95, trusted);
+  `agent.abort` registra interruzione senza completare il task.
+- Completion osserva `completed_at` e porta la sessione a `waiting`; l'uscita
+  aggiunge `exited`. Un'interruzione non completa mai il task senza prova.
+- I checkpoint `jarvis://activity` sono deterministici, generati dal backend
+  e mai dal modello; label senza terminalId/generation/IPC/JSON.
+- Widget collassato: nessun nome/conteggio agente; stato compatto con
+  priorità voce → agente → conferma → thinking → TTS → "Pronto quando vuoi".
+- Strip attività effimera nel pannello espanso (max 3), mai un messaggio di
+  conversazione. Nessun dashboard agent nella UI normale: la diagnostica
+  resta in Impostazioni → Advanced.
+- Nessuna persistenza per task, timeline e attività; la Fase 8 resta fuori
+  scope.

@@ -3,6 +3,7 @@ pub mod agent_adapter;
 pub mod agent_registry;
 pub mod cache;
 pub mod chat;
+pub mod checkpoints;
 pub mod commands;
 pub mod context_broker;
 pub mod documentation;

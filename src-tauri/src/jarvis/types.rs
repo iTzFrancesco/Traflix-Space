@@ -184,6 +184,62 @@ pub struct AgentSessionRef {
     pub provider_turn_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Compact operational task enrichment for `agent.list` and friends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_task: Option<AgentTaskContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+}
+
+/// Who originated an agent task or activity. Jarvis-sent prompts are recorded
+/// with `Jarvis` only after the backend has proven the PTY write succeeded.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentInteractionSource {
+    User,
+    Jarvis,
+    System,
+}
+
+/// The current operational task of an agent session, as reconstructed from the
+/// shared visible PTY. Never persisted, bounded to `MAX_TASK_TEXT_BYTES`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskContext {
+    pub text: String,
+    pub source: AgentInteractionSource,
+    pub started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    pub confidence: f32,
+    pub untrusted: bool,
+}
+
+/// Semantic activity kinds of an agent session. These are not raw scrollback
+/// lines: they are bounded, deduplicated interpretations of session signals.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityKind {
+    PromptSubmitted,
+    Working,
+    CompletionObserved,
+    ResultAvailable,
+    Interrupted,
+    Exited,
+}
+
+/// One bounded event of the semantic activity timeline of an agent session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityEvent {
+    pub id: String,
+    pub kind: AgentActivityKind,
+    pub source: AgentInteractionSource,
+    pub occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_excerpt: Option<String>,
+    pub confidence: f32,
+    pub untrusted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,6 +314,11 @@ pub struct AgentSessionContext {
     pub provenance: Provenance,
     pub confidence: f32,
     pub warnings: Vec<String>,
+    /// Compact task enrichment mirroring `reference.current_task`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_task: Option<AgentTaskContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -3,6 +3,7 @@ import { Mic, MicOff, Settings, X } from "lucide-react";
 import { JarvisExpandedPanel } from "./JarvisExpandedPanel";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
+import { collapsedJarvisStatus, type ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type { JarvisConversationMessage, JarvisProviderStatus, JarvisRequestState, JarvisUiIntent, PendingAction, TtsStatusView, VoiceActivationMode, VoiceRequestStatusView, WidgetPosition } from "../../lib/jarvis/types";
 
@@ -34,6 +35,7 @@ interface JarvisWidgetProps {
   onVoiceDiscard: () => void;
   ttsStatus: TtsStatusView;
   onStopTts: () => void;
+  activities: ActivityCheckpoint[];
 }
 
 export function JarvisWidget(props: JarvisWidgetProps) {
@@ -43,6 +45,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const setExpanded = useJarvisStore((state) => state.setExpanded);
   const setDragging = useJarvisStore((state) => state.setDragging);
   const updateWidgetPosition = useJarvisStore((state) => state.updateWidgetPosition);
+  const registrySessions = useJarvisStore((state) => state.registrySessions);
   const widgetRef = useRef<HTMLDivElement>(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const holdPressedRef = useRef(false);
@@ -68,7 +71,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   };
   const activeRequests = Object.values(props.requests).filter((request) => request.workspaceId === props.workspaceId && (request.status === "running" || request.status === "cancellation_requested")).length;
   const speaking = props.ttsStatus.status === "synthesizing" || props.ttsStatus.status === "playing";
-  const statusText = props.voiceError ? "Errore voce" : !props.workspaceName ? "Seleziona una workspace" : speaking ? "Sto parlando…" : activeRequests ? "Jarvis sta lavorando…" : "Pronto quando vuoi";
+  const statusText = collapsedJarvisStatus({ workspaceId: props.workspaceId, workspaceName: props.workspaceName, voiceError: props.voiceError, voiceRequest: props.voiceRequest, ttsStatus: props.ttsStatus, requests: props.requests, pendingActions: props.pendingActions, registrySessions });
   const voiceActive = props.voiceRequest?.status === "recording" || props.voiceRequest?.status === "armed";
   const voiceBusy = props.voiceRequest?.status === "transcribing" || props.voiceRequest?.status === "stopping";
   const handleVoiceClick = () => {
@@ -137,7 +140,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           <button type="button" data-jarvis-control onClick={props.onHide} className="ui-icon-button h-9 w-9" title="Nascondi Jarvis" aria-label="Nascondi Jarvis"><X size={17} /></button>
         </div>
       </div>
-      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} voiceError={props.voiceError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} onSendMessage={props.onSendMessage} onSendVoiceTranscript={props.onSendVoiceTranscript} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} voiceRequest={props.voiceRequest} activationMode={props.activationMode} onVoiceDiscard={props.onVoiceDiscard} onVoiceCancel={props.onVoiceCancel} ttsStatus={props.ttsStatus} onStopTts={props.onStopTts} />}
+      {expanded && <JarvisExpandedPanel workspaceId={props.workspaceId} workspaceName={props.workspaceName} conversation={props.conversation} pendingActions={props.pendingActions} requests={props.requests} chatError={props.chatError} voiceError={props.voiceError} providerStatus={props.providerStatus} uiIntents={props.uiIntents} followUps={props.followUps} activities={props.activities} onSendMessage={props.onSendMessage} onSendVoiceTranscript={props.onSendVoiceTranscript} onCancelRequest={props.onCancelRequest} onConfirmAction={props.onConfirmAction} onRejectAction={props.onRejectAction} onUpdateAction={props.onUpdateAction} onOpenTerminal={props.onOpenTerminal} voiceRequest={props.voiceRequest} activationMode={props.activationMode} onVoiceDiscard={props.onVoiceDiscard} onVoiceCancel={props.onVoiceCancel} ttsStatus={props.ttsStatus} onStopTts={props.onStopTts} />}
     </div>
   );
 }

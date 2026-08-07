@@ -2,6 +2,8 @@ use crate::jarvis::actions::{
     prompt_bytes, validate_agent_text, ActionError, PendingAction, PendingActionInput,
     PendingActionStatus,
 };
+use crate::jarvis::agent_registry::session_id_for;
+use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
 use crate::jarvis::model::{
     ModelCompletion, ModelError, ModelFunctionDefinition, ModelMessage, ModelRequest,
     ModelToolCall, ModelToolDefinition, ProviderStatus,
@@ -12,7 +14,7 @@ use crate::jarvis::types::{
     InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth, ToolEnvelope,
 };
 use crate::settings::store::{JarvisSettings, ModelProvider as SettingsProvider, SettingsManager};
-use crate::terminal_engine::TerminalManager;
+use crate::terminal_engine::{TerminalInputOrigin, TerminalManager};
 use crate::workspace::registry::{WorkspaceConfig, WorkspaceRegistry};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -203,21 +205,84 @@ pub async fn jarvis_chat(
     result
 }
 
+/// Close an open checkpoint on a failed chat setup so the ephemeral strip
+/// never keeps a stale running row for a failed request.
+fn fail_open_checkpoint(app: &AppHandle, invocation: &InvocationBinding, phase: &str, label: &str) {
+    emit_checkpoint(
+        app,
+        &invocation.request_id,
+        &invocation.target_workspace_id,
+        phase,
+        label,
+        JarvisActivityStatus::Failed,
+        None,
+    );
+}
+
 async fn run_chat(
     app: &AppHandle,
     request: JarvisChatRequest,
     cancellation: CancellationToken,
 ) -> Result<JarvisChatResponse, JarvisErrorEnvelope> {
     let observed_at = now();
-    let workspace = load_workspace(
+    emit_checkpoint(
+        app,
+        &request.invocation.request_id,
+        &request.invocation.target_workspace_id,
+        "checking_agents",
+        "Checking agents…",
+        JarvisActivityStatus::Running,
+        None,
+    );
+    let workspace = match load_workspace(
         app,
         &request.invocation.target_workspace_id,
         &request.invocation.request_id,
         &observed_at,
     )
-    .await?;
-    ensure_not_cancelled(&cancellation, &request.invocation, &observed_at)?;
-    let context = build_context_for_chat(app, &workspace, request.invocation.clone()).await?;
+    .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            fail_open_checkpoint(
+                app,
+                &request.invocation,
+                "checking_agents",
+                "Checking agents…",
+            );
+            return Err(error);
+        }
+    };
+    if let Err(error) = ensure_not_cancelled(&cancellation, &request.invocation, &observed_at) {
+        fail_open_checkpoint(
+            app,
+            &request.invocation,
+            "checking_agents",
+            "Checking agents…",
+        );
+        return Err(error);
+    }
+    let context = match build_context_for_chat(app, &workspace, request.invocation.clone()).await {
+        Ok(context) => context,
+        Err(error) => {
+            fail_open_checkpoint(
+                app,
+                &request.invocation,
+                "checking_agents",
+                "Checking agents…",
+            );
+            return Err(error);
+        }
+    };
+    emit_checkpoint(
+        app,
+        &request.invocation.request_id,
+        &request.invocation.target_workspace_id,
+        "checking_agents",
+        "Checking agents…",
+        JarvisActivityStatus::Done,
+        None,
+    );
     let state = app.state::<JarvisState>();
     let settings: JarvisSettings = app.state::<SettingsManager>().get().await.jarvis;
     state.memory.append_with_id(
@@ -437,6 +502,13 @@ pub async fn jarvis_confirm_action(
             &observed_at,
         ));
     }
+    let provider_label = record
+        .action
+        .provider
+        .as_deref()
+        .map(provider_display_name)
+        .unwrap_or_else(|| "agente".to_string());
+    let target_session_id = crate::jarvis::agent_registry::session_id_for(&snapshot);
     let result = match record.action.operation.as_str() {
         "agent.send" => {
             if !snapshot.is_agent_terminal
@@ -451,8 +523,33 @@ pub async fn jarvis_confirm_action(
                     .get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                emit_checkpoint(
+                    &app,
+                    &invocation.request_id,
+                    &invocation.target_workspace_id,
+                    "writing",
+                    &format!("Writing to {provider_label}…"),
+                    JarvisActivityStatus::Running,
+                    Some(target_session_id.clone()),
+                );
                 match prompt_bytes(text) {
-                    Ok(bytes) => manager.write(&app, &terminal_id, &bytes).await,
+                    Ok(bytes) => {
+                        let written = manager
+                            .write_typed(
+                                &app,
+                                &terminal_id,
+                                &bytes,
+                                TerminalInputOrigin::JarvisPrompt,
+                            )
+                            .await;
+                        if written.is_ok() {
+                            // Register the task only after a successful PTY
+                            // write; the backend knows the exact text, so
+                            // provenance and confidence are high.
+                            state.registry.observe_jarvis_send(&snapshot, text, &now());
+                        }
+                        written
+                    }
                     Err(_) => Err("invalid action payload".to_string()),
                 }
             }
@@ -465,25 +562,61 @@ pub async fn jarvis_confirm_action(
             {
                 Err("target is not a confirmed agent".to_string())
             } else {
-                manager.write(&app, &terminal_id, &[0x03]).await
+                emit_checkpoint(
+                    &app,
+                    &invocation.request_id,
+                    &invocation.target_workspace_id,
+                    "interrupting",
+                    &format!("Interrupting {provider_label}…"),
+                    JarvisActivityStatus::Running,
+                    Some(target_session_id.clone()),
+                );
+                manager
+                    .write_typed(
+                        &app,
+                        &terminal_id,
+                        &[0x03],
+                        TerminalInputOrigin::JarvisAbort,
+                    )
+                    .await
             }
         }
         "terminal.kill" => manager.kill(&app, &terminal_id).await,
         _ => Err("unsupported action".to_string()),
     };
     match result {
-        Ok(()) => state
-            .actions
-            .finish(&action_id, PendingActionStatus::Confirmed)
-            .ok_or_else(|| {
-                action_failure(
-                    "action state unavailable",
-                    "action_not_pending",
-                    &invocation,
-                    &observed_at,
-                )
-            }),
+        Ok(()) => {
+            emit_checkpoint(
+                &app,
+                &invocation.request_id,
+                &invocation.target_workspace_id,
+                "sent",
+                "Sent.",
+                JarvisActivityStatus::Done,
+                None,
+            );
+            state
+                .actions
+                .finish(&action_id, PendingActionStatus::Confirmed)
+                .ok_or_else(|| {
+                    action_failure(
+                        "action state unavailable",
+                        "action_not_pending",
+                        &invocation,
+                        &observed_at,
+                    )
+                })
+        }
         Err(error) => {
+            emit_checkpoint(
+                &app,
+                &invocation.request_id,
+                &invocation.target_workspace_id,
+                "writing",
+                "Scrittura non riuscita.",
+                JarvisActivityStatus::Failed,
+                None,
+            );
             state
                 .actions
                 .finish(&action_id, PendingActionStatus::Failed);
@@ -714,6 +847,15 @@ async fn execute_or_propose_tool(
                 )
             ),
         };
+        emit_checkpoint(
+            app,
+            &invocation.request_id,
+            &invocation.target_workspace_id,
+            "preparing",
+            "Preparing message…",
+            JarvisActivityStatus::Running,
+            Some(session_id_for(&snapshot)),
+        );
         let input = PendingActionInput {
             operation,
             description: "Operazione proposta dal modello; richiede conferma esplicita."
@@ -735,8 +877,28 @@ async fn execute_or_propose_tool(
             .with_active(&invocation.request_id, || state.actions.create(input))
         {
             Ok(action) => action,
-            Err(_) => return (json!({"error":"chat cancelled"}), None, None),
+            Err(_) => {
+                emit_checkpoint(
+                    app,
+                    &invocation.request_id,
+                    &invocation.target_workspace_id,
+                    "preparing",
+                    "Preparing message…",
+                    JarvisActivityStatus::Failed,
+                    Some(session_id_for(&snapshot)),
+                );
+                return (json!({"error":"chat cancelled"}), None, None);
+            }
         };
+        emit_checkpoint(
+            app,
+            &invocation.request_id,
+            &invocation.target_workspace_id,
+            "waiting_confirmation",
+            "Waiting for confirmation…",
+            JarvisActivityStatus::WaitingConfirmation,
+            Some(session_id_for(&snapshot)),
+        );
         return (
             json!({"pendingActionId": action.id, "status":"pending_confirmation", "executed":false}),
             Some(action),
@@ -770,6 +932,62 @@ async fn execute_or_propose_tool(
             json!({"intent":"open_terminal","executed":false}),
             None,
             Some(intent),
+        );
+    }
+    let read_checkpoint: Option<(String, String, Option<String>)> =
+        match call.function.name.as_str() {
+            "agent.list" => Some((
+                "checking_agents".to_string(),
+                "Checking agents…".to_string(),
+                None,
+            )),
+            "agent.status" => {
+                let session_id = args
+                    .get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let label = context
+                    .agent_sessions
+                    .iter()
+                    .find(|session| session.reference.agent_session_id == session_id)
+                    .map(|session| {
+                        format!(
+                            "Checking {}…",
+                            provider_display_name(&session.resolved_provider)
+                        )
+                    })
+                    .unwrap_or_else(|| "Checking agent…".to_string());
+                Some((
+                    "checking_agent".to_string(),
+                    label,
+                    Some(session_id.to_string()),
+                ))
+            }
+            "agent.last_result" => Some((
+                "reading_result".to_string(),
+                "Reading last result…".to_string(),
+                args.get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )),
+            "agent.activity" => Some((
+                "reading_activity".to_string(),
+                "Reading agent timeline…".to_string(),
+                args.get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )),
+            _ => None,
+        };
+    if let Some((phase, label, target)) = &read_checkpoint {
+        emit_checkpoint(
+            app,
+            &invocation.request_id,
+            &invocation.target_workspace_id,
+            phase,
+            label,
+            JarvisActivityStatus::Running,
+            target.clone(),
         );
     }
     let result = match call.function.name.as_str() {
@@ -814,6 +1032,35 @@ async fn execute_or_propose_tool(
                 })
                 .unwrap_or_else(|| json!({"error":"agent session or result unavailable"}))
         }
+        "agent.activity" => {
+            let session_id = args
+                .get("agentSessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(crate::jarvis::agent_registry::DEFAULT_ACTIVITY_LIMIT as u64)
+                .min(crate::jarvis::agent_registry::MAX_ACTIVITY_LIMIT as u64)
+                .max(1) as usize;
+            let session = context
+                .agent_sessions
+                .iter()
+                .find(|session| session.reference.agent_session_id == session_id);
+            let Some(session) = session else {
+                return (json!({"error":"agent_session_not_found"}), None, None);
+            };
+            match app
+                .state::<JarvisState>()
+                .broker
+                .source()
+                .get_activity(&session.reference, limit)
+            {
+                Ok(events) => serde_json::to_value(events)
+                    .unwrap_or_else(|_| json!({"error":"activity unavailable"})),
+                Err(_) => json!({"error":"agent activity unavailable"}),
+            }
+        }
         "markdown.read" => {
             let path = args
                 .get("relativePath")
@@ -827,6 +1074,22 @@ async fn execute_or_propose_tool(
         }
         _ => json!({"error":"unknown read-only tool"}),
     };
+    if let Some((phase, label, target)) = read_checkpoint {
+        let failed = result.get("error").is_some();
+        emit_checkpoint(
+            app,
+            &invocation.request_id,
+            &invocation.target_workspace_id,
+            &phase,
+            &label,
+            if failed {
+                JarvisActivityStatus::Failed
+            } else {
+                JarvisActivityStatus::Done
+            },
+            target,
+        );
+    }
     (result, None, None)
 }
 
@@ -861,6 +1124,7 @@ fn tool_definitions() -> Vec<ModelToolDefinition> {
         read_tool("agent.list", "List agent sessions and bounded state.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("agent.status", "Read bounded agent status.", json!({"type":"object","properties":{"agentSessionId":{"type":"string"}},"required":["agentSessionId"],"additionalProperties":false})),
         read_tool("agent.last_result", "Read one bounded, untrusted latest agent result.", json!({"type":"object","properties":{"agentSessionId":{"type":"string"}},"required":["agentSessionId"],"additionalProperties":false})),
+        read_tool("agent.activity", "Read the bounded semantic activity timeline of one agent session.", json!({"type":"object","properties":{"agentSessionId":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":16}},"required":["agentSessionId"],"additionalProperties":false})),
         read_tool("markdown.read", "Read one explicitly requested permitted Markdown document.", json!({"type":"object","properties":{"relativePath":{"type":"string"}},"required":["relativePath"],"additionalProperties":false})),
         read_tool("ui.open_terminal", "Offer a button to focus a terminal; never focus it automatically.", json!({"type":"object","properties":{"terminalId":{"type":"string"}},"required":["terminalId"],"additionalProperties":false})),
         action_tool("agent.send", "Propose text to send to a selected recognized agent. Never executes without confirmation.", json!({"type":"object","properties":{"terminalId":{"type":"string"},"text":{"type":"string","maxLength":16384}},"required":["terminalId","text"],"additionalProperties":false})),
@@ -916,6 +1180,16 @@ fn preview_text(text: &str) -> String {
         end -= 1;
     }
     value[..end].to_string()
+}
+
+/// Display name used only for user-facing checkpoint labels, e.g.
+/// `codex` → `Codex`. Never exposes terminal IDs or internal identity.
+fn provider_display_name(provider: &str) -> String {
+    let mut chars = provider.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "agente".to_string(),
+    }
 }
 
 fn bounded_tool_json(value: &Value, max_bytes: usize) -> String {

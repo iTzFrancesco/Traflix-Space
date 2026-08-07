@@ -25,6 +25,7 @@ import {
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
 import { isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
+import { mergeActivityEvents, type ActivityCheckpoint } from "../lib/jarvis/activityState";
 import { useWorkspaceStore } from "./workspaceStore";
 import { sanitizedVoiceError } from "../lib/jarvis/voiceSettings";
 import type {
@@ -73,6 +74,7 @@ interface JarvisStore {
   providerStatus: JarvisProviderStatus | null;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
+  activities: ActivityCheckpoint[];
   voiceRequests: Record<string, VoiceRequestStatusView>;
   activeVoiceRequestId: string | null;
   voiceStopRequested: boolean;
@@ -121,6 +123,8 @@ interface JarvisStore {
   sendVoiceTranscript: (requestId: string, text: string) => Promise<boolean>;
   loadVoiceDraft: (workspaceId: string) => Promise<void>;
   setVoiceRequest: (status: VoiceRequestStatusView) => void;
+  applyActivityEvents: (events: ActivityCheckpoint[]) => void;
+  clearWorkspaceActivities: (workspaceId: string) => void;
   setVoiceLevel: (event: VoiceLevelEvent) => void;
   setTtsStatus: (status: TtsStatusView) => void;
   stopTts: () => Promise<void>;
@@ -142,7 +146,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
-  voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
+  activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
   activeVoiceRequestId: null,
   voiceStopRequested: false,
   voiceCancelRequested: false,
@@ -367,6 +371,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       }).catch(() => undefined);
     }
   },
+  applyActivityEvents: (activities) => set((state) => ({ activities: mergeActivityEvents(state.activities, activities) })),
+  clearWorkspaceActivities: (workspaceId) => set((state) => ({ activities: state.activities.filter((event) => event.workspaceId !== workspaceId) })),
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),
   setTtsStatus: (ttsStatus) => set((state) => state.ttsStatus.requestId && ttsStatus.requestId && state.ttsStatus.requestId !== ttsStatus.requestId && ttsStatus.status !== "synthesizing" ? state : { ttsStatus }),
   stopTts: async () => { try { const status = await ttsStop(); get().setTtsStatus(status); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },

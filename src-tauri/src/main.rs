@@ -199,6 +199,7 @@ fn main() {
             jarvis::commands::jarvis_agent_get_status,
             jarvis::commands::jarvis_agent_get_last_result,
             jarvis::commands::jarvis_agent_get_messages,
+            jarvis::commands::jarvis_agent_activity,
             jarvis::commands::jarvis_mark_selected_agent,
             jarvis::commands::jarvis_confirm_identity,
             jarvis::commands::jarvis_ignore_identity,

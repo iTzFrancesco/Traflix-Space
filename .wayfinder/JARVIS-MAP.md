@@ -51,32 +51,35 @@
 ### JARVIS-003 — Qual è il protocollo agent principale?
 
 - **Domanda:** structured adapter o scraping terminale?
-- **Stato:** Decisa per principio
+- **Stato:** Decisa per principio — **SUPERSEDUTA dalla Fase 7**
 - **Raccomandazione:** `StructuredAgentAdapter` come fondamento; `TerminalAgentAdapter` soltanto fallback.
 - **Alternative:** scraping PTY per tutti; notifiche completion come risultato.
 - **Evidenze:** Traflix ha completion notification ma non transcript/results; ANSI/alternate-screen non è protocollo.
 - **Dipendenze:** AgentSessionRegistry e adapter lifecycle.
 - **Manca:** schema persistente di `AgentSessionRef`.
+- **Decisione Fase 7 (supersede):** la PTY visibile è il canale canonico; gli adapter strutturati (incluso app-server) restano fuori scope. Vedere JARVIS-013.
 
 ### JARVIS-004 — Come si integra OpenCode?
 
 - **Domanda:** server controllato da Traflix, server TUI, SDK diretto o ibrido?
-- **Stato:** Raccomandata condizionata
+- **Stato:** Raccomandata condizionata — **SUPERSEDUTA dalla Fase 7**
 - **Raccomandazione:** SDK/spec generated verso il server già usato dalla TUI quando discovery/auth/version/cwd sono deterministici; server controllato da Traflix come fallback strutturato; TUI visibile non è fonte primaria.
 - **Alternative:** avviare sempre un server per workspace; solo terminale; chiamare direttamente l'SDK senza health/version check.
 - **Evidenze:** OpenCode documenta `serve`, OpenAPI, session/message APIs, SSE, permission e localhost; snapshot upstream `def7220b...` contiene server/SDK/protocol packages.
 - **Dipendenze:** versione OpenCode installata, location directory e gestione auth.
 - **Manca:** discovery ufficiale sul Windows target e capability matrix della versione installata.
+- **Decisione Fase 7 (supersede):** nessun `opencode serve`; l'integrazione resta la TUI visibile nello stesso PTY. Vedere JARVIS-013.
 
 ### JARVIS-005 — Come si integra Codex?
 
 - **Domanda:** app-server, exec, MCP o TUI?
-- **Stato:** Raccomandata condizionata
+- **Stato:** Raccomandata condizionata — **SUPERSEDUTA dalla Fase 7**
 - **Raccomandazione:** `codex app-server` come adapter primario, con JSON-RPC typed, thread/turn lifecycle, approval forwarding e schema generato dallo stesso binario; auth resta al client ufficiale.
 - **Alternative:** `codex exec`; scraping TUI; MCP come canale sessione.
 - **Evidenze:** README app-server upstream al commit `57f42a8...` descrive thread/list/read/resume/fork, turn lifecycle, eventi, approvals, cwd e interrupt.
 - **Dipendenze:** binario/versione e trasporto locale.
 - **Manca:** verifica Windows e policy per app-server process ownership.
+- **Decisione Fase 7 (supersede):** nessun `codex app-server`; l'integrazione resta la TUI visibile nello stesso PTY. Vedere JARVIS-013.
 
 ### JARVIS-006 — Come si costruisce il contesto?
 
@@ -148,6 +151,28 @@
 - **Dipendenze:** JARVIS-001, 002, 003, 006, 007, 010, 011.
 - **Manca:** approvazione dei decision blocker in `NEXT-STEP.md`.
 
+### JARVIS-013 — PTY canonico e intelligenza di sessione (Fase 7)
+
+- **Domanda:** come si integrano gli agenti quando non esistono adapter strutturati?
+- **Stato:** Decisa per la Fase 7 — supersede JARVIS-003/004/005 per il percorso live
+- **Decisione:** la TUI visibile nella PTY condivisa è il canale canonico e
+  l'utente resta l'operatore primario. Jarvis osserva la stessa sessione,
+  ricostruisce il task corrente solo da input committed (Enter), tiene una
+  timeline semantica bounded (32 eventi) e scrive nello stesso PTY via Pending
+  Actions confermate. Niente `codex app-server`, `opencode serve` o adapter
+  provider in questa fase.
+- **Vincoli:** provenance per sorgente (`user`/`jarvis`/`system`) con
+  confidence e untrusted; task bounded a 2048 byte; nessuna persistenza;
+  checkpoint `jarvis://activity` deterministici dal backend, mai dal modello;
+  widget collassato senza nomi/conteggi agenti; diagnostica solo in
+  Impostazioni → Advanced; nessun dashboard agent nella UI normale.
+- **Evidenze:** il registry terminal-based (Fase 3) usa già
+  `terminalId + generation` come identità; la chat Fase 4 scrive già nella
+  PTY con conferma e ricontrollo di generation.
+- **Dipendenze:** AgentSessionRegistry, InputTracker, Pending Actions.
+- **Manca:** validazione Windows fisica (vedi
+  `docs/jarvis/PHASE-7-WINDOWS-VALIDATION.md`).
+
 ## Dipendenze tra decisioni
 
 ```text
@@ -195,3 +220,16 @@ JARVIS-011 ────────────────> session summaries e
   cambiano.
 - Wake word, ascolto continuo, full duplex, streaming e Fase 7 restano fuori
   scope.
+
+## Stato Fase 7
+
+- JARVIS-013: **decisa** — PTY canonico, task tracking effimero con
+  provenance, timeline bounded, provenance Jarvis solo dopo scrittura riuscita
+  e checkpoint deterministici.
+- JARVIS-003/004/005: **supersedute per il percorso live** — nessun adapter
+  strutturato, app-server o serve; la TUI visibile è l'unica integrazione.
+- JARVIS-010: **consolidata** — le operazioni mutative restano dietro Pending
+  Actions confermate; `agent.activity` è read-only.
+- JARVIS-011: **consolidata** — completion aggiorna `waiting` e `completed_at`
+  senza chiudere la sessione; le interruzioni non completano i task.
+- La validazione Windows della Fase 7 è **PENDING** (nessun ambiente fisico).

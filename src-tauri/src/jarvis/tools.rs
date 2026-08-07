@@ -1,15 +1,15 @@
 use crate::jarvis::actions::PendingActionRegistry;
 use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
-use crate::jarvis::agent_registry::AgentSessionRegistry;
+use crate::jarvis::agent_registry::{AgentSessionRegistry, MAX_ACTIVITY_LIMIT};
 use crate::jarvis::context_broker::ContextBroker;
 use crate::jarvis::memory::ConversationMemory;
 use crate::jarvis::model::{JarvisModelProvider, OpenCodeZenProvider};
 use crate::jarvis::requests::ChatRequestRegistry;
 use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
-    AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, ContextPackageV1,
-    InvocationBinding, JarvisErrorEnvelope, Provenance, RequestedDepth, TerminalSummary,
-    ToolEnvelope, WorkspaceSummary,
+    AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef,
+    ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, Provenance, RequestedDepth,
+    TerminalSummary, ToolEnvelope, WorkspaceSummary,
 };
 use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::WorkspaceConfig;
@@ -252,6 +252,29 @@ impl<'a> JarvisToolService<'a> {
             data: messages,
             provenance: Provenance::untrusted("agent-context-source", observed_at),
             warnings: vec!["full messages requested explicitly".to_string()],
+        })
+    }
+
+    pub fn agent_activity(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        limit: usize,
+        request_id: Option<String>,
+        observed_at: &str,
+    ) -> Result<ToolEnvelope<Vec<AgentActivityEvent>>, JarvisErrorEnvelope> {
+        let reference =
+            self.resolve_session(workspace_id, session_id, request_id.clone(), observed_at)?;
+        let limit = limit.clamp(1, MAX_ACTIVITY_LIMIT);
+        let events = self
+            .broker
+            .source()
+            .get_activity(&reference, limit)
+            .map_err(|source| source_error(source, request_id, workspace_id, observed_at))?;
+        Ok(ToolEnvelope {
+            data: events,
+            provenance: Provenance::trusted("agent-registry", observed_at),
+            warnings: Vec::new(),
         })
     }
 
