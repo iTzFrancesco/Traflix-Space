@@ -79,6 +79,12 @@ export function ProjectGitChanges({
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
   const [selectedRow, setSelectedRow] = useState<SelectedGitRow | null>(null);
 
+  useEffect(() => {
+    setCommitMessage("");
+    setPendingDiscard(null);
+    setSelectedRow(null);
+  }, [workspaceId]);
+
   const stagedChanges = useMemo(
     () => changes.filter((change) => change.index !== "clean"),
     [changes],
