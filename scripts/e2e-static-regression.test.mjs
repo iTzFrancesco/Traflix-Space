@@ -13,6 +13,8 @@ const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
+const windowsTauriConfig = source("../src-tauri/tauri.windows.conf.json");
+const windowsPrebuild = source("./tauri-before-build.ps1");
 const releaseWorkflow = source("../.github/workflows/release.yml");
 
 test("exited PTY generations remain recoverable until the user chooses an action", () => {
@@ -89,10 +91,15 @@ test("fresh installations watch the canonical skills directory before the first 
   assert.match(skillsWatcher, /watcher\.watch\(&dir, RecursiveMode::Recursive\)/);
 });
 
-test("tagged MSI releases rebuild the current persistent Edge TTS helper", () => {
+test("every Windows MSI build regenerates the current persistent Edge TTS sidecar", () => {
+  assert.match(windowsTauriConfig, /tauri-before-build\.ps1/);
+  assert.match(windowsTauriConfig, /jarvis-edge-tts/);
+  assert.match(windowsPrebuild, /build-jarvis-edge-tts-sidecar\.ps1/);
+  assert.match(windowsPrebuild, /Get-Command python/);
+  assert.match(windowsPrebuild, /Get-Command py/);
+  assert.match(windowsPrebuild, /npm run build/);
   assert.match(releaseWorkflow, /actions\/setup-python@v5/);
-  assert.match(releaseWorkflow, /build-jarvis-edge-tts-sidecar\.ps1/);
-  assert.match(releaseWorkflow, /jarvis-edge-tts-x86_64-pc-windows-msvc\.exe/);
   assert.match(releaseWorkflow, /npm run tauri build/);
+  assert.match(releaseWorkflow, /tauri\.windows\.conf\.json/);
   assert.doesNotMatch(releaseWorkflow, /cache:\s*pip/);
 });
