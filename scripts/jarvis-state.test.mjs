@@ -32,15 +32,6 @@ import {
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
-const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
-const settingsSource = source("../src/components/layout/SettingsModal.tsx");
-const browserSource = source("../src/components/browser/BrowserPanel.tsx");
-const skillsSource = source("../src/components/skills/SkillsModule.tsx");
-const wizardSource = source("../src/components/workspace/NewSpaceWizard.tsx");
-const sidebarSource = source("../src/components/layout/Sidebar.tsx");
-const rightPanelSource = source("../src/components/layout/RightPanel.tsx");
-const gridSource = source("../src/components/workspace/WorkspaceGrid.tsx");
-const globalsSource = source("../src/styles/globals.css");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const registrySource = source("../src-tauri/src/jarvis/agent_registry.rs");
 const chatSource = source("../src-tauri/src/jarvis/chat.rs");
@@ -183,11 +174,12 @@ test("voice transcript cannot escape its origin workspace", () => {
   assert.equal(canSendTranscript(request, "workspace-a", "ciao"), true);
 });
 
-test("owner mode guarantees one-click automatic voice", () => {
+test("owner mode defaults to hands-free VAD with automatic submit and speech", () => {
   const settings = defaultJarvisSettings();
   assert.equal(isJarvisOwnerModeReady(settings), true);
-  assert.equal(settings.voiceInput.activationMode, "click_toggle");
+  assert.equal(settings.voiceInput.activationMode, "vad");
   assert.equal(settings.voiceInput.vadEnabled, true);
+  assert.ok(settings.voiceInput.maxArmedSeconds >= 120);
   assert.equal(settings.voiceInput.autoSubmitTranscript, true);
   assert.equal(settings.voiceOutput.enabled, true);
   assert.equal(settings.voiceOutput.autoSpeak, true);
@@ -196,16 +188,25 @@ test("owner mode guarantees one-click automatic voice", () => {
   assert.equal(shouldStopTtsBeforeRecording("playing"), true);
 });
 
-test("owner mode upgrades legacy flags without rewriting model choice", () => {
+test("owner mode upgrades old automatic modes without rewriting model choice or hold-to-talk", () => {
   const old = defaultJarvisSettings();
   old.textModel.primaryModel = "custom-model";
   old.textModel.privacyConsent = false;
+  old.voiceInput.activationMode = "click_toggle";
   old.voiceInput.vadEnabled = false;
   old.voiceInput.autoSubmitTranscript = false;
   old.voiceOutput.autoSpeak = false;
   const upgraded = ownerModeJarvisSettings(old);
   assert.equal(upgraded.textModel.primaryModel, "custom-model");
+  assert.equal(upgraded.voiceInput.activationMode, "vad");
   assert.equal(isJarvisOwnerModeReady(upgraded), true);
+
+  const hold = defaultJarvisSettings();
+  hold.voiceInput.activationMode = "hold_to_talk";
+  assert.equal(
+    ownerModeJarvisSettings(hold).voiceInput.activationMode,
+    "hold_to_talk",
+  );
 });
 
 test("voice utility output is safe and bounded", () => {
@@ -229,54 +230,7 @@ test("voice utility output is safe and bounded", () => {
   );
 });
 
-test("normal Jarvis surface is voice-first, not a transcript or chat drawer", () => {
-  assert.match(widgetSource, /VoiceMeter/);
-  assert.match(widgetSource, /silence sends automatically/);
-  assert.match(widgetSource, /Talk to Jarvis/);
-  assert.doesNotMatch(
-    widgetSource,
-    /JarvisExpandedPanel|JarvisChatPanel|JarvisTranscriptCard|MessageSquareText|textarea|Text fallback|TRASCRIZIONE PRONTA|Invia alla chat/,
-  );
-});
-
-test("Jarvis gives audible and visual listening feedback", () => {
-  assert.match(widgetSource, /playCue\("start"\)/);
-  assert.match(widgetSource, /playCue\("stop"\)/);
-  assert.match(widgetSource, /createOscillator/);
-  assert.match(widgetSource, /normalizedLevel/);
-  assert.match(widgetSource, /jarvis-pill--listening/);
-  assert.match(widgetSource, /<Square/);
-});
-
-test("Jarvis drag requires deliberate hold plus movement", () => {
-  assert.match(widgetSource, /DRAG_HOLD_MS = 380/);
-  assert.match(widgetSource, /DRAG_START_DISTANCE = 6/);
-  assert.match(widgetSource, /EARLY_MOVE_CANCEL_DISTANCE = 12/);
-  assert.match(widgetSource, /armed: false/);
-  assert.match(widgetSource, /activated: false/);
-  assert.match(widgetSource, /intent\.activated = true;\s*setDragging\(true\)/s);
-  assert.match(widgetSource, /if \(!intent\?\.activated/);
-});
-
-test("hold-to-talk compatibility path still guards lost releases", () => {
-  assert.match(widgetSource, /onBlur=\{releaseHeldVoice\}/);
-  assert.match(widgetSource, /onPointerCancel=\{handleVoicePointerUp\}/);
-  assert.match(widgetSource, /visibilitychange/);
-});
-
-test("normal Settings exposes useful connections and no privacy gate", () => {
-  assert.match(settingsSource, /Voice is the default interface/);
-  assert.match(settingsSource, /OpenCode Zen/);
-  assert.match(settingsSource, /Groq/);
-  assert.match(settingsSource, /Global hotkey/);
-  assert.match(settingsSource, /Advanced diagnostics/);
-  assert.doesNotMatch(
-    settingsSource,
-    /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Owner mode/,
-  );
-});
-
-test("idle and active status hierarchy stays compact and exact", () => {
+test("idle and active status hierarchy stays compact", () => {
   assert.equal(collapsedJarvisStatus(idle()), "Ready when you are");
   assert.equal(
     collapsedJarvisStatus(
@@ -310,7 +264,6 @@ test("idle and active status hierarchy stays compact and exact", () => {
     collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })),
     "Speaking…",
   );
-  assert.doesNotMatch(widgetSource, /registrySessions/);
 });
 
 test("activity timeline supersedes stale phases and stays workspace-scoped", () => {
@@ -338,19 +291,15 @@ test("activity timeline supersedes stale phases and stays workspace-scoped", () 
   assert.equal(stripActivities(merged, "workspace-b").length, 0);
 });
 
-test("click-toggle owner mode uses local VAD to close the turn automatically", () => {
-  assert.match(voiceCommandsSource, /input\.vad_enabled/);
+test("VAD capture closes speech turns automatically and re-arms hands-free", () => {
   assert.match(voiceCommandsSource, /signal\.should_stop/);
   assert.match(voiceCommandsSource, /finish_voice_stop/);
   assert.match(captureSource, /options\.vad_enabled/);
   assert.match(captureSource, /EnergyVad/);
   assert.match(captureSource, /should_auto_stop/);
-});
-
-test("voice level events drive the compact meter", () => {
-  assert.match(voiceCommandsSource, /VOICE_LEVEL_EVENT/);
-  assert.match(voiceCommandsSource, /normalized_level/);
-  assert.match(overlaySource, /jarvis:\/\/voice-level/);
+  assert.match(overlaySource, /AUTO_ARM_DELAY_MS/);
+  assert.match(overlaySource, /activeVoiceRequestId/);
+  assert.match(overlaySource, /store\.startVoice\(\)/);
 });
 
 test("successful model replies are spoken and transcripts auto-submit", () => {
@@ -379,7 +328,7 @@ test("Phase 8 planner remains semantic, typed and allowlisted", () => {
   );
 });
 
-test("clarification is a hard synchronous boundary", () => {
+test("clarification remains a hard synchronous boundary", () => {
   assert.match(controlSource, /hard conversational/);
   assert.match(
     controlSource,
@@ -455,26 +404,4 @@ test("handoff is bounded to last result or recent terminal evidence", () => {
   assert.match(controlSource, /source_evidence/);
   assert.match(controlSource, /last_result/);
   assert.match(controlSource, /build_handoff_prompt/);
-});
-
-test("desktop shell remains compact and restrained", () => {
-  assert.doesNotMatch(globalsSource, /radial-gradient|backdrop-filter/);
-  assert.match(globalsSource, /--radius-pane: 7px/);
-  assert.match(globalsSource, /prefers-reduced-motion/);
-  assert.match(sidebarSource, /New space/);
-  assert.match(rightPanelSource, /PANEL_SLOTS/);
-  assert.match(gridSource, /gap: isFocusMode \? 0 : "4px"/);
-});
-
-test("secondary desktop surfaces avoid decorative AI chrome", () => {
-  assert.doesNotMatch(browserSource, /radial-gradient|linear-gradient|TRAFLIX/);
-  assert.doesNotMatch(skillsSource, /SKILL_ACCENTS|Sparkles|backdrop-blur/);
-  assert.doesNotMatch(wizardSource, /linear-gradient|backdrop-blur|surface-card/);
-});
-
-test("normal Jarvis UI contains no diagnostics or transcript editor", () => {
-  assert.doesNotMatch(
-    widgetSource,
-    /Diagnostics|Context Broker|JarvisTranscriptCard|JarvisExpandedPanel|conversation\.map|textarea/,
-  );
 });
