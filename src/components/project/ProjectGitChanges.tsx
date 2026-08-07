@@ -19,7 +19,7 @@ import {
   changeTone,
 } from "./changePresentation";
 import { getFileIcon, isPreviewableImage } from "./fileIcons";
-import type { ProjectGitChange } from "../../project/types";
+import type { DiffSide, ProjectGitChange } from "../../project/types";
 
 interface ProjectGitChangesProps {
   workspaceId: string;
@@ -30,6 +30,17 @@ interface PendingDiscard {
   paths: string[];
   label: string;
   untracked: boolean;
+}
+
+interface SelectedGitRow {
+  path: string;
+  side: DiffSide;
+}
+
+function availableSide(change: ProjectGitChange, preferred: DiffSide): DiffSide {
+  if (preferred === "staged" && change.index !== "clean") return "staged";
+  if (preferred === "worktree" && change.worktree !== "clean") return "worktree";
+  return change.worktree !== "clean" ? "worktree" : "staged";
 }
 
 export function ProjectGitChanges({
@@ -65,9 +76,8 @@ export function ProjectGitChanges({
   const selectedPath = workspaceState?.selectedPath ?? null;
   const revision = workspaceState?.revision ?? 0;
   const [commitMessage, setCommitMessage] = useState("");
-  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(
-    null,
-  );
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  const [selectedRow, setSelectedRow] = useState<SelectedGitRow | null>(null);
 
   const stagedChanges = useMemo(
     () => changes.filter((change) => change.index !== "clean"),
@@ -89,13 +99,15 @@ export function ProjectGitChanges({
     });
   };
 
-  const selectChange = (change: ProjectGitChange) => {
+  const selectChange = (change: ProjectGitChange, stagedRow: boolean) => {
+    const side: DiffSide = stagedRow ? "staged" : "worktree";
+    setSelectedRow({ path: change.path, side });
+
     if (selectedPath === change.path) {
       if (isPreviewableImage(change.path)) {
         void loadFilePreview(workspaceId, change.path);
       } else {
-        const side = change.worktree !== "clean" ? "worktree" : "staged";
-        void loadDiff(workspaceId, change.path, side);
+        void loadDiff(workspaceId, change.path, availableSide(change, side));
       }
       return;
     }
@@ -118,13 +130,24 @@ export function ProjectGitChanges({
     if (!selectedChange) {
       clearDiff(workspaceId);
       clearPreview(workspaceId);
+      setSelectedRow(null);
       return;
     }
     if (isPreviewableImage(selectedPath)) {
       void loadFilePreview(workspaceId, selectedPath);
       return;
     }
-    const side = selectedChange.worktree !== "clean" ? "worktree" : "staged";
+
+    const preferred =
+      selectedRow?.path === selectedPath
+        ? selectedRow.side
+        : selectedChange.worktree !== "clean"
+          ? "worktree"
+          : "staged";
+    const side = availableSide(selectedChange, preferred);
+    if (selectedRow?.path === selectedPath && selectedRow.side !== side) {
+      setSelectedRow({ path: selectedPath, side });
+    }
     void loadDiff(workspaceId, selectedPath, side);
   }, [
     changes,
@@ -135,6 +158,7 @@ export function ProjectGitChanges({
     loadFilePreview,
     revision,
     selectedPath,
+    selectedRow,
     workspaceId,
   ]);
 
@@ -144,6 +168,10 @@ export function ProjectGitChanges({
     const slash = change.path.lastIndexOf("/");
     const filename = slash >= 0 ? change.path.slice(slash + 1) : change.path;
     const directory = slash >= 0 ? change.path.slice(0, slash) : "";
+    const rowSide: DiffSide = staged ? "staged" : "worktree";
+    const selected =
+      selectedPath === change.path &&
+      (selectedRow?.path !== change.path || selectedRow.side === rowSide);
 
     return (
       <div
@@ -152,14 +180,14 @@ export function ProjectGitChanges({
       >
         <button
           type="button"
-          onClick={() => selectChange(change)}
+          onClick={() => selectChange(change, staged)}
           className={`flex min-h-9 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left transition-colors ${
-            selectedPath === change.path
+            selected
               ? "bg-primary/[0.08] text-neutral-text"
               : "text-neutral-text-dim hover:bg-white/[0.025]"
           }`}
           title={changeDetail(change)}
-          aria-selected={selectedPath === change.path}
+          aria-selected={selected}
         >
           <Icon
             size={13}
@@ -378,7 +406,10 @@ export function ProjectGitChanges({
             showSideToggle={false}
             onClose={() => clearDiff(workspaceId)}
             onSideChange={(side) => {
-              if (selectedPath) void loadDiff(workspaceId, selectedPath, side);
+              if (selectedPath) {
+                setSelectedRow({ path: selectedPath, side });
+                void loadDiff(workspaceId, selectedPath, side);
+              }
             }}
             onStage={() => {
               if (selectedPath) void stagePaths(workspaceId, [selectedPath]);
