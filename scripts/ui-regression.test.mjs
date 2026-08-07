@@ -237,9 +237,22 @@ test("skill rows retain stable accent colors without reverting the compact layou
   assert.match(skillsSource, /backgroundColor: accent\.background/);
 });
 
-test("sidebar new workspace action stays compact and clearly framed", () => {
+test("sidebar new workspace action stays compact, framed and localized", () => {
   assert.match(sidebarSource, /h-\[45px\]/);
-  assert.match(sidebarSource, /New workspace/);
+  assert.match(sidebarSource, /Nuovo spazio/);
+  assert.match(sidebarSource, /Spazi di lavoro/);
   assert.match(sidebarSource, /h-7 items-center gap-1\.5 rounded-md border border-white\/\[0\.10\]/);
-  assert.doesNotMatch(sidebarSource, /New space\s*<\/button>/);
+  assert.doesNotMatch(sidebarSource, /New workspace|New space|Workspaces|No workspaces yet/);
+});
+
+test("workspace empty state keeps the terminal icon centered and uses Italian copy", () => {
+  assert.match(workspaceViewSource, /w-full max-w-sm text-center tab-slide-in/);
+  assert.match(workspaceViewSource, /<div className="flex justify-center">/);
+  assert.match(workspaceViewSource, /Nessuno spazio di lavoro aperto/);
+  assert.match(workspaceViewSource, /Seleziona uno spazio dalla barra laterale/);
+  assert.match(workspaceViewSource, /Nuovo spazio/);
+  assert.doesNotMatch(
+    workspaceViewSource,
+    /No workspace open|Select a workspace from the sidebar|New space/,
+  );
 });
