@@ -4,7 +4,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use reqwest::{header::CONTENT_TYPE, Client, StatusCode};
-use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::types::{VoiceErrorCode, GROQ_STT_MODEL, MAX_WAV_BYTES};
@@ -142,9 +141,13 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
             if !status.is_success() {
                 return Err(classify_status(status));
             }
-            let payload: GroqTranscriptionResponse =
-                serde_json::from_slice(&body).map_err(|_| VoiceErrorCode::InvalidResponse)?;
-            let text = payload.text.trim().to_string();
+
+            // Groq's `text` response is already the only value Jarvis needs.
+            // Avoid JSON allocation/parsing on every successful voice turn.
+            let text = std::str::from_utf8(&body)
+                .map_err(|_| VoiceErrorCode::InvalidResponse)?
+                .trim()
+                .to_string();
             if text.is_empty() {
                 return Err(VoiceErrorCode::InvalidResponse);
             }
@@ -181,7 +184,7 @@ fn build_groq_multipart(wav: &[u8], language: &str) -> Vec<u8> {
     let mut body = Vec::with_capacity(wav.len().saturating_add(768));
     push_field(&mut body, "model", GROQ_STT_MODEL);
     push_field(&mut body, "language", language);
-    push_field(&mut body, "response_format", "json");
+    push_field(&mut body, "response_format", "text");
     push_field(&mut body, "temperature", "0");
     push_field(&mut body, "prompt", GROQ_PROMPT);
     body.extend_from_slice(b"--");
@@ -194,11 +197,6 @@ fn build_groq_multipart(wav: &[u8], language: &str) -> Vec<u8> {
     body.extend_from_slice(GROQ_BOUNDARY.as_bytes());
     body.extend_from_slice(b"--\r\n");
     body
-}
-
-#[derive(Debug, Deserialize)]
-struct GroqTranscriptionResponse {
-    text: String,
 }
 
 fn classify_status(status: StatusCode) -> VoiceErrorCode {
@@ -238,7 +236,7 @@ mod tests {
                 requests.fetch_add(1, Ordering::SeqCst);
                 let mut buffer = vec![0_u8; 32 * 1024];
                 let _ = socket.read(&mut buffer).await;
-                let response = format!("HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len());
+                let response = format!("HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{body}", body.len());
                 let _ = socket.write_all(response.as_bytes()).await;
             }
         });
@@ -260,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn multipart_uses_only_turbo_model() {
         let requests = Arc::new(AtomicUsize::new(0));
-        let endpoint = server(r#"{"text":"ciao"}"#, 200, requests.clone()).await;
+        let endpoint = server("ciao", 200, requests.clone()).await;
         let provider = GroqSpeechToTextProvider::new(endpoint, Some("test-secret".into()));
         let result = provider
             .transcribe(vec![0; 128], "it".into(), CancellationToken::new())
@@ -278,7 +276,7 @@ mod tests {
         let text = String::from_utf8_lossy(&payload);
         assert!(text.contains("name=\"model\"\r\n\r\nwhisper-large-v3-turbo"));
         assert!(text.contains("name=\"language\"\r\n\r\nit"));
-        assert!(text.contains("name=\"response_format\"\r\n\r\njson"));
+        assert!(text.contains("name=\"response_format\"\r\n\r\ntext"));
         assert!(payload.windows(wav.len()).any(|window| window == wav));
     }
 
