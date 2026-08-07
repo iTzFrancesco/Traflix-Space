@@ -7,6 +7,7 @@ const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const terminalStore = source("../src/stores/terminalStore.ts");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+const jarvisStore = source("../src/stores/jarvisStore.ts");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
 const releaseWorkflow = source("../.github/workflows/release.yml");
@@ -40,6 +41,14 @@ test("hands-free VAD is authoritative in backend defaults and legacy click-toggl
   );
   assert.match(rustSettings, /fn default_max_armed_seconds\(\) -> u32 \{\s*120\s*\}/);
   assert.match(rustSettings, /owner_mode_migrates_click_toggle_but_preserves_hold_to_talk/);
+});
+
+test("chat completion reserves TTS state before IPC so hands-free cannot rearm into Jarvis speech", () => {
+  assert.match(jarvisStore, /const ttsRequestId = `tts-\$\{response\.message\.id\}`/);
+  assert.match(jarvisStore, /setTtsStatus\(\{ requestId: ttsRequestId, status: "synthesizing" \}\)/);
+  assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId/);
+  assert.match(jarvisStore, /status: "failed"/);
+  assert.match(jarvisStore, /code: "tts_failed"/);
 });
 
 test("fresh installations watch the canonical skills directory before the first skill exists", () => {
