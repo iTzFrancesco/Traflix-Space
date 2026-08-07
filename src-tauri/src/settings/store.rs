@@ -6,6 +6,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use tauri::AppHandle;
 use tauri::Manager;
 
+const OWNER_MODE_MARKER: &str = "owner-mode";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -259,6 +261,30 @@ struct LegacyJarvisSettings {
     privacy_consent_at: Option<String>,
 }
 
+fn enforce_owner_mode(settings: &mut JarvisSettings) {
+    settings.text_model.privacy_consent = true;
+    if settings.text_model.privacy_consent_at.is_none() {
+        settings.text_model.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
+    }
+
+    settings.voice_input.enabled = true;
+    settings.voice_input.activation_mode = VoiceActivationMode::ClickToggle;
+    settings.voice_input.auto_submit_transcript = true;
+    settings.voice_input.vad_enabled = true;
+    settings.voice_input.privacy_consent = true;
+    if settings.voice_input.privacy_consent_at.is_none() {
+        settings.voice_input.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
+    }
+
+    settings.voice_output.enabled = true;
+    settings.voice_output.auto_speak = true;
+    settings.voice_output.stop_on_user_speech = true;
+    settings.voice_output.privacy_consent = true;
+    if settings.voice_output.privacy_consent_at.is_none() {
+        settings.voice_output.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
+    }
+}
+
 impl<'de> Deserialize<'de> for JarvisSettings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -294,10 +320,8 @@ impl<'de> Deserialize<'de> for JarvisSettings {
         if !has_new_text_model {
             migrate_text_model(&mut text_model);
         }
-        if !text_model.privacy_consent {
-            text_model.privacy_consent_at = None;
-        }
-        Ok(Self {
+
+        let mut settings = Self {
             enabled: raw.enabled.unwrap_or_else(default_true),
             voice_engine: raw.voice_engine.unwrap_or_default(),
             muted: raw.muted.unwrap_or(false),
@@ -309,7 +333,9 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             advanced_view_enabled: raw.advanced_view_enabled.unwrap_or(false),
             voice_input: raw.voice_input.unwrap_or_default(),
             voice_output: raw.voice_output.unwrap_or_default(),
-        })
+        };
+        enforce_owner_mode(&mut settings);
+        Ok(settings)
     }
 }
 
@@ -320,8 +346,8 @@ impl Default for TextModelSettings {
             primary_model: default_primary_model(),
             fallback_model: default_fallback_model(),
             fallback_enabled: true,
-            privacy_consent: false,
-            privacy_consent_at: None,
+            privacy_consent: true,
+            privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
         }
     }
 }
@@ -335,14 +361,14 @@ impl Default for VoiceInputSettings {
             language: default_voice_language(),
             max_duration_seconds: default_voice_max_duration(),
             selected_input_device_id: None,
-            auto_submit_transcript: false,
-            privacy_consent: false,
-            privacy_consent_at: None,
-            activation_mode: VoiceActivationMode::default(),
+            auto_submit_transcript: true,
+            privacy_consent: true,
+            privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
+            activation_mode: VoiceActivationMode::ClickToggle,
             global_shortcut_enabled: false,
             global_shortcut: default_global_shortcut(),
             shortcut_behavior: ShortcutBehavior::default(),
-            vad_enabled: false,
+            vad_enabled: true,
             vad_speech_threshold: default_vad_threshold(),
             vad_start_frames: default_vad_start_frames(),
             vad_silence_frames: default_vad_silence_frames(),
@@ -364,8 +390,8 @@ impl Default for VoiceOutputSettings {
             pitch: default_edge_pitch(),
             auto_speak: true,
             max_spoken_chars: default_max_spoken_chars(),
-            privacy_consent: false,
-            privacy_consent_at: None,
+            privacy_consent: true,
+            privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
             stop_on_user_speech: true,
         }
     }
@@ -603,15 +629,7 @@ impl SettingsManager {
     }
 
     pub async fn set(&self, mut settings: AppSettings) -> Result<(), String> {
-        if !settings.jarvis.text_model.privacy_consent {
-            settings.jarvis.text_model.privacy_consent_at = None;
-        }
-        if !settings.jarvis.voice_input.privacy_consent {
-            settings.jarvis.voice_input.privacy_consent_at = None;
-        }
-        if !settings.jarvis.voice_output.privacy_consent {
-            settings.jarvis.voice_output.privacy_consent_at = None;
-        }
+        enforce_owner_mode(&mut settings.jarvis);
         *self.settings.lock().await = settings.clone();
         Self::save_to_disk(&self.store_path, &settings)
     }
@@ -638,7 +656,14 @@ mod tests {
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
         assert_eq!(settings.jarvis.voice_input.model, "whisper-large-v3-turbo");
+        assert!(settings.jarvis.voice_input.auto_submit_transcript);
+        assert!(settings.jarvis.voice_input.vad_enabled);
+        assert_eq!(
+            settings.jarvis.voice_input.activation_mode,
+            VoiceActivationMode::ClickToggle
+        );
         assert_eq!(settings.jarvis.voice_output.provider, "edge_tts");
+        assert!(settings.jarvis.voice_output.privacy_consent);
         assert_eq!(settings.jarvis.voice_engine, VoiceEngine::Standard);
     }
 
@@ -716,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn new_defaults_are_safe_and_consent_is_false() {
+    fn new_defaults_are_owner_mode_safe() {
         let settings = AppSettings::default();
         assert_eq!(
             settings.jarvis.text_model.provider,
@@ -727,25 +752,49 @@ mod tests {
             settings.jarvis.text_model.fallback_model,
             "deepseek-v4-flash-free"
         );
-        assert!(!settings.jarvis.text_model.privacy_consent);
+        assert!(settings.jarvis.text_model.privacy_consent);
+        assert!(settings.jarvis.text_model.privacy_consent_at.is_some());
+        assert!(settings.jarvis.voice_input.enabled);
+        assert!(settings.jarvis.voice_input.auto_submit_transcript);
+        assert!(settings.jarvis.voice_input.vad_enabled);
+        assert!(settings.jarvis.voice_input.privacy_consent);
+        assert_eq!(
+            settings.jarvis.voice_input.activation_mode,
+            VoiceActivationMode::ClickToggle
+        );
+        assert!(settings.jarvis.voice_output.enabled);
+        assert!(settings.jarvis.voice_output.auto_speak);
+        assert!(settings.jarvis.voice_output.stop_on_user_speech);
+        assert!(settings.jarvis.voice_output.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
     }
 
     #[test]
-    fn phase_six_voice_settings_round_trip_without_losing_activation_policy() {
+    fn owner_mode_round_trip_normalizes_legacy_activation_policy() {
         let mut settings = AppSettings::default();
         settings.jarvis.voice_input.activation_mode = VoiceActivationMode::Vad;
+        settings.jarvis.voice_input.auto_submit_transcript = false;
+        settings.jarvis.voice_input.vad_enabled = false;
+        settings.jarvis.voice_input.privacy_consent = false;
+        settings.jarvis.voice_input.privacy_consent_at = None;
         settings.jarvis.voice_input.global_shortcut_enabled = true;
         settings.jarvis.voice_input.global_shortcut = "Ctrl+Shift+Space".into();
         settings.jarvis.voice_input.shortcut_behavior = ShortcutBehavior::Hold;
         settings.jarvis.voice_input.vad_speech_threshold = 0.031;
         settings.jarvis.voice_output.stop_on_user_speech = false;
+        settings.jarvis.voice_output.privacy_consent = false;
+        settings.jarvis.voice_output.privacy_consent_at = None;
         let reloaded: AppSettings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(
             reloaded.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::Vad
+            VoiceActivationMode::ClickToggle
         );
+        assert!(reloaded.jarvis.voice_input.auto_submit_transcript);
+        assert!(reloaded.jarvis.voice_input.vad_enabled);
+        assert!(reloaded.jarvis.voice_input.privacy_consent);
+        assert!(reloaded.jarvis.voice_output.stop_on_user_speech);
+        assert!(reloaded.jarvis.voice_output.privacy_consent);
         assert!(reloaded.jarvis.voice_input.global_shortcut_enabled);
         assert_eq!(
             reloaded.jarvis.voice_input.global_shortcut,
@@ -756,6 +805,5 @@ mod tests {
             ShortcutBehavior::Hold
         );
         assert_eq!(reloaded.jarvis.voice_input.vad_speech_threshold, 0.031);
-        assert!(!reloaded.jarvis.voice_output.stop_on_user_speech);
     }
 }
