@@ -1,5 +1,9 @@
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::thread::{self, JoinHandle};
 #[cfg(any(windows, test))]
 use std::time::Instant;
 
@@ -81,9 +85,46 @@ impl AudioCaptureSource for PlatformAudioCapture {
         selected_device_id: Option<&str>,
         options: VoiceCaptureOptions,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let selected_device_id = selected_device_id.map(ToOwned::to_owned);
+        let capture_thread = thread::Builder::new()
+            .name("traflix-audio-capture".into())
+            .spawn(move || {
+                run_cpal_capture(selected_device_id, options, ready_tx, stop_rx);
+            })
+            .map_err(|_| VoiceErrorCode::DeviceUnavailable)?;
+        let buffer = match ready_rx
+            .recv()
+            .map_err(|_| VoiceErrorCode::DeviceUnavailable)?
+        {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                let _ = capture_thread.join();
+                return Err(error);
+            }
+        };
+        Ok(Box::new(CpalCaptureSession {
+            stop_tx: Some(stop_tx),
+            capture_thread: Some(capture_thread),
+            buffer,
+            started_at: Instant::now(),
+        }))
+    }
+}
+
+#[cfg(windows)]
+fn run_cpal_capture(
+    selected_device_id: Option<String>,
+    options: VoiceCaptureOptions,
+    ready_tx: SyncSender<Result<Arc<Mutex<CaptureBuffer>>, VoiceErrorCode>>,
+    stop_rx: Receiver<()>,
+) {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    let setup = (|| {
         let host = cpal::default_host();
-        let device = if let Some(selected) = selected_device_id {
+        let device = if let Some(selected) = selected_device_id.as_deref() {
             host.input_devices()
                 .map_err(|_| VoiceErrorCode::DeviceUnavailable)?
                 .find(|candidate| candidate.name().ok().as_deref() == Some(selected))
@@ -156,17 +197,27 @@ impl AudioCaptureSource for PlatformAudioCapture {
         stream
             .play()
             .map_err(|_| VoiceErrorCode::DeviceUnavailable)?;
-        Ok(Box::new(CpalCaptureSession {
-            stream: Some(stream),
-            buffer,
-            started_at: Instant::now(),
-        }))
+        Ok((stream, buffer))
+    })();
+
+    let (stream, buffer) = match setup {
+        Ok(setup) => setup,
+        Err(error) => {
+            let _ = ready_tx.send(Err(error));
+            return;
+        }
+    };
+    if ready_tx.send(Ok(buffer)).is_err() {
+        return;
     }
+    let _ = stop_rx.recv();
+    drop(stream);
 }
 
 #[cfg(windows)]
 struct CpalCaptureSession {
-    stream: Option<cpal::Stream>,
+    stop_tx: Option<Sender<()>>,
+    capture_thread: Option<JoinHandle<()>>,
     buffer: Arc<Mutex<CaptureBuffer>>,
     started_at: Instant,
 }
@@ -174,7 +225,7 @@ struct CpalCaptureSession {
 #[cfg(windows)]
 impl AudioCaptureSession for CpalCaptureSession {
     fn stop(mut self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode> {
-        self.stream.take();
+        self.stop_stream();
         self.buffer
             .lock()
             .map(|buffer| {
@@ -213,6 +264,25 @@ impl AudioCaptureSession for CpalCaptureSession {
     }
     fn failure(&self) -> Option<VoiceErrorCode> {
         self.buffer.lock().ok().and_then(|buffer| buffer.failure)
+    }
+}
+
+#[cfg(windows)]
+impl CpalCaptureSession {
+    fn stop_stream(&mut self) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if let Some(capture_thread) = self.capture_thread.take() {
+            let _ = capture_thread.join();
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CpalCaptureSession {
+    fn drop(&mut self) {
+        self.stop_stream();
     }
 }
 

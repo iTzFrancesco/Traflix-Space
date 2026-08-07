@@ -1,9 +1,13 @@
 param(
-  [string]$Python = "python",
+  [string]$Python = "",
   [string]$TargetTriple = "x86_64-pc-windows-msvc"
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Python)) {
+  $Python = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { "python" }
+}
+
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script = Join-Path $repo "scripts\jarvis-edge-tts.py"
 $binaries = Join-Path $repo "src-tauri\binaries"
