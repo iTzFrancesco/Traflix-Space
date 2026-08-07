@@ -665,7 +665,18 @@ async fn resolve_target(
     query: Option<&str>,
     provider: Option<&str>,
 ) -> TargetResolution {
-    let provider = provider.and_then(normalize_provider);
+    let explicit_provider = provider.and_then(normalize_provider);
+    let query_text = query.unwrap_or_default().trim();
+    let query_provider = if query_text.is_empty() {
+        None
+    } else {
+        normalize_provider(query_text)
+    };
+    // If the semantic query is only a provider name ("Codex"), constrain to
+    // that provider first. With multiple sessions of the same provider this
+    // remains ambiguous; availability alone is not enough to guess which pane
+    // the user meant.
+    let provider_filter = explicit_provider.clone().or(query_provider.clone());
     let mut candidates = context
         .agent_sessions
         .iter()
@@ -678,17 +689,17 @@ async fn resolve_target(
             if terminal.workspace_id != context.invocation.target_workspace_id {
                 return None;
             }
-            if provider.as_deref().is_some_and(|value| {
+            if provider_filter.as_deref().is_some_and(|value| {
                 value != session.resolved_provider && value != session.reference.provider
             }) {
                 return None;
             }
             Some((
                 score_candidate(
-                    query.unwrap_or_default(),
+                    query_text,
                     session,
                     terminal,
-                    provider.as_deref(),
+                    provider_filter.as_deref(),
                 ),
                 session,
                 terminal,
@@ -699,13 +710,25 @@ async fn resolve_target(
     if candidates.is_empty() {
         return TargetResolution::NotFound;
     }
+
+    let query_is_provider_only = query_provider.is_some();
+    if candidates.len() > 1 && (query_text.is_empty() || query_is_provider_only) {
+        return TargetResolution::Ambiguous(
+            candidates
+                .iter()
+                .take(4)
+                .map(|(_, session, terminal)| display_candidate(session, terminal))
+                .collect(),
+        );
+    }
+
     candidates.sort_by(|left, right| right.0.cmp(&left.0));
     let top_score = candidates[0].0;
     if candidates.len() > 1 && candidates[1].0 == top_score {
         let mut with_tail = Vec::new();
         for (_, session, terminal) in candidates.iter().take(4) {
             if let Ok(tail) = read_agent_tail(app, terminal, DEFAULT_TAIL_LINES).await {
-                let tail_score = token_overlap(query.unwrap_or_default(), &tail.content);
+                let tail_score = token_overlap(query_text, &tail.content);
                 with_tail.push((tail_score, *session, *terminal));
             }
         }
@@ -726,7 +749,7 @@ async fn resolve_target(
                 .collect(),
         );
     }
-    if top_score <= 0 && query.is_some_and(|value| !value.trim().is_empty()) {
+    if top_score <= 0 && !query_text.is_empty() {
         return TargetResolution::Ambiguous(
             candidates
                 .iter()
