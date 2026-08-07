@@ -227,9 +227,10 @@ export function WorkspaceView() {
           terminalStore.setActiveTerminal(firstId);
         }
 
-        // Calculate eviction BEFORE setState — React may call updaters multiple
-        // times (StrictMode, concurrent rendering) so side effects don't belong
-        // inside the updater function. Read from refs, not from stale closure.
+        // This is only an LRU cache for workspace configuration. Evicting a
+        // cached config must never kill the user's live PTY or agent session;
+        // TerminalPane can rehydrate the same backend PTY when the workspace
+        // is visited again.
         const newOrder = openOrderRef.current
           .filter((k) => k !== id)
           .concat(id);
@@ -240,10 +241,6 @@ export function WorkspaceView() {
               (k) => k !== currentActive && loadedMapRef.current.has(k),
             )
           : undefined;
-
-        if (toEvict) {
-          terminalStore.killWorkspaceTerminals(toEvict);
-        }
 
         setLoadedMap((prev) => {
           const next = new Map(prev);
