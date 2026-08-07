@@ -13,39 +13,103 @@ function resolveAgentCommand(agent: AgentDefinition, shell: string): string {
   return agent.commandByShell?.[shellFamily(shell)] ?? agent.command;
 }
 
+interface QueuedLaunch {
+  terminalId: string;
+  agentId: string;
+  attempt: number;
+}
+
+const MAX_LAUNCH_ATTEMPTS = 2;
+const INITIAL_LAUNCH_DELAY_MS = 1000;
+const RETRY_DELAY_MS = 1200;
+
+function rollbackLaunchState(terminalId: string) {
+  useTerminalStore.setState((state) => {
+    const terminal = state.terminals[terminalId];
+    if (!terminal) return state;
+    return {
+      terminals: {
+        ...state.terminals,
+        [terminalId]: {
+          ...terminal,
+          agentLaunched: false,
+          agentStatus: "idle",
+          agentAttentionRequired: false,
+          lastAgentCompletion: null,
+        },
+      },
+    };
+  });
+}
+
 class AgentLaunchQueue {
-  private queue: Array<{ terminalId: string; agentId: string }> = [];
+  private queue: QueuedLaunch[] = [];
+  private queuedTerminals = new Set<string>();
   private active = 0;
-  private maxConcurrent = 2;
+  private readonly maxConcurrent = 2;
+  private wakeTimer: number | null = null;
 
   enqueue(terminalId: string, agentId: string) {
     const terminal = useTerminalStore.getState().terminals[terminalId];
-    if (!terminal) return;
+    if (!terminal || this.queuedTerminals.has(terminalId)) return;
 
-    this.queue.push({ terminalId, agentId });
-    setTimeout(() => this.processNext(), 1000);
+    this.queuedTerminals.add(terminalId);
+    this.queue.push({ terminalId, agentId, attempt: 1 });
+    this.schedule(INITIAL_LAUNCH_DELAY_MS);
   }
 
-  private async processNext() {
-    if (this.active >= this.maxConcurrent || this.queue.length === 0) return;
-    const { terminalId, agentId } = this.queue.shift()!;
-    this.active++;
+  private schedule(delayMs: number) {
+    if (this.wakeTimer !== null) return;
+    this.wakeTimer = window.setTimeout(() => {
+      this.wakeTimer = null;
+      this.processAvailable();
+    }, delayMs);
+  }
+
+  private processAvailable() {
+    while (this.active < this.maxConcurrent && this.queue.length > 0) {
+      const launch = this.queue.shift();
+      if (!launch) break;
+      this.active += 1;
+      void this.run(launch);
+    }
+  }
+
+  private async run(launch: QueuedLaunch) {
+    const { terminalId, agentId } = launch;
+    let retry = false;
+
     try {
-      const agent = AGENTS.find((a) => a.id === agentId);
+      const agent = AGENTS.find((candidate) => candidate.id === agentId);
       const terminal = useTerminalStore.getState().terminals[terminalId];
-      if (agent && terminal) {
-        const cmd = `${resolveAgentCommand(agent, terminal.shell)} ${agent.args.join(" ")}\r\n`;
-        const encoder = new TextEncoder();
-        await invoke("terminal_write", {
-          terminalId,
-          data: Array.from(encoder.encode(cmd)),
-        });
+      if (!agent || !terminal || terminal.exitCode !== null) {
+        rollbackLaunchState(terminalId);
+        return;
       }
-    } catch {
-      // Agent launch failed silently
+
+      const cmd = `${resolveAgentCommand(agent, terminal.shell)} ${agent.args.join(" ")}\r\n`;
+      const encoder = new TextEncoder();
+      await invoke("terminal_write", {
+        terminalId,
+        data: Array.from(encoder.encode(cmd)),
+      });
+    } catch (error) {
+      if (
+        launch.attempt < MAX_LAUNCH_ATTEMPTS &&
+        useTerminalStore.getState().terminals[terminalId]
+      ) {
+        retry = true;
+        this.queue.push({ ...launch, attempt: launch.attempt + 1 });
+      } else {
+        rollbackLaunchState(terminalId);
+        console.warn(`[agent-launch] failed for ${terminalId}`, error);
+      }
     } finally {
-      this.active--;
-      setTimeout(() => this.processNext(), 2000);
+      this.active -= 1;
+      if (!retry) this.queuedTerminals.delete(terminalId);
+      if (this.queue.length > 0) {
+        this.schedule(retry ? RETRY_DELAY_MS : 0);
+      }
     }
   }
 }
