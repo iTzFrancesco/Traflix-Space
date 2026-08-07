@@ -32,8 +32,8 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   assert.match(agentLauncher, /agentLaunchQueue\.enqueue\(terminalId, agentId\)/);
 });
 
-test("selectable agent catalog stays aligned across launcher, backend catalog and Jarvis identity", () => {
-  for (const provider of [
+test("manual agent catalog is complete while Jarvis advertises only readiness-verified providers", () => {
+  const manualAgents = [
     "anti-gravity",
     "claude",
     "codex",
@@ -42,16 +42,24 @@ test("selectable agent catalog stays aligned across launcher, backend catalog an
     "cmdc",
     "cline",
     "freebuff",
-  ]) {
+  ];
+  for (const provider of manualAgents) {
     assert.match(agents, new RegExp(`id: "${provider}"`));
+  }
+
+  const jarvisProviders = ["claude", "codex", "opencode", "pi", "freebuff"];
+  for (const provider of jarvisProviders) {
     assert.match(agentRegistry, new RegExp(`id: "${provider}"\\.into\\(\\)`));
     assert.match(runtimeDetector, new RegExp(`"${provider}"`));
   }
-  assert.match(runtimeDetector, /"agy" \| "anti gravity" \| "antigravity" => "anti-gravity"/);
-  assert.match(runtimeDetector, /"command code" \| "command-code" => "cmdc"/);
-  assert.match(runtimeDetector, /"agy\\r\\n"/);
-  assert.match(runtimeDetector, /"cmdc\\r\\n"/);
-  assert.match(runtimeDetector, /"cline\\r\\n"/);
+
+  for (const manualOnly of ["anti-gravity", "cmdc", "cline"]) {
+    assert.doesNotMatch(agentRegistry, new RegExp(`id: "${manualOnly}"\\.into\\(\\)`));
+  }
+  assert.match(runtimeDetector, /for manual_only in \["agy", "anti-gravity", "cmdc", "command code", "cline"\]/);
+  assert.match(agents, /id: "cmdc"[\s\S]*command: "cmdc"/);
+  assert.match(agents, /id: "cline"[\s\S]*command: "cline"/);
+  assert.match(agents, /id: "anti-gravity"[\s\S]*command: "agy"/);
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
