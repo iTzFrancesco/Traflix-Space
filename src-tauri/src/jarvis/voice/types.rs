@@ -128,7 +128,7 @@ impl VoiceCaptureOptions {
     pub fn bounded(self) -> Self {
         Self {
             max_duration_seconds: normalize_max_duration_seconds(self.max_duration_seconds),
-            max_armed_seconds: self.max_armed_seconds.clamp(1, 20),
+            max_armed_seconds: self.max_armed_seconds.clamp(1, 120),
             vad_enabled: self.vad_enabled,
             vad_speech_threshold: self.vad_speech_threshold.clamp(0.001, 1.0),
             vad_start_frames: self.vad_start_frames.clamp(1, 60),
@@ -191,7 +191,8 @@ pub fn normalize_max_duration_seconds(value: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_max_duration_seconds, MAX_RECORDING_MS};
+    use super::{normalize_max_duration_seconds, VoiceCaptureOptions, MAX_RECORDING_MS};
+    use crate::settings::store::VoiceActivationMode;
 
     #[test]
     fn corrupted_duration_is_bounded_for_capture_and_watchdog() {
@@ -201,6 +202,23 @@ mod tests {
             MAX_RECORDING_MS as u32 / 1000
         );
         assert_eq!(normalize_max_duration_seconds(12), 12);
+    }
+
+    #[test]
+    fn hands_free_arm_window_allows_two_minutes_without_churn() {
+        let options = VoiceCaptureOptions {
+            activation_mode: VoiceActivationMode::Vad,
+            max_duration_seconds: 45,
+            max_armed_seconds: 120,
+            vad_enabled: true,
+            vad_speech_threshold: 0.018,
+            vad_start_frames: 3,
+            vad_silence_frames: 16,
+            vad_pre_roll_ms: 250,
+            vad_post_speech_ms: 650,
+        }
+        .bounded();
+        assert_eq!(options.max_armed_seconds, 120);
     }
 }
 
