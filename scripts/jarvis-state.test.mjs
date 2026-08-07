@@ -245,51 +245,44 @@ function idleStatusInput(overrides = {}) {
     ttsStatus: { status: "idle" },
     requests: {},
     pendingActions: [],
-    registrySessions: [],
+    activities: [],
     ...overrides,
   };
 }
 
-function registrySession(overrides = {}) {
-  return {
-    ref: {
-      agentSessionId: "codex-1",
-      provider: "codex",
-      resolvedProvider: "codex",
-      workspaceId: "workspace-a",
-      terminalId: "t-1",
-      generation: 1,
-      createdAt: "now",
-      updatedAt: "now",
-    },
-    state: "waiting",
-    ...overrides,
-  };
-}
-
-test("collapsed widget is Ready when idle and never shows agent names or counts", () => {
-  assert.equal(collapsedJarvisStatus(idleStatusInput()), "Pronto quando vuoi");
-  const working = collapsedJarvisStatus(idleStatusInput({ registrySessions: [registrySession({ state: "working" }), registrySession({ state: "starting", ref: { ...registrySession().ref, agentSessionId: "pi-1", provider: "pi", resolvedProvider: "pi" } })] }));
-  assert.equal(working, "L'agente sta lavorando…");
-  assert.doesNotMatch(working, /codex|Codex|pi|count|agenti/i);
+test("collapsed widget represents Jarvis only and is exactly Ready when idle", () => {
+  assert.equal(collapsedJarvisStatus(idleStatusInput()), "Ready when you are");
+  assert.doesNotMatch(widgetSource, /registrySessions/);
+  assert.doesNotMatch(widgetSource, /Codex ready|agents working|agents waiting/i);
 });
 
-test("collapsed priority is voice, then agent, then pending, then thinking, then TTS", () => {
+test("collapsed priority is voice, checkpoint, pending, thinking, then TTS", () => {
   const base = idleStatusInput();
-  assert.equal(collapsedJarvisStatus({ ...base, voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "recording", createdAt: "now", normalizedLevel: 0 } }), "Ti ascolto…");
-  assert.equal(collapsedJarvisStatus({ ...base, pendingActions: [{ id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a" } }] }), "Conferma richiesta");
-  assert.equal(collapsedJarvisStatus({ ...base, requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } } }), "Jarvis sta pensando…");
-  assert.equal(collapsedJarvisStatus({ ...base, ttsStatus: { status: "playing" } }), "Sto parlando…");
-  assert.equal(collapsedJarvisStatus({ ...base, voiceError: "errore" }), "Errore voce");
-  assert.equal(collapsedJarvisStatus({ ...base, workspaceId: null, workspaceName: null }), "Seleziona una workspace");
+  assert.equal(collapsedJarvisStatus({ ...base, voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "recording", createdAt: "now", normalizedLevel: 0 } }), "Listening…");
+  assert.equal(collapsedJarvisStatus({ ...base, voiceRequest: { requestId: "v", workspaceId: "workspace-a", status: "transcribing", createdAt: "now", normalizedLevel: 0 } }), "Transcribing…");
+  assert.equal(collapsedJarvisStatus({ ...base, activities: [checkpoint({ requestId: "r", phase: "checking", label: "Checking Codex…", status: "running", createdAt: "2026-08-07T00:00:00Z" })] }), "Checking Codex…");
+  assert.equal(collapsedJarvisStatus({ ...base, pendingActions: [{ id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a", requestId: "a" } }] }), "Waiting for confirmation…");
+  assert.equal(collapsedJarvisStatus({ ...base, requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } } }), "Thinking…");
+  assert.equal(collapsedJarvisStatus({ ...base, ttsStatus: { status: "playing" } }), "Speaking…");
+  assert.equal(collapsedJarvisStatus({ ...base, voiceError: "errore" }), "Voice error");
+  assert.equal(collapsedJarvisStatus({ ...base, workspaceId: null, workspaceName: null }), "Select a workspace");
 });
 
-test("agent pending state wins over thinking while a confirmation is requested", () => {
-  const input = idleStatusInput({
-    pendingActions: [{ id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a" } }],
-    requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } },
-  });
-  assert.equal(collapsedJarvisStatus(input), "Conferma richiesta");
+test("pending confirmation wins over thinking and stale waiting checkpoints are ignored", () => {
+  const pending = { id: "a", status: "pending", invocation: { targetWorkspaceId: "workspace-a", requestId: "req-1" } };
+  const waiting = checkpoint({ requestId: "req-1", phase: "waiting_confirmation", label: "Waiting for confirmation…", status: "waiting_confirmation", createdAt: "2026-08-07T00:00:00Z" });
+  assert.equal(collapsedJarvisStatus(idleStatusInput({ pendingActions: [pending], activities: [waiting], requests: { r: { requestId: "r", workspaceId: "workspace-a", createdAt: "now", status: "running" } } })), "Waiting for confirmation…");
+  assert.equal(collapsedJarvisStatus(idleStatusInput({ pendingActions: [], activities: [waiting] })), "Ready when you are");
+});
+
+test("new checkpoint phases supersede stale open phases from the same request", () => {
+  const preparing = checkpoint({ requestId: "req-1", phase: "preparing", label: "Preparing message…", status: "running", createdAt: "2026-08-07T00:00:00Z" });
+  const waiting = checkpoint({ requestId: "req-1", phase: "waiting_confirmation", label: "Waiting for confirmation…", status: "waiting_confirmation", createdAt: "2026-08-07T00:00:01Z" });
+  const writing = checkpoint({ requestId: "req-1", phase: "writing", label: "Writing to Codex…", status: "running", createdAt: "2026-08-07T00:00:02Z" });
+  const merged = mergeActivityEvents([preparing], [waiting, writing]);
+  assert.equal(merged.some((event) => event.phase === "preparing"), false);
+  assert.equal(merged.some((event) => event.phase === "waiting_confirmation"), false);
+  assert.equal(merged.at(-1).phase, "writing");
 });
 
 test("checkpoints merge deduplicates by request, phase and target and stay bounded", () => {
@@ -301,7 +294,7 @@ test("checkpoints merge deduplicates by request, phase and target and stay bound
   assert.equal(merged[0].label, "Sent.");
 });
 
-test("checkpoint view is bounded and only open events are visible in the strip", () => {
+test("checkpoint view is bounded and the strip includes current and recent terminal events", () => {
   const events = [];
   for (let index = 0; index < MAX_ACTIVITY_EVENTS + 8; index += 1) {
     events.push(checkpoint({ requestId: `req-${index}`, phase: "writing", label: `L${index}`, status: index % 2 ? "done" : "running", createdAt: `2026-08-07T00:${String(index).padStart(2, "0")}:00Z` }));
@@ -310,7 +303,7 @@ test("checkpoint view is bounded and only open events are visible in the strip",
   assert.equal(merged.length, MAX_ACTIVITY_EVENTS);
   const strip = stripActivities(merged, "workspace-a");
   assert.ok(strip.length <= MAX_ACTIVITY_STRIP);
-  assert.ok(strip.every((event) => event.status === "running" || event.status === "waiting_confirmation"));
+  assert.ok(strip.some((event) => event.status === "done"));
 });
 
 test("activity strip is isolated per workspace and never a conversation message", () => {
@@ -321,10 +314,9 @@ test("activity strip is isolated per workspace and never a conversation message"
   assert.deepEqual(stripActivities(events, "workspace-a").map((event) => event.label), ["A"]);
   assert.deepEqual(stripActivities(events, "workspace-b").map((event) => event.label), ["B"]);
   assert.equal(stripActivities(events, null).length, 0);
-  // The strip is a separate ephemeral element, not a conversation message.
   assert.match(stripSource, /JarvisActivityStrip/);
   assert.doesNotMatch(stripSource, /role === "user"|role === "assistant"/);
-  assert.match(chatPanelSource, /JarvisActivityStrip/);
+  assert.match(chatPanelSource, /pendingActions=\{props\.pendingActions\}/);
 });
 
 test("checkpoints are backend-deterministic and labels never leak terminal identity", () => {
@@ -364,7 +356,7 @@ test("agent.activity tool is read-only and bounded, never an app-server adapter"
 test("no hidden provider sessions exist: Jarvis only writes into the shared PTY", () => {
   assert.doesNotMatch(chatBackendSource, /codex app-server|opencode serve/);
   assert.doesNotMatch(chatBackendSource, /spawn.*hidden|detached.*agent/i);
-  assert.doesNotMatch(widgetSource, /registrySessions\.filter/);
+  assert.doesNotMatch(widgetSource, /registrySessions/);
 });
 
 test("task text and timeline bounds are enforced in the registry", () => {
@@ -372,6 +364,8 @@ test("task text and timeline bounds are enforced in the registry", () => {
   assert.match(registrySource, /MAX_ACTIVITY_TIMELINE: usize = 32/);
   assert.match(registrySource, /MAX_ACTIVITY_LIMIT: usize = 16/);
   assert.match(registrySource, /DEFAULT_ACTIVITY_LIMIT: usize = 8/);
+  assert.match(registrySource, /unreliable: bool/);
+  assert.match(registrySource, /invalidate_line/);
 });
 
 test("expanded panel shows the strip without converting it into chat messages", () => {
