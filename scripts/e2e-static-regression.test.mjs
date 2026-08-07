@@ -6,6 +6,7 @@ const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const terminalStore = source("../src/stores/terminalStore.ts");
 const agents = source("../src/lib/agents.ts");
+const agentRegistry = source("../src-tauri/src/agent/registry.rs");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
 const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
@@ -31,12 +32,17 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   assert.match(agentLauncher, /agentLaunchQueue\.enqueue\(terminalId, agentId\)/);
 });
 
-test("Command Code stays launchable and identifiable across frontend and Jarvis backend", () => {
-  assert.match(agents, /id: "cmdc"/);
+test("Command Code and Cline stay aligned across launcher, backend catalog and Jarvis identity", () => {
+  for (const provider of ["cmdc", "cline"]) {
+    assert.match(agents, new RegExp(`id: "${provider}"`));
+    assert.match(agentRegistry, new RegExp(`id: "${provider}"\\.into\\(\\)`));
+    assert.match(runtimeDetector, new RegExp(`"${provider}"`));
+  }
   assert.match(agents, /command: "cmdc"/);
-  assert.match(runtimeDetector, /"cmdc"/);
+  assert.match(agents, /command: "cline"/);
   assert.match(runtimeDetector, /"command code" \| "command-code" => "cmdc"/);
   assert.match(runtimeDetector, /"cmdc\\r\\n"/);
+  assert.match(runtimeDetector, /"cline\\r\\n"/);
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
