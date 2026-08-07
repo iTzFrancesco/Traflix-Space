@@ -48,6 +48,16 @@ microfono, voce TTS, hotkey e tuning/diagnostica avanzata. Il tuning del turno
 espone la sensibilità VAD e `vadPostSpeechMs` (silenzio prima dell'invio), non il
 vecchio timeout di attesa del VAD armato. Le API key vengono salvate fuori da
 `settings.json`; il frontend riceve solo lo stato configurata/non configurata.
+Il backend normalizza inoltre gli eventuali spazi di copia/incolla ai bordi
+della chiave e rifiuta valori vuoti, multilinea, NUL o oltre il limite.
+
+Un transcript vocale rimane sempre legato alla workspace nella quale è stato
+registrato. Se l'utente cambia workspace durante la trascrizione, Jarvis non lo
+invia alla workspace nuova. Quando la workspace originale torna in focus il
+draft può riprendere automaticamente, ma solo se Jarvis è abilitato e la chat
+di quella workspace è libera. Il resume è deduplicato per `requestId` e ritenta
+quando una richiesta concorrente termina; Jarvis nascosto non produce invii
+invisibili.
 
 ## Authority e scope
 
@@ -112,6 +122,13 @@ registrano `observe_jarvis_send` solo dopo una scrittura riuscita. Un fallimento
 ferma la catena corrente; non viene scelto un altro provider e non viene fatto
 fallback creativo.
 
+Anche il launcher frontend dei terminali configurati manualmente è bounded: la
+coda deduplica per terminale, prova al massimo due scritture e ripristina
+`agentLaunched=false` se la PTY write non riesce. Questo evita uno stato falso
+"agente lanciato" che impedirebbe un recovery successivo. Il percorso Jarvis
+resta separato e autorevole perché il backend ha già lanciato il provider prima
+di emettere `jarvis-agent-opened`.
+
 ## Handoff e output
 
 Un handoff preferisce `last_result`; usa il tail solo se necessario. Jarvis
@@ -147,17 +164,34 @@ right-panel view non più esistenti vengono scartate. Anche i preset workspace
 legacy vengono normalizzati prima dell'uso (1–8 terminali, conteggi agenti
 bounded). In questo modo l'upgrade non richiede localStorage pulito.
 
+La cache frontend delle workspace è solo una cache di configurazione, non il
+proprietario delle PTY. L'eviction LRU non termina più terminali o agenti vivi.
+Il candidato viene deciso con la workspace attiva al momento effettivo del
+commit di stato, quindi un load asincrono non può espellere una workspace che
+nel frattempo è diventata attiva. Se per churn una config attiva manca dalla
+cache, il loader la ricostruisce automaticamente dalla registry backend e la
+PTY esistente viene reidratata. Anche un load completato in ritardo può popolare
+la cache, ma non può rubare `activeTerminalId` alla workspace ora in focus.
+
 I modal condivisi applicano focus trap, Esc e restore focus. Toast di
 success/info e warning/error espongono semantica `status`/`alert` senza una
 seconda live region duplicata.
+
+Nel pannello Git lo stesso path può comparire sia in `Staged` sia in `Changes`:
+la selezione conserva esplicitamente il lato del diff, quindi una riga staged
+non apre per errore il worktree diff. Draft del commit, selezione lato e conferme
+distruttive `Discard` vengono azzerati al cambio workspace per evitare che una
+conferma aperta in A venga applicata in B.
 
 ## Guardrail di regressione
 
 `npm run test:jarvis` include sia i test Jarvis esistenti sia
 `scripts/ui-regression.test.mjs`. I guardrail statici verificano, tra l'altro,
 che il vecchio drawer non venga reintrodotto, che il widget non riacquisti il
-wiring morto, che modal e storage migration restino presenti e che il tuning
-voice-first continui a usare `vadPostSpeechMs`.
+wiring morto, che modal e storage migration restino presenti, che il tuning
+voice-first continui a usare `vadPostSpeechMs`, che i draft vocali riprendano
+solo nella workspace corretta, che l'LRU non uccida PTY e che i lati Git
+staged/worktree restino distinti.
 
 La presenza di questi test nel repository **non significa che siano stati
 eseguiti con successo sull'HEAD corrente**.
@@ -171,9 +205,10 @@ fornisce status CI utilizzabili come prova di validazione.
 
 Sono stati ricontrollati staticamente i percorsi critici della Fase 8: binding
 workspace/generation, risoluzione target, hard boundary delle clarification,
-doppio launch frontend/backend, VAD/auto-stop, auto-submit transcript, TTS,
-owner-mode settings, secret persistence, wiring del widget e migrazione dello
-stato UI persistito.
+doppio launch frontend/backend, VAD/auto-stop, auto-submit transcript, recovery
+cross-workspace dei draft, TTS, owner-mode settings, secret persistence, wiring
+del widget, launcher frontend degli agenti, lifecycle/cache delle PTY e
+migrazione dello stato UI persistito.
 
 Non è disponibile un output completo e verificabile dell'HEAD corrente per
 `npm run test:jarvis`, `npm run build`/TypeScript, `cargo check` o `cargo test`.
