@@ -59,6 +59,18 @@ export const AGENTS: AgentDefinition[] = [
     color: "#a855f7",
   },
   {
+    id: "cmdc",
+    name: "Command Code",
+    description: "Agente AI Command Code",
+    command: "cmdc",
+    args: [],
+    icon: "Terminal",
+    color: "#3a86ff",
+  },
+  {
+    // Kept for backwards compatibility with workspaces created by older
+    // frontend-only catalogues. The current backend wizard does not advertise
+    // Cline, but an existing saved terminal must still be launchable.
     id: "cline",
     name: "Cline",
     description: "Agente AI Cline",
