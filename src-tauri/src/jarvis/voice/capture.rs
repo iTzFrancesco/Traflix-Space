@@ -228,11 +228,14 @@ impl AudioCaptureSession for CpalCaptureSession {
         self.stop_stream();
         self.buffer
             .lock()
-            .map(|buffer| {
+            .map(|mut buffer| {
                 if let Some(error) = buffer.failure {
                     Err(error)
                 } else {
-                    Ok(buffer.audio())
+                    // The CPAL stream and callback have already been joined.
+                    // Move the recording out instead of cloning every sample
+                    // on the latency-critical stop path.
+                    Ok(buffer.take_audio())
                 }
             })
             .map_err(|_| VoiceErrorCode::DeviceUnavailable)
@@ -332,9 +335,9 @@ impl CaptureBuffer {
             failure: None,
         }
     }
-    fn audio(&self) -> CapturedAudio {
+    fn take_audio(&mut self) -> CapturedAudio {
         CapturedAudio {
-            samples: self.samples.clone(),
+            samples: std::mem::take(&mut self.samples),
             channels: self.channels,
             sample_rate: self.sample_rate,
         }
@@ -380,12 +383,8 @@ fn push_samples<I: IntoIterator<Item = f32>>(buffer: &Arc<Mutex<CaptureBuffer>>,
         if buffer.vad.is_some() {
             if speech_started && buffer.samples.is_empty() {
                 let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
-                let preroll = buffer
-                    .pre_roll
-                    .drain(..)
-                    .take(remaining)
-                    .collect::<Vec<_>>();
-                buffer.samples.extend(preroll);
+                let preroll = std::mem::take(&mut buffer.pre_roll);
+                buffer.samples.extend(preroll.into_iter().take(remaining));
             }
             if speech_started {
                 let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
