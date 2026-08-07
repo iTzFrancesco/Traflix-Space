@@ -49,6 +49,11 @@ const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
   persistent: false,
 };
 
+type VoiceInputSettings = AppSettings["jarvis"]["voiceInput"];
+type VoiceOutputSettings = AppSettings["jarvis"]["voiceOutput"];
+type VoiceActivationMode = VoiceInputSettings["activationMode"];
+type ShortcutBehavior = VoiceInputSettings["shortcutBehavior"];
+
 export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
@@ -431,10 +436,10 @@ function VoiceOptions({
   onInputChange,
   onOutputChange,
 }: {
-  input: AppSettings["jarvis"]["voiceInput"];
-  output: AppSettings["jarvis"]["voiceOutput"];
-  onInputChange: (value: AppSettings["jarvis"]["voiceInput"]) => void;
-  onOutputChange: (value: AppSettings["jarvis"]["voiceOutput"]) => void;
+  input: VoiceInputSettings;
+  output: VoiceOutputSettings;
+  onInputChange: (value: VoiceInputSettings) => void;
+  onOutputChange: (value: VoiceOutputSettings) => void;
 }) {
   const [devices, setDevices] = useState<VoiceInputDevice[]>([]);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
@@ -442,13 +447,13 @@ function VoiceOptions({
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
 
-  const normalizedInput = {
+  const normalizedInput: VoiceInputSettings = {
     ...input,
-    activationMode: "click_toggle" as const,
+    enabled: true,
     autoSubmitTranscript: true,
-    vadEnabled: true,
+    vadEnabled: input.activationMode !== "hold_to_talk",
   };
-  const normalizedOutput = {
+  const normalizedOutput: VoiceOutputSettings = {
     ...output,
     enabled: true,
     autoSpeak: true,
@@ -479,10 +484,18 @@ function VoiceOptions({
     }
   };
 
+  const setActivationMode = (activationMode: VoiceActivationMode) => {
+    onInputChange({
+      ...normalizedInput,
+      activationMode,
+      vadEnabled: activationMode !== "hold_to_talk",
+    });
+  };
+
   return (
     <SettingsSection
       title="Voice"
-      description="Turn detection, transcript submission and spoken replies are automatic."
+      description="One click is the default. Turn detection, transcript submission and spoken replies are automatic."
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="space-y-1.5 text-xs text-neutral-text-muted">
@@ -579,33 +592,82 @@ function VoiceOptions({
       <details className="details-panel mt-4">
         <summary>Voice tuning</summary>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <TextField
-            label="VAD sensitivity"
-            value={String(normalizedInput.vadSpeechThreshold)}
-            onChange={(value) => {
-              const parsed = Number(value);
-              if (Number.isFinite(parsed)) {
-                onInputChange({
-                  ...normalizedInput,
-                  vadSpeechThreshold: Math.max(0.001, Math.min(1, parsed)),
-                });
-              }
-            }}
+          <SelectField
+            label="Interaction mode"
+            value={normalizedInput.activationMode}
+            onChange={(value) => setActivationMode(value as VoiceActivationMode)}
+            options={[
+              { value: "click_toggle", label: "One click" },
+              { value: "hold_to_talk", label: "Hold to talk" },
+              { value: "vad", label: "Voice activity" },
+            ]}
           />
-          <TextField
-            label="Silence before send (ms)"
-            value={String(normalizedInput.vadPostSpeechMs)}
-            onChange={(value) => {
-              const parsed = Number(value);
-              if (Number.isFinite(parsed)) {
-                onInputChange({
-                  ...normalizedInput,
-                  vadPostSpeechMs: Math.max(100, Math.min(5000, Math.floor(parsed))),
-                });
-              }
-            }}
+          <SelectField
+            label="Hotkey behavior"
+            value={normalizedInput.shortcutBehavior}
+            onChange={(value) =>
+              onInputChange({
+                ...normalizedInput,
+                shortcutBehavior: value as ShortcutBehavior,
+              })
+            }
+            options={[
+              { value: "toggle", label: "Press to toggle" },
+              { value: "hold", label: "Hold to talk" },
+            ]}
           />
+
+          {normalizedInput.activationMode !== "hold_to_talk" && (
+            <>
+              <TextField
+                label="VAD sensitivity"
+                value={String(normalizedInput.vadSpeechThreshold)}
+                onChange={(value) => {
+                  const parsed = Number(value);
+                  if (Number.isFinite(parsed)) {
+                    onInputChange({
+                      ...normalizedInput,
+                      vadSpeechThreshold: Math.max(0.001, Math.min(1, parsed)),
+                    });
+                  }
+                }}
+              />
+              <TextField
+                label="Silence before send (ms)"
+                value={String(normalizedInput.vadPostSpeechMs)}
+                onChange={(value) => {
+                  const parsed = Number(value);
+                  if (Number.isFinite(parsed)) {
+                    onInputChange({
+                      ...normalizedInput,
+                      vadPostSpeechMs: Math.max(100, Math.min(5000, Math.floor(parsed))),
+                    });
+                  }
+                }}
+              />
+            </>
+          )}
+
+          {normalizedInput.activationMode === "vad" && (
+            <TextField
+              label="Wait for speech (s)"
+              value={String(normalizedInput.maxArmedSeconds)}
+              onChange={(value) => {
+                const parsed = Number(value);
+                if (Number.isFinite(parsed)) {
+                  onInputChange({
+                    ...normalizedInput,
+                    maxArmedSeconds: Math.max(2, Math.min(120, Math.floor(parsed))),
+                  });
+                }
+              }}
+            />
+          )}
         </div>
+        <p className="mt-3 text-[10px] leading-relaxed text-neutral-text-muted">
+          One click listens until you stop speaking. Hold to talk stops on release.
+          Voice activity waits for speech before starting the turn.
+        </p>
       </details>
 
       {voiceSettingsError && (
@@ -644,6 +706,35 @@ function TextField({
   );
 }
 
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="space-y-1.5">
+      <span className="text-xs text-neutral-text-muted">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="field-input w-full"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function ToggleRow({
   label,
   description,
@@ -656,7 +747,7 @@ function ToggleRow({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex min-h-9 cursor-pointer items-center justify-between gap-3 border-y border-neutral-border px-1 py-2.5">
+    <div className="flex min-h-10 items-center justify-between gap-3 border-y border-neutral-border px-1 py-2.5">
       <span>
         <span className="block text-xs font-medium text-neutral-text">{label}</span>
         {description && (
@@ -665,12 +756,24 @@ function ToggleRow({
           </span>
         )}
       </span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="accent-primary"
-      />
-    </label>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative h-[20px] w-9 shrink-0 rounded-full border transition-colors ${
+          checked
+            ? "border-primary/55 bg-primary/25"
+            : "border-neutral-border bg-neutral-darkest"
+        }`}
+      >
+        <span
+          className={`absolute top-[3px] h-3 w-3 rounded-full transition-[left,background-color] ${
+            checked ? "left-[19px] bg-primary" : "left-[3px] bg-neutral-text-muted"
+          }`}
+        />
+      </button>
+    </div>
   );
 }
