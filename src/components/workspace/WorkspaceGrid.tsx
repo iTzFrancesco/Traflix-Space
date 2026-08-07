@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { X } from "lucide-react";
 import { TerminalPane } from "./TerminalPane";
 import { useTerminalStore } from "../../stores/terminalStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -24,6 +25,7 @@ export function WorkspaceGrid({
 }: WorkspaceGridProps) {
   const activeTerminalId = useTerminalStore((state) => state.activeTerminalId);
   const focusedTerminalId = useTerminalStore((state) => state.focusedTerminalId);
+  const runtimeTerminals = useTerminalStore((state) => state.terminals);
   const toggleFocusTerminal = useTerminalStore((state) => state.toggleFocusTerminal);
   const localFocusId = focusedTerminalId !== null && terminals.some((terminal) => terminal.id === focusedTerminalId)
     ? focusedTerminalId
@@ -54,8 +56,8 @@ export function WorkspaceGrid({
     return (
       <div className="flex flex-1 items-center justify-center px-8">
         <div className="text-center">
-          <p className="text-xs font-semibold text-neutral-text-dim">No terminals in this workspace</p>
-          <p className="mt-1 text-[10px] text-neutral-text-muted">Add a terminal from the workspace configuration.</p>
+          <p className="text-xs font-semibold text-neutral-text-dim">Nessun terminale in questo spazio di lavoro</p>
+          <p className="mt-1 text-[10px] text-neutral-text-muted">Aggiungi un terminale dalla configurazione dello spazio di lavoro.</p>
         </div>
       </div>
     );
@@ -79,13 +81,14 @@ export function WorkspaceGrid({
       {terminals.map((terminal) => {
         const isFocused = localFocusId === terminal.id;
         const isHidden = isFocusMode && !isFocused;
+        const hasExited = runtimeTerminals[terminal.id]?.exitCode !== null && runtimeTerminals[terminal.id]?.exitCode !== undefined;
         return (
           <div
             key={terminal.id}
             style={
               isFocusMode
                 ? isFocused
-                  ? { gridColumn: "1 / -1", gridRow: "1 / -1", minWidth: 0, minHeight: 0, display: "flex", zIndex: 2 }
+                  ? { gridColumn: "1 / -1", gridRow: "1 / -1", minWidth: 0, minHeight: 0, display: "flex", zIndex: 2, position: "relative" }
                   : {
                       position: "absolute",
                       width: 1,
@@ -96,7 +99,7 @@ export function WorkspaceGrid({
                       zIndex: 0,
                       clipPath: "inset(50%)",
                     }
-                : { minWidth: 0, minHeight: 0, display: "flex" }
+                : { minWidth: 0, minHeight: 0, display: "flex", position: "relative" }
             }
             aria-hidden={isHidden || undefined}
           >
@@ -112,10 +115,28 @@ export function WorkspaceGrid({
               isFocused={isFocused}
               focusModeActive={isFocusMode}
               onActivate={stableOnActivate}
-              onClose={onCloseTerminal}
+              // TerminalPane historically schedules an automatic close after a
+              // natural process exit. Once exited, keep that callback absent so
+              // its recovery overlay remains usable instead of disappearing.
+              onClose={hasExited ? undefined : onCloseTerminal}
               onToggleFocus={stableOnToggleFocus}
               onReorder={onReorderTerminals}
             />
+            {hasExited && onCloseTerminal && !isHidden && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTerminal(terminal.id);
+                }}
+                className="absolute right-2 top-2 z-[35] inline-flex h-7 items-center gap-1.5 rounded-md border border-danger/30 bg-neutral-elevated/95 px-2 text-[10px] font-semibold text-danger transition-colors hover:bg-danger/[0.10]"
+                title="Rimuovi il terminale chiuso"
+                aria-label="Rimuovi il terminale chiuso"
+              >
+                <X size={12} />
+                Rimuovi
+              </button>
+            )}
           </div>
         );
       })}
