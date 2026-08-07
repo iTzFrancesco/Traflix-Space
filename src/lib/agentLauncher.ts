@@ -115,3 +115,41 @@ class AgentLaunchQueue {
 }
 
 export const agentLaunchQueue = new AgentLaunchQueue();
+
+// A manual "Riapri terminale" creates a fresh PTY generation but TerminalPane
+// stays mounted, so its normal mount-time launch effect does not run again.
+// Detect exactly the exited -> spawned transition and relaunch the configured
+// agent after the current event turn. Jarvis-owned restarts mark agentLaunched
+// synchronously after markSpawned; the deferred check therefore observes true
+// and never starts a duplicate CLI.
+useTerminalStore.subscribe((state, previous) => {
+  for (const [terminalId, terminal] of Object.entries(state.terminals)) {
+    const before = previous.terminals[terminalId];
+    if (
+      !before ||
+      before.exitCode === null ||
+      terminal.exitCode !== null ||
+      !terminal.spawned ||
+      !terminal.agent
+    ) {
+      continue;
+    }
+
+    const agentId = terminal.agent;
+    window.setTimeout(() => {
+      const liveStore = useTerminalStore.getState();
+      const live = liveStore.terminals[terminalId];
+      if (
+        !live ||
+        !live.spawned ||
+        live.exitCode !== null ||
+        live.agent !== agentId ||
+        live.agentLaunched
+      ) {
+        return;
+      }
+      liveStore.markAgentLaunched(terminalId);
+      agentLaunchQueue.enqueue(terminalId, agentId);
+    }, 0);
+  }
+});
