@@ -230,17 +230,13 @@ export function WorkspaceView() {
         // This is only an LRU cache for workspace configuration. Evicting a
         // cached config must never kill the user's live PTY or agent session;
         // TerminalPane can rehydrate the same backend PTY when the workspace
-        // is visited again.
+        // is visited again. The eviction target is resolved inside the state
+        // updater so a workspace that becomes active during an async load is
+        // never removed by a stale precomputed candidate.
         const newOrder = openOrderRef.current
           .filter((k) => k !== id)
           .concat(id);
-
-        const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
-        const toEvict = loadedMapRef.current.size >= MAX_OPEN_WORKSPACES
-          ? newOrder.find(
-              (k) => k !== currentActive && loadedMapRef.current.has(k),
-            )
-          : undefined;
+        openOrderRef.current = newOrder;
 
         setLoadedMap((prev) => {
           const next = new Map(prev);
@@ -254,13 +250,12 @@ export function WorkspaceView() {
             updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
           });
 
-          openOrderRef.current = newOrder;
-
-          if (toEvict) {
-            next.delete(toEvict);
-            openOrderRef.current = openOrderRef.current.filter(
-              (k) => k !== toEvict,
+          if (next.size > MAX_OPEN_WORKSPACES) {
+            const activeAtCommit = useWorkspaceStore.getState().activeWorkspaceId;
+            const toEvict = newOrder.find(
+              (key) => key !== activeAtCommit && key !== id && next.has(key),
             );
+            if (toEvict) next.delete(toEvict);
           }
 
           return next;
@@ -581,16 +576,21 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica workspace attivo se non già in cache.
-  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare
-  // il focus sul solo workspace attivo. Così se esci da una
-  // workspace in focus mode e ci torni, il focus è preservato.
+  // Carica workspace attivo se non già in cache. Watching loadedMap as well as
+  // the active id lets the current workspace recover automatically if cache
+  // churn removes its config while async loads are completing.
+  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare il focus sul
+  // solo workspace attivo. Così se esci da una workspace in focus mode e ci
+  // torni, il focus è preservato.
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    if (!loadedMapRef.current.has(activeWorkspaceId)) {
+    if (
+      !loadedMap.has(activeWorkspaceId) &&
+      !loadingRef.current.has(activeWorkspaceId)
+    ) {
       loadWorkspace(activeWorkspaceId);
     }
-  }, [activeWorkspaceId, loadWorkspace]);
+  }, [activeWorkspaceId, loadedMap, loadWorkspace]);
 
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
