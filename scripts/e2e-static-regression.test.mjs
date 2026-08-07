@@ -10,6 +10,7 @@ const agentRegistry = source("../src-tauri/src/agent/registry.rs");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
 const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+const workspaceWizard = source("../src/components/workspace/NewSpaceWizard.tsx");
 const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
@@ -78,6 +79,13 @@ test("new workspaces validate real directories and the human folder picker has n
   assert.match(workspaceCommands, /preferred_default_workspace_path/);
   assert.match(workspaceCommands, /let file = rx\s*\.await/s);
   assert.doesNotMatch(workspaceCommands, /timeout\(Duration::from_secs\(10\), rx\)/);
+  assert.match(workspaceWizard, /invoke<string>\("select_folder"\)/);
+  assert.match(workspaceWizard, /folder-selection-cancelled/);
+  assert.doesNotMatch(
+    workspaceWizard,
+    /invokeWithTimeout\([\s\S]{0,160}select_folder/,
+  );
+  assert.doesNotMatch(workspaceWizard, /30000/);
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
