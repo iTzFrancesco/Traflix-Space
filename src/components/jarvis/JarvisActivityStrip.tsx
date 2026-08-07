@@ -1,19 +1,22 @@
 import { Activity, CheckCircle2, Loader2, TimerReset, XCircle } from "lucide-react";
 import { stripActivities, type ActivityCheckpoint } from "../../lib/jarvis/activityState";
+import type { PendingAction } from "../../lib/jarvis/types";
 
 interface Props {
   activities: ActivityCheckpoint[];
   workspaceId: string | null;
+  pendingActions: PendingAction[];
 }
 
 /**
- * Ephemeral backend-deterministic activity strip. Shows only open checkpoints
- * (running / waiting confirmation) for the current workspace, newest first,
- * capped at 3. Completed events are pruned immediately: this is a live strip,
- * not a log, and never a conversation message.
+ * Ephemeral backend-deterministic activity strip. Shows at most three current
+ * or recent checkpoints for the current workspace. Completed/failed rows may
+ * remain briefly as recent context; stale waiting-confirmation rows disappear
+ * as soon as their Pending Action is no longer pending. This is not a log and
+ * never becomes a conversation message.
  */
-export function JarvisActivityStrip({ activities, workspaceId }: Props) {
-  const visible = stripActivities(activities, workspaceId);
+export function JarvisActivityStrip({ activities, workspaceId, pendingActions }: Props) {
+  const visible = stripActivities(activities, workspaceId, pendingActions);
   if (visible.length === 0) return null;
   return (
     <div className="mb-3 space-y-1.5">
