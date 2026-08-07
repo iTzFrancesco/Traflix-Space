@@ -38,7 +38,7 @@ pub fn hydrate_process_environment() {
 }
 
 pub fn set_secret(secret: JarvisSecretId, value: String) -> Result<JarvisSecretStatus, String> {
-    validate_secret(&value)?;
+    let value = normalize_secret(&value)?;
     let name = secret_env_name(secret);
     persist_user_secret(name, Some(&value))?;
     env::set_var(name, value);
@@ -53,8 +53,13 @@ pub fn clear_secret(secret: JarvisSecretId) -> Result<JarvisSecretStatus, String
 }
 
 pub fn read_secret_env(name: &str) -> Option<String> {
-    if let Some(value) = env::var(name).ok().filter(|value| !value.trim().is_empty()) {
-        return Some(value);
+    if let Some(value) = env::var(name).ok() {
+        if let Ok(value) = normalize_secret(&value) {
+            if env::var(name).ok().as_deref() != Some(value.as_str()) {
+                env::set_var(name, &value);
+            }
+            return Some(value);
+        }
     }
 
     #[cfg(windows)]
@@ -72,10 +77,8 @@ pub fn read_secret_env(name: &str) -> Option<String> {
         if !output.status.success() {
             return None;
         }
-        let value = String::from_utf8(output.stdout).ok()?;
-        if value.trim().is_empty() {
-            return None;
-        }
+        let raw = String::from_utf8(output.stdout).ok()?;
+        let value = normalize_secret(&raw).ok()?;
         env::set_var(name, &value);
         return Some(value);
     }
@@ -91,8 +94,9 @@ fn secret_env_name(secret: JarvisSecretId) -> &'static str {
     }
 }
 
-fn validate_secret(value: &str) -> Result<(), String> {
-    if value.trim().is_empty()
+fn normalize_secret(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
         || value.len() > MAX_SECRET_BYTES
         || value.contains('\0')
         || value.contains('\r')
@@ -100,7 +104,7 @@ fn validate_secret(value: &str) -> Result<(), String> {
     {
         return Err("API key non valida".to_string());
     }
-    Ok(())
+    Ok(value.to_string())
 }
 
 #[cfg(windows)]
@@ -151,4 +155,21 @@ fn persist_user_secret(name: &str, value: Option<&str>) -> Result<(), String> {
 #[cfg(not(windows))]
 fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_secret;
+
+    #[test]
+    fn secret_normalization_trims_copy_paste_whitespace() {
+        assert_eq!(normalize_secret("  token-value  ").unwrap(), "token-value");
+    }
+
+    #[test]
+    fn secret_normalization_rejects_empty_multiline_and_oversized_values() {
+        assert!(normalize_secret("   ").is_err());
+        assert!(normalize_secret("token\nvalue").is_err());
+        assert!(normalize_secret(&"x".repeat(1025)).is_err());
+    }
 }
