@@ -7,7 +7,9 @@ const exists = (path) => existsSync(new URL(path, import.meta.url));
 
 const modalSource = source("../src/components/ui/Modal.tsx");
 const uiStoreSource = source("../src/stores/uiStore.ts");
+const presetStoreSource = source("../src/stores/presetStore.ts");
 const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
+const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
 
@@ -23,6 +25,19 @@ const obsoleteJarvisUi = [
 
 test("obsolete Jarvis text drawer components stay removed", () => {
   for (const path of obsoleteJarvisUi) assert.equal(exists(path), false, path);
+});
+
+test("voice widget contract no longer carries dead drawer state", () => {
+  assert.doesNotMatch(
+    widgetSource,
+    /JarvisConversationMessage|JarvisProviderStatus|JarvisUiIntent|onSendMessage|onSendVoiceTranscript|onConfirmAction|onRejectAction|onUpdateAction|onOpenTerminal/,
+  );
+  assert.doesNotMatch(
+    overlaySource,
+    /loadConversation|conversationForWorkspace|terminalList|setActiveTerminal|uiIntents|followUps|confirmPendingAction|rejectPendingAction|updatePendingAction/,
+  );
+  assert.match(overlaySource, /subscribeAgentTurnCompleted/);
+  assert.match(overlaySource, /loadVoiceDraft/);
 });
 
 test("modal traps keyboard focus and restores the previous control", () => {
@@ -44,6 +59,15 @@ test("persisted desktop layout rejects obsolete right-panel views", () => {
   assert.match(uiStoreSource, /MIN_SIDEBAR_WIDTH = 260/);
   assert.match(uiStoreSource, /MAX_RIGHT_PANEL_WIDTH = 520/);
   assert.doesNotMatch(uiStoreSource, /RightPanelView = string/);
+  assert.doesNotMatch(uiStoreSource, /\.\.\.saved,/);
+});
+
+test("persisted workspace presets are bounded before the wizard consumes them", () => {
+  assert.match(presetStoreSource, /boundedTerminalCount/);
+  assert.match(presetStoreSource, /Math\.max\(1, Math\.min\(8/);
+  assert.match(presetStoreSource, /boundedAgentCounts/);
+  assert.match(presetStoreSource, /merge: \(persisted, current\)/);
+  assert.match(presetStoreSource, /filter\(\(preset\): preset is Preset/);
 });
 
 test("compact Jarvis microphone meter has real geometry", () => {
@@ -55,7 +79,10 @@ test("compact Jarvis microphone meter has real geometry", () => {
 
 test("normal Jarvis settings remain voice-first without old consent UI", () => {
   assert.match(settingsSource, /Voice is the default interface/);
-  assert.match(settingsSource, /Turn detection, transcript submission and spoken replies are automatic/);
+  assert.match(
+    settingsSource,
+    /Turn detection, transcript submission and spoken replies are automatic/,
+  );
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
