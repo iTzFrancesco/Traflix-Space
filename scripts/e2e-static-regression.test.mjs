@@ -10,6 +10,7 @@ const agentRegistry = source("../src-tauri/src/agent/registry.rs");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
 const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
@@ -62,6 +63,16 @@ test("manual agent catalog is complete while Jarvis advertises only readiness-ve
   assert.match(agents, /id: "cmdc"[\s\S]*command: "cmdc"/);
   assert.match(agents, /id: "cline"[\s\S]*command: "cline"/);
   assert.match(agents, /id: "anti-gravity"[\s\S]*command: "agy"/);
+});
+
+test("new workspaces validate real directories and the human folder picker has no arbitrary timeout", () => {
+  assert.match(workspaceCommands, /fn validate_new_workspace/);
+  assert.match(workspaceCommands, /canonical_directory\(&config\.root_path/);
+  assert.match(workspaceCommands, /config\.terminals\.is_empty\(\) \|\| config\.terminals\.len\(\) > 8/);
+  assert.match(workspaceCommands, /terminal\.workspace_id = Some\(config\.id\.clone\(\)\)/);
+  assert.match(workspaceCommands, /preferred_default_workspace_path/);
+  assert.match(workspaceCommands, /let file = rx\s*\.await/s);
+  assert.doesNotMatch(workspaceCommands, /timeout\(Duration::from_secs\(10\), rx\)/);
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
