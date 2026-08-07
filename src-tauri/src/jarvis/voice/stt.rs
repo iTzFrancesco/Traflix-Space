@@ -1,13 +1,21 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use futures_util::StreamExt;
-use reqwest::{multipart, Client, StatusCode};
+use reqwest::{header::CONTENT_TYPE, Client, StatusCode};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::types::{VoiceErrorCode, GROQ_STT_MODEL, MAX_WAV_BYTES};
+
+const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_BOUNDARY: &str = "------------------------traflix-space-jarvis";
+const GROQ_CONTENT_TYPE: &str =
+    "multipart/form-data; boundary=------------------------traflix-space-jarvis";
+const GROQ_PROMPT: &str =
+    "Traflix Space, Jarvis, Codex, OpenCode, Pi, Freebuff, Tauri, ConPTY, workspace";
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub type SttFuture = Pin<Box<dyn Future<Output = Result<String, VoiceErrorCode>> + Send>>;
 
@@ -28,27 +36,57 @@ pub struct GroqSpeechToTextProvider {
     api_key: Option<String>,
 }
 
+#[derive(Clone)]
+struct CachedGroqProvider {
+    api_key: String,
+    provider: GroqSpeechToTextProvider,
+}
+
+static RUNTIME_PROVIDER: OnceLock<Mutex<Option<CachedGroqProvider>>> = OnceLock::new();
+
 impl GroqSpeechToTextProvider {
     pub fn from_environment() -> Result<Self, VoiceErrorCode> {
         let api_key = std::env::var("GROQ_API_KEY")
             .ok()
-            .filter(|key| !key.trim().is_empty());
-        Ok(Self::new(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+        let Some(api_key) = api_key else {
+            return Ok(Self::new(GROQ_ENDPOINT, None));
+        };
+
+        // Keep one reqwest client alive across voice turns. Besides avoiding
+        // per-turn client construction, this lets reqwest reuse the Groq
+        // keep-alive connection when the service/network permits it.
+        let cache = RUNTIME_PROVIDER.get_or_init(|| Mutex::new(None));
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.as_ref() {
+            if cached.api_key == api_key {
+                return Ok(cached.provider.clone());
+            }
+        }
+        let provider = Self::new(GROQ_ENDPOINT, Some(api_key.clone()));
+        *cache = Some(CachedGroqProvider {
             api_key,
-        ))
+            provider: provider.clone(),
+        });
+        Ok(provider)
     }
 
     pub fn new(endpoint: impl Into<String>, api_key: Option<String>) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(1)
+            .tcp_nodelay(true)
             .build()
             .expect("voice HTTP client");
         Self {
             client,
             endpoint: endpoint.into(),
-            api_key,
+            api_key: api_key.map(|key| key.trim().to_string()),
         }
     }
 }
@@ -74,42 +112,32 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
             if wav.is_empty() || wav.len() > MAX_WAV_BYTES {
                 return Err(VoiceErrorCode::AudioTooLarge);
             }
-            let file = multipart::Part::bytes(wav)
-                .file_name("audio.wav")
-                .mime_str("audio/wav")
-                .map_err(|_| VoiceErrorCode::InvalidRequest)?;
-            let form = multipart::Form::new()
-                .part("file", file)
-                .text("model", GROQ_STT_MODEL)
-                .text("language", if language.trim().is_empty() { "it".into() } else { language })
-                .text("response_format", "json")
-                .text("temperature", "0")
-                .text("prompt", "Traflix Space, Jarvis, Codex, OpenCode, Pi, Freebuff, Tauri, ConPTY, workspace");
+
+            let language = normalized_language(&language);
+            let body = build_groq_multipart(&wav, &language);
             let request = this
                 .client
                 .post(&this.endpoint)
                 .bearer_auth(this.api_key.as_deref().unwrap_or_default())
-                .multipart(form);
+                .header(CONTENT_TYPE, GROQ_CONTENT_TYPE)
+                .body(body);
             let response = tokio::select! {
                 _ = cancellation.cancelled() => return Err(VoiceErrorCode::Cancelled),
                 result = request.send() => result.map_err(classify_transport)?
             };
             let status = response.status();
-            let mut stream = response.bytes_stream();
-            let mut body = Vec::new();
-            loop {
-                let next = tokio::select! {
-                    _ = cancellation.cancelled() => return Err(VoiceErrorCode::Cancelled),
-                    next = stream.next() => next
-                };
-                let Some(chunk) = next else {
-                    break;
-                };
-                let chunk = chunk.map_err(classify_transport)?;
-                if body.len().saturating_add(chunk.len()) > 64 * 1024 {
-                    return Err(VoiceErrorCode::InvalidResponse);
-                }
-                body.extend_from_slice(&chunk);
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+            {
+                return Err(VoiceErrorCode::InvalidResponse);
+            }
+            let body = tokio::select! {
+                _ = cancellation.cancelled() => return Err(VoiceErrorCode::Cancelled),
+                result = response.bytes() => result.map_err(classify_transport)?
+            };
+            if body.len() > MAX_RESPONSE_BYTES {
+                return Err(VoiceErrorCode::InvalidResponse);
             }
             if !status.is_success() {
                 return Err(classify_status(status));
@@ -123,6 +151,49 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
             Ok(text)
         })
     }
+}
+
+fn normalized_language(language: &str) -> String {
+    let trimmed = language.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 16
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        "it".to_string()
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
+fn push_field(body: &mut Vec<u8>, name: &str, value: &str) {
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(GROQ_BOUNDARY.as_bytes());
+    body.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+    body.extend_from_slice(name.as_bytes());
+    body.extend_from_slice(b"\"\r\n\r\n");
+    body.extend_from_slice(value.as_bytes());
+    body.extend_from_slice(b"\r\n");
+}
+
+fn build_groq_multipart(wav: &[u8], language: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(wav.len().saturating_add(768));
+    push_field(&mut body, "model", GROQ_STT_MODEL);
+    push_field(&mut body, "language", language);
+    push_field(&mut body, "response_format", "json");
+    push_field(&mut body, "temperature", "0");
+    push_field(&mut body, "prompt", GROQ_PROMPT);
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(GROQ_BOUNDARY.as_bytes());
+    body.extend_from_slice(
+        b"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n",
+    );
+    body.extend_from_slice(wav);
+    body.extend_from_slice(b"\r\n--");
+    body.extend_from_slice(GROQ_BOUNDARY.as_bytes());
+    body.extend_from_slice(b"--\r\n");
+    body
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +269,24 @@ mod tests {
         assert_eq!(result, "ciao");
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         assert_eq!(GROQ_STT_MODEL, "whisper-large-v3-turbo");
+    }
+
+    #[test]
+    fn raw_multipart_contains_fixed_fields_and_audio_without_reencoding() {
+        let wav = b"RIFFtiny-wave";
+        let payload = build_groq_multipart(wav, "it");
+        let text = String::from_utf8_lossy(&payload);
+        assert!(text.contains("name=\"model\"\r\n\r\nwhisper-large-v3-turbo"));
+        assert!(text.contains("name=\"language\"\r\n\r\nit"));
+        assert!(text.contains("name=\"response_format\"\r\n\r\njson"));
+        assert!(payload.windows(wav.len()).any(|window| window == wav));
+    }
+
+    #[test]
+    fn language_is_bounded_before_entering_multipart_headers() {
+        assert_eq!(normalized_language("IT"), "it");
+        assert_eq!(normalized_language("\r\nmalicious"), "it");
+        assert_eq!(normalized_language(""), "it");
     }
 
     #[test]
