@@ -474,7 +474,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
       }}
     >
       <div
-        className={`jarvis-pill ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""} ${props.muted ? "jarvis-pill--muted" : ""}`}
+        className={`jarvis-pill cursor-grab ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Hold briefly, then drag to reposition Jarvis"
@@ -504,7 +504,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             onBlur={releaseHeldVoice}
             onKeyDown={handleVoiceKeyDown}
             onKeyUp={handleVoiceKeyUp}
-            className={`jarvis-control ${props.muted ? "jarvis-control--muted" : voiceListening ? "jarvis-control--listening" : ""}`}
+            className={`jarvis-control ${props.muted ? "bg-danger/[0.10] text-danger hover:bg-danger/[0.14] hover:text-danger" : voiceListening ? "jarvis-control--listening" : ""}`}
             title={props.muted ? "Unmute Jarvis microphone" : "Mute Jarvis microphone"}
             aria-label={props.muted ? "Unmute Jarvis microphone" : "Mute Jarvis microphone"}
             aria-pressed={props.muted}
