@@ -10,7 +10,7 @@ import { BrowserPanel } from "../browser/BrowserPanel";
 
 const PANEL_SLOTS = [
   { id: "browser", label: "Browser", icon: Globe2 },
-  { id: "files", label: "Files", icon: FolderTree },
+  { id: "files", label: "File", icon: FolderTree },
   { id: "git", label: "Git", icon: GitBranch },
   { id: "skills", label: "Skills", icon: Blocks },
 ] as const;
@@ -57,24 +57,28 @@ export function RightPanel() {
       const nextWidth = Math.max(330, Math.min(520, startWidth + startX - moveEvent.clientX));
       element.style.width = `${nextWidth}px`;
     };
-    const handleUp = () => {
+    const cleanup = () => {
       const finalWidth = Number.parseFloat(element.style.width);
       if (Number.isFinite(finalWidth)) setPanelWidth(Math.round(finalWidth));
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", handleMove);
       document.removeEventListener("mouseup", handleUp);
+      window.removeEventListener("blur", handleBlur);
     };
+    const handleUp = () => cleanup();
+    const handleBlur = () => cleanup();
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", handleMove);
     document.addEventListener("mouseup", handleUp);
+    window.addEventListener("blur", handleBlur, { once: true });
   };
 
   if (!isOpen) {
     return (
-      <aside className="flex h-full w-10 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Workspace tools">
-        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Open workspace tools" aria-label="Open workspace tools">
+      <aside className="flex h-full w-10 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Strumenti dello spazio di lavoro">
+        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Apri strumenti" aria-label="Apri strumenti dello spazio di lavoro">
           <PanelRightOpen size={15} />
         </button>
       </aside>
@@ -90,7 +94,7 @@ export function RightPanel() {
       ref={panelRef}
       className="relative flex h-full shrink-0 flex-col border-l border-neutral-border bg-neutral-surface"
       style={{ width: panelWidth, minWidth: 330 }}
-      aria-label="Workspace tools"
+      aria-label="Strumenti dello spazio di lavoro"
     >
       <div onMouseDown={handleResizeMouseDown} className="group absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize" aria-hidden="true">
         <span className="absolute inset-y-0 right-1 w-px bg-transparent transition-colors group-hover:bg-primary/60" />
@@ -101,7 +105,7 @@ export function RightPanel() {
           <ActiveIcon size={15} className="text-primary" />
           <span className="truncate text-xs font-semibold text-neutral-text">{activeSlot.label}</span>
         </div>
-        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Close panel" aria-label="Close panel">
+        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
           <PanelRightClose size={15} />
         </button>
       </div>
@@ -144,8 +148,8 @@ export function RightPanel() {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
           <FolderTree size={22} className="mb-2 text-neutral-text-muted" strokeWidth={1.4} />
-          <p className="text-xs font-semibold text-neutral-text">No workspace selected</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-neutral-text-muted">Select a workspace to inspect its files and changes.</p>
+          <p className="text-xs font-semibold text-neutral-text">Nessuno spazio selezionato</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-neutral-text-muted">Seleziona uno spazio di lavoro per esplorarne file e modifiche.</p>
         </div>
       )}
     </aside>
