@@ -33,11 +33,10 @@ interface JarvisExpandedPanelProps {
 export function JarvisExpandedPanel(props: JarvisExpandedPanelProps) {
   const requests = useMemo(() => Object.values(props.requests).filter((request) => request.workspaceId === props.workspaceId), [props.requests, props.workspaceId]);
   return (
-    <div className="mt-3 w-[min(680px,calc(100vw-24px))] overflow-hidden rounded-2xl border border-white/[0.1] bg-neutral-elevated/95 shadow-2xl backdrop-blur-xl">
-      <div className="border-b border-white/[0.08] px-5 py-4">
-        <p className="eyebrow">Jarvis</p>
-        <h2 className="mt-1 truncate text-lg font-semibold text-neutral-text">{props.workspaceName ?? "Seleziona una workspace"}</h2>
-        <p className="mt-1 text-xs text-neutral-text-muted">Conversazione isolata nella workspace attiva</p>
+    <div className="mt-2 w-[min(440px,calc(100vw-24px))] overflow-hidden rounded-xl border border-white/[0.09] bg-neutral-elevated/95 shadow-xl backdrop-blur-xl">
+      <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2">
+        <span className="text-[11px] font-medium text-neutral-text">Text fallback</span>
+        <span className="max-w-52 truncate text-[10px] text-neutral-text-muted">{props.workspaceName ?? "No workspace"}</span>
       </div>
       <JarvisChatPanel {...props} requests={requests} />
     </div>
