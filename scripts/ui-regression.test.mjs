@@ -13,6 +13,7 @@ const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx")
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
 const gitChangesSource = source("../src/components/project/ProjectGitChanges.tsx");
+const workspaceViewSource = source("../src/components/workspace/WorkspaceView.tsx");
 
 const obsoleteJarvisUi = [
   "../src/components/jarvis/JarvisExpandedPanel.tsx",
@@ -84,6 +85,14 @@ test("Git drafts and destructive confirmations cannot leak across workspaces", (
     gitChangesSource,
     /useEffect\(\(\) => \{\s*setCommitMessage\(""\);\s*setPendingDiscard\(null\);\s*setSelectedRow\(null\);\s*\}, \[workspaceId\]\)/s,
   );
+});
+
+test("late workspace loads cannot steal active terminal ownership", () => {
+  assert.match(
+    workspaceViewSource,
+    /firstId\s*&&\s*useWorkspaceStore\.getState\(\)\.activeWorkspaceId === id[\s\S]*terminalStore\.setActiveTerminal\(firstId\)/,
+  );
+  assert.doesNotMatch(workspaceViewSource, /let cancelled = false/);
 });
 
 test("compact Jarvis microphone meter has real geometry", () => {
