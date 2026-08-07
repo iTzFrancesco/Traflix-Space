@@ -194,13 +194,17 @@ export function Sidebar() {
           <span className="absolute inset-y-0 left-1 w-px bg-transparent transition-colors group-hover:bg-primary/60" />
         </div>
 
-        <div className="flex h-[49px] shrink-0 items-center gap-2 border-b border-neutral-border px-2.5">
-          <button type="button" onClick={toggleSidebar} className="ui-icon-button h-8 w-8" title="Comprimi sidebar" aria-label="Comprimi sidebar">
-            <PanelLeftClose size={16} />
+        <div className="flex h-[45px] shrink-0 items-center justify-between gap-2 border-b border-neutral-border px-2">
+          <button type="button" onClick={toggleSidebar} className="ui-icon-button h-7 w-7" title="Comprimi sidebar" aria-label="Comprimi sidebar">
+            <PanelLeftClose size={15} />
           </button>
-          <button type="button" onClick={() => setWizardOpen(true)} className="secondary-button h-8 min-h-8 flex-1 justify-start px-2.5 text-neutral-text">
-            <Plus size={15} className="text-primary" />
-            New space
+          <button
+            type="button"
+            onClick={() => setWizardOpen(true)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/[0.10] bg-white/[0.025] px-2.5 text-[11px] font-semibold text-neutral-text-dim transition-colors hover:border-primary/35 hover:bg-white/[0.05] hover:text-neutral-text"
+          >
+            <Plus size={13} className="text-primary" />
+            New workspace
           </button>
         </div>
 
