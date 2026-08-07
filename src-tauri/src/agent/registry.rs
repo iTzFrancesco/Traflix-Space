@@ -95,6 +95,17 @@ impl AgentRegistry {
                     readiness_hints: vec![],
                 },
                 AgentDefinition {
+                    id: "cline".into(),
+                    name: "Cline".into(),
+                    description: "Agente AI Cline".into(),
+                    command: "cline".into(),
+                    args: vec![],
+                    env: std::collections::HashMap::new(),
+                    icon: "Bot".into(),
+                    color: "#6366f1".into(),
+                    readiness_hints: vec![],
+                },
+                AgentDefinition {
                     id: "freebuff".into(),
                     name: "Freebuff".into(),
                     description: "Agente AI Freebuff".into(),
