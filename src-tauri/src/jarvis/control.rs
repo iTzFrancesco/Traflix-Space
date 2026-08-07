@@ -101,19 +101,20 @@ impl ConversationalPlan {
                 }
             }
             match step.operation {
-                PlanOperation::AgentSend => {
-                    validate_agent_text(step.prompt.as_deref().unwrap_or_default())
-                        .map_err(|_| "prompt agente non valido".to_string())?;
+                // A continuation turn may intentionally omit a prompt because
+                // the backend restores it from the exact pending intent. A
+                // fresh send/handoff with no prompt still fails at execution.
+                PlanOperation::AgentSend | PlanOperation::AgentHandoff => {
+                    if let Some(prompt) = &step.prompt {
+                        validate_agent_text(prompt)
+                            .map_err(|_| "prompt agente non valido".to_string())?;
+                    }
                 }
                 PlanOperation::AgentOpen => {
                     if let Some(prompt) = &step.prompt {
                         validate_agent_text(prompt)
                             .map_err(|_| "prompt iniziale non valido".to_string())?;
                     }
-                }
-                PlanOperation::AgentHandoff => {
-                    validate_agent_text(step.prompt.as_deref().unwrap_or_default())
-                        .map_err(|_| "prompt handoff non valido".to_string())?;
                 }
                 PlanOperation::DraftPrompt => {
                     validate_agent_text(step.prompt.as_deref().unwrap_or_default())
@@ -297,6 +298,12 @@ pub async fn execute_plan(
                 if !step_response.is_empty() {
                     response = step_response;
                 }
+                // A clarification/confirmation is a hard conversational
+                // boundary. Never continue later plan operations after asking
+                // the user for a choice, even if the model emitted more steps.
+                if state.control.pending(&invocation.target_workspace_id).is_some() {
+                    break;
+                }
             }
             Err(step_error) => {
                 return ControlExecution {
@@ -320,8 +327,15 @@ async fn execute_step(
     invocation: &InvocationBinding,
     context: &crate::jarvis::types::ModelContextViewV1,
     pending: Option<&PendingConversationalIntent>,
-    step: &ConversationStep,
+    incoming_step: &ConversationStep,
 ) -> Result<String, String> {
+    // The current turn carries the new choice (provider, confirmed,
+    // allowBusy), while the exact pending state preserves omitted semantic
+    // fields from the previous turn. This lets short answers such as “sì”,
+    // “usa quello” or “Codex” safely continue the dialogue.
+    let step = merge_step_with_pending(incoming_step, pending);
+    let step = &step;
+
     match step.operation {
         PlanOperation::Respond => Ok(step
             .prompt
@@ -340,18 +354,12 @@ async fn execute_step(
         PlanOperation::DraftPrompt => Ok(step.prompt.clone().unwrap_or_default()),
         PlanOperation::AgentReport => Ok(build_agent_report(context)),
         PlanOperation::AgentOpen => {
+            let initial_prompt = step.prompt.clone().filter(|value| !value.trim().is_empty());
             let Some(provider) = step.provider.as_deref().and_then(normalize_provider) else {
                 let question = "Quale agente vuoi aprire?".to_string();
                 put_clarification(app, invocation, step, question.clone());
                 return Ok(question);
             };
-            let initial_prompt = step.prompt.clone().or_else(|| {
-                pending
-                    .filter(|intent| intent.kind == PendingConversationKind::Clarification)
-                    .filter(|intent| intent.operation == PlanOperation::AgentSend)
-                    .and_then(|intent| intent.plan.operations.first())
-                    .and_then(|operation| operation.prompt.clone())
-            });
             let opened = open_agent(app, workspace, invocation, &provider, initial_prompt).await?;
             Ok(match opened {
                 OpenResult::Opened { provider, sent, .. } => {
@@ -364,13 +372,22 @@ async fn execute_step(
             })
         }
         PlanOperation::AgentSend => {
-            let target = resolve_target(
-                app,
-                context,
-                step.target.as_deref(),
-                step.provider.as_deref(),
-            )
-            .await;
+            let resolution = bound_target_from_pending(context, pending, step).map_or_else(
+                || None,
+                Some,
+            );
+            let target = match resolution {
+                Some(target) => TargetResolution::Selected(target),
+                None => {
+                    resolve_target(
+                        app,
+                        context,
+                        step.target.as_deref(),
+                        step.provider.as_deref(),
+                    )
+                    .await
+                }
+            };
             let target = target_or_clarify(app, invocation, step, target, "inviare la task")?;
             if is_busy(&target.session) && !busy_override_matches(pending, step, &target) {
                 let label = target_label(&target);
@@ -400,13 +417,18 @@ async fn execute_step(
                 source,
                 "leggere la sorgente dell'handoff",
             )?;
-            let destination = resolve_target(
-                app,
-                context,
-                step.destination.as_deref().or(step.target.as_deref()),
-                step.provider.as_deref(),
-            )
-            .await;
+            let destination = if let Some(target) = bound_target_from_pending(context, pending, step)
+            {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.destination.as_deref().or(step.target.as_deref()),
+                    step.provider.as_deref(),
+                )
+                .await
+            };
             let destination =
                 target_or_clarify(app, invocation, step, destination, "inviare l'handoff")?;
             if is_busy(&destination.session) && !busy_override_matches(pending, step, &destination)
@@ -438,15 +460,19 @@ async fn execute_step(
             ))
         }
         PlanOperation::AgentAbort => {
-            let target = resolve_target(
-                app,
-                context,
-                step.target.as_deref(),
-                step.provider.as_deref(),
-            )
-            .await;
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.target.as_deref(),
+                    step.provider.as_deref(),
+                )
+                .await
+            };
             let target =
-                target_or_clarify(app, invocation, step, target, "interrompere la sessione")?;
+                target_or_clarify(app, invocation, step, resolution, "interrompere la sessione")?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo interrompo comunque?",
@@ -469,14 +495,18 @@ async fn execute_step(
             Ok(format!("Fatto, ho interrotto {}.", target_label(&target)))
         }
         PlanOperation::TerminalClose => {
-            let target = resolve_target(
-                app,
-                context,
-                step.target.as_deref(),
-                step.provider.as_deref(),
-            )
-            .await;
-            let target = target_or_clarify(app, invocation, step, target, "chiudere la sessione")?;
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.target.as_deref(),
+                    step.provider.as_deref(),
+                )
+                .await
+            };
+            let target = target_or_clarify(app, invocation, step, resolution, "chiudere la sessione")?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo chiudo comunque?",
@@ -489,14 +519,18 @@ async fn execute_step(
             Ok(format!("Fatto, ho chiuso {}.", target_label(&target)))
         }
         PlanOperation::TerminalRestart => {
-            let target = resolve_target(
-                app,
-                context,
-                step.target.as_deref(),
-                step.provider.as_deref(),
-            )
-            .await;
-            let target = target_or_clarify(app, invocation, step, target, "riavviare la sessione")?;
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step) {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.target.as_deref(),
+                    step.provider.as_deref(),
+                )
+                .await
+            };
+            let target = target_or_clarify(app, invocation, step, resolution, "riavviare la sessione")?;
             if is_busy(&target.session) && !confirmation_matches(pending, step, &target) {
                 let question = format!(
                     "{} sta ancora lavorando. Lo riavvio comunque?",
@@ -511,6 +545,75 @@ async fn execute_step(
     }
 }
 
+fn merge_step_with_pending(
+    current: &ConversationStep,
+    pending: Option<&PendingConversationalIntent>,
+) -> ConversationStep {
+    let mut merged = current.clone();
+    let Some(intent) = pending else {
+        return merged;
+    };
+    let Some(previous) = intent.plan.operations.first() else {
+        return merged;
+    };
+
+    if intent.operation == current.operation {
+        if merged.provider.is_none() {
+            merged.provider = previous.provider.clone();
+        }
+        if merged.target.as_deref().is_none_or(str::is_empty) {
+            merged.target = previous.target.clone();
+        }
+        if merged.source.as_deref().is_none_or(str::is_empty) {
+            merged.source = previous.source.clone();
+        }
+        if merged.destination.as_deref().is_none_or(str::is_empty) {
+            merged.destination = previous.destination.clone();
+        }
+        if merged.prompt.as_deref().is_none_or(str::is_empty) {
+            merged.prompt = previous.prompt.clone();
+        }
+    } else if current.operation == PlanOperation::AgentOpen
+        && matches!(intent.operation, PlanOperation::AgentSend | PlanOperation::AgentHandoff)
+        && merged.prompt.as_deref().is_none_or(str::is_empty)
+    {
+        // “Aprine uno nuovo” after a busy-target question must not lose the
+        // task that triggered the clarification.
+        merged.prompt = previous.prompt.clone();
+    }
+    merged
+}
+
+fn bound_target_from_pending(
+    context: &crate::jarvis::types::ModelContextViewV1,
+    pending: Option<&PendingConversationalIntent>,
+    step: &ConversationStep,
+) -> Option<ResolvedAgentTarget> {
+    if !step.confirmed && !step.allow_busy {
+        return None;
+    }
+    let pending = pending?;
+    if pending.operation != step.operation {
+        return None;
+    }
+    let terminal_id = pending.terminal_id.as_deref()?;
+    let generation = pending.generation?;
+    let terminal = context.terminals.iter().find(|terminal| {
+        terminal.terminal_id == terminal_id
+            && terminal.generation == generation
+            && terminal.workspace_id == context.invocation.target_workspace_id
+    })?;
+    let session = context.agent_sessions.iter().find(|session| {
+        session.reference.terminal_id.as_deref() == Some(terminal_id)
+            && session.reference.generation == generation
+            && session.reference.workspace_id == context.invocation.target_workspace_id
+    })?;
+    Some(ResolvedAgentTarget {
+        terminal: terminal.clone(),
+        session: session.clone(),
+    })
+}
+
 fn target_or_clarify(
     app: &AppHandle,
     invocation: &InvocationBinding,
@@ -522,10 +625,10 @@ fn target_or_clarify(
         TargetResolution::Selected(target) => Ok(target),
         TargetResolution::NotFound => Err(format!("Non ho trovato un agente da {action}.")),
         TargetResolution::Ambiguous(options) => {
-            let question = if options.is_empty() {
-                "Quale agente vuoi usare?".to_string()
-            } else {
-                format!("Quale agente vuoi usare: {}?", options.join(", "))
+            let question = match options.as_slice() {
+                [] => "Quale agente vuoi usare?".to_string(),
+                [only] => format!("Intendi {only} per {action}?"),
+                _ => format!("Quale agente vuoi usare: {}?", options.join(", ")),
             };
             put_clarification(app, invocation, step, question.clone());
             Err(question)
@@ -545,10 +648,10 @@ async fn resolve_target(
         .iter()
         .filter_map(|session| {
             let terminal_id = session.reference.terminal_id.as_ref()?;
-            let terminal = context
-                .terminals
-                .iter()
-                .find(|terminal| &terminal.terminal_id == terminal_id)?;
+            let terminal = context.terminals.iter().find(|terminal| {
+                &terminal.terminal_id == terminal_id
+                    && terminal.generation == session.reference.generation
+            })?;
             if terminal.workspace_id != context.invocation.target_workspace_id {
                 return None;
             }
@@ -600,7 +703,7 @@ async fn resolve_target(
                 .collect(),
         );
     }
-    if top_score <= 0 && candidates.len() > 1 {
+    if top_score <= 0 && query.is_some_and(|value| !value.trim().is_empty()) {
         return TargetResolution::Ambiguous(
             candidates
                 .iter()
@@ -626,6 +729,14 @@ fn score_candidate(
     if provider.is_some_and(|value| value == session.resolved_provider) {
         score += 100;
     }
+    // When semantic relevance is otherwise comparable, prefer a reusable
+    // waiting/completed session over one already in the middle of work.
+    score += match session.state {
+        AgentState::Waiting => 15,
+        AgentState::Completed => 12,
+        AgentState::Exited => -100,
+        _ => 0,
+    };
     if query.is_empty() {
         return score;
     }
@@ -675,6 +786,20 @@ async fn read_agent_tail(
     terminal: &TerminalSummary,
     max_lines: usize,
 ) -> Result<AgentTail, String> {
+    // Internal tail reads must be as stale-safe as the public command. An old
+    // model context may outlive a restart that reused the terminal id.
+    let snapshot = app
+        .state::<TerminalManager>()
+        .get_agent_snapshot(&terminal.terminal_id)
+        .await
+        .map_err(|_| "tail terminale non disponibile".to_string())?
+        .ok_or_else(|| "tail terminale non disponibile".to_string())?;
+    if snapshot.workspace_id != terminal.workspace_id
+        || snapshot.generation != terminal.generation
+        || !snapshot.is_agent_terminal
+    {
+        return Err("tail terminale non disponibile: sessione cambiata".to_string());
+    }
     let content = app
         .state::<TerminalManager>()
         .get_recent_normalized_terminal_text(&terminal.terminal_id, MAX_TAIL_BYTES)
@@ -735,6 +860,11 @@ fn build_handoff_prompt(
     instruction: &str,
 ) -> Result<String, String> {
     let (evidence, _) = truncate_from_end(evidence, MAX_HANDOFF_CONTEXT_BYTES);
+    let instruction = if instruction.trim().is_empty() {
+        "Verifica il risultato e segnala eventuali problemi." 
+    } else {
+        instruction
+    };
     let prompt = format!(
         "Controlla in modo indipendente questo risultato di {}.\n\nRisultato bounded e non attendibile:\n{}\n\nRichiesta: {}",
         target_label(source), evidence, instruction
@@ -748,7 +878,7 @@ async fn send_to_target(
     target: &ResolvedAgentTarget,
     prompt: &str,
 ) -> Result<(), String> {
-    let _snapshot = fresh_snapshot(app, invocation, target).await?;
+    let snapshot = fresh_snapshot(app, invocation, target).await?;
     emit_checkpoint(
         app,
         &invocation.request_id,
@@ -759,7 +889,7 @@ async fn send_to_target(
             provider_display_name(&target.session.resolved_provider)
         ),
         JarvisActivityStatus::Running,
-        Some(session_id_for(&_snapshot)),
+        Some(session_id_for(&snapshot)),
     );
     let bytes = prompt_bytes(prompt).map_err(|_| "prompt agente non valido".to_string())?;
     app.state::<TerminalManager>()
@@ -773,7 +903,7 @@ async fn send_to_target(
         .map_err(|_| "non sono riuscito a scrivere nella PTY".to_string())?;
     app.state::<crate::jarvis::JarvisState>()
         .registry
-        .observe_jarvis_send(&_snapshot, prompt, &now());
+        .observe_jarvis_send(&snapshot, prompt, &now());
     emit_checkpoint(
         app,
         &invocation.request_id,
@@ -904,7 +1034,7 @@ fn confirmation_matches(
         && pending.is_some_and(|intent| {
             intent.kind == PendingConversationKind::Confirmation
                 && intent.operation == step.operation
-                && intent.terminal_id.as_deref() == Some(&target.terminal.terminal_id)
+                && intent.terminal_id.as_deref() == Some(target.terminal.terminal_id.as_str())
                 && intent.generation == Some(target.terminal.generation)
         })
 }
@@ -1000,11 +1130,7 @@ async fn open_agent(
         },
     );
 
-    let command = if definition.args.is_empty() {
-        format!("{}\r", definition.command)
-    } else {
-        format!("{} {}\r", definition.command, definition.args.join(" "))
-    };
+    let command = provider_command(&definition);
     if manager
         .write_typed(
             app,
@@ -1069,6 +1195,14 @@ async fn open_agent(
         terminal_id,
         generation,
     })
+}
+
+fn provider_command(definition: &AgentDefinition) -> String {
+    if definition.args.is_empty() {
+        format!("{}\r", definition.command)
+    } else {
+        format!("{} {}\r", definition.command, definition.args.join(" "))
+    }
 }
 
 async fn rollback_open_agent(app: &AppHandle, workspace: &WorkspaceConfig, terminal_id: &str) {
@@ -1216,7 +1350,7 @@ async fn restart_target(
         .map_err(|_| "sessione riavviata non disponibile".to_string())?
         .ok_or_else(|| "sessione riavviata non disponibile".to_string())?
         .generation;
-    let command = format!("{}\r", definition.command);
+    let command = provider_command(&definition);
     app.state::<TerminalManager>()
         .write_typed(
             app,
@@ -1227,6 +1361,16 @@ async fn restart_target(
         .await
         .map_err(|_| "non sono riuscito a rilanciare l'agente".to_string())?;
     wait_until_ready(app, &target.terminal.terminal_id, &definition).await?;
+
+    // Re-announce the same visible pane so the frontend clears any stale exit
+    // state and marks the provider as already launched by the backend.
+    let _ = app.emit(
+        "jarvis-agent-opened",
+        AgentOpenedEvent {
+            workspace_id: workspace.id.clone(),
+            terminal: config,
+        },
+    );
     emit_checkpoint(
         app,
         &invocation.request_id,
@@ -1312,40 +1456,55 @@ fn synthetic_session(config: &TerminalConfig, generation: u64) -> AgentSessionCo
 }
 
 fn build_agent_report(context: &crate::jarvis::types::ModelContextViewV1) -> String {
-    if context.agent_sessions.is_empty() {
+    let current = context
+        .agent_sessions
+        .iter()
+        .filter_map(|session| {
+            let terminal_id = session.reference.terminal_id.as_deref()?;
+            let terminal = context.terminals.iter().find(|terminal| {
+                terminal.terminal_id == terminal_id
+                    && terminal.generation == session.reference.generation
+                    && terminal.workspace_id == context.invocation.target_workspace_id
+            })?;
+            Some((session, terminal))
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+
+    if current.is_empty() {
         return "Non ci sono agenti aperti in questa workspace.".to_string();
     }
+
     let mut parts = Vec::new();
-    for session in context.agent_sessions.iter().take(8) {
-        let title = context
-            .terminals
-            .iter()
-            .find(|terminal| {
-                terminal.terminal_id == session.reference.terminal_id.as_deref().unwrap_or_default()
-            })
-            .map(|terminal| terminal.title.clone())
-            .filter(|title| !title.trim().is_empty() && !title.eq_ignore_ascii_case("terminal"))
-            .unwrap_or_else(|| provider_display_name(&session.resolved_provider));
-        let detail = session
-            .current_task
-            .as_ref()
-            .map(|task| format!("sta lavorando su {}", preview_text(&task.text)))
-            .unwrap_or_else(|| match session.state {
-                AgentState::Working | AgentState::Starting => "sta lavorando".to_string(),
-                AgentState::Waiting => "è in attesa".to_string(),
-                AgentState::Completed => "ha finito".to_string(),
-                AgentState::Failed => "è in errore".to_string(),
-                AgentState::Aborted => "è stato interrotto".to_string(),
-                AgentState::Exited => "è chiuso".to_string(),
-                AgentState::Unknown => "ha stato sconosciuto".to_string(),
-            });
+    for (session, terminal) in &current {
+        let title = if !terminal.title.trim().is_empty()
+            && !terminal.title.eq_ignore_ascii_case("terminal")
+        {
+            terminal.title.clone()
+        } else {
+            provider_display_name(&session.resolved_provider)
+        };
+        let task = session.current_task.as_ref();
+        let detail = match session.state {
+            AgentState::Working | AgentState::Starting => task
+                .filter(|task| task.completed_at.is_none())
+                .map(|task| format!("sta lavorando su {}", preview_text(&task.text)))
+                .unwrap_or_else(|| "sta lavorando".to_string()),
+            AgentState::Waiting => task
+                .filter(|task| task.completed_at.is_some())
+                .map(|task| format!("ha finito {}", preview_text(&task.text)))
+                .unwrap_or_else(|| "è in attesa".to_string()),
+            AgentState::Completed => task
+                .map(|task| format!("ha finito {}", preview_text(&task.text)))
+                .unwrap_or_else(|| "ha finito".to_string()),
+            AgentState::Failed => "è in errore".to_string(),
+            AgentState::Aborted => "è stato interrotto".to_string(),
+            AgentState::Exited => "è chiuso".to_string(),
+            AgentState::Unknown => "ha stato sconosciuto".to_string(),
+        };
         parts.push(format!("{title} {detail}"));
     }
-    format!(
-        "Hai {} agenti. {}.",
-        context.agent_sessions.len(),
-        parts.join(", ")
-    )
+    format!("Hai {} agenti. {}.", current.len(), parts.join(", "))
 }
 
 fn provider_display_name(provider: &str) -> String {
@@ -1387,6 +1546,27 @@ fn now() -> String {
 mod tests {
     use super::*;
 
+    fn sample_terminal(generation: u64) -> TerminalSummary {
+        TerminalSummary {
+            terminal_id: "t".into(),
+            workspace_id: "w".into(),
+            title: "Codex Auth".into(),
+            shell: "shell".into(),
+            cwd: ".".into(),
+            active: false,
+            process_alive: true,
+            agent_id: Some("codex".into()),
+            configured_agent_id: Some("codex".into()),
+            observed_provider: Some("codex".into()),
+            resolved_provider: "codex".into(),
+            detection_source: "test".into(),
+            detection_confidence: 1.0,
+            identity_warnings: Vec::new(),
+            generation,
+            provenance: Provenance::trusted("test", "now"),
+        }
+    }
+
     #[test]
     fn plan_rejects_unknown_provider_and_arbitrary_control_bytes() {
         let invalid = ConversationalPlan {
@@ -1407,6 +1587,24 @@ mod tests {
     }
 
     #[test]
+    fn continuation_send_may_defer_prompt_validation_until_pending_merge() {
+        let continuation = ConversationalPlan {
+            operations: vec![ConversationStep {
+                operation: PlanOperation::AgentSend,
+                provider: Some("codex".into()),
+                target: None,
+                source: None,
+                destination: None,
+                prompt: None,
+                confirmed: false,
+                allow_busy: true,
+            }],
+            response: None,
+        };
+        assert!(continuation.validate().is_ok());
+    }
+
+    #[test]
     fn tail_is_bounded_by_lines_and_bytes_and_untrusted() {
         let tail = build_tail("w", "t", 4, "a\nb\nc\nd", 2, false);
         assert_eq!(tail.content, "c\nd");
@@ -1415,26 +1613,9 @@ mod tests {
     }
 
     #[test]
-    fn candidate_resolution_score_uses_read_only_title_and_task() {
-        let terminal = TerminalSummary {
-            terminal_id: "t".into(),
-            workspace_id: "w".into(),
-            title: "Codex Auth".into(),
-            shell: "shell".into(),
-            cwd: ".".into(),
-            active: false,
-            process_alive: true,
-            agent_id: Some("codex".into()),
-            configured_agent_id: Some("codex".into()),
-            observed_provider: Some("codex".into()),
-            resolved_provider: "codex".into(),
-            detection_source: "test".into(),
-            detection_confidence: 1.0,
-            identity_warnings: Vec::new(),
-            generation: 1,
-            provenance: Provenance::trusted("test", "now"),
-        };
-        let session = synthetic_session(
+    fn candidate_resolution_score_uses_read_only_title_and_prefers_waiting() {
+        let terminal = sample_terminal(1);
+        let mut working = synthetic_session(
             &TerminalConfig {
                 id: "t".into(),
                 shell: "shell".into(),
@@ -1446,7 +1627,73 @@ mod tests {
             },
             1,
         );
-        assert!(score_candidate("401", &session, &terminal, None) >= 0);
-        assert!(score_candidate("auth", &session, &terminal, None) > 0);
+        working.state = AgentState::Working;
+        let mut waiting = working.clone();
+        waiting.state = AgentState::Waiting;
+        assert!(score_candidate("auth", &working, &terminal, None) > 0);
+        assert!(score_candidate("auth", &waiting, &terminal, None) > score_candidate("auth", &working, &terminal, None));
+    }
+
+    #[test]
+    fn report_uses_only_matching_generation_and_completed_task_is_not_working() {
+        let terminal = sample_terminal(2);
+        let mut old = synthetic_session(
+            &TerminalConfig {
+                id: "t".into(),
+                shell: "shell".into(),
+                agent_id: Some("codex".into()),
+                command: None,
+                cwd: ".".into(),
+                title: "Codex Auth".into(),
+                workspace_id: Some("w".into()),
+            },
+            1,
+        );
+        old.state = AgentState::Exited;
+        let mut current = synthetic_session(
+            &TerminalConfig {
+                id: "t".into(),
+                shell: "shell".into(),
+                agent_id: Some("codex".into()),
+                command: None,
+                cwd: ".".into(),
+                title: "Codex Auth".into(),
+                workspace_id: Some("w".into()),
+            },
+            2,
+        );
+        current.state = AgentState::Waiting;
+        current.current_task = Some(crate::jarvis::types::AgentTaskContext {
+            text: "fix auth".into(),
+            source: crate::jarvis::types::AgentInteractionSource::User,
+            started_at: "now".into(),
+            completed_at: Some("later".into()),
+            confidence: 0.65,
+            untrusted: true,
+        });
+        let context = crate::jarvis::types::ModelContextViewV1 {
+            schema_version: "1".into(),
+            invocation: InvocationBinding {
+                request_id: "r".into(),
+                target_workspace_id: "w".into(),
+                target_terminal_id: None,
+                target_agent_session_id: None,
+                created_at: "now".into(),
+            },
+            workspace: crate::jarvis::types::WorkspaceModelContext {
+                id: "w".into(),
+                name: "W".into(),
+                root_path: ".".into(),
+            },
+            document_index: Vec::new(),
+            documents: Vec::new(),
+            terminals: vec![terminal],
+            agent_sessions: vec![old, current],
+            warnings: Vec::new(),
+        };
+        let report = build_agent_report(&context);
+        assert!(report.contains("Hai 1 agenti"));
+        assert!(report.contains("ha finito fix auth"));
+        assert!(!report.contains("sta lavorando su fix auth"));
     }
 }
