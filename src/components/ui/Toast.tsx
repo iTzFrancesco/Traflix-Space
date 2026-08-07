@@ -21,11 +21,7 @@ export function ToastContainer() {
   const reduceMotion = useReducedMotion();
 
   return (
-    <div
-      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(400px,calc(100vw-32px))] flex-col gap-2"
-      aria-live="polite"
-      aria-relevant="additions text"
-    >
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(400px,calc(100vw-32px))] flex-col gap-2">
       <AnimatePresence mode="popLayout">
         {toasts.map((toast) => {
           const Icon = iconMap[toast.type];
