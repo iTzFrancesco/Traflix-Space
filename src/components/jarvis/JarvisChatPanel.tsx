@@ -12,6 +12,7 @@ interface Props {
   pendingActions: PendingAction[];
   requests: JarvisRequestState[];
   chatError: string | null;
+  voiceError: string | null;
   providerStatus: JarvisProviderStatus | null;
   uiIntents: JarvisUiIntent[];
   followUps: string[];
@@ -39,6 +40,7 @@ export function JarvisChatPanel(props: Props) {
         {props.requests.map((request) => <div key={request.requestId} className="mr-10 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2 text-xs text-neutral-text-muted"><div className="flex items-center justify-between gap-2"><span className="inline-flex items-center gap-1"><Bot size={13} /> {request.status === "cancellation_requested" ? "Annullamento…" : request.status === "running" ? "Jarvis sta pensando…" : request.status}</span>{(request.status === "running" || request.status === "cancellation_requested") && <CancelButton onCancel={() => props.onCancelRequest(request.requestId)} />}</div>{request.error && <p className="mt-1 text-danger">{request.error}</p>}</div>)}
       </div>
       {props.chatError && <p className="mt-3 rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{props.chatError}</p>}
+      {props.voiceError && <p role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{props.voiceError}</p>}
       {props.voiceRequest && <JarvisTranscriptCard request={props.voiceRequest} activeWorkspace={props.voiceRequest.workspaceId === props.workspaceId} onSend={(text) => props.onSendVoiceTranscript(props.voiceRequest!.requestId, text)} onDiscard={props.onVoiceDiscard} />}
       {props.voiceRequest && (props.voiceRequest.status === "recording" || props.voiceRequest.status === "transcribing" || props.voiceRequest.status === "stopping") && <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/[0.05] px-3 py-2 text-xs text-neutral-text-muted"><span>{props.voiceRequest.status === "recording" ? `Registrazione ${Math.floor((props.voiceRequest.durationMs ?? 0) / 1000)}s · livello ${Math.round((props.voiceRequest.normalizedLevel ?? 0) * 100)}%` : "Trascrizione in corso…"}</span><button type="button" data-jarvis-control onClick={props.onVoiceCancel} className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-text"><Square size={11} /> Annulla</button></div>}
       {(props.ttsStatus.status === "playing" || props.ttsStatus.status === "synthesizing") && <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/[0.05] px-3 py-2 text-xs text-neutral-text-muted"><span>Sto parlando…</span><button type="button" data-jarvis-control onClick={props.onStopTts} className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-text"><Square size={11} /> Stop</button></div>}

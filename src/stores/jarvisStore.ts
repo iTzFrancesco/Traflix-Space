@@ -16,6 +16,7 @@ import {
   ttsStop,
   voiceCancel,
   voiceDiscardTranscript,
+  voiceShutdown,
   voiceStart,
   voiceStop,
   voiceWorkspaceStatus,
@@ -24,6 +25,7 @@ import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/setting
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
 import { isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
 import { useWorkspaceStore } from "./workspaceStore";
+import { sanitizedVoiceError } from "../lib/jarvis/voiceSettings";
 import type {
   AgentResult,
   AgentSessionContext,
@@ -73,6 +75,7 @@ interface JarvisStore {
   voiceRequests: Record<string, VoiceRequestStatusView>;
   voiceLevel: VoiceLevelEvent | null;
   ttsStatus: TtsStatusView;
+  voiceError: string | null;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
@@ -117,6 +120,7 @@ interface JarvisStore {
   setVoiceLevel: (event: VoiceLevelEvent) => void;
   setTtsStatus: (status: TtsStatusView) => void;
   stopTts: () => Promise<void>;
+  clearVoiceError: () => void;
 }
 
 let settingsSaveQueue = Promise.resolve();
@@ -134,6 +138,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
   voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
+  voiceError: null,
 
   loadSettings: async () => {
     set({ settingsLoading: true, settingsError: null });
@@ -141,6 +146,16 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error) }); }
   },
   saveSettings: async (settings) => {
+    const current = get().settings;
+    if (current.jarvis.enabled && !settings.jarvis.enabled) {
+      try {
+        await voiceShutdown();
+      } catch (error) {
+        const message = sanitizedVoiceError(error);
+        set({ voiceError: message });
+        throw error;
+      }
+    }
     set({ settings, settingsError: null });
     settingsSaveQueue = settingsSaveQueue.catch(() => undefined).then(() => persistSettings(settings));
     try { await settingsSaveQueue; } catch (error) { set({ settingsError: errorMessage(error) }); throw error; }
@@ -217,16 +232,27 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
   startVoice: async () => {
-    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-    if (!workspaceId) return;
-    if (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing") await get().stopTts();
-    const requestId = crypto.randomUUID();
-    const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
-    set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } }));
+    try {
+      set({ voiceError: null });
+      const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+      if (!workspaceId) return;
+      if (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing") {
+        const stopped = await ttsStop();
+        get().setTtsStatus(stopped);
+        if (stopped.status === "playing" || stopped.status === "synthesizing") {
+          throw new Error("La riproduzione vocale non si è arrestata.");
+        }
+      }
+      const requestId = crypto.randomUUID();
+      const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
+      set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: null }));
+    } catch (error) {
+      set({ voiceError: sanitizedVoiceError(error) });
+    }
   },
-  stopVoice: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; set((state) => ({ voiceRequests: { ...state.voiceRequests, [workspaceId]: { ...state.voiceRequests[workspaceId], status: "stopping" } } })); const status = await voiceStop(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } })); },
-  cancelVoice: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status } })); },
-  discardVoiceTranscript: async () => { const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests }; }); },
+  stopVoice: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; set((state) => ({ voiceRequests: { ...state.voiceRequests, [workspaceId]: { ...state.voiceRequests[workspaceId], status: "stopping" } } })); const status = await voiceStop(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: status.error ? sanitizedVoiceError(status.error) : null })); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
+  cancelVoice: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; const status = await voiceCancel(requestId); set((state) => ({ voiceRequests: { ...state.voiceRequests, [status.workspaceId]: status }, voiceError: status.error ? sanitizedVoiceError(status.error) : null })); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
+  discardVoiceTranscript: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests }; }); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
   sendVoiceTranscript: async (requestId, text) => {
     const origin = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
     const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
@@ -251,11 +277,12 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   setVoiceRequest: (voiceRequest) => set((state) => {
     const current = state.voiceRequests[voiceRequest.workspaceId];
     if (current && current.requestId !== voiceRequest.requestId && voiceRequest.status !== "recording") return state;
-    return { voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest } };
+    return { voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest }, voiceError: voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError };
   }),
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs } } }; }),
   setTtsStatus: (ttsStatus) => set((state) => state.ttsStatus.requestId && ttsStatus.requestId && state.ttsStatus.requestId !== ttsStatus.requestId && ttsStatus.status !== "synthesizing" ? state : { ttsStatus }),
-  stopTts: async () => { const status = await ttsStop(); get().setTtsStatus(status); },
+  stopTts: async () => { try { const status = await ttsStop(); get().setTtsStatus(status); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
+  clearVoiceError: () => set({ voiceError: null }),
 }));
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {

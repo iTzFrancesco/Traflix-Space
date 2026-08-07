@@ -61,8 +61,7 @@
       "../icons/icon.ico"
     ],
     "resources": {
-      "../scripts/agent-notifications/*": "agent-notifications/",
-      "../scripts/jarvis-edge-tts.py": "scripts/jarvis-edge-tts.py"
+      "../scripts/agent-notifications/*": "agent-notifications/"
     },
     "windows": {
       "webviewInstallMode": {

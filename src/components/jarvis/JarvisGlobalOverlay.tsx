@@ -31,6 +31,7 @@ export function JarvisGlobalOverlay() {
   const voiceRequests = useJarvisStore((state) => state.voiceRequests);
   const voiceRequest = activeWorkspaceId ? voiceRequests[activeWorkspaceId] ?? null : null;
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
+  const voiceError = useJarvisStore((state) => state.voiceError);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const loadConversation = useJarvisStore((state) => state.loadConversation);
   const setContext = useJarvisStore((state) => state.setContext);
@@ -115,7 +116,7 @@ export function JarvisGlobalOverlay() {
 
   if (!settings.jarvis.enabled) return null;
   return <>
-    <JarvisWidget workspaceId={activeWorkspaceId} workspaceName={workspace?.name ?? null} conversation={conversationForWorkspace} pendingActions={pendingActions} requests={requests} chatError={chatError} providerStatus={providerStatus} uiIntents={uiIntents} followUps={activeWorkspaceId ? followUps[activeWorkspaceId] ?? [] : []} voiceRequest={voiceRequest} ttsStatus={ttsStatus} onOpenSettings={() => setSettingsOpen(true)} onHide={() => void useJarvisStore.getState().hideJarvis()} onSendMessage={(message) => void sendMessage(message)} onSendVoiceTranscript={async (requestId, text) => { await sendVoiceTranscript(requestId, text); }} onCancelRequest={(requestId) => void cancelChatRequest(requestId)} onConfirmAction={(action) => void confirmPendingAction(action)} onRejectAction={(action) => void rejectPendingAction(action)} onUpdateAction={(action, text) => updatePendingAction(action, text)} onOpenTerminal={handleOpenTerminal} onVoiceStart={() => void startVoice()} onVoiceStop={() => void stopVoice()} onVoiceCancel={() => void cancelVoice()} onVoiceDiscard={() => void discardVoiceTranscript()} onStopTts={() => void stopTts()} />
+    <JarvisWidget workspaceId={activeWorkspaceId} workspaceName={workspace?.name ?? null} conversation={conversationForWorkspace} pendingActions={pendingActions} requests={requests} chatError={chatError} voiceError={voiceError} providerStatus={providerStatus} uiIntents={uiIntents} followUps={activeWorkspaceId ? followUps[activeWorkspaceId] ?? [] : []} voiceRequest={voiceRequest} ttsStatus={ttsStatus} onOpenSettings={() => setSettingsOpen(true)} onHide={() => void useJarvisStore.getState().hideJarvis()} onSendMessage={(message) => void sendMessage(message)} onSendVoiceTranscript={async (requestId, text) => { await sendVoiceTranscript(requestId, text); }} onCancelRequest={(requestId) => void cancelChatRequest(requestId)} onConfirmAction={(action) => void confirmPendingAction(action)} onRejectAction={(action) => void rejectPendingAction(action)} onUpdateAction={(action, text) => updatePendingAction(action, text)} onOpenTerminal={handleOpenTerminal} onVoiceStart={() => void startVoice()} onVoiceStop={() => void stopVoice()} onVoiceCancel={() => void cancelVoice()} onVoiceDiscard={() => void discardVoiceTranscript()} onStopTts={() => void stopTts()} />
     <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} advanced={{ context, contextStatus, contextError, sessions: registrySessions, isRefreshing, onRefresh: () => void refreshRegistry(), onRefreshContext: () => void refreshContext() }} />
   </>;
 }

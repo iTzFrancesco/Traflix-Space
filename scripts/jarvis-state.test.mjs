@@ -6,10 +6,11 @@ import { buildAgentSessionView } from "../src/lib/jarvis/sessionView.ts";
 import { advancedViewVisible, isWorkspaceChatLoading, MAX_COMPLETED_REQUEST_HISTORY, mergeConversationMessages, pendingActionsForWorkspace, pruneRequestHistory, requestsForWorkspace } from "../src/lib/jarvis/chatState.ts";
 import { canConfirmPendingAction, savePendingActionEdit } from "../src/lib/jarvis/pendingActionState.ts";
 import { canSendTranscript, shouldAutoSpeak, shouldStopTtsBeforeRecording, voiceDraftsForWorkspaces, voiceRequestForWorkspace } from "../src/lib/jarvis/voiceState.ts";
-import { inputDeviceOptions, italianVoices } from "../src/lib/jarvis/voiceSettings.ts";
+import { inputDeviceOptions, italianVoices, sanitizedVoiceError } from "../src/lib/jarvis/voiceSettings.ts";
 
 const chatPanelSource = readFileSync(new URL("../src/components/jarvis/JarvisChatPanel.tsx", import.meta.url), "utf8");
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
+const settingsSource = readFileSync(new URL("../src/components/layout/SettingsModal.tsx", import.meta.url), "utf8");
 
 function session({ id, terminalId, generation, state = "waiting", updatedAt, provider = "codex", result = null }) {
   return {
@@ -161,4 +162,13 @@ test("voice transcript is never auto-submitted and TTS requires separate consent
 test("voice settings helpers keep default device and Italian voices only", () => {
   assert.deepEqual(inputDeviceOptions([{ id: "mic", name: "Desk mic", isDefault: true, available: true }]), [{ id: "mic", label: "Desk mic (predefinito)" }]);
   assert.deepEqual(italianVoices([{ shortName: "it-IT-A", locale: "it-IT" }, { shortName: "en-US-A", locale: "en-US" }]).map((voice) => voice.shortName), ["it-IT-A"]);
+});
+
+test("voice errors are sanitized and the legacy mute toggle is not presented", () => {
+  const message = sanitizedVoiceError({ message: "Bearer gsk_test_secret_value" });
+  assert.equal(message.includes("gsk_test_secret_value"), false);
+  assert.ok(message.length <= 240);
+  assert.doesNotMatch(settingsSource, /Microfono muto/);
+  assert.match(settingsSource, /Aggiorna microfoni/);
+  assert.match(settingsSource, /Carica voci italiane/);
 });

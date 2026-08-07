@@ -209,6 +209,7 @@ fn main() {
             jarvis::voice::commands::jarvis_voice_status,
             jarvis::voice::commands::jarvis_voice_workspace_status,
             jarvis::voice::commands::jarvis_voice_discard_transcript,
+            jarvis::voice::commands::jarvis_voice_shutdown,
             jarvis::voice::commands::jarvis_tts_speak,
             jarvis::voice::commands::jarvis_tts_stop,
             jarvis::voice::commands::jarvis_tts_status,
@@ -245,7 +246,7 @@ fn main() {
                 let voice = app.state::<jarvis::voice::VoiceState>().clone();
                 let manager = app.state::<TerminalManager>();
                 tauri::async_runtime::block_on(async {
-                    voice.shutdown().await;
+                    let _ = voice.shutdown().await;
                     manager.kill_all().await;
                 });
             }

@@ -4,7 +4,7 @@ import { Modal } from "../ui/Modal";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import { defaultJarvisSettings } from "../../lib/jarvis/settings";
 import { ttsListVoices, voiceListInputDevices } from "../../lib/jarvis/client";
-import { inputDeviceOptions, italianVoices } from "../../lib/jarvis/voiceSettings";
+import { inputDeviceOptions, italianVoices, sanitizedVoiceError } from "../../lib/jarvis/voiceSettings";
 import type { AppSettings, TtsVoice, VoiceEngine, VoiceInputDevice } from "../../lib/jarvis/types";
 import { JarvisAdvancedSettings } from "../jarvis/JarvisAdvancedSettings";
 import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
@@ -168,12 +168,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
                 updateJarvis((current) => ({ ...current, wakeWordEnabled }))
               }
             />
-            <ToggleRow
-              label="Microfono muto"
-              description="Il microfono parte soltanto dopo un click esplicito sul widget."
-              checked={jarvis.muted}
-              onChange={(muted) => updateJarvis((current) => ({ ...current, muted }))}
-            />
           </div>
         </div>
 
@@ -224,8 +218,9 @@ function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input:
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingVoices, setLoadingVoices] = useState(false);
-  const loadDevices = async () => { setLoadingDevices(true); try { setDevices(await voiceListInputDevices()); } finally { setLoadingDevices(false); } };
-  const loadVoices = async () => { setLoadingVoices(true); try { setVoices(italianVoices(await ttsListVoices())); } finally { setLoadingVoices(false); } };
+  const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
+  const loadDevices = async () => { setLoadingDevices(true); setVoiceSettingsError(null); try { setDevices(await voiceListInputDevices()); } catch (error) { setVoiceSettingsError(sanitizedVoiceError(error)); } finally { setLoadingDevices(false); } };
+  const loadVoices = async () => { setLoadingVoices(true); setVoiceSettingsError(null); try { setVoices(italianVoices(await ttsListVoices())); } catch (error) { setVoiceSettingsError(sanitizedVoiceError(error)); } finally { setLoadingVoices(false); } };
   return <div className="space-y-4 rounded-xl border border-signal/20 bg-signal/[0.04] p-5">
     <div><h3 className="font-semibold text-neutral-text">Voce Jarvis</h3><p className="mt-1 text-xs leading-relaxed text-neutral-text-muted">STT esclusivamente Groq Whisper turbo. TTS esclusivamente Microsoft Edge TTS. Il transcript non viene inviato automaticamente.</p></div>
     <div className="grid gap-3 sm:grid-cols-2">
@@ -245,6 +240,7 @@ function VoiceOptions({ input, output, onInputChange, onOutputChange }: { input:
     <ToggleRow label="Parla automaticamente le risposte" description="Richiede consenso separato per inviare il testo a Edge TTS." checked={output.autoSpeak} onChange={(autoSpeak) => onOutputChange({ ...output, autoSpeak })} />
     <ToggleRow label="Consenso audio → Groq" description="L'audio registrato viene inviato a Groq per Whisper e resta solo in memoria." checked={input.privacyConsent} onChange={(privacyConsent) => onInputChange({ ...input, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />
     <ToggleRow label="Consenso testo → Edge TTS" description="Il testo della risposta viene inviato al servizio vocale online Edge TTS." checked={output.privacyConsent} onChange={(privacyConsent) => onOutputChange({ ...output, privacyConsent, privacyConsentAt: privacyConsent ? new Date().toISOString() : undefined })} />
+    {voiceSettingsError && <p role="alert" className="rounded-lg border border-danger/30 bg-danger/[0.08] px-3 py-2 text-xs text-danger">{voiceSettingsError}</p>}
   </div>;
 }
 

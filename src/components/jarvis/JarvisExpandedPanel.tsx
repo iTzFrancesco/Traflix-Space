@@ -9,6 +9,7 @@ interface JarvisExpandedPanelProps {
   pendingActions: PendingAction[];
   requests: Record<string, JarvisRequestState>;
   chatError: string | null;
+  voiceError: string | null;
   providerStatus: JarvisProviderStatus | null;
   uiIntents: JarvisUiIntent[];
   followUps: string[];

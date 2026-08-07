@@ -1,8 +1,5 @@
-use std::path::PathBuf;
-
 use crate::settings::store::SettingsManager;
-use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tauri::{AppHandle, Emitter, State};
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
 use super::registry::{friendly_message, VoiceState};
@@ -215,6 +212,18 @@ pub fn jarvis_voice_discard_transcript(
 }
 
 #[tauri::command]
+pub async fn jarvis_voice_shutdown(
+    app: AppHandle,
+    state: State<'_, VoiceState>,
+) -> Result<(), VoiceErrorView> {
+    for status in state.shutdown().await {
+        emit_voice_state(&app, &status);
+    }
+    emit_tts_state(&app, &state.tts_status());
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn jarvis_tts_speak(
     app: AppHandle,
     state: State<'_, VoiceState>,
@@ -228,8 +237,7 @@ pub async fn jarvis_tts_speak(
     let request_id = request.request_id.clone();
     let (cancellation, synthesizing) = state.begin_tts(request_id.clone());
     emit_tts_state(&app, &synthesizing);
-    let helper = helper_path(&app);
-    let provider = EdgeTextToSpeechProvider::new(helper);
+    let provider = runtime_tts_provider(&app);
     let path = match provider
         .speak(
             request_id.clone(),
@@ -333,59 +341,17 @@ pub async fn jarvis_tts_list_voices(
 ) -> Result<Vec<TtsVoice>, VoiceErrorView> {
     let config = settings.get().await.jarvis.voice_output;
     ensure_output_allowed(&config)?;
-    let mut child = helper_command(helper_path(&app))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin
-            .write_all(
-                br#"{"action":"listVoices"}
-"#,
-            )
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
-            return Err(to_error(VoiceErrorCode::HelperFailed));
-        }
-    }
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill().await;
-        return Err(to_error(VoiceErrorCode::HelperFailed));
-    };
-    let status = match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await
-    {
-        Ok(Ok(status)) => status,
-        _ => {
-            let _ = child.kill().await;
-            return Err(to_error(VoiceErrorCode::HelperFailed));
-        }
-    };
-    let mut bytes = Vec::new();
-    stdout
-        .take(64 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
-    if !status.success() || bytes.len() > 64 * 1024 {
-        return Err(to_error(VoiceErrorCode::HelperFailed));
-    }
-    let result: VoiceListResult =
-        serde_json::from_slice(&bytes).map_err(|_| to_error(VoiceErrorCode::HelperFailed))?;
-    if !result.ok {
-        return Err(to_error(VoiceErrorCode::HelperFailed));
-    }
-    Ok(result.voices.unwrap_or_default())
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VoiceListResult {
-    ok: bool,
-    voices: Option<Vec<TtsVoice>>,
+    let provider = runtime_tts_provider(&app);
+    let voices = provider.list_voices().await.map_err(to_error)?;
+    Ok(voices
+        .into_iter()
+        .filter(|voice| voice.locale.to_ascii_lowercase().starts_with("it-"))
+        .map(|voice| TtsVoice {
+            short_name: voice.short_name,
+            locale: voice.locale,
+            gender: voice.gender,
+        })
+        .collect())
 }
 
 fn ensure_input_allowed(
@@ -427,46 +393,23 @@ fn ensure_output_allowed(
     Ok(())
 }
 
-fn helper_path(app: &AppHandle) -> PathBuf {
-    if cfg!(debug_assertions) {
-        if let Ok(path) = std::env::var("TRAF_EDGE_TTS_HELPER") {
-            return PathBuf::from(path);
-        }
-        return app
-            .path()
-            .resource_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("scripts/jarvis-edge-tts.py");
-    }
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let candidates = if cfg!(windows) {
-        vec![
-            resource_dir.join("binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe"),
-            resource_dir.join("binaries/jarvis-edge-tts.exe"),
-            resource_dir.join("jarvis-edge-tts.exe"),
-        ]
-    } else {
-        vec![resource_dir.join("binaries/jarvis-edge-tts")]
-    };
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| resource_dir.join("binaries/jarvis-edge-tts"))
+#[cfg(debug_assertions)]
+fn runtime_tts_provider(app: &AppHandle) -> EdgeTextToSpeechProvider {
+    EdgeTextToSpeechProvider::debug(debug_helper_path(app))
 }
 
-fn helper_command(path: PathBuf) -> tokio::process::Command {
-    if path.extension().and_then(|value| value.to_str()) == Some("exe") {
-        let command = tokio::process::Command::new(path);
-        command
-    } else {
-        let mut command =
-            tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
-        command.arg("-u").arg(path);
-        command
+#[cfg(not(debug_assertions))]
+fn runtime_tts_provider(app: &AppHandle) -> EdgeTextToSpeechProvider {
+    EdgeTextToSpeechProvider::release(app.clone())
+}
+
+#[cfg(debug_assertions)]
+fn debug_helper_path(app: &AppHandle) -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("TRAF_EDGE_TTS_HELPER") {
+        return std::path::PathBuf::from(path);
     }
+    let _ = app;
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/jarvis-edge-tts.py")
 }
 
 fn to_error(code: VoiceErrorCode) -> VoiceErrorView {

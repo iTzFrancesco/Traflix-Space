@@ -316,14 +316,29 @@ impl VoiceState {
         }
     }
 
-    pub async fn shutdown(&self) {
-        let (captures, tts_token, tts_request_id) = {
+    pub async fn shutdown(&self) -> Vec<VoiceRequestStatusView> {
+        let (captures, tts_token, tts_request_id, cancelled_requests) = {
             let mut inner = self.inner.lock();
+            let mut cancelled_requests = Vec::new();
             let captures = inner
                 .requests
                 .values_mut()
                 .filter_map(|request| {
                     request.cancellation.cancel();
+                    if matches!(
+                        request.view.status,
+                        VoiceRequestStatus::Recording
+                            | VoiceRequestStatus::Stopping
+                            | VoiceRequestStatus::Transcribing
+                    ) {
+                        request.view.status = VoiceRequestStatus::Cancelled;
+                        request.view.transcript = None;
+                        request.view.error = Some(error_view(
+                            VoiceErrorCode::Cancelled,
+                            friendly_message(VoiceErrorCode::Cancelled),
+                        ));
+                        cancelled_requests.push(request.view.clone());
+                    }
                     request.capture.take()
                 })
                 .collect::<Vec<_>>();
@@ -334,13 +349,14 @@ impl VoiceState {
                 inner.tts_cancel_requested = true;
                 inner.tts.status = TtsStatus::Stopped;
             }
-            (captures, tts_token, tts_request_id)
+            (captures, tts_token, tts_request_id, cancelled_requests)
         };
         for capture in captures {
             let _ = capture.stop();
         }
         let _ = tts_token;
         self.wait_tts_request_finished(tts_request_id).await;
+        cancelled_requests
     }
 }
 
@@ -462,5 +478,30 @@ mod tests {
         assert_eq!(playing.request_id.as_deref(), Some("tts"));
         let idle = state.set_tts_for("tts", TtsStatus::Idle, None).unwrap();
         assert_eq!(idle.status, TtsStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_active_capture_before_jarvis_is_disabled() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        state
+            .start("shutdown-request".into(), "workspace-a".into(), None, 45)
+            .unwrap();
+        let cancelled = state.shutdown().await;
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].status, VoiceRequestStatus::Cancelled);
+        assert_eq!(state.tts_status().status, TtsStatus::Idle);
+        assert_eq!(
+            state.snapshot(Some("shutdown-request")).unwrap().status,
+            VoiceRequestStatus::Cancelled
+        );
     }
 }

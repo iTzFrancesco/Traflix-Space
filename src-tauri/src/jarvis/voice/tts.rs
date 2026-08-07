@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -31,12 +32,30 @@ pub trait TextToSpeechProvider: Send + Sync {
 
 #[derive(Clone)]
 pub struct EdgeTextToSpeechProvider {
-    pub helper_path: PathBuf,
+    helper: EdgeHelper,
+}
+
+#[derive(Clone)]
+enum EdgeHelper {
+    Python(PathBuf),
+    Sidecar(tauri::AppHandle),
 }
 
 impl EdgeTextToSpeechProvider {
     pub fn new(helper_path: PathBuf) -> Self {
-        Self { helper_path }
+        Self {
+            helper: EdgeHelper::Python(helper_path),
+        }
+    }
+
+    pub fn debug(helper_path: PathBuf) -> Self {
+        Self::new(helper_path)
+    }
+
+    pub fn release(app: tauri::AppHandle) -> Self {
+        Self {
+            helper: EdgeHelper::Sidecar(app),
+        }
     }
 }
 
@@ -52,47 +71,14 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
         max_chars: usize,
         cancellation: CancellationToken,
     ) -> TtsFuture {
-        let helper_path = self.helper_path.clone();
+        let helper = self.helper.clone();
         Box::pin(async move {
             let text =
                 sanitize_for_speech(&text, max_chars).ok_or(VoiceErrorCode::InvalidRequest)?;
             let output_path = temp_audio_path(&request_id);
             let result = async {
-                let mut child = helper_command(helper_path)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|_| VoiceErrorCode::HelperFailed)?;
-                let payload = serde_json::json!({ "requestId": request_id, "text": text, "voice": voice, "rate": rate, "volume": volume, "pitch": pitch, "outputPath": output_path });
-                if let Some(mut stdin) = child.stdin.take() {
-                    if stdin.write_all(payload.to_string().as_bytes()).await.is_err() {
-                        let _ = child.kill().await;
-                        return Err(VoiceErrorCode::HelperFailed);
-                    }
-                }
-                let Some(stdout) = child.stdout.take() else {
-                    let _ = child.kill().await;
-                    return Err(VoiceErrorCode::HelperFailed);
-                };
-                let status = tokio::select! {
-                    _ = cancellation.cancelled() => { let _ = child.kill().await; return Err(VoiceErrorCode::Cancelled); },
-                    result = tokio::time::timeout(HELPER_TIMEOUT, child.wait()) => {
-                        match result {
-                            Ok(Ok(status)) => status,
-                            _ => { let _ = child.kill().await; return Err(VoiceErrorCode::HelperFailed); }
-                        }
-                    }
-                };
-                let mut stdout_bytes = Vec::new();
-                let read_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    stdout.take((MAX_HELPER_OUTPUT_BYTES + 1) as u64).read_to_end(&mut stdout_bytes),
-                ).await;
-                read_result.map_err(|_| VoiceErrorCode::HelperFailed)?.map_err(|_| VoiceErrorCode::HelperFailed)?;
-                if !status.success() || stdout_bytes.len() > MAX_HELPER_OUTPUT_BYTES {
-                    return Err(VoiceErrorCode::HelperFailed);
-                }
+                let payload = serde_json::json!({ "requestId": request_id, "text": text, "voice": voice, "rate": rate, "volume": volume, "pitch": pitch, "outputPath": output_path }).to_string();
+                let stdout_bytes = helper.run(payload, cancellation.clone()).await?;
                 let result: HelperResult =
                     serde_json::from_slice(&stdout_bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
                 if !result.ok {
@@ -119,11 +105,173 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
     }
 }
 
+impl EdgeHelper {
+    async fn run(
+        &self,
+        payload: String,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<u8>, VoiceErrorCode> {
+        match self {
+            EdgeHelper::Python(path) => {
+                run_python_helper(path.clone(), payload, cancellation).await
+            }
+            EdgeHelper::Sidecar(app) => {
+                run_sidecar_helper(app.clone(), payload, cancellation).await
+            }
+        }
+    }
+}
+
+impl EdgeTextToSpeechProvider {
+    pub async fn list_voices(&self) -> Result<Vec<TtsVoiceInfo>, VoiceErrorCode> {
+        let payload = r#"{"action":"listVoices"}"#.to_string();
+        let bytes = self.helper.run(payload, CancellationToken::new()).await?;
+        let result: VoiceListResult =
+            serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
+        if !result.ok {
+            return Err(VoiceErrorCode::HelperFailed);
+        }
+        Ok(result.voices.unwrap_or_default())
+    }
+}
+
+async fn run_python_helper(
+    helper_path: PathBuf,
+    payload: String,
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, VoiceErrorCode> {
+    let mut child = helper_command(helper_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| VoiceErrorCode::HelperFailed)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin
+            .write_all(format!("{payload}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            return Err(VoiceErrorCode::HelperFailed);
+        }
+    }
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill().await;
+        return Err(VoiceErrorCode::HelperFailed);
+    };
+    let status = tokio::select! {
+        _ = cancellation.cancelled() => { let _ = child.kill().await; return Err(VoiceErrorCode::Cancelled); },
+        result = tokio::time::timeout(HELPER_TIMEOUT, child.wait()) => match result {
+            Ok(Ok(status)) => status,
+            _ => { let _ = child.kill().await; return Err(VoiceErrorCode::HelperFailed); }
+        }
+    };
+    let mut bytes = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stdout.read_to_end(&mut bytes),
+    )
+    .await
+    .map_err(|_| VoiceErrorCode::HelperFailed)?
+    .map_err(|_| VoiceErrorCode::HelperFailed)?;
+    if !status.success() || bytes.len() > MAX_HELPER_OUTPUT_BYTES {
+        return Err(VoiceErrorCode::HelperFailed);
+    }
+    Ok(bytes)
+}
+
+async fn run_sidecar_helper(
+    app: tauri::AppHandle,
+    payload: String,
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, VoiceErrorCode> {
+    let command = app
+        .shell()
+        .sidecar("jarvis-edge-tts")
+        .map_err(|_| VoiceErrorCode::HelperFailed)?
+        .set_raw_out(true);
+    let (mut events, child) = command.spawn().map_err(|_| VoiceErrorCode::HelperFailed)?;
+    let mut child = Some(child);
+    if child
+        .as_mut()
+        .expect("sidecar child exists")
+        .write(format!("{payload}\n").as_bytes())
+        .is_err()
+    {
+        if let Some(child) = child.take() {
+            let _ = child.kill();
+        }
+        return Err(VoiceErrorCode::HelperFailed);
+    }
+    let result = tokio::time::timeout(HELPER_TIMEOUT, async {
+        let mut stdout = Vec::new();
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    if let Some(child) = child.take() { let _ = child.kill(); }
+                    return Err(VoiceErrorCode::Cancelled);
+                }
+                event = events.recv() => match event {
+                    Some(CommandEvent::Stdout(bytes)) => {
+                        if stdout.len().saturating_add(bytes.len()) > MAX_HELPER_OUTPUT_BYTES {
+                            if let Some(child) = child.take() { let _ = child.kill(); }
+                            return Err(VoiceErrorCode::HelperFailed);
+                        }
+                        stdout.extend_from_slice(&bytes);
+                    }
+                    Some(CommandEvent::Terminated(status)) => {
+                        let _ = child.take();
+                        if !status.code.is_some_and(|code| code == 0) || stdout.len() > MAX_HELPER_OUTPUT_BYTES {
+                            return Err(VoiceErrorCode::HelperFailed);
+                        }
+                        return Ok(stdout);
+                    }
+                    Some(CommandEvent::Error(_)) => {
+                        if let Some(child) = child.take() { let _ = child.kill(); }
+                        return Err(VoiceErrorCode::HelperFailed);
+                    }
+                    Some(CommandEvent::Stderr(_)) => {}
+                    None => {
+                        if let Some(child) = child.take() { let _ = child.kill(); }
+                        return Err(VoiceErrorCode::HelperFailed);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }).await;
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            if let Some(child) = child.take() {
+                let _ = child.kill();
+            }
+            Err(VoiceErrorCode::HelperFailed)
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HelperResult {
     ok: bool,
     output_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsVoiceInfo {
+    pub short_name: String,
+    pub locale: String,
+    pub gender: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceListResult {
+    ok: bool,
+    voices: Option<Vec<TtsVoiceInfo>>,
 }
 
 pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
@@ -260,7 +408,8 @@ mod tests {
         let _ = fs::remove_file(&path);
         fs::write(&path, b"mp3").unwrap();
         let canonical = canonical_temp_file(&path).unwrap();
-        assert_eq!(canonical, fs::canonicalize(&path).unwrap());
+        let expected = super::normalize_windows_extended_prefix(fs::canonicalize(&path).unwrap());
+        assert_eq!(canonical, expected);
         let _ = fs::remove_file(path);
     }
 

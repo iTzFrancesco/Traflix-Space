@@ -392,6 +392,10 @@ export function voiceDiscardTranscript(requestId: string): Promise<void> {
   return invokeWithTimeout(() => invoke<void>("jarvis_voice_discard_transcript", { requestId }), READ_TIMEOUT_MS);
 }
 
+export function voiceShutdown(): Promise<void> {
+  return invokeWithTimeout(() => invoke<void>("jarvis_voice_shutdown"), READ_TIMEOUT_MS);
+}
+
 export function ttsSpeak(request: TtsSpeakRequest): Promise<TtsStatusView> {
   return invokeWithTimeout(() => invoke<TtsStatusView>("jarvis_tts_speak", { request }), MODEL_TIMEOUT_MS);
 }

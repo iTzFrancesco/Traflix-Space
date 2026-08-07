@@ -20,10 +20,13 @@ normale `jarvis_chat` della Fase 4.
 
 ## TTS
 
-Il provider è `edge_tts`, senza API key e senza fallback. Rust avvia
-`scripts/jarvis-edge-tts.py` con JSON typed, mantiene il file MP3 in una
-directory temporanea e lo elimina dopo successo, stop, errore o cancellazione.
-Il helper non legge settings, workspace o file e non registra il testo.
+Il provider è `edge_tts`, senza API key e senza fallback. In debug Rust può
+avviare `scripts/jarvis-edge-tts.py` (oppure il percorso indicato da
+`TRAF_EDGE_TTS_HELPER`) con JSON typed; in release usa il resolver ufficiale
+`ShellExt::sidecar("jarvis-edge-tts")` del plugin Tauri. Il file MP3 resta in
+una directory temporanea e viene eliminato dopo successo, stop, errore o
+cancellazione. Il helper non legge settings, workspace o file e non registra
+il testo.
 `rodio` gestisce il playback Windows dietro `AudioPlayback`; lo stop è
 idempotente e il click sul microfono interrompe prima l’audio (barge-in).
 
@@ -48,9 +51,10 @@ Le voci vengono elencate soltanto su richiesta esplicita. La strategia release
 è verificabile su Windows con
 `powershell -ExecutionPolicy Bypass -File scripts/build-jarvis-edge-tts-sidecar.ps1`:
 lo script genera `src-tauri/binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe`
-con PyInstaller e il manifest Tauri lo include come `externalBin`. Il sidecar
-non è stato costruito sulla VPS Linux; la verifica del binario resta manuale.
-In debug il comando usa Python e il modulo `edge-tts` presenti nell’ambiente.
+con PyInstaller e `src-tauri/tauri.windows.conf.json` lo include come
+`externalBin`. Il sidecar non è stato costruito sulla VPS Linux; la verifica
+del binario resta manuale. L’MSI release non richiede Python; solo il debug
+usa Python e il modulo `edge-tts` presenti nell’ambiente.
 La voce predefinita
 è `it-IT-DiegoNeural` e il codice non seleziona silenziosamente una voce
 straniera.
