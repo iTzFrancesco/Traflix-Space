@@ -1,20 +1,27 @@
 import type { AppSettings, JarvisSettings } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
+const ALWAYS_READY_ARM_SECONDS = 120;
 
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
  * runs in owner mode: network consent, transcript submission and spoken
- * replies are always enabled. One-click + local VAD is the default interaction,
- * while explicit advanced activation choices remain valid.
+ * replies are always enabled. Hands-free local VAD is the default interaction;
+ * hold-to-talk remains available as an explicit advanced choice.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
-  const activationMode = settings.voiceInput.activationMode;
+  const activationMode =
+    settings.voiceInput.activationMode === "hold_to_talk" ? "hold_to_talk" : "vad";
   const voiceInput = {
     ...settings.voiceInput,
     enabled: true,
     autoSubmitTranscript: true,
+    activationMode,
     vadEnabled: activationMode !== "hold_to_talk",
+    maxArmedSeconds:
+      activationMode === "vad"
+        ? Math.max(ALWAYS_READY_ARM_SECONDS, settings.voiceInput.maxArmedSeconds)
+        : settings.voiceInput.maxArmedSeconds,
     privacyConsent: true,
     privacyConsentAt: settings.voiceInput.privacyConsentAt || OWNER_MODE_MARKER,
   };
@@ -39,13 +46,18 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
 }
 
 export function isJarvisOwnerModeReady(settings: JarvisSettings): boolean {
-  const expectedVad = settings.voiceInput.activationMode !== "hold_to_talk";
+  const expectedActivationMode =
+    settings.voiceInput.activationMode === "hold_to_talk" ? "hold_to_talk" : "vad";
+  const expectedVad = expectedActivationMode !== "hold_to_talk";
   return Boolean(
     settings.textModel.privacyConsent &&
       settings.textModel.privacyConsentAt &&
       settings.voiceInput.enabled &&
       settings.voiceInput.autoSubmitTranscript &&
+      settings.voiceInput.activationMode === expectedActivationMode &&
       settings.voiceInput.vadEnabled === expectedVad &&
+      (expectedActivationMode !== "vad" ||
+        settings.voiceInput.maxArmedSeconds >= ALWAYS_READY_ARM_SECONDS) &&
       settings.voiceInput.privacyConsent &&
       settings.voiceInput.privacyConsentAt &&
       settings.voiceOutput.enabled &&
@@ -96,7 +108,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       autoSubmitTranscript: true,
       privacyConsent: true,
       privacyConsentAt: OWNER_MODE_MARKER,
-      activationMode: "click_toggle",
+      activationMode: "vad",
       globalShortcutEnabled: false,
       globalShortcut: "Ctrl+Alt+Space",
       shortcutBehavior: "toggle",
@@ -106,7 +118,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       vadSilenceFrames: 16,
       vadPreRollMs: 250,
       vadPostSpeechMs: 650,
-      maxArmedSeconds: 20,
+      maxArmedSeconds: ALWAYS_READY_ARM_SECONDS,
     },
     voiceOutput: {
       enabled: true,
