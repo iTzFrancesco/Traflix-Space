@@ -13,10 +13,7 @@ import {
 } from "../../lib/jarvis/settings";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
-  JarvisConversationMessage,
-  JarvisProviderStatus,
   JarvisRequestState,
-  JarvisUiIntent,
   PendingAction,
   TtsStatusView,
   VoiceActivationMode,
@@ -27,31 +24,17 @@ import type {
 interface JarvisWidgetProps {
   workspaceId: string | null;
   workspaceName: string | null;
-  conversation: JarvisConversationMessage[];
   pendingActions: PendingAction[];
   requests: Record<string, JarvisRequestState>;
   chatError: string | null;
   voiceError: string | null;
-  providerStatus: JarvisProviderStatus | null;
-  uiIntents: JarvisUiIntent[];
-  followUps: string[];
   onOpenSettings: () => void;
   onHide: () => void;
-  onSendMessage: (message: string) => void;
-  onSendVoiceTranscript: (requestId: string, text: string) => Promise<void> | void;
-  onCancelRequest: (requestId: string) => void;
-  onConfirmAction: (action: PendingAction) => void;
-  onRejectAction: (action: PendingAction) => void;
-  onUpdateAction: (action: PendingAction, text: string) => Promise<PendingAction>;
-  onOpenTerminal: (workspaceId: string, terminalId: string, generation: number) => void;
   voiceRequest: VoiceRequestStatusView | null;
   activationMode: VoiceActivationMode;
   onVoiceStart: () => Promise<void> | void;
   onVoiceStop: () => void;
-  onVoiceCancel: () => void;
-  onVoiceDiscard: () => void;
   ttsStatus: TtsStatusView;
-  onStopTts: () => void;
   activities: ActivityCheckpoint[];
 }
 
@@ -91,24 +74,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const holdPressedRef = useRef(false);
   const onVoiceStopRef = useRef(props.onVoiceStop);
   onVoiceStopRef.current = props.onVoiceStop;
-
-  // Voice is the product surface. These compatibility props remain wired to
-  // the underlying conversational engine, but this component never renders a
-  // transcript/chat/provider/debug drawer.
-  void props.conversation;
-  void props.providerStatus;
-  void props.uiIntents;
-  void props.followUps;
-  void props.onSendMessage;
-  void props.onSendVoiceTranscript;
-  void props.onCancelRequest;
-  void props.onConfirmAction;
-  void props.onRejectAction;
-  void props.onUpdateAction;
-  void props.onOpenTerminal;
-  void props.onVoiceCancel;
-  void props.onVoiceDiscard;
-  void props.onStopTts;
 
   const ownerModeReady = isJarvisOwnerModeReady(jarvisSettings);
 
