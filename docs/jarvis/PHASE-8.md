@@ -14,7 +14,11 @@ continua un workflow senza una nuova richiesta dell'utente.
 ## UX voice-first
 
 La superficie normale di Jarvis è un'unica barra compatta flottante. Non esiste
-un transcript drawer o una chat aperta durante l'uso vocale normale.
+un transcript drawer o una chat aperta durante l'uso vocale normale. I vecchi
+componenti frontend del drawer testuale, transcript card, agent list e Pending
+Action card sono stati rimossi dal tree: non sono semplicemente nascosti via
+CSS. I contratti backend legacy necessari alla compatibilità restano separati
+dalla UI normale.
 
 Il percorso primario è:
 
@@ -40,9 +44,10 @@ interne: input vocale, invio automatico, VAD, modello e output vocale vengono
 normalizzati in owner mode e non sono presentati come gate privacy nella UI.
 
 Le Settings espongono soltanto configurazione utile: OpenCode Zen, Groq,
-microfono, voce TTS, hotkey e tuning/diagnostica avanzata. Le API key vengono
-salvate fuori da `settings.json`; il frontend riceve solo lo stato
-configurata/non configurata.
+microfono, voce TTS, hotkey e tuning/diagnostica avanzata. Il tuning del turno
+espone la sensibilità VAD e `vadPostSpeechMs` (silenzio prima dell'invio), non il
+vecchio timeout di attesa del VAD armato. Le API key vengono salvate fuori da
+`settings.json`; il frontend riceve solo lo stato configurata/non configurata.
 
 ## Authority e scope
 
@@ -136,18 +141,44 @@ nuovo workspace, modal e toast) usano gli stessi token, bordi sottili e controll
 compatti, evitando gradienti decorativi, card annidate, glow e pill non
 necessarie.
 
+Lo stato desktop persistito viene normalizzato in fase di hydration: le
+larghezze sidebar/right-panel vengono ricondotte ai limiti supportati e vecchie
+right-panel view non più esistenti vengono scartate. Anche i preset workspace
+legacy vengono normalizzati prima dell'uso (1–8 terminali, conteggi agenti
+bounded). In questo modo l'upgrade non richiede localStorage pulito.
+
+I modal condivisi applicano focus trap, Esc e restore focus. Toast di
+success/info e warning/error espongono semantica `status`/`alert` senza una
+seconda live region duplicata.
+
+## Guardrail di regressione
+
+`npm run test:jarvis` include sia i test Jarvis esistenti sia
+`scripts/ui-regression.test.mjs`. I guardrail statici verificano, tra l'altro,
+che il vecchio drawer non venga reintrodotto, che il widget non riacquisti il
+wiring morto, che modal e storage migration restino presenti e che il tuning
+voice-first continui a usare `vadPostSpeechMs`.
+
+La presenza di questi test nel repository **non significa che siano stati
+eseguiti con successo sull'HEAD corrente**.
+
 ## Validazione
 
-La review corrente usa validazione mirata e review statica invece di usare
-GitHub CI/CD come loop di sviluppo. I workflow automatici sulle pull request
-sono stati disattivati e la build MSI è manuale, così failure infrastrutturali
-non vengono confuse con regressioni del prodotto.
+La review corrente usa review statica e test mirati disponibili nel repository,
+senza usare GitHub CI/CD come loop di sviluppo. Il workflow automatico del
+branch non è attivo; la build MSI resta manuale. Sull'HEAD corrente GitHub non
+fornisce status CI utilizzabili come prova di validazione.
 
 Sono stati ricontrollati staticamente i percorsi critici della Fase 8: binding
 workspace/generation, risoluzione target, hard boundary delle clarification,
 doppio launch frontend/backend, VAD/auto-stop, auto-submit transcript, TTS,
-owner-mode settings e secret persistence. La UI normale non monta più il vecchio
-pannello chat/transcript.
+owner-mode settings, secret persistence, wiring del widget e migrazione dello
+stato UI persistito.
+
+Non è disponibile un output completo e verificabile dell'HEAD corrente per
+`npm run test:jarvis`, `npm run build`/TypeScript, `cargo check` o `cargo test`.
+Questi controlli restano **PENDING** e non vengono considerati implicitamente
+passati.
 
 Questa review statica non sostituisce l'esecuzione reale su Windows. La
 validazione end-to-end del microfono, cue audio, Groq, OpenCode Zen, Edge TTS,
