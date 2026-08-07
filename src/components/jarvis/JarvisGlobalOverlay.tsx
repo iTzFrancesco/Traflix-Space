@@ -16,6 +16,7 @@ import {
   releaseVoicePress,
   type VoicePress,
 } from "../../lib/jarvis/voiceActivation";
+import { isJarvisOwnerModeReady } from "../../lib/jarvis/settings";
 import { JarvisWidget } from "./JarvisWidget";
 
 const AUTO_ARM_DELAY_MS = 180;
@@ -24,6 +25,7 @@ export function JarvisGlobalOverlay() {
   const workspaces = useWorkspaceStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
   const settings = useJarvisStore((state) => state.settings);
+  const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsOpen = useJarvisStore((state) => state.settingsOpen);
   const context = useJarvisStore((state) => state.context);
   const contextStatus = useJarvisStore((state) => state.contextStatus);
@@ -216,6 +218,8 @@ export function JarvisGlobalOverlay() {
   // speech changes the request to Recording and turns the widget green.
   useEffect(() => {
     if (
+      !settingsLoaded ||
+      !isJarvisOwnerModeReady(settings.jarvis) ||
       !activeWorkspaceId ||
       !settings.jarvis.enabled ||
       settings.jarvis.muted ||
@@ -246,6 +250,8 @@ export function JarvisGlobalOverlay() {
     const timer = window.setTimeout(() => {
       const store = useJarvisStore.getState();
       if (
+        !store.settingsLoaded ||
+        !isJarvisOwnerModeReady(store.settings.jarvis) ||
         useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
         !store.settings.jarvis.enabled ||
         store.settings.jarvis.muted ||
@@ -272,9 +278,8 @@ export function JarvisGlobalOverlay() {
     activeVoiceRequestId,
     activeWorkspaceId,
     requests,
-    settings.jarvis.enabled,
-    settings.jarvis.muted,
-    settings.jarvis.voiceInput.activationMode,
+    settings,
+    settingsLoaded,
     settingsOpen,
     ttsStatus.status,
     voiceRequest?.requestId,
