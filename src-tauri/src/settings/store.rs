@@ -269,9 +269,8 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
 
     settings.voice_input.enabled = true;
     settings.voice_input.auto_submit_transcript = true;
-    if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
-        settings.voice_input.vad_enabled = true;
-    }
+    settings.voice_input.vad_enabled =
+        settings.voice_input.activation_mode != VoiceActivationMode::HoldToTalk;
     settings.voice_input.privacy_consent = true;
     if settings.voice_input.privacy_consent_at.is_none() {
         settings.voice_input.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
@@ -775,7 +774,7 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.jarvis.voice_input.activation_mode = VoiceActivationMode::HoldToTalk;
         settings.jarvis.voice_input.auto_submit_transcript = false;
-        settings.jarvis.voice_input.vad_enabled = false;
+        settings.jarvis.voice_input.vad_enabled = true;
         settings.jarvis.voice_input.privacy_consent = false;
         settings.jarvis.voice_input.privacy_consent_at = None;
         settings.jarvis.voice_input.global_shortcut_enabled = true;
