@@ -354,7 +354,28 @@ async fn execute_step(
         PlanOperation::DraftPrompt => Ok(step.prompt.clone().unwrap_or_default()),
         PlanOperation::AgentReport => Ok(build_agent_report(context)),
         PlanOperation::AgentOpen => {
-            let initial_prompt = step.prompt.clone().filter(|value| !value.trim().is_empty());
+            let initial_prompt = if step.source.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+                // This path is used when the user answered a busy-handoff
+                // clarification with “open a new agent”. Preserve the original
+                // source and rebuild the bounded handoff instead of sending
+                // only the short instruction to the new provider.
+                let source = resolve_target(app, context, step.source.as_deref(), None).await;
+                let source = target_or_clarify(
+                    app,
+                    invocation,
+                    step,
+                    source,
+                    "leggere la sorgente dell'handoff",
+                )?;
+                let evidence = source_evidence(app, &source).await?;
+                Some(build_handoff_prompt(
+                    &source,
+                    &evidence,
+                    step.prompt.as_deref().unwrap_or_default(),
+                )?)
+            } else {
+                step.prompt.clone().filter(|value| !value.trim().is_empty())
+            };
             let Some(provider) = step.provider.as_deref().and_then(normalize_provider) else {
                 let question = "Quale agente vuoi aprire?".to_string();
                 put_clarification(app, invocation, step, question.clone());
@@ -570,11 +591,18 @@ fn merge_step_with_pending(
         }
     } else if current.operation == PlanOperation::AgentOpen
         && matches!(intent.operation, PlanOperation::AgentSend | PlanOperation::AgentHandoff)
-        && merged.prompt.as_deref().is_none_or(str::is_empty)
     {
         // “Aprine uno nuovo” after a busy-target question must not lose the
-        // task that triggered the clarification.
-        merged.prompt = previous.prompt.clone();
+        // task that triggered the clarification. Handoffs also keep their
+        // source so AgentOpen can rebuild bounded evidence for the new agent.
+        if merged.prompt.as_deref().is_none_or(str::is_empty) {
+            merged.prompt = previous.prompt.clone();
+        }
+        if intent.operation == PlanOperation::AgentHandoff
+            && merged.source.as_deref().is_none_or(str::is_empty)
+        {
+            merged.source = previous.source.clone();
+        }
     }
     merged
 }
@@ -1058,6 +1086,25 @@ enum OpenResult {
     },
 }
 
+async fn live_workspace(
+    app: &AppHandle,
+    expected: &WorkspaceConfig,
+    invocation: &InvocationBinding,
+) -> Result<WorkspaceConfig, String> {
+    if expected.id != invocation.target_workspace_id {
+        return Err("workspace invocation non valida".to_string());
+    }
+    let current = app
+        .state::<WorkspaceRegistry>()
+        .get(&expected.id)
+        .await
+        .ok_or_else(|| "workspace non disponibile".to_string())?;
+    if current.id != invocation.target_workspace_id {
+        return Err("workspace invocation non valida".to_string());
+    }
+    Ok(current)
+}
+
 async fn open_agent(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
@@ -1072,9 +1119,7 @@ async fn open_agent(
         .get_agent(&provider)
         .cloned()
         .ok_or_else(|| format!("provider non supportato: {provider}"))?;
-    if workspace.id != invocation.target_workspace_id {
-        return Err("workspace invocation non valida".to_string());
-    }
+    let workspace = live_workspace(app, workspace, invocation).await?;
     if workspace.terminals.len() >= 8 {
         return Err("limite di otto terminali raggiunto in questa workspace".to_string());
     }
@@ -1114,7 +1159,7 @@ async fn open_agent(
     updated.updated_at = now();
     app.state::<WorkspaceRegistry>().insert(updated).await;
     if app.state::<WorkspaceRegistry>().save().await.is_err() {
-        rollback_open_agent(app, workspace, &terminal_id).await;
+        rollback_open_agent(app, &workspace, &terminal_id).await;
         return Err("non sono riuscito a registrare il nuovo terminale".to_string());
     }
     let _ = app.emit(
@@ -1136,11 +1181,11 @@ async fn open_agent(
         .await
         .is_err()
     {
-        rollback_open_agent(app, workspace, &terminal_id).await;
+        rollback_open_agent(app, &workspace, &terminal_id).await;
         return Err("non sono riuscito ad avviare l'agente nella PTY".to_string());
     }
     if let Err(error) = wait_until_ready(app, &terminal_id, &definition).await {
-        rollback_open_agent(app, workspace, &terminal_id).await;
+        rollback_open_agent(app, &workspace, &terminal_id).await;
         return Err(error);
     }
     let mut sent = false;
@@ -1164,7 +1209,7 @@ async fn open_agent(
         )
         .await
         {
-            rollback_open_agent(app, workspace, &terminal_id).await;
+            rollback_open_agent(app, &workspace, &terminal_id).await;
             return Err(error);
         }
         sent = true;
@@ -1273,6 +1318,7 @@ async fn close_target(
     target: &ResolvedAgentTarget,
 ) -> Result<(), String> {
     let snapshot = fresh_snapshot(app, invocation, target).await?;
+    let workspace = live_workspace(app, workspace, invocation).await?;
     app.state::<TerminalManager>()
         .kill(app, &target.terminal.terminal_id)
         .await
@@ -1305,6 +1351,7 @@ async fn restart_target(
     target: &ResolvedAgentTarget,
 ) -> Result<(), String> {
     let snapshot = fresh_snapshot(app, invocation, target).await?;
+    let workspace = live_workspace(app, workspace, invocation).await?;
     let config = workspace
         .terminals
         .iter()
@@ -1597,6 +1644,48 @@ mod tests {
             response: None,
         };
         assert!(continuation.validate().is_ok());
+    }
+
+    #[test]
+    fn handoff_to_new_agent_preserves_source_and_instruction() {
+        let previous = ConversationStep {
+            operation: PlanOperation::AgentHandoff,
+            provider: Some("opencode".into()),
+            target: None,
+            source: Some("Codex Auth".into()),
+            destination: Some("OpenCode Review".into()),
+            prompt: Some("controlla soprattutto i test".into()),
+            confirmed: false,
+            allow_busy: false,
+        };
+        let pending = PendingConversationalIntent {
+            workspace_id: "w".into(),
+            kind: PendingConversationKind::Clarification,
+            question: "aprirne uno nuovo?".into(),
+            operation: PlanOperation::AgentHandoff,
+            terminal_id: Some("busy".into()),
+            generation: Some(1),
+            created_at: "2026-08-07T00:00:00Z".into(),
+            expires_at: "2999-08-07T00:00:00Z".into(),
+            plan: ConversationalPlan {
+                operations: vec![previous],
+                response: None,
+            },
+        };
+        let next = ConversationStep {
+            operation: PlanOperation::AgentOpen,
+            provider: Some("pi".into()),
+            target: None,
+            source: None,
+            destination: None,
+            prompt: None,
+            confirmed: false,
+            allow_busy: false,
+        };
+        let merged = merge_step_with_pending(&next, Some(&pending));
+        assert_eq!(merged.source.as_deref(), Some("Codex Auth"));
+        assert_eq!(merged.prompt.as_deref(), Some("controlla soprattutto i test"));
+        assert_eq!(merged.provider.as_deref(), Some("pi"));
     }
 
     #[test]
