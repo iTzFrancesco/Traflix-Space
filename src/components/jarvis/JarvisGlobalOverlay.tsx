@@ -34,6 +34,9 @@ export function JarvisGlobalOverlay() {
   const requests = useJarvisStore((state) => state.requests);
   const chatErrors = useJarvisStore((state) => state.chatErrors);
   const voiceRequests = useJarvisStore((state) => state.voiceRequests);
+  const activeVoiceRequestId = useJarvisStore(
+    (state) => state.activeVoiceRequestId,
+  );
   const voiceRequest = activeWorkspaceId
     ? voiceRequests[activeWorkspaceId] ?? null
     : null;
@@ -183,6 +186,31 @@ export function JarvisGlobalOverlay() {
     settings.jarvis.enabled,
   ]);
 
+  // An armed VAD capture is only ambient readiness, so it follows workspace
+  // focus. A capture that already heard speech keeps its original immutable
+  // workspace binding and is allowed to finish before the new workspace arms.
+  useEffect(() => {
+    if (!activeVoiceRequestId) return;
+    const activeRequest = Object.values(voiceRequests).find(
+      (request) => request.requestId === activeVoiceRequestId,
+    );
+    if (
+      activeRequest?.status !== "armed" ||
+      activeRequest.workspaceId === activeWorkspaceId
+    ) {
+      return;
+    }
+    const requestId = activeVoiceRequestId;
+    void useJarvisStore
+      .getState()
+      .cancelVoice()
+      .then(() => {
+        const store = useJarvisStore.getState();
+        if (store.activeVoiceRequestId !== requestId) store.clearVoiceError();
+      })
+      .catch(() => undefined);
+  }, [activeVoiceRequestId, activeWorkspaceId, voiceRequests]);
+
   // Hands-free mode: while unmuted, keep a VAD capture armed in the focused
   // workspace. Armed is intentionally visually neutral; only actual detected
   // speech changes the request to Recording and turns the widget green.
@@ -192,7 +220,8 @@ export function JarvisGlobalOverlay() {
       !settings.jarvis.enabled ||
       settings.jarvis.muted ||
       settings.jarvis.voiceInput.activationMode !== "vad" ||
-      settingsOpen
+      settingsOpen ||
+      activeVoiceRequestId
     ) {
       return;
     }
@@ -240,6 +269,7 @@ export function JarvisGlobalOverlay() {
 
     return () => window.clearTimeout(timer);
   }, [
+    activeVoiceRequestId,
     activeWorkspaceId,
     requests,
     settings.jarvis.enabled,
