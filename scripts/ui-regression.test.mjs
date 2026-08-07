@@ -43,11 +43,16 @@ test("voice widget contract no longer carries dead drawer state", () => {
   assert.match(overlaySource, /loadVoiceDraft/);
 });
 
-test("ready voice draft resumes only after its origin workspace is focused again", () => {
+test("ready voice draft resumes only after its origin workspace is focused and Jarvis is enabled", () => {
+  assert.match(
+    overlaySource,
+    /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled\) return/,
+  );
   assert.match(
     overlaySource,
     /useWorkspaceStore\.getState\(\)\.activeWorkspaceId !== workspaceId/,
   );
+  assert.match(overlaySource, /store\.settings\.jarvis\.enabled/);
   assert.match(overlaySource, /draft\?\.status === "transcript_ready"/);
   assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.autoSubmitTranscript/);
   assert.match(overlaySource, /store\.sendVoiceTranscript\(/);
