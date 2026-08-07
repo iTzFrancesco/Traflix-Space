@@ -4,12 +4,45 @@
 
 La Fase 8 rende Jarvis un'interfaccia conversazionale sopra Traflix Space.
 Jarvis è reattivo: esegue una richiesta esplicita dell'utente quando il piano è
-chiaro e chiede una decisione quando manca un'informazione sostanziale.
-In termini di ownership è **reactive, not proactive**.
+chiaro e chiede una decisione quando manca un'informazione sostanziale. In
+termini di ownership è **reactive, not proactive**.
 
 Jarvis non è un orchestratore autonomo. Non parla quando un agente termina, non
 propone review, non apre agenti spontaneamente, non schedula catene future e non
 continua un workflow senza una nuova richiesta dell'utente.
+
+## UX voice-first
+
+La superficie normale di Jarvis è un'unica barra compatta flottante. Non esiste
+un transcript drawer o una chat aperta durante l'uso vocale normale.
+
+Il percorso primario è:
+
+`click microfono → Listening… → silenzio naturale → Transcribing… → Thinking… → azione → Speaking… → Ready when you are`
+
+Il click sul microfono avvia un turno. Il VAD locale rileva l'inizio del parlato
+e la pausa di fine frase, ferma la registrazione e avvia automaticamente la
+trascrizione. La trascrizione pronta viene inviata automaticamente al motore
+conversazionale e la risposta viene letta con Edge TTS. Non esistono pulsanti
+"trascrivi" o "invia alla chat" nel percorso normale.
+
+L'inizio e la fine dell'ascolto hanno un breve cue audio locale. Durante
+l'ascolto la barra cambia stato e mostra un meter legato al livello del
+microfono. Il controllo attivo diventa uno stop esplicito, utile solo quando
+l'utente vuole chiudere il turno prima del VAD.
+
+Il widget si sposta soltanto con pressione prolungata seguita da movimento. Un
+click o un piccolo movimento involontario non modifica la posizione.
+
+Traflix Space è un'app desktop privata usata dal proprietario. I legacy consent
+fields rimangono nello schema Rust per compatibilità, ma sono invarianti
+interne: input vocale, invio automatico, VAD, modello e output vocale vengono
+normalizzati in owner mode e non sono presentati come gate privacy nella UI.
+
+Le Settings espongono soltanto configurazione utile: OpenCode Zen, Groq,
+microfono, voce TTS, hotkey e tuning/diagnostica avanzata. Le API key vengono
+salvate fuori da `settings.json`; il frontend riceve solo lo stato
+configurata/non configurata.
 
 ## Authority e scope
 
@@ -94,22 +127,31 @@ Le risposte sono brevi e voice-friendly. Un task semplice normalmente produce
 una frase; report e failure restano compatti. Dopo `Fai implementare X a Codex`
 Jarvis termina: un eventuale handoff successivo richiede una nuova richiesta.
 
+## Desktop UI rework
+
+Il frontend della Fase 8 usa una shell desktop compatta e gerarchica: sidebar,
+workspace identity bar, terminal grid e right panel. I terminali restano il
+contenuto dominante. Le superfici secondarie (Browser, Skills, Settings, wizard
+nuovo workspace, modal e toast) usano gli stessi token, bordi sottili e controlli
+compatti, evitando gradienti decorativi, card annidate, glow e pill non
+necessarie.
+
 ## Validazione
 
-Il repository contiene test/backend assertions per piani typed, isolamento
-workspace, target resolution, busy clarification, tail bounded e regressioni
-frontend/Jarvis. **La presenza dei test non equivale però a una suite completa
-eseguita con successo.** Durante la validazione della Fase 8 sulla VPS lo spazio
-disco è terminato prima di poter completare tutti i comandi previsti. In questa
-review successiva non è disponibile un output completo e verificabile di
-`cargo check`, `cargo test`, `npm run test:jarvis` e typecheck sul nuovo HEAD;
-GitHub non espone inoltre status CI per il branch. Questi controlli restano
-quindi **PENDING / da rieseguire quando c'è spazio sufficiente**, senza
-considerarli implicitamente passati.
+La review corrente usa validazione mirata e review statica invece di usare
+GitHub CI/CD come loop di sviluppo. I workflow automatici sulle pull request
+sono stati disattivati e la build MSI è manuale, così failure infrastrutturali
+non vengono confuse con regressioni del prodotto.
 
-La review statica successiva ha corretto guardrail di lifecycle/routing,
-correlazione per generation e doppio launch frontend/backend, ma non sostituisce
-l'esecuzione delle suite.
+Sono stati ricontrollati staticamente i percorsi critici della Fase 8: binding
+workspace/generation, risoluzione target, hard boundary delle clarification,
+doppio launch frontend/backend, VAD/auto-stop, auto-submit transcript, TTS,
+owner-mode settings e secret persistence. La UI normale non monta più il vecchio
+pannello chat/transcript.
 
-La validazione Windows è ancora **PENDING** e non viene dichiarata superata.
+Questa review statica non sostituisce l'esecuzione reale su Windows. La
+validazione end-to-end del microfono, cue audio, Groq, OpenCode Zen, Edge TTS,
+WebView2 e delle PTY condivise resta **PENDING** finché il branch aggiornato non
+viene eseguito sulla macchina Windows reale.
+
 Vedere [PHASE-8-WINDOWS-VALIDATION.md](./PHASE-8-WINDOWS-VALIDATION.md).
