@@ -172,28 +172,28 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Jarvis settings"
+      title="Impostazioni Jarvis"
       width="max-w-[700px]"
     >
       <div className="space-y-7">
         <header>
           <p className="text-sm font-semibold text-neutral-text">
-            Voice is the default interface
+            La voce è l'interfaccia principale
           </p>
           <p className="mt-1 max-w-xl text-xs leading-relaxed text-neutral-text-muted">
-            Click once, speak normally, then stop talking. Jarvis detects the end
-            of the turn, sends it and replies aloud automatically.
+            Jarvis resta pronto in ascolto. Quando rileva la tua voce avvia il turno,
+            riconosce automaticamente il silenzio finale, invia la richiesta e risponde a voce.
           </p>
         </header>
 
         <SettingsSection
-          title="Connections"
-          description="Keys are stored outside settings.json and are never shown again after saving."
+          title="Connessioni"
+          description="Le chiavi sono salvate fuori da settings.json e non vengono più mostrate dopo il salvataggio."
         >
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
             <CredentialField
               label="OpenCode Zen"
-              description="Conversation and planning"
+              description="Conversazione e pianificazione"
               configured={secretStatus.openCodeZenConfigured}
               value={secretDrafts.open_code_zen}
               busy={secretBusy === "open_code_zen"}
@@ -233,10 +233,10 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         />
 
         <details className="details-panel">
-          <summary>Model routing</summary>
+          <summary>Instradamento modelli</summary>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <TextField
-              label="Primary model"
+              label="Modello principale"
               value={jarvis.textModel.primaryModel}
               placeholder="longcat-2.0-free"
               onChange={(primaryModel) =>
@@ -247,7 +247,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
               }
             />
             <TextField
-              label="Fallback model"
+              label="Modello di fallback"
               value={jarvis.textModel.fallbackModel}
               placeholder="deepseek-v4-flash-free"
               onChange={(fallbackModel) =>
@@ -260,7 +260,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
           </div>
           <div className="mt-3">
             <ToggleRow
-              label="Allow model fallback"
+              label="Consenti fallback del modello"
               checked={jarvis.textModel.fallbackEnabled}
               onChange={(fallbackEnabled) =>
                 updateJarvis((current) => ({
@@ -273,11 +273,11 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         </details>
 
         <details className="details-panel">
-          <summary>Advanced diagnostics</summary>
+          <summary>Diagnostica avanzata</summary>
           <div className="mt-3">
             <ToggleRow
-              label="Show agent diagnostics"
-              description="Registry and Context Broker details. Never shown in the normal Jarvis surface."
+              label="Mostra diagnostica agenti"
+              description="Dettagli del registry e del Context Broker. Non vengono mostrati nell'interfaccia normale di Jarvis."
               checked={jarvis.advancedViewEnabled}
               onChange={(advancedViewEnabled) =>
                 updateJarvis((current) => ({
@@ -307,17 +307,17 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         )}
         {saved && (
           <p className="flex items-center gap-2 text-xs text-signal" role="status">
-            <Check size={14} aria-hidden="true" /> Settings saved
+            <Check size={14} aria-hidden="true" /> Impostazioni salvate
           </p>
         )}
 
         <footer className="flex items-center justify-between border-t border-neutral-border pt-4">
           <button type="button" onClick={handleReset} className="secondary-button">
-            <RotateCcw size={14} /> Reset defaults
+            <RotateCcw size={14} /> Ripristina predefiniti
           </button>
           <div className="flex gap-2">
             <button type="button" onClick={onClose} className="secondary-button">
-              Close
+              Chiudi
             </button>
             <button
               type="button"
@@ -325,7 +325,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
               onClick={() => void handleSave()}
               className="primary-button"
             >
-              <Save size={14} /> {saving ? "Saving…" : "Save"}
+              <Save size={14} /> {saving ? "Salvataggio…" : "Salva"}
             </button>
           </div>
         </footer>
@@ -382,12 +382,12 @@ function CredentialField({
             <p className="truncate text-xs font-medium text-neutral-text">{label}</p>
             <span
               className={configured ? "status-dot status-dot--ok" : "status-dot"}
-              title={configured ? "Configured" : "Not configured"}
+              title={configured ? "Configurata" : "Non configurata"}
               aria-hidden="true"
             />
           </div>
           <p className="truncate text-[10px] text-neutral-text-muted">
-            {description} · {configured ? "configured" : "not configured"}
+            {description} · {configured ? "configurata" : "non configurata"}
           </p>
         </div>
       </div>
@@ -400,9 +400,9 @@ function CredentialField({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={
-            configured ? "Paste a new key to replace it" : "Paste API key"
+            configured ? "Incolla una nuova chiave per sostituirla" : "Incolla API key"
           }
-          aria-label={`${label} API key`}
+          aria-label={`API key ${label}`}
           className="field-input min-w-0 flex-1"
         />
         <button
@@ -411,7 +411,7 @@ function CredentialField({
           onClick={onSave}
           className="primary-button px-3"
         >
-          Save
+          Salva
         </button>
         {configured && (
           <button
@@ -419,8 +419,8 @@ function CredentialField({
             disabled={busy}
             onClick={onClear}
             className="ui-icon-button h-9 w-9 hover:text-danger"
-            title={`Remove ${label}`}
-            aria-label={`Remove ${label}`}
+            title={`Rimuovi ${label}`}
+            aria-label={`Rimuovi ${label}`}
           >
             <Trash2 size={14} />
           </button>
@@ -494,12 +494,12 @@ function VoiceOptions({
 
   return (
     <SettingsSection
-      title="Voice"
-      description="One click is the default. Turn detection, transcript submission and spoken replies are automatic."
+      title="Voce"
+      description="La modalità predefinita resta sempre pronta e usa il VAD locale per rilevare l'inizio e la fine della frase."
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Microphone</span>
+          <span>Microfono</span>
           <div className="flex gap-2">
             <select
               value={normalizedInput.selectedInputDeviceId ?? ""}
@@ -511,7 +511,7 @@ function VoiceOptions({
               }
               className="field-input min-w-0 flex-1"
             >
-              <option value="">Windows default</option>
+              <option value="">Predefinito di Windows</option>
               {inputDeviceOptions(devices).map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.label}
@@ -523,8 +523,8 @@ function VoiceOptions({
               onClick={() => void loadDevices()}
               disabled={loadingDevices}
               className="ui-icon-button h-9 w-9"
-              title="Refresh microphones"
-              aria-label="Refresh microphones"
+              title="Aggiorna microfoni"
+              aria-label="Aggiorna microfoni"
             >
               <RefreshCw
                 size={14}
@@ -535,7 +535,7 @@ function VoiceOptions({
         </label>
 
         <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Jarvis voice</span>
+          <span>Voce di Jarvis</span>
           <div className="flex gap-2">
             <select
               value={normalizedOutput.voice}
@@ -560,8 +560,8 @@ function VoiceOptions({
               onClick={() => void loadVoices()}
               disabled={loadingVoices}
               className="ui-icon-button h-9 w-9"
-              title="Refresh voices"
-              aria-label="Refresh voices"
+              title="Aggiorna voci"
+              aria-label="Aggiorna voci"
             >
               <RefreshCw
                 size={14}
@@ -574,14 +574,14 @@ function VoiceOptions({
 
       <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr]">
         <TextField
-          label="Global hotkey"
+          label="Scorciatoia globale"
           value={normalizedInput.globalShortcut}
           onChange={(globalShortcut) =>
             onInputChange({ ...normalizedInput, globalShortcut })
           }
         />
         <ToggleRow
-          label="Enable hotkey"
+          label="Abilita scorciatoia"
           checked={normalizedInput.globalShortcutEnabled}
           onChange={(globalShortcutEnabled) =>
             onInputChange({ ...normalizedInput, globalShortcutEnabled })
@@ -590,20 +590,19 @@ function VoiceOptions({
       </div>
 
       <details className="details-panel mt-4">
-        <summary>Voice tuning</summary>
+        <summary>Regolazione voce</summary>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <SelectField
-            label="Interaction mode"
+            label="Modalità di interazione"
             value={normalizedInput.activationMode}
             onChange={(value) => setActivationMode(value as VoiceActivationMode)}
             options={[
-              { value: "click_toggle", label: "One click" },
-              { value: "hold_to_talk", label: "Hold to talk" },
-              { value: "vad", label: "Voice activity" },
+              { value: "vad", label: "Sempre in ascolto" },
+              { value: "hold_to_talk", label: "Tieni premuto per parlare" },
             ]}
           />
           <SelectField
-            label="Hotkey behavior"
+            label="Comportamento scorciatoia"
             value={normalizedInput.shortcutBehavior}
             onChange={(value) =>
               onInputChange({
@@ -612,15 +611,15 @@ function VoiceOptions({
               })
             }
             options={[
-              { value: "toggle", label: "Press to toggle" },
-              { value: "hold", label: "Hold to talk" },
+              { value: "toggle", label: "Premi per attivare/disattivare" },
+              { value: "hold", label: "Tieni premuto per parlare" },
             ]}
           />
 
           {normalizedInput.activationMode !== "hold_to_talk" && (
             <>
               <TextField
-                label="VAD sensitivity"
+                label="Sensibilità VAD"
                 value={String(normalizedInput.vadSpeechThreshold)}
                 onChange={(value) => {
                   const parsed = Number(value);
@@ -633,7 +632,7 @@ function VoiceOptions({
                 }}
               />
               <TextField
-                label="Silence before send (ms)"
+                label="Silenzio prima dell'invio (ms)"
                 value={String(normalizedInput.vadPostSpeechMs)}
                 onChange={(value) => {
                   const parsed = Number(value);
@@ -650,7 +649,7 @@ function VoiceOptions({
 
           {normalizedInput.activationMode === "vad" && (
             <TextField
-              label="Wait for speech (s)"
+              label="Attesa massima della voce (s)"
               value={String(normalizedInput.maxArmedSeconds)}
               onChange={(value) => {
                 const parsed = Number(value);
@@ -665,8 +664,8 @@ function VoiceOptions({
           )}
         </div>
         <p className="mt-3 text-[10px] leading-relaxed text-neutral-text-muted">
-          One click listens until you stop speaking. Hold to talk stops on release.
-          Voice activity waits for speech before starting the turn.
+          Sempre in ascolto usa il VAD per aprire il turno solo quando rileva la voce.
+          Tieni premuto per parlare termina invece il turno al rilascio.
         </p>
       </details>
 
