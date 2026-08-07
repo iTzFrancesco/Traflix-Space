@@ -9,7 +9,8 @@ pub struct AgentDetection {
     pub confidence: f32,
 }
 
-const SUPPORTED_PROVIDERS: [&str; 7] = [
+const SUPPORTED_PROVIDERS: [&str; 8] = [
+    "anti-gravity",
     "codex",
     "opencode",
     "claude",
@@ -22,6 +23,7 @@ const SUPPORTED_PROVIDERS: [&str; 7] = [
 pub fn normalize_provider(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     let normalized = match normalized.as_str() {
+        "agy" | "anti gravity" | "antigravity" => "anti-gravity",
         "command code" | "command-code" => "cmdc",
         value => value,
     };
@@ -227,6 +229,7 @@ mod tests {
     #[test]
     fn recognizes_supported_commands_without_classifying_powershell() {
         for command in [
+            "agy\r\n",
             "codex --resume\r\n",
             "npx -y opencode\r\n",
             "pnpm exec claude\r\n",
@@ -247,12 +250,13 @@ mod tests {
 
     #[test]
     fn provider_names_are_bounded_to_supported_runtime_agents() {
+        assert_eq!(normalize_provider("agy").as_deref(), Some("anti-gravity"));
+        assert_eq!(normalize_provider("Anti Gravity").as_deref(), Some("anti-gravity"));
         assert_eq!(normalize_provider("Pi").as_deref(), Some("pi"));
         assert_eq!(normalize_provider("freebuff").as_deref(), Some("freebuff"));
         assert_eq!(normalize_provider("cmdc").as_deref(), Some("cmdc"));
         assert_eq!(normalize_provider("Command Code").as_deref(), Some("cmdc"));
         assert_eq!(normalize_provider("cline").as_deref(), Some("cline"));
         assert!(normalize_provider("powershell").is_none());
-        assert!(normalize_provider("anti-gravity").is_none());
     }
 }
