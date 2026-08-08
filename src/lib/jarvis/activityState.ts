@@ -226,8 +226,10 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   } = input;
   if (voiceError) return "Errore voce";
   if (!workspaceName || !workspaceId) return "Seleziona uno spazio di lavoro";
-  if (voiceRequest?.status === "recording" || voiceRequest?.status === "armed") return "In ascolto…";
-  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Trascrizione…";
+  if (voiceRequest?.status === "recording") return "In ascolto…";
+  if (voiceRequest?.status === "armed") return "Ascolto attivo…";
+  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Trascrivo…";
+  if (voiceRequest?.status === "transcript_ready") return "Invio a Jarvis…";
 
   const activityLabel = currentActivityLabel(activities, workspaceId, pendingActions);
   if (activityLabel) return activityLabel;

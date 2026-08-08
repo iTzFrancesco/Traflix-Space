@@ -258,7 +258,7 @@ test("idle and active status hierarchy stays compact", () => {
         },
       }),
     ),
-    "Trascrizione…",
+    "Trascrivo…",
   );
   assert.equal(
     collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })),
@@ -312,8 +312,28 @@ test("successful model replies are spoken and transcripts auto-submit", () => {
   assert.match(storeSource, /sendVoiceTranscript/);
   assert.match(
     storeSource,
-    /if \(!accepted\) autoSubmittedVoiceRequests\.delete/,
+    /if \(!accepted\)[\s\S]*autoSubmittedVoiceRequests\.delete/,
   );
+});
+
+test("voice failures are observable at every async boundary and rejected drafts can retry", () => {
+  assert.match(storeSource, /function voiceLog\(/);
+  assert.match(storeSource, /function voiceWarn\(/);
+  assert.match(storeSource, /voiceWarn\("start failed"/);
+  assert.match(storeSource, /voiceWarn\("stop failed"/);
+  assert.match(storeSource, /voiceLog\("transcript submission started"/);
+  assert.match(storeSource, /voiceWarn\("transcript submission rejected/);
+  assert.match(storeSource, /autoSubmittedVoiceRequests\.delete\(voiceRequest\.requestId\)/);
+  assert.match(storeSource, /acceptedVoiceRequestIds/);
+  assert.match(storeSource, /ACCEPTED_VOICE_REQUESTS_STORAGE_KEY/);
+  assert.match(storeSource, /accepted transcript draft found during reload/);
+  assert.match(overlaySource, /\[Jarvis voice\] frontend state event/);
+  assert.match(voiceCommandsSource, /active_voice_stops/);
+  assert.match(voiceCommandsSource, /Duplicate voice stop ignored by single-flight guard/);
+  assert.match(voiceCommandsSource, /Voice stop pipeline entered/);
+  assert.match(voiceCommandsSource, /Voice STT request started/);
+  assert.match(voiceCommandsSource, /Voice STT request completed/);
+  assert.match(voiceCommandsSource, /Voice STT request failed/);
 });
 
 test("Phase 8 planner remains semantic, typed and allowlisted", () => {

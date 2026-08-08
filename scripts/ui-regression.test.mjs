@@ -78,12 +78,14 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
   assert.match(overlaySource, /store\.startVoice\(\)/);
   assert.match(overlaySource, /toggleMicrophoneMuted/);
-  assert.match(overlaySource, /voiceError \|\|/);
+  assert.match(overlaySource, /voiceError && isVoiceConfigurationError\(voiceError\)/);
   assert.match(settingsSource, /clearVoiceError\(\)/);
   assert.match(widgetSource, /onToggleMuted/);
   assert.match(widgetSource, /MicOff/);
-  assert.match(widgetSource, /<p className="truncate text-\[12px\] font-semibold leading-none tracking-\[0\.02em\] text-neutral-text">\s*Jarvis\s*<\/p>/);
-  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{accessibilityStatus\}`\}/);
+  assert.match(widgetSource, /workspaceName: string \| null/);
+  assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
+  assert.match(widgetSource, /collapsedJarvisStatus\(/);
+  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
   assert.match(widgetSource, /aria-live="polite"/);
   assert.doesNotMatch(widgetSource, /statusText|helperText|jarvis-pill__helper|jarvis-pill__label/);
@@ -255,22 +257,20 @@ test("skill rows retain stable accent colors without reverting the compact layou
 test("sidebar new workspace action stays compact, framed and localized", () => {
   assert.match(sidebarSource, /h-\[45px\]/);
   assert.match(sidebarSource, /Nuovo spazio/);
-  assert.match(rightPanelSource, /right-rail-jarvis--active/);
-  assert.match(globalsSource, /\.right-rail-jarvis \{[\s\S]*background: transparent/);
-  assert.match(globalsSource, /\.right-rail-jarvis--active \{[\s\S]*background: oklch\(0\.74 0\.16 63 \/ 0\.18\)/);
-  assert.match(globalsSource, /\.jarvis-pill--muted \{[\s\S]*background: oklch\(0\.185 0\.006 85 \/ 0\.985/);
+  assert.match(rightPanelSource, /right-rail-jarvis/);
   assert.match(rightPanelSource, /const toggleJarvis = \(\) =>/);
   assert.match(rightPanelSource, /jarvisEnabled \? hideJarvis\(\) : showJarvis\(\)/);
-  assert.match(rightPanelSource, /title=\{jarvisEnabled \? "Nascondi Jarvis" : "Mostra Jarvis"\}/);
-  assert.match(rightPanelSource, /<span className="text-\[10px\] font-semibold">Jarvis<\/span>/);
+  assert.match(globalsSource, /\.right-rail-jarvis \{[\s\S]*background: transparent/);
+  assert.match(globalsSource, /\.right-rail-jarvis--active \{[\s\S]*background: oklch\(0\.82 0\.14 82 \/ 0\.10\)/);
+  assert.match(globalsSource, /\.jarvis-pill--muted \{[\s\S]*background: oklch\(0\.185 0\.006 85 \/ 0\.985/);
   assert.doesNotMatch(rightPanelSource, /Traflix Jarvis/);
-  assert.match(rightPanelSource, /h-9 w-9/);
+  assert.doesNotMatch(sidebarSource, /right-rail-jarvis|toggleJarvis|showJarvis|hideJarvis|Sparkles/);
   assert.match(uiStoreSource, /rightPanelWidth: 420/);
   assert.match(uiStoreSource, /MIN_RIGHT_PANEL_WIDTH = 360/);
   assert.match(uiStoreSource, /MAX_RIGHT_PANEL_WIDTH = 560/);
   assert.match(uiStoreSource, /rightPanelLayoutVersion: RIGHT_PANEL_LAYOUT_VERSION/);
   assert.match(sidebarSource, /Spazi di lavoro/);
-  assert.match(sidebarSource, /h-7 items-center gap-1\.5 rounded-md border border-white\/\[0\.10\]/);
+  assert.match(sidebarSource, /h-7 min-w-\[156px\] items-center justify-center gap-1\.5 rounded-md border border-white\/\[0\.10\]/);
   assert.doesNotMatch(sidebarSource, /New workspace|New space|Workspaces|No workspaces yet/);
 });
 

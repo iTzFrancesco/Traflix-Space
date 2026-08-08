@@ -13,12 +13,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use super::types::{VoiceErrorCode, MAX_MP3_BYTES};
 
 const MAX_HELPER_OUTPUT_BYTES: usize = 64 * 1024;
 const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const HELPER_QUEUE_DEPTH: usize = 4;
+
+fn helper_operation(payload: &str) -> &'static str {
+    if payload.contains(r#""action":"ping""#) {
+        "ping"
+    } else if payload.contains(r#""action":"listVoices""#) {
+        "list_voices"
+    } else {
+        "speak"
+    }
+}
 
 pub type TtsFuture = Pin<Box<dyn Future<Output = Result<PathBuf, VoiceErrorCode>> + Send>>;
 
@@ -108,14 +119,31 @@ impl EdgeTextToSpeechProvider {
     }
 
     pub async fn prewarm(&self) -> Result<(), VoiceErrorCode> {
+        info!("[JARVIS-TTS-HELPER] prewarm started");
         let bytes = self
             .run_helper(r#"{"action":"ping"}"#.to_string(), CancellationToken::new())
             .await?;
-        let result: HelperResult =
-            serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
+        let result: HelperResult = match serde_json::from_slice(&bytes) {
+            Ok(result) => result,
+            Err(error) => {
+                error!(
+                    response_bytes = bytes.len(),
+                    error = %error,
+                    "[JARVIS-TTS-HELPER] prewarm response was not valid JSON",
+                );
+                self.reset_worker().await;
+                return Err(VoiceErrorCode::HelperFailed);
+            }
+        };
         if result.ok {
+            info!("[JARVIS-TTS-HELPER] prewarm completed");
             Ok(())
         } else {
+            warn!(
+                response_bytes = bytes.len(),
+                "[JARVIS-TTS-HELPER] prewarm rejected by helper; resetting worker",
+            );
+            self.reset_worker().await;
             Err(VoiceErrorCode::HelperFailed)
         }
     }
@@ -124,15 +152,26 @@ impl EdgeTextToSpeechProvider {
         let mut worker = self.worker.lock().await;
         if let Some(sender) = worker.as_ref() {
             if !sender.is_closed() {
+                debug!("[JARVIS-TTS-HELPER] reusing helper worker");
                 return Ok(sender.clone());
             }
+            warn!("[JARVIS-TTS-HELPER] cached helper worker is closed; spawning replacement");
         }
+        info!(
+            runtime = if cfg!(debug_assertions) {
+                "python"
+            } else {
+                "sidecar"
+            },
+            "[JARVIS-TTS-HELPER] spawning helper worker",
+        );
         let sender = spawn_helper_worker(self.helper.clone()).await?;
         *worker = Some(sender.clone());
         Ok(sender)
     }
 
     async fn reset_worker(&self) {
+        debug!("[JARVIS-TTS-HELPER] resetting cached helper worker");
         self.worker.lock().await.take();
     }
 
@@ -141,10 +180,22 @@ impl EdgeTextToSpeechProvider {
         payload: String,
         cancellation: CancellationToken,
     ) -> Result<Vec<u8>, VoiceErrorCode> {
+        let operation = helper_operation(&payload);
         for attempt in 0..2 {
             if cancellation.is_cancelled() {
+                info!(
+                    operation,
+                    attempt = attempt + 1,
+                    "[JARVIS-TTS-HELPER] request cancelled before dispatch",
+                );
                 return Err(VoiceErrorCode::Cancelled);
             }
+            debug!(
+                operation,
+                attempt = attempt + 1,
+                max_attempts = 2,
+                "[JARVIS-TTS-HELPER] dispatching request",
+            );
             let sender = self.worker_sender().await?;
             let (response, result) = oneshot::channel();
             if sender
@@ -156,6 +207,11 @@ impl EdgeTextToSpeechProvider {
                 .await
                 .is_err()
             {
+                warn!(
+                    operation,
+                    attempt = attempt + 1,
+                    "[JARVIS-TTS-HELPER] helper request could not be queued",
+                );
                 self.reset_worker().await;
                 if attempt == 0 {
                     continue;
@@ -163,15 +219,65 @@ impl EdgeTextToSpeechProvider {
                 return Err(VoiceErrorCode::HelperFailed);
             }
             match result.await {
-                Ok(Ok(bytes)) => return Ok(bytes),
-                Ok(Err(VoiceErrorCode::Cancelled)) => return Err(VoiceErrorCode::Cancelled),
-                Ok(Err(_)) | Err(_) if attempt == 0 => {
+                Ok(Ok(bytes)) => {
+                    debug!(
+                        operation,
+                        attempt = attempt + 1,
+                        response_bytes = bytes.len(),
+                        "[JARVIS-TTS-HELPER] helper response received",
+                    );
+                    return Ok(bytes);
+                }
+                Ok(Err(VoiceErrorCode::Cancelled)) => {
+                    info!(
+                        operation,
+                        attempt = attempt + 1,
+                        "[JARVIS-TTS-HELPER] helper request cancelled",
+                    );
+                    return Err(VoiceErrorCode::Cancelled);
+                }
+                Ok(Err(code)) if attempt == 0 => {
+                    warn!(
+                        operation,
+                        attempt = attempt + 1,
+                        error_code = %code.as_str(),
+                        "[JARVIS-TTS-HELPER] helper request failed; resetting before retry",
+                    );
                     self.reset_worker().await;
                 }
-                Ok(Err(code)) => return Err(code),
-                Err(_) => return Err(VoiceErrorCode::HelperFailed),
+                Ok(Err(code)) => {
+                    error!(
+                        operation,
+                        attempt = attempt + 1,
+                        error_code = %code.as_str(),
+                        "[JARVIS-TTS-HELPER] helper request failed after retry",
+                    );
+                    return Err(code);
+                }
+                Err(error) if attempt == 0 => {
+                    warn!(
+                        operation,
+                        attempt = attempt + 1,
+                        error = %error,
+                        "[JARVIS-TTS-HELPER] helper response channel closed; resetting before retry",
+                    );
+                    self.reset_worker().await;
+                }
+                Err(error) => {
+                    error!(
+                        operation,
+                        attempt = attempt + 1,
+                        error = %error,
+                        "[JARVIS-TTS-HELPER] helper response channel closed after retry",
+                    );
+                    return Err(VoiceErrorCode::HelperFailed);
+                }
             }
         }
+        error!(
+            operation,
+            "[JARVIS-TTS-HELPER] helper request exhausted retries",
+        );
         Err(VoiceErrorCode::HelperFailed)
     }
 
@@ -232,32 +338,102 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
     ) -> TtsFuture {
         let provider = self.clone();
         Box::pin(async move {
-            let text =
-                sanitize_for_speech(&text, max_chars).ok_or(VoiceErrorCode::InvalidRequest)?;
+            let request_id_for_log = request_id.clone();
+            let input_chars = text.chars().count();
+            let text = match sanitize_for_speech(&text, max_chars) {
+                Some(text) => text,
+                None => {
+                    warn!(
+                        request_id = %request_id_for_log,
+                        input_chars,
+                        max_chars,
+                        "[JARVIS-TTS-HELPER] synthesis text rejected",
+                    );
+                    return Err(VoiceErrorCode::InvalidRequest);
+                }
+            };
             let output_path = temp_audio_path(&request_id);
+            debug!(
+                request_id = %request_id_for_log,
+                text_chars = text.chars().count(),
+                output_file = output_path.file_name().and_then(|name| name.to_str()).unwrap_or("unknown"),
+                "[JARVIS-TTS-HELPER] synthesis payload prepared",
+            );
             let result = async {
                 let payload = serde_json::json!({ "requestId": request_id, "text": text, "voice": voice, "rate": rate, "volume": volume, "pitch": pitch, "outputPath": output_path }).to_string();
                 let stdout_bytes = provider.run_helper(payload, cancellation.clone()).await?;
-                let result: HelperResult =
-                    serde_json::from_slice(&stdout_bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
+                let result: HelperResult = match serde_json::from_slice(&stdout_bytes) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        error!(
+                            request_id = %request_id_for_log,
+                            response_bytes = stdout_bytes.len(),
+                            error = %error,
+                            "[JARVIS-TTS-HELPER] synthesis response was not valid JSON",
+                        );
+                        return Err(VoiceErrorCode::HelperFailed);
+                    }
+                };
                 if !result.ok {
+                    warn!(
+                        request_id = %request_id_for_log,
+                        response_bytes = stdout_bytes.len(),
+                        "[JARVIS-TTS-HELPER] synthesis helper returned ok=false",
+                    );
                     return Err(VoiceErrorCode::HelperFailed);
                 }
                 let returned = PathBuf::from(result.output_path.unwrap_or_default());
-                let canonical = canonical_temp_file(&returned).ok_or(VoiceErrorCode::HelperFailed)?;
-                let generated = canonical_temp_file(&output_path).ok_or(VoiceErrorCode::HelperFailed)?;
+                let canonical = match canonical_temp_file(&returned) {
+                    Some(path) => path,
+                    None => {
+                        error!(
+                            request_id = %request_id_for_log,
+                            "[JARVIS-TTS-HELPER] helper returned an unsafe output path",
+                        );
+                        return Err(VoiceErrorCode::HelperFailed);
+                    }
+                };
+                let generated = match canonical_temp_file(&output_path) {
+                    Some(path) => path,
+                    None => {
+                        error!(
+                            request_id = %request_id_for_log,
+                            "[JARVIS-TTS-HELPER] generated output path is unsafe",
+                        );
+                        return Err(VoiceErrorCode::HelperFailed);
+                    }
+                };
+                let file_bytes = std::fs::metadata(&canonical)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
                 if canonical != generated
                     || !canonical.is_file()
-                    || std::fs::metadata(&canonical)
-                        .map(|metadata| metadata.len() == 0 || metadata.len() > MAX_MP3_BYTES)
-                        .unwrap_or(true)
+                    || file_bytes == 0
+                    || file_bytes > MAX_MP3_BYTES
                 {
+                    error!(
+                        request_id = %request_id_for_log,
+                        path_matches = canonical == generated,
+                        file_exists = canonical.is_file(),
+                        file_bytes,
+                        max_file_bytes = MAX_MP3_BYTES,
+                        "[JARVIS-TTS-HELPER] generated audio failed validation",
+                    );
                     return Err(VoiceErrorCode::HelperFailed);
                 }
+                info!(
+                    request_id = %request_id_for_log,
+                    file_bytes,
+                    "[JARVIS-TTS-HELPER] generated audio validated",
+                );
                 Ok(canonical)
             }
             .await;
             if result.is_err() {
+                warn!(
+                    request_id = %request_id_for_log,
+                    "[JARVIS-TTS-HELPER] cleaning up failed synthesis output",
+                );
                 cleanup_temp_file(&output_path);
             }
             result
@@ -280,7 +456,20 @@ async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, Voice
     // Microsoft Store stub even when the real launcher is available as `py`.
     // Prefer the Windows launcher, then fall back to the conventional names.
     // This keeps dev mode working without requiring a machine-wide alias.
-    let mut child = spawn_helper_process(&helper_path)?;
+    info!(
+        helper_path = %helper_path.display(),
+        "[JARVIS-TTS-HELPER] starting Python helper",
+    );
+    let mut child = match spawn_helper_process(&helper_path) {
+        Ok(child) => child,
+        Err(code) => {
+            error!(
+                error_code = %code.as_str(),
+                "[JARVIS-TTS-HELPER] Python helper process failed to start",
+            );
+            return Err(code);
+        }
+    };
     let mut stdin = child.stdin.take().ok_or(VoiceErrorCode::HelperFailed)?;
     let stdout = child.stdout.take().ok_or(VoiceErrorCode::HelperFailed)?;
     let mut lines = BufReader::new(stdout).lines();
@@ -294,22 +483,47 @@ async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, Voice
                     cancellation,
                     response,
                 } => {
+                    let operation = helper_operation(&payload);
+                    debug!(
+                        operation,
+                        "[JARVIS-TTS-HELPER] Python helper request received",
+                    );
                     if stdin.write_all(payload.as_bytes()).await.is_err()
                         || stdin.write_all(b"\n").await.is_err()
                         || stdin.flush().await.is_err()
                     {
+                        error!(
+                            operation,
+                            "[JARVIS-TTS-HELPER] Python helper stdin write failed",
+                        );
                         let _ = response.send(Err(VoiceErrorCode::HelperFailed));
                         break;
                     }
                     let result = tokio::select! {
                         _ = cancellation.cancelled() => {
+                            info!(
+                                operation,
+                                "[JARVIS-TTS-HELPER] Python helper request cancelled",
+                            );
                             let _ = child.kill().await;
                             Err(VoiceErrorCode::Cancelled)
                         }
                         result = tokio::time::timeout(HELPER_TIMEOUT, lines.next_line()) => {
                             match result {
-                                Ok(Ok(Some(line))) if line.len() <= MAX_HELPER_OUTPUT_BYTES => Ok(line.into_bytes()),
+                                Ok(Ok(Some(line))) if line.len() <= MAX_HELPER_OUTPUT_BYTES => {
+                                    debug!(
+                                        operation,
+                                        response_bytes = line.len(),
+                                        "[JARVIS-TTS-HELPER] Python helper response received",
+                                    );
+                                    Ok(line.into_bytes())
+                                }
                                 _ => {
+                                    warn!(
+                                        operation,
+                                        max_response_bytes = MAX_HELPER_OUTPUT_BYTES,
+                                        "[JARVIS-TTS-HELPER] Python helper response timed out, closed, or exceeded limit",
+                                    );
                                     let _ = child.kill().await;
                                     Err(VoiceErrorCode::HelperFailed)
                                 }
@@ -319,10 +533,15 @@ async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, Voice
                     let fatal = result.is_err();
                     let _ = response.send(result);
                     if fatal {
+                        warn!(
+                            operation,
+                            "[JARVIS-TTS-HELPER] Python helper worker stopping after fatal request",
+                        );
                         break;
                     }
                 }
                 HelperRequest::Shutdown { response } => {
+                    info!("[JARVIS-TTS-HELPER] stopping Python helper worker");
                     let _ = child.kill().await;
                     let _ = response.send(());
                     return;
@@ -336,12 +555,26 @@ async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, Voice
 
 #[cfg(not(debug_assertions))]
 async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, VoiceErrorCode> {
+    info!("[JARVIS-TTS-HELPER] starting bundled sidecar");
     let command = app
         .shell()
         .sidecar("jarvis-edge-tts")
-        .map_err(|_| VoiceErrorCode::HelperFailed)?
+        .map_err(|error| {
+            error!(
+                error = %error,
+                "[JARVIS-TTS-HELPER] sidecar command lookup failed",
+            );
+            VoiceErrorCode::HelperFailed
+        })?
         .set_raw_out(true);
-    let (mut events, child) = command.spawn().map_err(|_| VoiceErrorCode::HelperFailed)?;
+    let (mut events, child) = command.spawn().map_err(|error| {
+        error!(
+            error = %error,
+            "[JARVIS-TTS-HELPER] sidecar process failed to start",
+        );
+        VoiceErrorCode::HelperFailed
+    })?;
+    info!("[JARVIS-TTS-HELPER] bundled sidecar started");
     let mut child = Some(child);
     let (sender, mut requests) = mpsc::channel::<HelperRequest>(HELPER_QUEUE_DEPTH);
 
@@ -353,11 +586,18 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                     cancellation,
                     response,
                 } => {
+                    let operation = helper_operation(&payload);
+                    debug!(operation, "[JARVIS-TTS-HELPER] sidecar request received",);
                     let Some(running) = child.as_mut() else {
+                        error!(
+                            operation,
+                            "[JARVIS-TTS-HELPER] sidecar process handle is unavailable",
+                        );
                         let _ = response.send(Err(VoiceErrorCode::HelperFailed));
                         break;
                     };
                     if running.write(payload.as_bytes()).is_err() || running.write(b"\n").is_err() {
+                        error!(operation, "[JARVIS-TTS-HELPER] sidecar stdin write failed",);
                         if let Some(running) = child.take() {
                             let _ = running.kill();
                         }
@@ -370,6 +610,10 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                         loop {
                             tokio::select! {
                                 _ = cancellation.cancelled() => {
+                                    info!(
+                                        operation,
+                                        "[JARVIS-TTS-HELPER] sidecar request cancelled",
+                                    );
                                     if let Some(running) = child.take() { let _ = running.kill(); }
                                     return Err(VoiceErrorCode::Cancelled);
                                 }
@@ -382,19 +626,42 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                                         stdout.extend_from_slice(&bytes);
                                         if let Some(newline) = stdout.iter().position(|byte| *byte == b'\n') {
                                             stdout.truncate(newline);
+                                            debug!(
+                                                operation,
+                                                response_bytes = stdout.len(),
+                                                "[JARVIS-TTS-HELPER] sidecar response received",
+                                            );
                                             return Ok(stdout);
                                         }
                                     }
                                     Some(CommandEvent::Terminated(_)) => {
+                                        error!(
+                                            operation,
+                                            "[JARVIS-TTS-HELPER] sidecar terminated before response",
+                                        );
                                         let _ = child.take();
                                         return Err(VoiceErrorCode::HelperFailed);
                                     }
                                     Some(CommandEvent::Error(_)) => {
+                                        error!(
+                                            operation,
+                                            "[JARVIS-TTS-HELPER] sidecar emitted process error",
+                                        );
                                         if let Some(running) = child.take() { let _ = running.kill(); }
                                         return Err(VoiceErrorCode::HelperFailed);
                                     }
-                                    Some(CommandEvent::Stderr(_)) => {}
+                                    Some(CommandEvent::Stderr(bytes)) => {
+                                        warn!(
+                                            operation,
+                                            stderr_bytes = bytes.len(),
+                                            "[JARVIS-TTS-HELPER] sidecar stderr output received",
+                                        );
+                                    }
                                     None => {
+                                        error!(
+                                            operation,
+                                            "[JARVIS-TTS-HELPER] sidecar event stream closed",
+                                        );
                                         if let Some(running) = child.take() { let _ = running.kill(); }
                                         return Err(VoiceErrorCode::HelperFailed);
                                     }
@@ -406,7 +673,12 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                     .await;
                     let result = match result {
                         Ok(result) => result,
-                        Err(_) => {
+                        Err(error) => {
+                            error!(
+                                operation,
+                                error = %error,
+                                "[JARVIS-TTS-HELPER] sidecar response timed out",
+                            );
                             if let Some(running) = child.take() {
                                 let _ = running.kill();
                             }
@@ -416,10 +688,15 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                     let fatal = result.is_err();
                     let _ = response.send(result);
                     if fatal {
+                        warn!(
+                            operation,
+                            "[JARVIS-TTS-HELPER] sidecar worker stopping after fatal request",
+                        );
                         break;
                     }
                 }
                 HelperRequest::Shutdown { response } => {
+                    info!("[JARVIS-TTS-HELPER] stopping bundled sidecar");
                     if let Some(running) = child.take() {
                         let _ = running.kill();
                     }

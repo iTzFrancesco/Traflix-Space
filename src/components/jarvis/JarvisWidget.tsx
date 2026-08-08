@@ -3,6 +3,7 @@ import { Mic, MicOff, Settings, X } from "lucide-react";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
 import {
+  collapsedJarvisStatus,
   hasOpenActivity,
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
@@ -22,6 +23,7 @@ import type {
 
 interface JarvisWidgetProps {
   workspaceId: string | null;
+  workspaceName: string | null;
   pendingActions: PendingAction[];
   requests: Record<string, JarvisRequestState>;
   chatError: string | null;
@@ -273,7 +275,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const speaking =
     props.ttsStatus.status === "synthesizing" ||
     props.ttsStatus.status === "playing";
-  const ttsFailed = props.ttsStatus.status === "failed";
   const jarvisActive = hasOpenActivity(
     props.activities,
     props.workspaceId,
@@ -283,7 +284,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const voiceListening = props.voiceRequest?.status === "recording";
   const voiceBusy =
     props.voiceRequest?.status === "transcribing" ||
-    props.voiceRequest?.status === "stopping";
+    props.voiceRequest?.status === "stopping" ||
+    props.voiceRequest?.status === "transcript_ready";
   const level = Math.max(
     0,
     Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
@@ -393,20 +395,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   };
 
   const active =
-    activeRequests > 0 || speaking || jarvisActive || voiceListening || voiceBusy;
-  const accessibilityStatus = props.muted
+    activeRequests > 0 || speaking || jarvisActive || voiceArmed || voiceListening || voiceBusy;
+  const statusLabel = props.muted
     ? "Microfono disattivato"
-    : props.voiceError
-      ? "Audio non disponibile"
-      : props.chatError
-        ? "Jarvis non disponibile"
-        : voiceListening
-          ? "In ascolto"
-          : voiceArmed
-            ? "Pronto"
-            : speaking
-              ? "Jarvis sta parlando"
-              : "Pronto";
+    : collapsedJarvisStatus({
+        workspaceId: props.workspaceId,
+        workspaceName: props.workspaceName,
+        voiceError: props.voiceError,
+        voiceRequest: props.voiceRequest,
+        ttsStatus: props.ttsStatus,
+        requests: props.requests,
+        pendingActions: props.pendingActions,
+        activities: props.activities,
+      });
 
   return (
     <div
@@ -424,15 +425,15 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Premi e trascina per spostare Jarvis"
-        aria-label={`Jarvis · ${accessibilityStatus}`}
+        aria-label={`Jarvis · ${statusLabel}`}
         role="status"
         aria-live="polite"
       >
         <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
 
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[12px] font-semibold leading-none tracking-[0.02em] text-neutral-text">
-            Jarvis
+          <p className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text" title={`Jarvis · ${statusLabel}`}>
+            Jarvis · {statusLabel}
           </p>
         </div>
 
@@ -461,7 +462,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             type="button"
             data-jarvis-control
             onClick={props.onOpenSettings}
-            className={`jarvis-control ${props.voiceError || props.chatError || ttsFailed ? "text-warning" : ""}`}
+            className="jarvis-control"
             title="Impostazioni di Jarvis"
             aria-label="Impostazioni di Jarvis"
           >
@@ -479,6 +480,11 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           </button>
         </div>
       </div>
+      {props.chatError && (
+        <p className="mt-1 max-w-[min(340px,calc(100vw-32px))] px-1 text-[11px] leading-snug text-red-400" role="alert">
+          {props.chatError}
+        </p>
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::env;
 #[cfg(windows)]
 use std::io::Write;
@@ -38,21 +39,27 @@ pub fn hydrate_process_environment(app: &AppHandle) {
     // Existing process/user environment variables always win over `.env`.
     let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
     let _ = read_secret_env(GROQ_API_KEY_ENV);
-    load_dotenv_environment(dotenv_candidates(app));
+    load_dotenv_environment(dotenv_candidates(app), false);
 }
 
 /// Re-check the supported `.env` locations before a voice request. This keeps
 /// development runs plug-and-play when the file was created after the app
 /// process started, without ever exposing the values to the frontend.
 pub fn refresh_dotenv_environment(app: &AppHandle) {
-    // Resolve persisted Windows user variables first so they keep precedence
-    // over the project `.env`, then fill any missing values from dotenv.
+    // In development, the repository `.env` is the source the owner edits and
+    // must win over a stale Windows user variable left by an older setup. In a
+    // packaged build we keep the persisted user secret as the fallback.
+    #[cfg(debug_assertions)]
+    load_dotenv_environment(dotenv_candidates(app), true);
+    #[cfg(not(debug_assertions))]
+    load_dotenv_environment(dotenv_candidates(app), false);
+
     let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
     let _ = read_secret_env(GROQ_API_KEY_ENV);
-    load_dotenv_environment(dotenv_candidates(app));
 }
 
-fn load_dotenv_environment(candidates: Vec<PathBuf>) {
+fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
+    let mut loaded = HashSet::new();
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(path) else {
             continue;
@@ -64,14 +71,18 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>) {
             if !matches!(name, OPENCODE_ZEN_API_KEY_ENV | GROQ_API_KEY_ENV) {
                 continue;
             }
+            if loaded.contains(name) {
+                continue;
+            }
             let already_configured = env::var(name)
                 .ok()
                 .is_some_and(|current| !current.trim().is_empty());
-            if already_configured {
+            if already_configured && !overwrite_existing {
                 continue;
             }
             if let Ok(value) = normalize_secret(&value) {
                 env::set_var(name, value);
+                loaded.insert(name.to_string());
             }
         }
     }

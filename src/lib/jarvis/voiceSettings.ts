@@ -17,8 +17,8 @@ export function isVoiceConfigurationError(message: string | null): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes("groq_api_key")
     || normalized.includes("provider non configur")
-    || normalized.includes("credenzial")
-    || normalized.includes("consenso privacy");
+    || normalized.includes("consenso privacy")
+    || normalized.includes("voice_provider_not_configured");
 }
 
 export function italianVoices(voices: TtsVoice[]): TtsVoice[] {

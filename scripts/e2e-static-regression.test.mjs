@@ -103,7 +103,7 @@ test("dotenv credentials are refreshed without exposing secret values to the fro
   assert.match(secretLoader, /fn parse_dotenv_assignment/);
   assert.match(secretLoader, /export OPENCODE_ZEN_API_KEY/);
   assert.match(secretLoader, /GROQ_API_KEY=\\\"groq # demo\\\"/);
-  assert.match(secretLoader, /if already_configured \{\s*continue;\s*\}/s);
+  assert.match(secretLoader, /if already_configured && !overwrite_existing \{\s*continue;\s*\}/s);
   assert.doesNotMatch(secretLoader, /println!/i);
   assert.match(voiceCommandsSource, /refresh_dotenv_environment/);
   assert.match(voiceCommandsSource, /from_environment\(\)/);
@@ -163,6 +163,7 @@ test("fresh installations watch the canonical skills directory before the first 
 test("strict regression runner gates frontend, formatting, clippy safety and warning-free Rust tests", () => {
   assert.match(strictTestRunner, /npmCommand/);
   assert.match(strictTestRunner, /test:jarvis/);
+  assert.match(strictTestRunner, /test:terminal/);
   assert.match(strictTestRunner, /cargoCommand, \["fmt"/);
   assert.match(strictTestRunner, /--check/);
   assert.match(strictTestRunner, /\["check", "--manifest-path", "src-tauri\/Cargo.toml", "--release"\]/);

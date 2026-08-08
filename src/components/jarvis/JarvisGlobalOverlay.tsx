@@ -17,12 +17,16 @@ import {
   type VoicePress,
 } from "../../lib/jarvis/voiceActivation";
 import { isJarvisOwnerModeReady } from "../../lib/jarvis/settings";
+import { isVoiceConfigurationError, sanitizedVoiceError } from "../../lib/jarvis/voiceSettings";
 import { JarvisWidget } from "./JarvisWidget";
 
 const AUTO_ARM_DELAY_MS = 180;
 
 export function JarvisGlobalOverlay() {
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const activeWorkspaceName = useWorkspaceStore(
+    (state) => state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId)?.name ?? null,
+  );
   const settings = useJarvisStore((state) => state.settings);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsOpen = useJarvisStore((state) => state.settingsOpen);
@@ -193,6 +197,19 @@ export function JarvisGlobalOverlay() {
         resumeVoiceDraftRef.current.add(draft.requestId);
         void store
           .sendVoiceTranscript(draft.requestId, draft.transcript ?? "")
+          .then((accepted) => {
+            if (!accepted) {
+              console.warn("[Jarvis voice] draft submission was rejected", {
+                requestId: draft.requestId,
+              });
+            }
+          })
+          .catch((error) => {
+            console.error("[Jarvis voice] draft submission failed", {
+              requestId: draft.requestId,
+              error: sanitizedVoiceError(error),
+            });
+          })
           .finally(() => resumeVoiceDraftRef.current.delete(draft.requestId));
       }
     });
@@ -241,7 +258,7 @@ export function JarvisGlobalOverlay() {
     if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
     if (
       !settingsLoaded ||
-      voiceError ||
+      (voiceError && isVoiceConfigurationError(voiceError)) ||
       !isJarvisOwnerModeReady(settings.jarvis) ||
       settings.jarvis.muted ||
       settings.jarvis.voiceInput.activationMode !== "vad" ||
@@ -255,6 +272,9 @@ export function JarvisGlobalOverlay() {
         voiceRequest.status,
       )
     ) {
+      // transcript_ready is still in the handoff window: the store is either
+      // submitting it to chat or preserving it for an explicit retry. Never
+      // start a second VAD capture over that draft.
       return;
     }
     const chatBusy = Object.values(requests).some(
@@ -262,17 +282,18 @@ export function JarvisGlobalOverlay() {
         request.workspaceId === activeWorkspaceId &&
         (request.status === "running" || request.status === "cancellation_requested"),
     );
-    // Keep the microphone armed while Jarvis speaks so VAD can detect a real
-    // user interruption. TTS is stopped only after the request transitions to
-    // `recording`, not merely when it is armed.
-    if (chatBusy) return;
+    const ttsBusy = ttsStatus.status === "synthesizing" || ttsStatus.status === "playing";
+    // Do not arm the microphone while Jarvis is generating or playing a reply.
+    // Otherwise VAD can capture Jarvis's own voice, submit a phantom transcript,
+    // and start a second turn before the first one is visibly finished.
+    if (chatBusy || ttsBusy) return;
 
     const workspaceId = activeWorkspaceId;
     const timer = window.setTimeout(() => {
       const store = useJarvisStore.getState();
       if (
         !store.settingsLoaded ||
-        store.voiceError ||
+        (store.voiceError && isVoiceConfigurationError(store.voiceError)) ||
         !isJarvisOwnerModeReady(store.settings.jarvis) ||
         useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
         !store.settings.jarvis.enabled ||
@@ -289,7 +310,13 @@ export function JarvisGlobalOverlay() {
           (request.status === "running" ||
             request.status === "cancellation_requested"),
       );
-      if (!liveChatBusy) void store.startVoice();
+      const liveTtsBusy =
+        store.ttsStatus.status === "synthesizing" ||
+        store.ttsStatus.status === "playing";
+      if (!liveChatBusy && !liveTtsBusy) {
+        console.info("[Jarvis voice] auto-arm after turn", { workspaceId });
+        void store.startVoice();
+      }
     }, AUTO_ARM_DELAY_MS);
 
     return () => window.clearTimeout(timer);
@@ -300,6 +327,7 @@ export function JarvisGlobalOverlay() {
     settings,
     settingsLoaded,
     settingsOpen,
+    ttsStatus.status,
     voiceError,
     voiceRequest?.requestId,
     voiceRequest?.status,
@@ -348,13 +376,29 @@ export function JarvisGlobalOverlay() {
     let disposed = false;
     const listeners = Promise.all([
       listen<VoiceRequestStatusView>("jarvis://voice-state", (event) => {
-        if (!disposed) setVoiceRequest(event.payload);
+        if (disposed) return;
+        console.info("[Jarvis voice] frontend state event", {
+          requestId: event.payload.requestId,
+          workspaceId: event.payload.workspaceId,
+          status: event.payload.status,
+          errorCode: event.payload.error?.code,
+          transcriptChars: event.payload.transcript?.length ?? 0,
+        });
+        setVoiceRequest(event.payload);
       }),
       listen<VoiceLevelEvent>("jarvis://voice-level", (event) => {
-        if (!disposed) setVoiceLevel(event.payload);
+        if (disposed) return;
+        setVoiceLevel(event.payload);
       }),
       listen<TtsStatusView>("jarvis://tts-state", (event) => {
-        if (!disposed) setTtsStatus(event.payload);
+        if (disposed) return;
+        console.info("[Jarvis TTS] frontend state event", {
+          requestId: event.payload.requestId,
+          status: event.payload.status,
+          errorCode: event.payload.error?.code,
+          errorMessage: event.payload.error?.message,
+        });
+        setTtsStatus(event.payload);
       }),
       listen<ActivityCheckpoint>("jarvis://activity", (event) => {
         if (!disposed) applyActivityEvents([event.payload]);
@@ -469,6 +513,7 @@ export function JarvisGlobalOverlay() {
     <>
       <JarvisWidget
         workspaceId={activeWorkspaceId}
+        workspaceName={activeWorkspaceName}
         pendingActions={pendingActions}
         requests={requests}
         chatError={chatError}

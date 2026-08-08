@@ -1,8 +1,10 @@
 use crate::settings::store::SettingsManager;
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tracing::{debug, error, info, warn};
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
 use super::registry::{friendly_message, VoiceState};
@@ -20,6 +22,31 @@ use super::types::{
 const VOICE_STATE_EVENT: &str = "jarvis://voice-state";
 const VOICE_LEVEL_EVENT: &str = "jarvis://voice-level";
 const TTS_STATE_EVENT: &str = "jarvis://tts-state";
+
+fn active_voice_stops() -> &'static Mutex<HashSet<String>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct VoiceStopClaim {
+    request_id: String,
+}
+
+impl Drop for VoiceStopClaim {
+    fn drop(&mut self) {
+        active_voice_stops().lock().remove(&self.request_id);
+    }
+}
+
+fn claim_voice_stop(request_id: &str) -> Option<VoiceStopClaim> {
+    let mut active = active_voice_stops().lock();
+    if !active.insert(request_id.to_string()) {
+        return None;
+    }
+    Some(VoiceStopClaim {
+        request_id: request_id.to_string(),
+    })
+}
 
 #[tauri::command]
 pub async fn jarvis_voice_sync_shortcut(
@@ -49,10 +76,29 @@ pub async fn jarvis_voice_start(
     settings: State<'_, SettingsManager>,
     request: VoiceStartRequest,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
+    info!(
+        request_id = %request.request_id,
+        workspace_id = %request.workspace_id,
+        selected_device = ?request.selected_device_id,
+        "Voice start requested"
+    );
     crate::settings::secrets::refresh_dotenv_environment(&app);
     let configured = settings.get().await;
-    let provider = GroqSpeechToTextProvider::from_environment().map_err(to_error)?;
-    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured())?;
+    let provider = GroqSpeechToTextProvider::from_environment().map_err(|code| {
+        warn!(request_id = %request.request_id, error_code = %code.as_str(), "Voice provider configuration lookup failed");
+        to_error(code)
+    })?;
+    debug!(
+        request_id = %request.request_id,
+        provider_configured = provider.configured(),
+        activation_mode = ?configured.jarvis.voice_input.activation_mode,
+        vad_enabled = configured.jarvis.voice_input.vad_enabled,
+        "Voice start configuration resolved"
+    );
+    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured()).map_err(|error| {
+        warn!(request_id = %request.request_id, error_code = %error.code, "Voice start rejected by input policy");
+        error
+    })?;
     let max_duration_seconds =
         normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
     let input = configured.jarvis.voice_input.clone();
@@ -76,7 +122,16 @@ pub async fn jarvis_voice_start(
             request.selected_device_id,
             options,
         )
-        .map_err(to_error)?;
+        .map_err(|code| {
+            warn!(error_code = %code.as_str(), "Voice registry rejected start");
+            to_error(code)
+        })?;
+    info!(
+        request_id = %status.request_id,
+        workspace_id = %status.workspace_id,
+        status = ?status.status,
+        "Voice capture started"
+    );
     emit_voice_state(&app, &status);
     let mut watchdog_config = configured.jarvis.voice_input.clone();
     watchdog_config.max_duration_seconds = max_duration_seconds;
@@ -93,6 +148,13 @@ pub async fn jarvis_voice_start(
             };
             let status = signal.status;
             if signal.status_changed {
+                info!(
+                    request_id = %request_id,
+                    status = ?status.status,
+                    vad_state = ?status.vad_state,
+                    level = status.normalized_level,
+                    "Voice state changed in capture watchdog"
+                );
                 emit_voice_state(&event_app, &status);
                 stop_tts_on_speech(&event_app, &event_state, &status);
             }
@@ -112,13 +174,17 @@ pub async fn jarvis_voice_start(
                 },
             );
             if signal.should_stop && status.status == VoiceRequestStatus::Recording {
-                let _ = finish_voice_stop(
+                info!(request_id = %request_id, "VAD requested automatic voice stop");
+                if let Err(error) = finish_voice_stop(
                     &event_app,
                     &event_state,
                     level_config.clone(),
                     request_id.clone(),
                 )
-                .await;
+                .await
+                {
+                    error!(request_id = %request_id, error_code = %error.code, "Automatic VAD stop failed");
+                }
                 break;
             }
         }
@@ -141,21 +207,28 @@ pub async fn jarvis_voice_start(
                 if current.duration_ms.unwrap_or_default()
                     >= watchdog_config.max_armed_seconds as u64 * 1000
                 {
+                    info!(request_id = %watchdog_request_id, "Voice armed timeout reached");
                     if let Ok(status) = watchdog_state.timeout_armed(&watchdog_request_id) {
                         emit_voice_state(&watchdog_app, &status);
+                    } else {
+                        warn!(request_id = %watchdog_request_id, "Voice armed timeout could not transition request");
                     }
                     break;
                 }
             } else if current.status == VoiceRequestStatus::Recording
                 && current.duration_ms.unwrap_or_default() >= max_duration_seconds as u64 * 1000
             {
-                let _ = finish_voice_stop(
+                info!(request_id = %watchdog_request_id, "Voice maximum recording duration reached");
+                if let Err(error) = finish_voice_stop(
                     &watchdog_app,
                     &watchdog_state,
                     watchdog_config.clone(),
                     watchdog_request_id.clone(),
                 )
-                .await;
+                .await
+                {
+                    error!(request_id = %watchdog_request_id, error_code = %error.code, "Maximum-duration voice stop failed");
+                }
                 break;
             } else if !matches!(
                 current.status,
@@ -186,22 +259,48 @@ async fn finish_voice_stop(
     config: crate::settings::store::VoiceInputSettings,
     request_id: String,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
-    let signal = state.signal(&request_id).map_err(to_error)?;
+    info!(request_id = %request_id, "Voice stop pipeline entered");
+    let Some(_stop_claim) = claim_voice_stop(&request_id) else {
+        warn!(request_id = %request_id, "Duplicate voice stop ignored by single-flight guard");
+        return state.snapshot(Some(&request_id)).map_err(|code| {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Could not read request after duplicate voice stop");
+            to_error(code)
+        });
+    };
+    let signal = state.signal(&request_id).map_err(|code| {
+        error!(request_id = %request_id, error_code = %code.as_str(), "Voice stop could not read request state");
+        to_error(code)
+    })?;
+    debug!(
+        request_id = %request_id,
+        status = ?signal.status.status,
+        status_changed = signal.status_changed,
+        should_stop = signal.should_stop,
+        "Voice stop pipeline observed request"
+    );
     if signal.status_changed {
         emit_voice_state(app, &signal.status);
     }
     if signal.status.status == VoiceRequestStatus::Failed {
+        warn!(request_id = %request_id, error_code = ?signal.status.error.as_ref().map(|error| &error.code), "Voice request already failed before stop");
         return Ok(signal.status);
     }
     if signal.status.status == VoiceRequestStatus::Armed {
-        let status = state.stop_armed(&request_id).map_err(to_error)?;
+        let status = state.stop_armed(&request_id).map_err(|code| {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Armed voice request could not stop");
+            to_error(code)
+        })?;
+        info!(request_id = %request_id, status = ?status.status, "Armed voice request stopped without transcription");
         emit_voice_state(app, &status);
         return Ok(status);
     }
     let (capture, cancellation, transcribing) = match state.begin_stop(&request_id) {
         Ok(result) => result,
         Err(VoiceErrorCode::InvalidRequest) => {
-            let current = state.snapshot(Some(&request_id)).map_err(to_error)?;
+            let current = state.snapshot(Some(&request_id)).map_err(|code| {
+                error!(request_id = %request_id, error_code = %code.as_str(), "Voice stop could not recover current request after duplicate stop");
+                to_error(code)
+            })?;
             if matches!(
                 current.status,
                 VoiceRequestStatus::Transcribing
@@ -209,16 +308,26 @@ async fn finish_voice_stop(
                     | VoiceRequestStatus::Cancelled
                     | VoiceRequestStatus::Failed
             ) {
+                warn!(request_id = %request_id, status = ?current.status, "Duplicate voice stop ignored; another stop pipeline owns the request");
                 return Ok(current);
             }
+            error!(request_id = %request_id, status = ?current.status, "Voice stop rejected from unexpected state");
             return Err(to_error(VoiceErrorCode::InvalidRequest));
         }
-        Err(code) => return Err(to_error(code)),
+        Err(code) => {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Voice stop could not begin");
+            return Err(to_error(code));
+        }
     };
+    info!(request_id = %request_id, status = ?transcribing.status, "Voice capture stopped; transcription begins");
     emit_voice_state(app, &transcribing);
     let audio = match capture.stop() {
-        Ok(audio) => audio,
+        Ok(audio) => {
+            info!(request_id = %request_id, samples = audio.samples.len(), sample_rate = audio.sample_rate, channels = audio.channels, "Voice audio captured");
+            audio
+        }
         Err(code) => {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Voice capture stop failed");
             let status = state
                 .finish(&request_id, VoiceRequestStatus::Failed, None, Some(code))
                 .map_err(to_error)?;
@@ -227,6 +336,7 @@ async fn finish_voice_stop(
         }
     };
     if cancellation.is_cancelled() {
+        info!(request_id = %request_id, "Voice transcription cancelled before encoding or STT");
         let status = state
             .finish(
                 &request_id,
@@ -239,8 +349,12 @@ async fn finish_voice_stop(
         return Ok(status);
     }
     let wav = match encode_wav_pcm16(&audio) {
-        Ok(wav) => wav,
+        Ok(wav) => {
+            debug!(request_id = %request_id, wav_bytes = wav.len(), "Voice audio encoded as WAV");
+            wav
+        }
         Err(code) => {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Voice audio encoding failed");
             let status = state
                 .finish(&request_id, VoiceRequestStatus::Failed, None, Some(code))
                 .map_err(to_error)?;
@@ -249,9 +363,21 @@ async fn finish_voice_stop(
         }
     };
     let duration_ms = wav_duration_ms(&wav);
+    debug!(request_id = %request_id, duration_ms = ?duration_ms, "Voice WAV duration measured");
     crate::settings::secrets::refresh_dotenv_environment(app);
-    let provider = GroqSpeechToTextProvider::from_environment().map_err(to_error)?;
+    let provider = match GroqSpeechToTextProvider::from_environment() {
+        Ok(provider) => provider,
+        Err(code) => {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Voice STT provider lookup failed during stop");
+            let status = state
+                .finish(&request_id, VoiceRequestStatus::Failed, None, Some(code))
+                .map_err(to_error)?;
+            emit_voice_state(app, &status);
+            return Ok(status);
+        }
+    };
     if !provider.configured() {
+        warn!(request_id = %request_id, "Voice STT provider is not configured");
         let status = state
             .finish(
                 &request_id,
@@ -263,27 +389,44 @@ async fn finish_voice_stop(
         emit_voice_state(app, &status);
         return Ok(status);
     }
+    info!(request_id = %request_id, wav_bytes = wav.len(), language = %config.language, "Voice STT request started");
     let result = provider
         .transcribe(wav, config.language, cancellation)
         .await;
     let (next_status, transcript, error) = match result {
-        Ok(text) => (VoiceRequestStatus::TranscriptReady, Some(text), None),
-        Err(code) => (
-            if code == VoiceErrorCode::Cancelled {
-                VoiceRequestStatus::Cancelled
-            } else {
-                VoiceRequestStatus::Failed
-            },
-            None,
-            Some(code),
-        ),
+        Ok(text) => {
+            info!(request_id = %request_id, transcript_chars = text.chars().count(), "Voice STT request completed");
+            (VoiceRequestStatus::TranscriptReady, Some(text), None)
+        }
+        Err(code) => {
+            warn!(request_id = %request_id, error_code = %code.as_str(), "Voice STT request failed");
+            (
+                if code == VoiceErrorCode::Cancelled {
+                    VoiceRequestStatus::Cancelled
+                } else {
+                    VoiceRequestStatus::Failed
+                },
+                None,
+                Some(code),
+            )
+        }
     };
     let mut status = state
         .finish(&request_id, next_status, transcript, error)
-        .map_err(to_error)?;
+        .map_err(|code| {
+            error!(request_id = %request_id, error_code = %code.as_str(), "Voice request could not enter terminal STT state");
+            to_error(code)
+        })?;
     if let Some(duration) = duration_ms {
         status.duration_ms = Some(duration);
     }
+    info!(
+        request_id = %request_id,
+        status = ?status.status,
+        error_code = ?status.error.as_ref().map(|error| &error.code),
+        transcript_chars = status.transcript.as_deref().map(str::chars).map(Iterator::count),
+        "Voice stop pipeline completed"
+    );
     emit_voice_state(app, &status);
     Ok(status)
 }
@@ -346,11 +489,51 @@ pub async fn jarvis_tts_speak(
     settings: State<'_, SettingsManager>,
     request: TtsSpeakRequest,
 ) -> Result<TtsStatusView, VoiceErrorView> {
-    let config = settings.get().await.jarvis.voice_output;
-    ensure_output_allowed(&config)?;
-    let text = sanitize_for_speech(&request.text, config.max_spoken_chars)
-        .ok_or_else(|| to_error(VoiceErrorCode::InvalidRequest))?;
     let request_id = request.request_id.clone();
+    let config = settings.get().await.jarvis.voice_output;
+    info!(
+        request_id = %request_id,
+        input_chars = request.text.chars().count(),
+        configured_provider = %config.provider,
+        configured_voice = %config.voice,
+        auto_speak = config.auto_speak,
+        output_enabled = config.enabled,
+        "[JARVIS-TTS] speak requested",
+    );
+    if let Err(error) = ensure_output_allowed(&config) {
+        warn!(
+            request_id = %request_id,
+            error_code = %error.code,
+            "[JARVIS-TTS] speak rejected by output policy",
+        );
+        return Err(error);
+    }
+    let text = match sanitize_for_speech(&request.text, config.max_spoken_chars) {
+        Some(text) => text,
+        None => {
+            warn!(
+                request_id = %request_id,
+                input_chars = request.text.chars().count(),
+                max_spoken_chars = config.max_spoken_chars,
+                "[JARVIS-TTS] speak rejected after text sanitization",
+            );
+            return Err(to_error(VoiceErrorCode::InvalidRequest));
+        }
+    };
+    let voice = request.voice.unwrap_or(config.voice);
+    let rate = request.rate.unwrap_or(config.rate);
+    let volume = request.volume.unwrap_or(config.volume);
+    let pitch = request.pitch.unwrap_or(config.pitch);
+    info!(
+        request_id = %request_id,
+        text_chars = text.chars().count(),
+        voice = %voice,
+        rate = %rate,
+        volume = %volume,
+        pitch = %pitch,
+        runtime = if cfg!(debug_assertions) { "python" } else { "sidecar" },
+        "[JARVIS-TTS] synthesis starting",
+    );
     let (cancellation, synthesizing) = state.begin_tts(request_id.clone());
     emit_tts_state(&app, &synthesizing);
     let provider = runtime_tts_provider(&app);
@@ -358,17 +541,38 @@ pub async fn jarvis_tts_speak(
         .speak(
             request_id.clone(),
             text,
-            request.voice.unwrap_or(config.voice),
-            request.rate.unwrap_or(config.rate),
-            request.volume.unwrap_or(config.volume),
-            request.pitch.unwrap_or(config.pitch),
+            voice,
+            rate,
+            volume,
+            pitch,
             config.max_spoken_chars,
             cancellation.clone(),
         )
         .await
     {
-        Ok(path) => path,
+        Ok(path) => {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown");
+            let file_bytes = std::fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            info!(
+                request_id = %request_id,
+                file_name = %file_name,
+                file_bytes,
+                "[JARVIS-TTS] synthesis completed",
+            );
+            path
+        }
         Err(code) => {
+            warn!(
+                request_id = %request_id,
+                error_code = %code.as_str(),
+                cancelled = code == VoiceErrorCode::Cancelled,
+                "[JARVIS-TTS] synthesis failed",
+            );
             let status = state.set_tts_for(
                 &request_id,
                 if code == VoiceErrorCode::Cancelled {
@@ -385,9 +589,23 @@ pub async fn jarvis_tts_speak(
             return Ok(state.tts_status());
         }
     };
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown");
+    info!(
+        request_id = %request_id,
+        file_name = %file_name,
+        "[JARVIS-TTS] playback starting",
+    );
     if let Some(status) = state.set_tts_for(&request_id, TtsStatus::Playing, None) {
         emit_tts_state(&app, &status);
     } else {
+        warn!(
+            request_id = %request_id,
+            file_name = %file_name,
+            "[JARVIS-TTS] playback skipped because request is no longer active",
+        );
         cleanup_temp_file(&path);
         return Ok(state.tts_status());
     }
@@ -395,6 +613,11 @@ pub async fn jarvis_tts_speak(
     cleanup_temp_file(&path);
     match playback {
         Ok(()) => {
+            info!(
+                request_id = %request_id,
+                file_name = %file_name,
+                "[JARVIS-TTS] playback completed",
+            );
             if let Some(status) = state.set_tts_for(&request_id, TtsStatus::Idle, None) {
                 emit_tts_state(&app, &status);
                 Ok(status)
@@ -403,6 +626,13 @@ pub async fn jarvis_tts_speak(
             }
         }
         Err(code) => {
+            warn!(
+                request_id = %request_id,
+                file_name = %file_name,
+                error_code = %code.as_str(),
+                cancelled = code == VoiceErrorCode::Cancelled,
+                "[JARVIS-TTS] playback failed",
+            );
             let status = state.set_tts_for(
                 &request_id,
                 if code == VoiceErrorCode::Cancelled {
@@ -432,9 +662,21 @@ pub async fn jarvis_tts_stop(
     state: State<'_, VoiceState>,
 ) -> Result<TtsStatusView, VoiceErrorView> {
     let (status, request_id) = state.request_stop_tts();
+    info!(
+        request_id = ?request_id,
+        status = ?status.status,
+        "[JARVIS-TTS] stop requested",
+    );
     emit_tts_state(&app, &status);
     state.wait_tts_request_finished(request_id).await;
-    Ok(state.tts_status())
+    let status = state.tts_status();
+    info!(
+        request_id = ?status.request_id,
+        status = ?status.status,
+        error_code = ?status.error.as_ref().map(|error| &error.code),
+        "[JARVIS-TTS] stop completed",
+    );
+    Ok(status)
 }
 
 #[tauri::command]
@@ -606,10 +848,32 @@ fn registered_shortcut() -> &'static Mutex<Option<String>> {
     REGISTERED.get_or_init(|| Mutex::new(None))
 }
 fn emit_voice_state(app: &AppHandle, status: &VoiceRequestStatusView) {
-    let _ = app.emit(VOICE_STATE_EVENT, status);
+    debug!(
+        request_id = %status.request_id,
+        workspace_id = %status.workspace_id,
+        status = ?status.status,
+        error_code = ?status.error.as_ref().map(|error| &error.code),
+        transcript_chars = status.transcript.as_deref().map(str::chars).map(Iterator::count),
+        "Emitting Jarvis voice state"
+    );
+    if let Err(error) = app.emit(VOICE_STATE_EVENT, status) {
+        warn!(request_id = %status.request_id, error = %error, "Could not emit Jarvis voice state");
+    }
 }
 fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
-    let _ = app.emit(TTS_STATE_EVENT, status);
+    debug!(
+        request_id = ?status.request_id,
+        status = ?status.status,
+        error_code = ?status.error.as_ref().map(|error| &error.code),
+        "[JARVIS-TTS] emitting state",
+    );
+    if let Err(error) = app.emit(TTS_STATE_EVENT, status) {
+        warn!(
+            request_id = ?status.request_id,
+            error = %error,
+            "[JARVIS-TTS] state event emit failed",
+        );
+    }
 }
 
 /// Barge-in is handled at the audio boundary, not only through a React event
@@ -621,6 +885,7 @@ fn stop_tts_on_speech(app: &AppHandle, state: &VoiceState, status: &VoiceRequest
     }
     let (tts, request_id) = state.request_stop_tts();
     if request_id.is_some() {
+        info!(request_id = ?request_id, "Stopping TTS because VAD confirmed user speech");
         emit_tts_state(app, &tts);
     }
 }
