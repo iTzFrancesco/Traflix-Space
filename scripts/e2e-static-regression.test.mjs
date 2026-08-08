@@ -15,13 +15,16 @@ const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
+const secretLoader = source("../src-tauri/src/settings/secrets.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
 const windowsTauriConfig = source("../src-tauri/tauri.windows.conf.json");
 const windowsPrebuild = source("./tauri-before-build.ps1");
 const voiceCapture = source("../src-tauri/src/jarvis/voice/capture.rs");
+const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const voiceTts = source("../src-tauri/src/jarvis/voice/tts.rs");
 const voiceStt = source("../src-tauri/src/jarvis/voice/stt.rs");
 const releaseWorkflow = source("../.github/workflows/release.yml");
+const strictTestRunner = source("./run-strict-tests.mjs");
 
 test("exited PTY generations remain recoverable until the user chooses an action", () => {
   assert.match(terminalStore, /markExited:[\s\S]*agentLaunched: false/);
@@ -91,6 +94,24 @@ test("new workspaces validate real directories and the human folder picker has n
   assert.doesNotMatch(workspaceWizard, /30000/);
 });
 
+test("dotenv credentials are refreshed without exposing secret values to the frontend", () => {
+  assert.match(secretLoader, /pub fn hydrate_process_environment/);
+  assert.match(secretLoader, /pub fn refresh_dotenv_environment/);
+  assert.match(secretLoader, /let _ = read_secret_env\(OPENCODE_ZEN_API_KEY_ENV\);[\s\S]*let _ = read_secret_env\(GROQ_API_KEY_ENV\);[\s\S]*load_dotenv_environment/);
+  assert.match(secretLoader, /push_ancestor_candidates/);
+  assert.match(secretLoader, /OPENCODE_ZEN_API_KEY_ENV \| GROQ_API_KEY_ENV/);
+  assert.match(secretLoader, /fn parse_dotenv_assignment/);
+  assert.match(secretLoader, /export OPENCODE_ZEN_API_KEY/);
+  assert.match(secretLoader, /GROQ_API_KEY=\\\"groq # demo\\\"/);
+  assert.match(secretLoader, /if already_configured \{\s*continue;\s*\}/s);
+  assert.doesNotMatch(secretLoader, /println!/i);
+  assert.match(voiceCommandsSource, /refresh_dotenv_environment/);
+  assert.match(voiceCommandsSource, /from_environment\(\)/);
+  const settingsCommands = source("../src-tauri/src/settings/commands.rs");
+  assert.match(settingsCommands, /pub fn jarvis_secret_status\(app: AppHandle\)/);
+  assert.match(settingsCommands, /secrets::refresh_dotenv_environment\(&app\)/);
+});
+
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
   assert.match(rustSettings, /impl Default for VoiceActivationMode[\s\S]*Self::Vad/);
   assert.match(
@@ -112,6 +133,7 @@ test("voice runtime avoids callback data loss, survives Windows Python aliases, 
   assert.match(voiceTts, /launcher\.args\(\["-3", "-u"\]\)/);
   assert.match(voiceTts, /child\.try_wait\(\)/);
   assert.match(voiceStt, /language\.chars\(\)\.any\(\|ch\| ch\.is_control\(\)\)/);
+  assert.match(voiceCapture, /perceptual_level/);
   assert.match(voiceTts, /child\.try_wait\(\)/);
 });
 
@@ -136,6 +158,21 @@ test("failed voice transcript submissions stay preserved without automatic retry
 test("fresh installations watch the canonical skills directory before the first skill exists", () => {
   assert.match(skillsWatcher, /std::fs::create_dir_all\(&dir\)/);
   assert.match(skillsWatcher, /watcher\.watch\(&dir, RecursiveMode::Recursive\)/);
+});
+
+test("strict regression runner gates frontend, formatting, clippy safety and warning-free Rust tests", () => {
+  assert.match(strictTestRunner, /npmCommand/);
+  assert.match(strictTestRunner, /test:jarvis/);
+  assert.match(strictTestRunner, /cargoCommand, \["fmt"/);
+  assert.match(strictTestRunner, /--check/);
+  assert.match(strictTestRunner, /\["check", "--manifest-path", "src-tauri\/Cargo.toml", "--release"\]/);
+  assert.match(strictTestRunner, /"-D",\s*"warnings"/);
+  assert.match(strictTestRunner, /clippy::result_large_err/);
+  assert.match(strictTestRunner, /clippy::too_many_arguments/);
+  assert.match(strictTestRunner, /const rustFlags = \[process\.env\.RUSTFLAGS, "-D warnings"\]/);
+  assert.match(strictTestRunner, /RUSTFLAGS: rustFlags/);
+  assert.match(strictTestRunner, /RUSTFLAGS/);
+  assert.match(strictTestRunner, /explicit Clippy baseline/);
 });
 
 test("every Windows MSI build regenerates the current persistent Edge TTS sidecar", () => {
