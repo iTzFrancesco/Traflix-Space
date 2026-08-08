@@ -3,6 +3,7 @@
 mod agent;
 mod agent_events;
 mod browser;
+mod jarvis;
 mod project;
 mod settings;
 mod skills;
@@ -17,8 +18,9 @@ use std::sync::{
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager, RunEvent,
+    Emitter, Manager, RunEvent,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -36,6 +38,20 @@ fn main() {
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    let state = match event.state {
+                        tauri_plugin_global_shortcut::ShortcutState::Pressed => "pressed",
+                        tauri_plugin_global_shortcut::ShortcutState::Released => "released",
+                    };
+                    let _ = app.emit(
+                        "jarvis://voice-shortcut",
+                        serde_json::json!({ "shortcut": shortcut.to_string(), "state": state }),
+                    );
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -56,12 +72,20 @@ fn main() {
     builder
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
+            settings::secrets::hydrate_process_environment(app.handle());
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
+            app.manage(jarvis::JarvisState::default());
+            app.manage(jarvis::voice::VoiceState::default());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());
             app.manage(project::watcher::ProjectWatcherRegistry::default());
             app.manage(agent_events::AgentEventRegistry::default());
+
+            // Edge TTS is process-based. Warm it outside the user's first
+            // spoken turn so Python/PyInstaller startup + import are not paid
+            // after Jarvis has already produced a reply.
+            jarvis::voice::tts::prewarm_runtime(app.handle().clone());
 
             // Agent hooks/plugins forward normalized turn-complete events to
             // this local Windows named pipe. The listener is best-effort and
@@ -156,6 +180,7 @@ fn main() {
             workspace::commands::get_workspaces,
             workspace::commands::get_workspace,
             workspace::commands::update_workspace,
+            workspace::commands::update_terminal_title,
             workspace::commands::delete_workspace,
             workspace::commands::select_folder,
             workspace::commands::navigate_folder,
@@ -174,8 +199,52 @@ fn main() {
             project::commands::project_unwatch_workspace,
             skills::commands::list_skills,
             agent::commands::list_agents,
+            jarvis::commands::jarvis_workspace_list,
+            jarvis::commands::jarvis_terminal_list,
+            jarvis::commands::jarvis_agent_list,
+            jarvis::commands::jarvis_agent_snapshot,
+            jarvis::commands::jarvis_agent_get_status,
+            jarvis::commands::jarvis_agent_get_last_result,
+            jarvis::commands::jarvis_agent_get_messages,
+            jarvis::commands::jarvis_agent_activity,
+            jarvis::commands::jarvis_agent_tail,
+            jarvis::commands::jarvis_agent_open,
+            jarvis::commands::jarvis_mark_selected_agent,
+            jarvis::commands::jarvis_confirm_identity,
+            jarvis::commands::jarvis_ignore_identity,
+            jarvis::commands::jarvis_clear_identity_decision,
+            jarvis::commands::jarvis_build_context,
+            jarvis::commands::jarvis_refresh_context,
+            jarvis::commands::jarvis_build_model_context,
+            jarvis::commands::jarvis_refresh_model_context,
+            jarvis::chat::jarvis_provider_status,
+            jarvis::chat::jarvis_pending_actions,
+            jarvis::chat::jarvis_conversation_history,
+            jarvis::chat::jarvis_chat_status,
+            jarvis::chat::jarvis_cancel_chat,
+            jarvis::chat::jarvis_chat,
+            jarvis::chat::jarvis_confirm_action,
+            jarvis::chat::jarvis_update_pending_action,
+            jarvis::chat::jarvis_reject_action,
+            jarvis::chat::jarvis_clear_conversation,
+            jarvis::voice::commands::jarvis_voice_list_input_devices,
+            jarvis::voice::commands::jarvis_voice_sync_shortcut,
+            jarvis::voice::commands::jarvis_voice_start,
+            jarvis::voice::commands::jarvis_voice_stop,
+            jarvis::voice::commands::jarvis_voice_cancel,
+            jarvis::voice::commands::jarvis_voice_status,
+            jarvis::voice::commands::jarvis_voice_workspace_status,
+            jarvis::voice::commands::jarvis_voice_discard_transcript,
+            jarvis::voice::commands::jarvis_voice_shutdown,
+            jarvis::voice::commands::jarvis_tts_speak,
+            jarvis::voice::commands::jarvis_tts_stop,
+            jarvis::voice::commands::jarvis_tts_status,
+            jarvis::voice::commands::jarvis_tts_list_voices,
             settings::commands::get_settings,
             settings::commands::set_settings,
+            settings::commands::jarvis_secret_status,
+            settings::commands::jarvis_set_secret,
+            settings::commands::jarvis_clear_secret,
             browser::browser_create,
             browser::browser_navigate,
             browser::browser_reload,
@@ -203,8 +272,12 @@ fn main() {
             // On real process exit (tray Quit, no-tray window close, OS kill),
             // tear down every PTY/shell so no orphans accumulate.
             if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+                let _ = app.global_shortcut().unregister_all();
+                let voice = app.state::<jarvis::voice::VoiceState>().clone();
                 let manager = app.state::<TerminalManager>();
                 tauri::async_runtime::block_on(async {
+                    let _ = voice.shutdown().await;
+                    jarvis::voice::tts::shutdown_runtime().await;
                     manager.kill_all().await;
                 });
             }

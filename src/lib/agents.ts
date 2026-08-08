@@ -59,6 +59,15 @@ export const AGENTS: AgentDefinition[] = [
     color: "#a855f7",
   },
   {
+    id: "cmdc",
+    name: "Command Code",
+    description: "Agente AI Command Code",
+    command: "cmdc",
+    args: [],
+    icon: "Terminal",
+    color: "#3a86ff",
+  },
+  {
     id: "cline",
     name: "Cline",
     description: "Agente AI Cline",

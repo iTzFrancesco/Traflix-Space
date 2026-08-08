@@ -7,72 +7,52 @@ const IS_DEV = import.meta.env.DEV;
 
 export function TitleBar() {
   useEffect(() => {
-    if (IS_DEV) {
-      document.title = "Traflix Space [DEV]";
-    }
+    if (IS_DEV) document.title = "Traflix Space [DEV]";
   }, []);
 
-  function getAppWindow() {
+  const appWindow = () => {
     if (typeof window === "undefined") return null;
-    try {
-      return getCurrentWindow();
-    } catch {
-      return null;
-    }
-  }
+    try { return getCurrentWindow(); }
+    catch { return null; }
+  };
 
   return (
-    <div
-      className="relative flex items-center h-12 bg-[#1a1b19] border-b select-none"
-      style={{ borderColor: "var(--color-neutral-border)" }}
-    >
-      <div
-        data-tauri-drag-region
-        className="flex items-center gap-3.5 flex-1 min-w-0 h-full px-5"
-      >
-        <img src="/icon.png" alt="Traflix" className="w-5.5 h-5.5 rounded-md shrink-0 transition-transform duration-200 hover:scale-105" />
-        <span className="font-display font-extrabold text-xs text-primary tracking-[0.12em] uppercase whitespace-nowrap">
-          Traflix Space
+    <header className="relative flex h-10 shrink-0 select-none items-center border-b border-neutral-border bg-neutral-surface">
+      <div data-tauri-drag-region className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-3.5">
+        <img src="/icon.png" alt="" className="h-[18px] w-[18px] shrink-0 rounded-[4px]" aria-hidden="true" />
+        <span className="whitespace-nowrap font-display text-[11px] font-bold tracking-[0.055em] text-neutral-text">
+          TRAFLIX SPACE
         </span>
-        <span className="text-[11px] font-sans font-semibold text-[#74716c]/80 tracking-wide select-none">
-          v{APP_VERSION}
-        </span>
+        <span className="font-mono text-[9px] text-neutral-text-muted">v{APP_VERSION}</span>
+        {IS_DEV && <span className="ml-1 rounded px-1.5 py-0.5 font-mono text-[8px] font-bold text-danger">DEV</span>}
       </div>
-
-      {IS_DEV && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 pointer-events-none">
-          <span className="font-display font-extrabold text-[0.75rem] tracking-[0.25em] text-red-500/80">
-            DEV
-          </span>
-        </div>
-      )}
 
       <div className="flex h-full shrink-0">
-        <button
-          onClick={() => getAppWindow()?.minimize()}
-          className="flex items-center justify-center w-11 h-full hover:bg-white/[0.065] active:bg-white/[0.03] transition-all duration-150"
-          title="Riduci a icona"
-          aria-label="Riduci a icona"
-        >
-          <Minus size={14} className="text-neutral-text-muted hover:text-neutral-text transition-colors" />
-        </button>
-        <button
-          onClick={() => getAppWindow()?.toggleMaximize()}
-          className="flex items-center justify-center w-11 h-full hover:bg-white/[0.065] active:bg-white/[0.03] transition-all duration-150"
-          title="Ingrandisci"
-          aria-label="Ingrandisci finestra"
-        >
-          <Square size={11} className="text-neutral-text-muted hover:text-neutral-text transition-colors" />
-        </button>
-        <button
-          onClick={() => getAppWindow()?.close()}
-          className="flex items-center justify-center w-11 h-full hover:bg-red-500/15 active:bg-red-500/10 transition-all duration-150 group"
-          title="Chiudi"
-          aria-label="Chiudi applicazione"
-        >
-          <X size={14} className="text-neutral-text-muted group-hover:text-red-400 transition-colors" />
-        </button>
+        <WindowButton label="Riduci a icona" onClick={() => void appWindow()?.minimize()}><Minus size={13} /></WindowButton>
+        <WindowButton label="Ingrandisci finestra" onClick={() => void appWindow()?.toggleMaximize()}><Square size={10} /></WindowButton>
+        <WindowButton label="Chiudi applicazione" danger onClick={() => void appWindow()?.close()}><X size={13} /></WindowButton>
       </div>
-    </div>
+    </header>
+  );
+}
+
+function WindowButton({ label, danger = false, onClick, children }: {
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex h-full w-10 items-center justify-center transition-colors ${
+        danger ? "text-neutral-text-muted hover:bg-danger/15 hover:text-danger" : "text-neutral-text-muted hover:bg-white/[0.06] hover:text-neutral-text"
+      }`}
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
   );
 }

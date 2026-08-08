@@ -65,6 +65,7 @@ export interface AgentTurnCompleted {
   provider: string;
   kind: "turn_completed";
   terminalId: string;
+  generation?: number | null;
   eventId?: string | null;
   workspaceId?: string | null;
   providerSessionId?: string | null;

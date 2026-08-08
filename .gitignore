@@ -7,6 +7,10 @@ dist/
 # Rust
 src-tauri/target/
 src-tauri/gen/
+src-tauri/edge-tts-build/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
 
 
 # IDE

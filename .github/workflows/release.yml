@@ -54,7 +54,12 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      - run: npm install
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      # tauri.windows.conf.json runs scripts/tauri-before-build.ps1, which
+      # regenerates the current persistent Edge TTS sidecar and builds the UI.
       - run: npm run tauri build
       - uses: softprops/action-gh-release@v2
         with:

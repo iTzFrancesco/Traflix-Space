@@ -26,10 +26,14 @@ pub fn start_skills_watcher(app: AppHandle) {
         }
     };
 
-    if !dir.exists() {
-        tracing::info!(
-            "Cartella skills non trovata: {:?} — watcher non avviato",
-            dir
+    // A fresh installation may not have installed any skill yet. Create the
+    // canonical directory before registering the watcher so adding the first
+    // skill later in the same app session is observed without a restart.
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            "Impossibile preparare la cartella skills {:?}: {:?}",
+            dir,
+            error
         );
         return;
     }
@@ -64,7 +68,7 @@ pub fn start_skills_watcher(app: AppHandle) {
                             if now.duration_since(last_emit) >= debounce_ms {
                                 last_emit = now;
                                 let _ = app.emit("skills-changed", ());
-                                tracing::debug!("Skills cambiato — evento emesso");
+                                tracing::debug!("Skills cambiate — evento emesso");
                             }
                         }
                         _ => {}

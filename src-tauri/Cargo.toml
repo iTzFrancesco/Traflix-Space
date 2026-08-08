@@ -1,6 +1,6 @@
 [package]
 name = "traflix-space"
-version = "1.6.4"
+version = "1.7.0"
 edition = "2021"
 
 [build-dependencies]
@@ -9,6 +9,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
@@ -30,6 +31,12 @@ parking_lot = "0.12"
 dashmap = "6"
 portable-pty = "0.8"
 notify = { version = "7", features = [] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
+futures-util = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+cpal = "0.15"
+rodio = "0.19"
 
 [features]
 default = ["custom-protocol"]

@@ -428,6 +428,8 @@ async fn run_git_owned_with_timeout(
     command
         .args(args)
         .current_dir(cwd)
+        .env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV)
+        .env_remove(crate::settings::secrets::GROQ_API_KEY_ENV)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
         .env("GIT_OPTIONAL_LOCKS", "0");

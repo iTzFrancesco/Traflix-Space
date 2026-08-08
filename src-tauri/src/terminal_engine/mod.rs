@@ -13,19 +13,40 @@ pub use session::TerminalSession;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use tracing::info;
 
+#[cfg(windows)]
+use crate::jarvis::runtime_detector::detect_from_process_tree_async;
+use crate::jarvis::runtime_detector::{normalize_provider, AgentDetection};
 use crate::terminal_engine::scheduler::FrameScheduler;
+
+pub use crate::jarvis::agent_registry::{NormalizedTerminalText, TerminalAgentSnapshot};
 
 pub struct TerminalManager {
     pub sessions: DashMap<String, Arc<RwLock<TerminalSession>>>,
     scheduler: tokio::sync::Mutex<FrameScheduler>,
     /// Currently focused terminal id (avoids write-locking every session on set_active).
     active_id: tokio::sync::Mutex<Option<String>>,
+    next_generation: AtomicU64,
+    detector_started: std::sync::atomic::AtomicBool,
+}
+
+/// Who wrote bytes into a PTY. The registry uses this to keep user prompts,
+/// Jarvis follow-ups and backend control signals provenance-distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalInputOrigin {
+    /// Typed/pasted by the user in the shared visible TUI.
+    User,
+    /// Jarvis follow-up written after a confirmed Pending Action.
+    JarvisPrompt,
+    /// Backend-generated Ctrl+C (confirmed `agent.abort`).
+    JarvisAbort,
+    /// Internal writes that must not be observed as user input.
+    Internal,
 }
 
 /// Current terminal location and the branch resolved for that exact location.
@@ -57,6 +78,8 @@ impl TerminalManager {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
             active_id: tokio::sync::Mutex::new(None),
+            next_generation: AtomicU64::new(1),
+            detector_started: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -89,6 +112,11 @@ impl TerminalManager {
                     // frontend synchronizes the measured DOM size after
                     // layout; resizing here would force a freshly mounted
                     // xterm's default 80x24 onto a running TUI.
+                    if let Ok(Some(snapshot)) = self.get_agent_snapshot(&id).await {
+                        if snapshot.is_agent_terminal {
+                            notify_agent_started(&app, &snapshot);
+                        }
+                    }
                     return Ok(id);
                 }
 
@@ -122,8 +150,26 @@ impl TerminalManager {
                         .trim_start_matches("\\\\.\\")
                         .to_string();
 
-                    let mut session =
-                        TerminalSession::new(id.clone(), shell, cwd, initial_cols, initial_rows);
+                    let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
+                    let mut session = TerminalSession::new(
+                        id.clone(),
+                        if config.title.trim().is_empty() {
+                            "Terminal".to_string()
+                        } else {
+                            config.title.clone()
+                        },
+                        shell,
+                        cwd,
+                        initial_cols,
+                        initial_rows,
+                    );
+                    session.generation = generation;
+                    session.is_agent_terminal = config.agent_id.is_some();
+                    session.agent_id = config.agent_id.clone();
+                    if session.agent_id.is_some() {
+                        session.detection_source = "configured-hint".to_string();
+                        session.detection_confidence = 0.65;
+                    }
                     session.workspace_id = config.workspace_id.clone();
                     slot.insert(Arc::new(RwLock::new(session)));
                     info!(terminal_id = %id, "Terminal session created");
@@ -137,6 +183,12 @@ impl TerminalManager {
         if let Err(e) = self.spawn_shell(&app, &id).await {
             let _ = self.sessions.remove(&id);
             return Err(e);
+        }
+
+        if let Some(snapshot) = self.get_agent_snapshot(&id).await.ok().flatten() {
+            if snapshot.is_agent_terminal {
+                notify_agent_started(&app, &snapshot);
+            }
         }
 
         Ok(id)
@@ -161,12 +213,32 @@ impl TerminalManager {
     }
 
     pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
+        self.write_typed(app, id, data, TerminalInputOrigin::User)
+            .await
+    }
+
+    /// Write into the PTY and observe the write according to its origin.
+    /// User writes feed the bounded input tracker (a task is registered only
+    /// when Enter commits a reliable line); Jarvis writes are registered by
+    /// the caller with the exact text after this call succeeds.
+    pub async fn write_typed(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        data: &[u8],
+        origin: TerminalInputOrigin,
+    ) -> Result<(), String> {
         let session = self
             .sessions
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
+        let mut session = session.write().await;
         session.write(data)?;
+        let command_detections = session.observe_agent_commands(data);
+        for detection in command_detections {
+            apply_runtime_identity(&mut session, &detection);
+        }
+        let agent_snapshot = snapshot_from_session(&session);
 
         // If the CWD was updated by a cd command detection, notify the frontend.
         if session.cwd_changed.swap(false, Ordering::Acquire) {
@@ -184,6 +256,19 @@ impl TerminalManager {
             );
         }
 
+        drop(session);
+        if agent_snapshot.is_agent_terminal {
+            match origin {
+                TerminalInputOrigin::User => notify_agent_user_input(&app, &agent_snapshot, data),
+                TerminalInputOrigin::JarvisAbort => {
+                    notify_agent_abort(&app, &agent_snapshot);
+                }
+                TerminalInputOrigin::JarvisPrompt | TerminalInputOrigin::Internal => {
+                    // Jarvis tasks are registered by chat.rs only after this
+                    // call succeeds, with the exact validated text.
+                }
+            }
+        }
         Ok(())
     }
 
@@ -203,12 +288,18 @@ impl TerminalManager {
             .remove(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.1.write().await;
+        let mut agent_snapshot = snapshot_from_session(&session);
+        agent_snapshot.process_alive = false;
         session.kill();
         self.scheduler.lock().await.stop(id);
 
         let mut active = self.active_id.lock().await;
         if active.as_deref() == Some(id) {
             *active = None;
+        }
+
+        if agent_snapshot.is_agent_terminal {
+            notify_agent_exit(_app, &agent_snapshot);
         }
 
         info!(terminal_id = %id, "Terminal killed and removed");
@@ -304,6 +395,125 @@ impl TerminalManager {
             cols: session.grid.cols,
             rows: session.grid.rows,
         })
+    }
+
+    pub async fn get_agent_snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<TerminalAgentSnapshot>, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        Ok(Some(snapshot_from_session(&session)))
+    }
+
+    pub async fn observe_agent_provider(
+        &self,
+        id: &str,
+        provider: &str,
+        source: &str,
+        confidence: f32,
+    ) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let mut session = session.write().await;
+        let current_priority = identity_source_priority(&session.detection_source);
+        if session.observed_provider.is_some()
+            && identity_source_priority(source) < current_priority
+        {
+            return Ok(());
+        }
+        let normalized = provider.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Ok(());
+        }
+        session.observed_provider = Some(normalized.clone());
+        session.detection_source = source.to_string();
+        session.detection_confidence = confidence;
+        session.is_agent_terminal = true;
+        if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
+            if configured != normalized {
+                push_identity_warning(
+                    &mut session.identity_warnings,
+                    &format!(
+                        "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                        configured, normalized
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn list_agent_snapshots(&self) -> Vec<TerminalAgentSnapshot> {
+        let sessions = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        let mut snapshots = Vec::new();
+        for session in sessions {
+            let session = session.read().await;
+            if session.is_agent_terminal {
+                snapshots.push(snapshot_from_session(&session));
+            }
+        }
+        snapshots.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
+        snapshots
+    }
+
+    pub async fn get_normalized_screen_text(
+        &self,
+        id: &str,
+        max_bytes: usize,
+    ) -> Result<NormalizedTerminalText, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        let parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let text = parser.screen_text(session.grid.rows, session.grid.cols);
+        let text = text.trim_end().to_string();
+        if text.len() <= max_bytes {
+            return Ok(NormalizedTerminalText {
+                content: text,
+                truncated: false,
+            });
+        }
+        let mut start = text.len() - max_bytes;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        Ok(NormalizedTerminalText {
+            content: text[start..].to_string(),
+            truncated: true,
+        })
+    }
+
+    pub async fn get_recent_normalized_terminal_text(
+        &self,
+        id: &str,
+        max_bytes: usize,
+    ) -> Result<NormalizedTerminalText, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        let mut parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let text = parser.recent_normalized_text();
+        bounded_terminal_text(&text, max_bytes)
     }
 
     pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
@@ -457,6 +667,8 @@ impl TerminalManager {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV)
+            .env_remove(crate::settings::secrets::GROQ_API_KEY_ENV)
             .env("GIT_PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "Never");
@@ -508,8 +720,100 @@ impl TerminalManager {
         }
     }
 
-    pub fn start_event_loop(&self, _app: AppHandle) {
+    pub fn start_event_loop(&self, app: AppHandle) {
         info!("Terminal manager event loop ready");
+        if self
+            .detector_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        #[cfg(windows)]
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let manager = app.state::<TerminalManager>();
+                let targets = manager.process_detection_targets().await;
+                let root_pids = targets
+                    .iter()
+                    .map(|(_, _, pid, _)| *pid)
+                    .collect::<Vec<_>>();
+                let detections = detect_from_process_tree_async(root_pids).await;
+                manager
+                    .apply_process_detections(targets, detections, &app)
+                    .await;
+                let retry_fast = manager
+                    .process_detection_targets()
+                    .await
+                    .iter()
+                    .any(|(_, _, _, source)| identity_source_priority(source) < 4);
+                tokio::time::sleep(std::time::Duration::from_secs(if retry_fast {
+                    3
+                } else {
+                    10
+                }))
+                .await;
+            }
+        });
+
+        #[cfg(not(windows))]
+        {
+            let _ = app;
+        }
+    }
+
+    #[cfg(windows)]
+    async fn process_detection_targets(&self) -> Vec<(String, u64, u32, String)> {
+        let sessions = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        let mut targets = Vec::new();
+        for session in sessions {
+            let session = session.read().await;
+            if !session.process_alive.load(Ordering::Acquire)
+                || session.process_id.is_none()
+                || identity_source_priority(&session.detection_source) >= 4
+            {
+                continue;
+            }
+            targets.push((
+                session.id.clone(),
+                session.generation,
+                session.process_id.unwrap_or_default(),
+                session.detection_source.clone(),
+            ));
+        }
+        targets
+    }
+
+    #[cfg(windows)]
+    async fn apply_process_detections(
+        &self,
+        targets: Vec<(String, u64, u32, String)>,
+        detections: std::collections::HashMap<u32, AgentDetection>,
+        app: &AppHandle,
+    ) {
+        for (terminal_id, generation, pid, _) in targets {
+            let Some(detection) = detections.get(&pid) else {
+                continue;
+            };
+            let Some(entry) = self.sessions.get(&terminal_id) else {
+                continue;
+            };
+            let mut session = entry.write().await;
+            if session.generation == generation
+                && session.process_id == Some(pid)
+                && session.process_alive.load(Ordering::Acquire)
+            {
+                apply_runtime_identity(&mut session, detection);
+                let snapshot = snapshot_from_session(&session);
+                drop(session);
+                notify_agent_started(app, &snapshot);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -529,6 +833,117 @@ impl TerminalManager {
     #[allow(dead_code)]
     pub async fn stop_frame_scheduler(&self, id: &str) {
         self.scheduler.lock().await.stop(id);
+    }
+}
+
+fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
+    TerminalAgentSnapshot {
+        terminal_id: session.id.clone(),
+        workspace_id: session.workspace_id.clone().unwrap_or_default(),
+        is_agent_terminal: session.is_agent_terminal,
+        agent_id: session.agent_id.clone(),
+        observed_provider: session.observed_provider.clone(),
+        detection_source: session.detection_source.clone(),
+        detection_confidence: session.detection_confidence,
+        identity_warnings: session.identity_warnings.clone(),
+        generation: session.generation,
+        process_alive: session.process_alive.load(Ordering::Acquire),
+    }
+}
+
+fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetection) {
+    let current_priority = identity_source_priority(&session.detection_source);
+    let incoming_priority = identity_source_priority(&detection.source);
+    if session.observed_provider.is_some() && incoming_priority < current_priority {
+        return;
+    }
+    session.observed_provider = Some(detection.provider.clone());
+    session.detection_source = detection.source.clone();
+    session.detection_confidence = detection.confidence;
+    session.is_agent_terminal = true;
+    if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
+        if configured != detection.provider {
+            push_identity_warning(
+                &mut session.identity_warnings,
+                &format!(
+                    "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                    configured, detection.provider
+                ),
+            );
+        }
+    }
+}
+
+fn bounded_terminal_text(text: &str, max_bytes: usize) -> Result<NormalizedTerminalText, String> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = normalized.trim_end_matches('\n');
+    if normalized.len() <= max_bytes {
+        return Ok(NormalizedTerminalText {
+            content: normalized.to_string(),
+            truncated: false,
+        });
+    }
+    let mut start = normalized.len().saturating_sub(max_bytes);
+    while start < normalized.len() && !normalized.is_char_boundary(start) {
+        start += 1;
+    }
+    Ok(NormalizedTerminalText {
+        content: normalized[start..].to_string(),
+        truncated: true,
+    })
+}
+
+fn identity_source_priority(source: &str) -> u8 {
+    match source {
+        "completion-event" => 5,
+        "process-tree" => 4,
+        "command-observed" => 3,
+        "configured-hint" => 2,
+        _ => 1,
+    }
+}
+
+fn push_identity_warning(warnings: &mut Vec<String>, warning: &str) {
+    if !warnings.iter().any(|existing| existing == warning) {
+        warnings.push(warning.to_string());
+    }
+}
+
+fn notify_agent_started(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state
+            .registry
+            .observe_terminal_started(snapshot, &chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn notify_agent_user_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot, data: &[u8]) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        let observed_at = chrono::Utc::now().to_rfc3339();
+        state
+            .registry
+            .observe_user_input(snapshot, data, &observed_at);
+        state
+            .registry
+            .observe_user_typing(snapshot, data, &observed_at);
+    }
+}
+
+fn notify_agent_abort(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state
+            .registry
+            .observe_abort(snapshot, &chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn notify_agent_exit(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state.registry.observe_terminal_exit(
+            &snapshot.terminal_id,
+            snapshot.generation,
+            &chrono::Utc::now().to_rfc3339(),
+        );
     }
 }
 

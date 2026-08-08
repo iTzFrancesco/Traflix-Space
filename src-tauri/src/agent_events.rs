@@ -4,6 +4,11 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
+use crate::jarvis::agent_registry::{
+    fallback_result_from_terminal_with_truncation, CompletionObservation,
+    MAX_TERMINAL_FALLBACK_BYTES,
+};
+use crate::jarvis::JarvisState;
 use crate::terminal_engine::TerminalManager;
 
 pub const AGENT_EVENT_PROTOCOL: u8 = 1;
@@ -28,6 +33,8 @@ pub struct AgentTurnCompletedEvent {
     pub provider: String,
     pub kind: String,
     pub terminal_id: String,
+    #[serde(default)]
+    pub generation: Option<u64>,
     #[serde(default)]
     pub event_id: Option<String>,
     #[serde(default)]
@@ -78,8 +85,11 @@ impl AgentTurnCompletedEvent {
     fn dedupe_key(&self) -> Option<String> {
         if let Some(event_id) = self.event_id.as_deref().filter(|value| !value.is_empty()) {
             return Some(format!(
-                "event:{}:{}:{}",
-                self.terminal_id, self.provider, event_id
+                "event:{}:{}:{}:{}",
+                self.terminal_id,
+                self.generation.unwrap_or_default(),
+                self.provider,
+                event_id
             ));
         }
 
@@ -90,10 +100,19 @@ impl AgentTurnCompletedEvent {
         }
 
         Some(format!(
-            "{}:{}:{}:{}:{}",
-            self.terminal_id, self.provider, self.kind, session, turn
+            "{}:{}:{}:{}:{}:{}",
+            self.terminal_id,
+            self.generation.unwrap_or_default(),
+            self.provider,
+            self.kind,
+            session,
+            turn
         ))
     }
+}
+
+fn matches_terminal_generation(event_generation: Option<u64>, current_generation: u64) -> bool {
+    event_generation.is_none() || event_generation == Some(current_generation)
 }
 
 pub fn start_listener(app: AppHandle) {
@@ -159,7 +178,7 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
             match reader.read_line(&mut line).await {
                 Ok(bytes) if bytes > 0 && bytes <= MAX_EVENT_BYTES => {
                     info!(bytes, "Agent event received from named pipe");
-                    handle_payload(&client_app, &registry, line.trim());
+                    handle_payload(&client_app, &registry, line.trim()).await;
                 }
                 Ok(bytes) if bytes > MAX_EVENT_BYTES => {
                     warn!(bytes, "Agent event payload rejected: too large");
@@ -177,7 +196,7 @@ fn pipe_busy(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(231)
 }
 
-fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
+async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
     let event = match serde_json::from_str::<AgentTurnCompletedEvent>(payload) {
         Ok(event) => event,
         Err(error) => {
@@ -226,6 +245,65 @@ fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str)
         warn!(terminal_id = %event.terminal_id, "Agent event received for a terminal owned by another Traflix instance");
     }
 
+    if terminal_known {
+        if let Ok(Some(snapshot)) = manager.get_agent_snapshot(&event.terminal_id).await {
+            if !matches_terminal_generation(event.generation, snapshot.generation) {
+                if let Some(event_generation) = event.generation {
+                    warn!(
+                        terminal_id = %event.terminal_id,
+                        event_generation,
+                        current_generation = snapshot.generation,
+                        "Agent completion ignored for stale terminal generation"
+                    );
+                }
+                return;
+            }
+            let _ = manager
+                .observe_agent_provider(
+                    &event.terminal_id,
+                    &event.provider,
+                    "completion-event",
+                    1.0,
+                )
+                .await;
+            let observed_at = event
+                .occurred_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            let fallback = manager
+                .get_recent_normalized_terminal_text(
+                    &event.terminal_id,
+                    MAX_TERMINAL_FALLBACK_BYTES,
+                )
+                .await
+                .ok()
+                .and_then(|text| {
+                    fallback_result_from_terminal_with_truncation(
+                        &text.content,
+                        text.truncated,
+                        &observed_at,
+                    )
+                });
+            let observation = CompletionObservation {
+                provider: event.provider.clone(),
+                event_id: event.event_id.clone(),
+                provider_session_id: event.provider_session_id.clone(),
+                provider_turn_id: event.provider_turn_id.clone(),
+                occurred_at: event.occurred_at.clone(),
+            };
+            if let Some(jarvis) = app.try_state::<JarvisState>() {
+                jarvis
+                    .registry
+                    .observe_completion(&snapshot, observation, fallback, &observed_at);
+            }
+        } else {
+            warn!(
+                terminal_id = %event.terminal_id,
+                "Agent completion could not be correlated with a terminal agent session"
+            );
+        }
+    }
+
     info!(
         terminal_id = %event.terminal_id,
         provider = %event.provider,
@@ -248,6 +326,7 @@ mod tests {
             provider: "codex".to_string(),
             kind: "turn_completed".to_string(),
             terminal_id: "terminal-1".to_string(),
+            generation: Some(1),
             event_id: Some("event-1".to_string()),
             workspace_id: None,
             provider_session_id: Some("session-1".to_string()),
@@ -261,7 +340,7 @@ mod tests {
     fn dedupe_key_prefers_explicit_event_id() {
         assert_eq!(
             event().dedupe_key().as_deref(),
-            Some("event:terminal-1:codex:event-1")
+            Some("event:terminal-1:1:codex:event-1")
         );
     }
 
@@ -271,5 +350,26 @@ mod tests {
         let key = event().dedupe_key().unwrap();
         assert!(registry.accept_once(key.clone()));
         assert!(!registry.accept_once(key));
+    }
+
+    #[test]
+    fn registry_eviction_is_bounded_and_allows_a_legitimate_later_duplicate() {
+        let registry = AgentEventRegistry::default();
+        let original = event().dedupe_key().unwrap();
+        assert!(registry.accept_once(original.clone()));
+        for index in 0..MAX_DEDUPE_ENTRIES {
+            assert!(registry.accept_once(format!("event-{index}")));
+        }
+        assert!(registry.accept_once(original));
+        let seen = registry.seen.lock().expect("registry lock");
+        assert_eq!(seen.set.len(), MAX_DEDUPE_ENTRIES);
+        assert_eq!(seen.order.len(), MAX_DEDUPE_ENTRIES);
+    }
+
+    #[test]
+    fn completion_generation_must_match_the_current_terminal_generation() {
+        assert!(matches_terminal_generation(Some(7), 7));
+        assert!(!matches_terminal_generation(Some(6), 7));
+        assert!(matches_terminal_generation(None, 7));
     }
 }

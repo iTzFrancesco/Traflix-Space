@@ -95,10 +95,10 @@ const ACTIVE_STYLE: React.CSSProperties = {
   minHeight: 0,
   background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid var(--color-primary)",
+  border: "1px solid color-mix(in oklch, var(--color-primary) 38%, transparent)",
   overflow: "hidden",
   isolation: "isolate",
-  boxShadow: "0 4px 20px rgba(255, 157, 36, 0.04)",
+  boxShadow: "none",
 };
 
 const FOCUSED_STYLE: React.CSSProperties = {
@@ -110,10 +110,10 @@ const FOCUSED_STYLE: React.CSSProperties = {
   minHeight: 0,
   background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid var(--color-primary-strong)",
+  border: "1px solid color-mix(in oklch, var(--color-primary) 52%, transparent)",
   overflow: "hidden",
   isolation: "isolate",
-  boxShadow: "0 4px 20px rgba(255, 107, 33, 0.05)",
+  boxShadow: "none",
 };
 
 const INACTIVE_STYLE: React.CSSProperties = {
@@ -156,7 +156,7 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  background: "rgba(255, 255, 255, 0.015)",
+  background: "var(--color-neutral-surface)",
   borderBottom: "1px solid var(--color-neutral-border)",
   userSelect: "none",
   overflow: "hidden",
@@ -164,15 +164,15 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
 
 function getTitleBarMetrics(terminalCount: number) {
   if (terminalCount <= 1) {
-    return { height: 42, padding: "0 14px", fontSize: 13, buttonSize: 32, iconSize: 16, dotSize: 10 };
+    return { height: 34, padding: "0 9px", fontSize: 12, buttonSize: 26, iconSize: 13, dotSize: 7 };
   }
   if (terminalCount === 2) {
-    return { height: 40, padding: "0 12px", fontSize: 12, buttonSize: 32, iconSize: 15, dotSize: 9 };
+    return { height: 32, padding: "0 8px", fontSize: 11, buttonSize: 25, iconSize: 12, dotSize: 6 };
   }
   if (terminalCount <= 4) {
-    return { height: 38, padding: "0 10px", fontSize: 12, buttonSize: 32, iconSize: 14, dotSize: 8 };
+    return { height: 30, padding: "0 7px", fontSize: 11, buttonSize: 24, iconSize: 12, dotSize: 6 };
   }
-  return { height: 36, padding: "0 9px", fontSize: 12, buttonSize: 30, iconSize: 14, dotSize: 7 };
+  return { height: 29, padding: "0 7px", fontSize: 10, buttonSize: 23, iconSize: 11, dotSize: 5 };
 }
 
 /** Return the latest complete PowerShell prompt, including wrapped paths. */
@@ -224,7 +224,7 @@ interface TerminalCwdChangedPayload {
 const TITLE_BAR_LEFT: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: "10px",
+  gap: "7px",
   minWidth: 0,
   flex: 1,
 };
@@ -239,14 +239,14 @@ const TITLE_BAR_DOT: React.CSSProperties = {
 const TITLE_BAR_NAME: React.CSSProperties = {
   fontSize: 12,
   fontFamily: 'var(--font-mono)',
-  color: "rgba(255,255,255,0.8)",
+  color: "var(--color-neutral-text-dim)",
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
   cursor: "text",
   lineHeight: 1,
   minWidth: 0,
-  letterSpacing: "0.02em",
+  letterSpacing: 0,
 };
 
 const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
@@ -287,16 +287,16 @@ const TITLE_BAR_RIGHT: React.CSSProperties = {
 };
 
 const TOOL_BTN_BASE: React.CSSProperties = {
-  width: "30px",
-  height: "30px",
-  borderRadius: "8px",
+  width: "26px",
+  height: "26px",
+  borderRadius: "5px",
   border: "none",
   cursor: "pointer",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
   lineHeight: 1,
-  transition: "background 0.15s ease, color 0.15s ease",
+  transition: "background-color 120ms ease, color 120ms ease",
   padding: 0,
 };
 
@@ -1177,6 +1177,7 @@ export const TerminalPane = memo(function TerminalPane({
           cols,
           rows,
           workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
+          agentId: agentId ?? null,
         });
         spawnSucceeded = true;
         useTerminalStore.getState().markSpawned(terminalId);
@@ -1553,11 +1554,20 @@ export const TerminalPane = memo(function TerminalPane({
 
   const handleRenameSubmit = useCallback(() => {
     const trimmed = editValue.trim();
-    if (trimmed) {
+    if (trimmed && trimmed !== displayTitle) {
       useTerminalStore.getState().renameTerminal(terminalId, trimmed);
+      void invokeWithTimeout(
+        () =>
+          invoke("update_terminal_title", {
+            workspaceId: terminalWorkspaceId,
+            terminalId,
+            title: trimmed,
+          }),
+        10000,
+      ).catch(() => undefined);
     }
     setEditing(false);
-  }, [editValue, terminalId]);
+  }, [displayTitle, editValue, terminalId, terminalWorkspaceId]);
 
   const handleRenameKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1580,6 +1590,7 @@ export const TerminalPane = memo(function TerminalPane({
         cols: xtermRef.current?.cols ?? 80,
         rows: xtermRef.current?.rows ?? 24,
         workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
+        agentId: agentId ?? null,
       });
       useTerminalStore.getState().markSpawned(terminalId);
       spawnedRef.current = true;
@@ -1664,8 +1675,7 @@ export const TerminalPane = memo(function TerminalPane({
   const dragOverlayStyle = isDragOver
     ? {
         borderColor: "var(--color-primary)",
-        boxShadow:
-          "inset 0 0 0 1px var(--color-primary), 0 0 16px rgba(232,93,4,0.15)",
+        boxShadow: "inset 0 0 0 1px var(--color-primary)",
       }
     : {};
   const attentionClass =
@@ -1711,8 +1721,8 @@ export const TerminalPane = memo(function TerminalPane({
             background: isDragHovered ? "rgba(18, 18, 18, 0.92)" : "rgba(18, 18, 18, 0.45)",
             border: isDragHovered ? "2px dashed var(--color-primary)" : "2px dashed rgba(255, 255, 255, 0.12)",
             borderRadius: "var(--radius-pane)",
-            backdropFilter: isDragHovered ? "blur(4px)" : "none",
-            transition: "all 0.2s ease-in-out",
+            backdropFilter: "none",
+            transition: "background-color 120ms ease, border-color 120ms ease",
           }}
         >
           {isDragHovered && (
@@ -1726,7 +1736,7 @@ export const TerminalPane = memo(function TerminalPane({
                 fontFamily: "var(--font-display)",
                 fontWeight: 700,
                 fontSize: "14px",
-                textShadow: "0 0 10px rgba(232, 93, 4, 0.4)",
+                textShadow: "none",
               }}
             >
               <svg
@@ -1869,9 +1879,9 @@ export const TerminalPane = memo(function TerminalPane({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: "48px",
-              height: "24px",
-              borderRadius: "6px",
+              width: "38px",
+              height: "20px",
+              borderRadius: "4px",
               cursor: "grab",
               color: "rgba(255,255,255,0.35)",
               backgroundColor: "rgba(255,255,255,0.02)",
@@ -1883,7 +1893,7 @@ export const TerminalPane = memo(function TerminalPane({
               e.currentTarget.style.background = "rgba(255,255,255,0.07)";
               e.currentTarget.style.borderColor = "var(--color-primary)";
               e.currentTarget.style.color = "var(--color-primary)";
-              e.currentTarget.style.boxShadow = "0 0 10px rgba(232,93,4,0.2)";
+              e.currentTarget.style.boxShadow = "none";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "rgba(255,255,255,0.02)";
@@ -1946,22 +1956,16 @@ export const TerminalPane = memo(function TerminalPane({
                 ...TOOL_BTN_BASE,
                 width: titleBarMetrics.buttonSize,
                 height: titleBarMetrics.buttonSize,
-                background: isFocused
-                  ? "rgba(59,130,246,0.25)"
-                  : "rgba(255,255,255,0.08)",
-                color: isFocused ? "#60a5fa" : "#a1a1aa",
+                background: isFocused ? "rgba(233,138,45,0.10)" : "transparent",
+                color: isFocused ? "var(--color-primary)" : "var(--color-neutral-text-muted)",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = isFocused
-                  ? "rgba(59,130,246,0.4)"
-                  : "rgba(255,255,255,0.14)";
-                e.currentTarget.style.color = isFocused ? "#93c5fd" : "#f4f4f5";
+                e.currentTarget.style.background = isFocused ? "rgba(233,138,45,0.14)" : "rgba(255,255,255,0.06)";
+                e.currentTarget.style.color = isFocused ? "var(--color-primary-light)" : "var(--color-neutral-text)";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = isFocused
-                  ? "rgba(59,130,246,0.25)"
-                  : "rgba(255,255,255,0.08)";
-                e.currentTarget.style.color = isFocused ? "#60a5fa" : "#a1a1aa";
+                e.currentTarget.style.background = isFocused ? "rgba(233,138,45,0.10)" : "transparent";
+                e.currentTarget.style.color = isFocused ? "var(--color-primary)" : "var(--color-neutral-text-muted)";
               }}
             >
               {isFocused ? (
@@ -1983,7 +1987,7 @@ export const TerminalPane = memo(function TerminalPane({
                   borderRadius: "8px",
                   padding: "2px 4px",
                   border: "1px solid rgba(239,68,68,0.35)",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+                  boxShadow: "none",
                 }}
               >
                 <span
@@ -2053,14 +2057,16 @@ export const TerminalPane = memo(function TerminalPane({
                   ...TOOL_BTN_BASE,
                   width: titleBarMetrics.buttonSize,
                   height: titleBarMetrics.buttonSize,
-                  background: "rgba(239,68,68,0.2)",
-                  color: "#ef4444",
+                  background: "transparent",
+                  color: "var(--color-neutral-text-muted)",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(239,68,68,0.35)";
+                  e.currentTarget.style.background = "rgba(255,98,107,0.10)";
+                  e.currentTarget.style.color = "var(--color-danger)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "rgba(239,68,68,0.2)";
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--color-neutral-text-muted)";
                 }}
               >
                 <X size={titleBarMetrics.iconSize} />
@@ -2083,14 +2089,14 @@ export const TerminalPane = memo(function TerminalPane({
             alignItems: "center",
             gap: "6px",
             padding: "6px 14px",
-            borderRadius: "10px",
+            borderRadius: "5px",
             fontSize: "12px",
             fontFamily: "var(--font-mono)",
             fontWeight: 500,
             color: "var(--color-primary)",
             backgroundColor: "rgba(232,93,4,0.12)",
             border: "1px solid rgba(232,93,4,0.25)",
-            backdropFilter: "blur(8px)",
+            backdropFilter: "none",
             whiteSpace: "nowrap",
             pointerEvents: "none",
           }}
@@ -2102,7 +2108,7 @@ export const TerminalPane = memo(function TerminalPane({
               height: "8px",
               borderRadius: "50%",
               background: "currentColor",
-              boxShadow: "0 0 8px currentColor",
+              boxShadow: "none",
             }}
           />
           <span>
@@ -2123,7 +2129,7 @@ export const TerminalPane = memo(function TerminalPane({
             justifyContent: "center",
             gap: "14px",
             zIndex: 20,
-            backdropFilter: "blur(8px)",
+            backdropFilter: "none",
             padding: "24px",
           }}
         >

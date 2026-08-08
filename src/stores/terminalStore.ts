@@ -232,7 +232,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   markSpawned: (id) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t || t.spawned) return state;
+      if (!t || (t.spawned && t.exitCode === null)) return state;
       return {
         terminals: {
           ...state.terminals,
@@ -257,6 +257,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             ...t,
             exitCode,
             spawned: false,
+            // A fresh PTY generation must prove/launch its agent again. Jarvis
+            // marks this true authoritatively after backend-owned restarts;
+            // manual reopens are recovered by the frontend launch queue.
+            agentLaunched: false,
             agentStatus: "idle",
             agentAttentionRequired: false,
             lastAgentCompletion: null,

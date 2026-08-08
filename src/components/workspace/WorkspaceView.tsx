@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { TerminalSquare, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
@@ -26,6 +27,17 @@ interface LoadedWorkspace {
 interface TerminalCloseRequest {
   terminalId: string;
   token: number;
+}
+
+interface AgentOpenedEvent {
+  workspaceId: string;
+  terminal: TerminalConfig;
+}
+
+interface AgentClosedEvent {
+  workspaceId: string;
+  terminalId: string;
+  generation: number;
 }
 
 export function WorkspaceView() {
@@ -58,6 +70,108 @@ export function WorkspaceView() {
     terminals: TerminalConfig[];
   }>({ workspaceId: null, terminals: [] });
 
+  // Jarvis opens/closes through the backend so the same visible PTY can be
+  // registered in the frontend without a second spawn or hidden process.
+  useEffect(() => {
+    let disposed = false;
+    const listeners = Promise.all([
+      listen<AgentOpenedEvent>("jarvis-agent-opened", (event) => {
+        if (disposed) return;
+        const { workspaceId, terminal } = event.payload;
+        const loaded = loadedMapRef.current.get(workspaceId);
+        if (!loaded) return;
+
+        // The backend owns the Jarvis open/restart flow: it has already
+        // spawned the visible PTY and launched the provider CLI before this
+        // event is useful to TerminalPane. Mark both facts authoritatively so
+        // the normal frontend agentLaunchQueue never launches the same CLI a
+        // second time when the new pane mounts.
+        const terminalStore = useTerminalStore.getState();
+        if (!terminalStore.terminals[terminal.id]) {
+          terminalStore.addTerminal({
+            id: terminal.id,
+            workspaceId,
+            shell: terminal.shell,
+            cwd: terminal.cwd,
+            title: terminal.title,
+            agent: terminal.agentId,
+          });
+        }
+        terminalStore.markSpawned(terminal.id);
+        terminalStore.markAgentLaunched(terminal.id);
+
+        // React state may not have committed a previous Jarvis-open event yet.
+        // For the focused workspace, the synchronous terminal ref is the
+        // authoritative event-to-event list so two rapid opens never drop the
+        // first pane from the visible grid.
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : loaded.terminals;
+
+        // A restart reuses the existing configured pane. In that case only
+        // refresh its runtime flags above; never duplicate the workspace item.
+        if (currentTerminals.some((item) => item.id === terminal.id)) {
+          if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+            terminalStore.setActiveTerminal(terminal.id);
+          }
+          return;
+        }
+
+        const nextTerminals = [...currentTerminals, terminal];
+        const nextLayout = computeLayout(nextTerminals.length);
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
+        }
+        setLoadedMap((previous) => {
+          const current = previous.get(workspaceId);
+          if (!current || current.terminals.some((item) => item.id === terminal.id)) return previous;
+          const next = new Map(previous);
+          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: nextLayout });
+          return next;
+        });
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: nextTerminals.length,
+          agentCount: nextTerminals.filter((item) => item.agentId).length,
+        });
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+          terminalStore.setActiveTerminal(terminal.id);
+        }
+      }),
+      listen<AgentClosedEvent>("jarvis-agent-closed", (event) => {
+        if (disposed) return;
+        const { workspaceId, terminalId } = event.payload;
+        useSkillStore.getState().clearPendingDrop(terminalId);
+        useTerminalStore.getState().removeTerminal(terminalId);
+        const loaded = loadedMapRef.current.get(workspaceId);
+        if (!loaded) return;
+        const currentTerminals =
+          workspaceTerminalsRef.current.workspaceId === workspaceId
+            ? workspaceTerminalsRef.current.terminals
+            : loaded.terminals;
+        const nextTerminals = currentTerminals.filter((item) => item.id !== terminalId);
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
+        }
+        setLoadedMap((previous) => {
+          const current = previous.get(workspaceId);
+          if (!current) return previous;
+          const next = new Map(previous);
+          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: computeLayout(nextTerminals.length) });
+          return next;
+        });
+        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+          terminalCount: nextTerminals.length,
+          agentCount: nextTerminals.filter((item) => item.agentId).length,
+        });
+      }),
+    ]);
+    return () => {
+      disposed = true;
+      void listeners.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => undefined);
+    };
+  }, []);
+
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === s.activeWorkspaceId),
   );
@@ -75,8 +189,6 @@ export function WorkspaceView() {
     if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
     loadingRef.current.add(id);
 
-    let cancelled = false;
-
     invokeWithTimeout(
       () =>
         invoke<{
@@ -89,8 +201,6 @@ export function WorkspaceView() {
       15000,
     )
       .then((fullConfig) => {
-        if (cancelled) return;
-
         // Registra i terminali nel terminalStore
         const terminalStore = useTerminalStore.getState();
         let firstId: string | null = null;
@@ -108,28 +218,25 @@ export function WorkspaceView() {
           if (!firstId) firstId = tc.id;
         }
 
-        // Auto-attiva il primo terminale
-        if (firstId) {
+        // A late load may populate the cache, but it must never steal the
+        // active terminal from a workspace the user switched to meanwhile.
+        if (
+          firstId &&
+          useWorkspaceStore.getState().activeWorkspaceId === id
+        ) {
           terminalStore.setActiveTerminal(firstId);
         }
 
-        // Calculate eviction BEFORE setState — React may call updaters multiple
-        // times (StrictMode, concurrent rendering) so side effects don't belong
-        // inside the updater function. Read from refs, not from stale closure.
+        // This is only an LRU cache for workspace configuration. Evicting a
+        // cached config must never kill the user's live PTY or agent session;
+        // TerminalPane can rehydrate the same backend PTY when the workspace
+        // is visited again. The eviction target is resolved inside the state
+        // updater so a workspace that becomes active during an async load is
+        // never removed by a stale precomputed candidate.
         const newOrder = openOrderRef.current
           .filter((k) => k !== id)
           .concat(id);
-
-        const currentActive = useWorkspaceStore.getState().activeWorkspaceId;
-        const toEvict = loadedMapRef.current.size >= MAX_OPEN_WORKSPACES
-          ? newOrder.find(
-              (k) => k !== currentActive && loadedMapRef.current.has(k),
-            )
-          : undefined;
-
-        if (toEvict) {
-          terminalStore.killWorkspaceTerminals(toEvict);
-        }
+        openOrderRef.current = newOrder;
 
         setLoadedMap((prev) => {
           const next = new Map(prev);
@@ -143,13 +250,12 @@ export function WorkspaceView() {
             updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
           });
 
-          openOrderRef.current = newOrder;
-
-          if (toEvict) {
-            next.delete(toEvict);
-            openOrderRef.current = openOrderRef.current.filter(
-              (k) => k !== toEvict,
+          if (next.size > MAX_OPEN_WORKSPACES) {
+            const activeAtCommit = useWorkspaceStore.getState().activeWorkspaceId;
+            const toEvict = newOrder.find(
+              (key) => key !== activeAtCommit && key !== id && next.has(key),
             );
+            if (toEvict) next.delete(toEvict);
           }
 
           return next;
@@ -165,11 +271,6 @@ export function WorkspaceView() {
       .finally(() => {
         loadingRef.current.delete(id);
       });
-
-    return () => {
-      cancelled = true;
-      loadingRef.current.delete(id);
-    };
   }, []);
 
   // Gestisce la chiusura di un terminale: serializzata per evitare race condition.
@@ -388,6 +489,7 @@ export function WorkspaceView() {
                 cols: 80,
                 rows: 24,
                 workspaceId,
+                agentId: newTerminal.agentId,
               }),
             10000,
           );
@@ -474,16 +576,21 @@ export function WorkspaceView() {
     };
   }, []);
 
-  // Carica workspace attivo se non già in cache.
-  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare
-  // il focus sul solo workspace attivo. Così se esci da una
-  // workspace in focus mode e ci torni, il focus è preservato.
+  // Carica workspace attivo se non già in cache. Watching loadedMap as well as
+  // the active id lets the current workspace recover automatically if cache
+  // churn removes its config while async loads are completing.
+  // NON clear focus: WorkspaceGrid usa localFocusId per filtrare il focus sul
+  // solo workspace attivo. Così se esci da una workspace in focus mode e ci
+  // torni, il focus è preservato.
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    if (!loadedMapRef.current.has(activeWorkspaceId)) {
+    if (
+      !loadedMap.has(activeWorkspaceId) &&
+      !loadingRef.current.has(activeWorkspaceId)
+    ) {
       loadWorkspace(activeWorkspaceId);
     }
-  }, [activeWorkspaceId, loadWorkspace]);
+  }, [activeWorkspaceId, loadedMap, loadWorkspace]);
 
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
@@ -518,42 +625,27 @@ export function WorkspaceView() {
     }
   }, [loadedMap, activeWorkspaceId]);
 
-  // Empty state — nessun workspace aperto
+  // Empty state — keep the desktop shell quiet and task-focused.
   if (!workspace && !activeWorkspaceId) {
     return (
       <>
-        <div className="flex h-full items-center justify-center px-8 text-neutral-text-muted">
-          <div className="panel flex max-w-xl flex-col items-center px-12 py-14 text-center shadow-2xl tab-slide-in">
-            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/25 transition-transform duration-200 hover:scale-105">
-              <TerminalSquare size={32} strokeWidth={1.5} className="text-primary" />
+        <div className="flex h-full items-center justify-center bg-neutral-darkest px-8">
+          <div className="w-full max-w-sm text-center tab-slide-in">
+            <div className="flex justify-center">
+              <TerminalSquare size={24} strokeWidth={1.4} className="text-neutral-text-muted" />
             </div>
-            <div>
-            <h2 className="font-display font-extrabold text-2xl text-neutral-text mb-3 tracking-tight">
-              Nessun Spazio Aperto
+            <h2 className="mt-4 font-display text-base font-semibold tracking-[-0.02em] text-neutral-text">
+              Nessuno spazio di lavoro aperto
             </h2>
-            <p className="text-[0.9375rem] text-neutral-text-dim max-w-md mb-8 leading-relaxed mx-auto">
-              Seleziona un workspace dalla sidebar o creane uno nuovo per iniziare ad operare con i terminali ed agenti.
+            <p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-neutral-text-muted">
+              Seleziona uno spazio dalla barra laterale oppure creane uno per iniziare.
             </p>
-             <button
-               onClick={() => setWizardOpen(true)}
-               className="inline-flex items-center gap-2 text-sm font-bold rounded-xl transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.97] hover:shadow-[0_0_20px_rgba(255,157,36,0.25)] cursor-pointer"
-               style={{
-                 padding: "10px 24px",
-                 background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-strong))",
-                 color: "var(--color-neutral-bg)",
-                 boxShadow: "0 4px 12px rgba(255, 157, 36, 0.18)",
-               }}
-             >
-               <Plus size={18} strokeWidth={2.2} />
-               Nuovo Spazio
-             </button>
-            </div>
+            <button type="button" onClick={() => setWizardOpen(true)} className="primary-button mt-5">
+              <Plus size={14} /> Nuovo spazio
+            </button>
           </div>
         </div>
-        <NewSpaceWizard
-          open={wizardOpen}
-          onClose={() => setWizardOpen(false)}
-        />
+        <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
       </>
     );
   }
@@ -571,48 +663,16 @@ export function WorkspaceView() {
           minHeight: 0,
         }}
       >
-        {/* Header del workspace attivo */}
-        <div
-          className="bg-black/5 backdrop-blur-sm"
-          style={{
-            padding: "16px 24px 14px",
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: "16px",
-            borderBottom: "1px solid var(--color-neutral-border)",
-          }}
-        >
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <h1
-              style={{
-                fontFamily: "var(--font-display)",
-                fontWeight: 800,
-                fontSize: "18px",
-                color: "var(--color-neutral-text)",
-                letterSpacing: "-0.02em",
-                lineHeight: 1.25,
-              }}
-            >
+        {/* Compact workspace identity bar. Terminal content gets the space. */}
+        <div className="flex h-12 shrink-0 items-center border-b border-neutral-border bg-neutral-surface px-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate font-display text-[13px] font-semibold tracking-[-0.02em] text-neutral-text">
               {activeLoaded.name}
             </h1>
-            <p
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "var(--color-neutral-text-muted)",
-                marginTop: "4px",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                lineHeight: 1.4,
-              }}
-            >
+            <p className="mt-0.5 truncate font-mono text-[9px] text-neutral-text-muted" title={activeLoaded.rootPath}>
               {activeLoaded.rootPath}
             </p>
           </div>
-
         </div>
 
         {/* Solo il workspace attivo viene renderizzato */}

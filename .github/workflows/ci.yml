@@ -3,8 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
   workflow_call:
 
 concurrency:
@@ -76,10 +75,13 @@ jobs:
         working-directory: .
       - run: npm run build
         working-directory: .
+      - run: npm run test:jarvis
+        working-directory: .
       - run: cargo test
 
   build:
     name: Build (Windows MSI)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     needs: [lint-rust, test-rust]
 
