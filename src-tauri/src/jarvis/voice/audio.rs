@@ -9,6 +9,29 @@ use super::types::{
 // edge silence from an already captured turn; it must not eat quiet speech.
 const CLOUD_SILENCE_THRESHOLD: f32 = 0.003;
 const CLOUD_SILENCE_PADDING_MS: u64 = 160;
+const LEVEL_FLOOR_DB: f32 = -45.0;
+const LEVEL_CEILING_DB: f32 = 0.0;
+
+/// Converts a linear microphone block into a perceptual 0..1 level.
+///
+/// VAD keeps its own linear threshold; this value is only for the UI meter.
+/// RMS shows sustained speech while a small peak contribution keeps consonants
+/// and word onsets visible, matching the working Traflix-Voice pipeline.
+pub fn perceptual_level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+        / samples.len() as f32)
+        .sqrt();
+    let peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0_f32, f32::max);
+    let effective = rms.max(peak * 0.08).max(0.000001);
+    let db = 20.0 * effective.log10();
+    ((db - LEVEL_FLOOR_DB) / (LEVEL_CEILING_DB - LEVEL_FLOOR_DB)).clamp(0.0, 1.0)
+}
 
 pub fn normalize_f32(sample: f32) -> f32 {
     sample.clamp(-1.0, 1.0)
@@ -56,12 +79,16 @@ fn trim_silence_range(samples: &[f32], sample_rate: u32) -> Option<Range<usize>>
     let first = if samples[0].abs() >= threshold {
         0
     } else {
-        samples.iter().position(|sample| sample.abs() >= threshold)?
+        samples
+            .iter()
+            .position(|sample| sample.abs() >= threshold)?
     };
     let last = if samples[samples.len() - 1].abs() >= threshold {
         samples.len() - 1
     } else {
-        samples.iter().rposition(|sample| sample.abs() >= threshold)?
+        samples
+            .iter()
+            .rposition(|sample| sample.abs() >= threshold)?
     };
 
     let pad = (sample_rate as u64 * CLOUD_SILENCE_PADDING_MS / 1000) as usize;
@@ -95,8 +122,8 @@ pub fn encode_wav_pcm16(audio: &CapturedAudio) -> Result<Vec<u8>, VoiceErrorCode
         &resampled_storage
     };
 
-    let range = trim_silence_range(prepared, TARGET_SAMPLE_RATE)
-        .ok_or(VoiceErrorCode::AudioTooShort)?;
+    let range =
+        trim_silence_range(prepared, TARGET_SAMPLE_RATE).ok_or(VoiceErrorCode::AudioTooShort)?;
     let trimmed = &prepared[range];
     let min_samples = (TARGET_SAMPLE_RATE as u64 * MIN_RECORDING_MS / 1000) as usize;
     if trimmed.len() < min_samples {
@@ -157,6 +184,16 @@ mod tests {
         assert_eq!(normalize_f32(2.0), 1.0);
         assert_eq!(normalize_i16(-32768), -1.0);
         assert!((normalize_u16(65535) - 0.9999695).abs() < 0.0001);
+    }
+
+    #[test]
+    fn perceptual_level_exposes_quiet_speech_and_rejects_silence() {
+        assert_eq!(perceptual_level(&[]), 0.0);
+        assert_eq!(perceptual_level(&[0.0; 128]), 0.0);
+        let quiet = perceptual_level(&[0.01; 128]);
+        let loud = perceptual_level(&[0.25; 128]);
+        assert!(quiet > 0.0);
+        assert!(loud > quiet);
     }
 
     #[test]

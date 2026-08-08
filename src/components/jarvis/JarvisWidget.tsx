@@ -464,7 +464,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           </p>
         </div>
 
-        <div className="flex items-center gap-0.5">
+        <div className="jarvis-controls" data-jarvis-control-group>
+          {(voiceArmed || voiceListening) && (
+            <VoiceMeter level={level} listening={voiceListening} />
+          )}
           <button
             type="button"
             data-jarvis-control
@@ -482,7 +485,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           >
             {props.muted ? <MicOff size={15} /> : <Mic size={15} />}
           </button>
-          {(voiceArmed || voiceListening) && <VoiceMeter level={level} />}
           <button
             type="button"
             data-jarvis-control
@@ -509,15 +511,29 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   );
 }
 
-function VoiceMeter({ level }: { level: number }) {
-  const visibleLevel = Math.max(0.04, Math.min(1, level * 3.2));
+function VoiceMeter({
+  level,
+  listening,
+}: {
+  level: number;
+  listening: boolean;
+}) {
+  // The capture pipeline already sends a perceptual 0..1 level, so do not
+  // apply a second dB conversion here. That would crush normal speech back
+  // toward zero and make the waves appear frozen.
+  const visibleLevel = Math.max(0, Math.min(1, level));
+  const factors = [0.42, 0.72, 1, 0.72, 0.42];
   return (
-    <span className="jarvis-level-meter" aria-label={`Livello microfono ${Math.round(level * 100)}%`} role="img">
-      {[0.3, 0.52, 0.76, 1, 0.64].map((factor, index) => (
+    <span
+      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""}`}
+      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%`}
+      role="img"
+    >
+      {factors.map((factor, index) => (
         <span
           key={factor}
           style={{
-            transform: `scaleY(${Math.max(0.12, visibleLevel * factor)})`,
+            transform: `scaleY(${Math.max(0.14, visibleLevel * factor)})`,
             transitionDelay: `${index * 12}ms`,
           }}
         />

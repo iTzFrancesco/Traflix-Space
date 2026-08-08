@@ -369,6 +369,14 @@ a:not(:disabled),
   background: var(--color-signal);
 }
 
+.jarvis-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
 .jarvis-control {
   width: 31px;
   height: 31px;
@@ -398,19 +406,31 @@ a:not(:disabled),
 }
 
 .jarvis-level-meter {
-  height: 14px;
+  width: 29px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 2px;
+  padding: 0 2px;
+  border-radius: 999px;
+  color: var(--color-signal);
+  opacity: 0.72;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.jarvis-level-meter--active {
+  opacity: 1;
+  background: oklch(0.78 0.13 157 / 0.08);
 }
 
 .jarvis-level-meter > span {
   width: 2px;
   height: 12px;
   border-radius: 99px;
-  background: var(--color-signal);
+  background: currentColor;
   transform-origin: center;
-  transition: transform 65ms linear;
+  transition: transform 65ms ease-out, opacity 65ms linear;
 }
 
 /* Agent attention is informative, not a glowing dashboard. */

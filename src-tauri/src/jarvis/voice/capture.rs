@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 #[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-#[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::thread::{self, JoinHandle};
 #[cfg(any(windows, test))]
@@ -154,7 +154,11 @@ fn run_cpal_capture(
             cpal::SampleFormat::F32 => device.build_input_stream(
                 &config,
                 move |data: &[f32], _| {
-                    push_samples(&callback_sender, data.iter().copied(), &callback_failed_for_samples)
+                    push_samples(
+                        &callback_sender,
+                        data.iter().copied(),
+                        &callback_failed_for_samples,
+                    )
                 },
                 {
                     let error_flag = Arc::clone(&callback_failed);
@@ -170,7 +174,8 @@ fn run_cpal_capture(
                     move |data: &[i16], _| {
                         push_samples(
                             &callback_sender,
-                            data.iter().map(|sample| super::audio::normalize_i16(*sample)),
+                            data.iter()
+                                .map(|sample| super::audio::normalize_i16(*sample)),
                             &callback_failed_for_samples,
                         )
                     },
@@ -189,7 +194,8 @@ fn run_cpal_capture(
                     move |data: &[u16], _| {
                         push_samples(
                             &callback_sender,
-                            data.iter().map(|sample| super::audio::normalize_u16(*sample)),
+                            data.iter()
+                                .map(|sample| super::audio::normalize_u16(*sample)),
                             &callback_failed_for_samples,
                         )
                     },
@@ -410,7 +416,9 @@ fn push_samples<I: IntoIterator<Item = f32>>(
     if incoming.is_empty() {
         return;
     }
-    if let Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) = sender.try_send(incoming) {
+    if let Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) =
+        sender.try_send(incoming)
+    {
         // Never block the realtime callback. A full queue is still a hard
         // capture failure rather than silently corrupting the transcript.
         failed.store(true, Ordering::Release);
@@ -420,8 +428,7 @@ fn push_samples<I: IntoIterator<Item = f32>>(
 #[cfg(windows)]
 fn process_samples(buffer: &Arc<Mutex<CaptureBuffer>>, incoming: Vec<f32>) {
     if let Ok(mut buffer) = buffer.lock() {
-        buffer.level =
-            incoming.iter().map(|sample| sample.abs()).sum::<f32>() / incoming.len().max(1) as f32;
+        buffer.level = super::audio::perceptual_level(&incoming);
         let speech_started = if let Some(vad) = buffer.vad.as_mut() {
             vad.process(&incoming);
             vad.speech_started()
