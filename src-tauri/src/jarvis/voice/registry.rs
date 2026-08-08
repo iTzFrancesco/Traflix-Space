@@ -425,13 +425,15 @@ impl VoiceState {
 
     pub fn request_stop_tts(&self) -> (TtsStatusView, Option<String>) {
         let mut inner = self.inner.lock();
-        let request_id = inner.tts.request_id.clone();
-        if let Some(token) = inner.tts_cancellation.clone() {
+        let request_id = if let Some(token) = inner.tts_cancellation.clone() {
             token.cancel();
             inner.tts_cancel_requested = true;
             inner.tts.status = TtsStatus::Stopped;
             inner.tts.error = None;
-        }
+            inner.tts.request_id.clone()
+        } else {
+            None
+        };
         (inner.tts.clone(), request_id)
     }
 

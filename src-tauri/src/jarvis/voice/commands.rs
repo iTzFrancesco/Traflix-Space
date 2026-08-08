@@ -93,6 +93,7 @@ pub async fn jarvis_voice_start(
             let status = signal.status;
             if signal.status_changed {
                 emit_voice_state(&event_app, &status);
+                stop_tts_on_speech(&event_app, &event_state, &status);
             }
             if !matches!(
                 status.status,
@@ -133,6 +134,7 @@ pub async fn jarvis_voice_start(
             let current = signal.status;
             if signal.status_changed {
                 emit_voice_state(&watchdog_app, &current);
+                stop_tts_on_speech(&watchdog_app, &watchdog_state, &current);
             }
             if current.status == VoiceRequestStatus::Armed {
                 if current.duration_ms.unwrap_or_default()
@@ -606,6 +608,19 @@ fn emit_voice_state(app: &AppHandle, status: &VoiceRequestStatusView) {
 }
 fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
     let _ = app.emit(TTS_STATE_EVENT, status);
+}
+
+/// Barge-in is handled at the audio boundary, not only through a React event
+/// round-trip. This runs once when VAD confirms speech and cancels the active
+/// Edge TTS/playback token before the first spoken frame can pollute STT.
+fn stop_tts_on_speech(app: &AppHandle, state: &VoiceState, status: &VoiceRequestStatusView) {
+    if status.status != VoiceRequestStatus::Recording {
+        return;
+    }
+    let (tts, request_id) = state.request_stop_tts();
+    if request_id.is_some() {
+        emit_tts_state(app, &tts);
+    }
 }
 
 #[cfg(test)]

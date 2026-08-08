@@ -229,6 +229,48 @@ pub struct ControlExecution {
     pub warnings: Vec<String>,
 }
 
+/// Request-scoped safety net: every running control checkpoint is closed even
+/// when an early `?` return happens during PTY setup or readiness polling.
+struct CheckpointGuard {
+    app: AppHandle,
+    request_id: String,
+    workspace_id: String,
+    phase: String,
+    armed: bool,
+}
+
+impl CheckpointGuard {
+    fn new(app: &AppHandle, invocation: &InvocationBinding, phase: &str) -> Self {
+        Self {
+            app: app.clone(),
+            request_id: invocation.request_id.clone(),
+            workspace_id: invocation.target_workspace_id.clone(),
+            phase: phase.to_string(),
+            armed: true,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CheckpointGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            emit_checkpoint(
+                &self.app,
+                &self.request_id,
+                &self.workspace_id,
+                &self.phase,
+                "Operazione non riuscita.",
+                JarvisActivityStatus::Failed,
+                None,
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentOpenResult {
@@ -953,8 +995,23 @@ async fn send_to_target(
         JarvisActivityStatus::Running,
         Some(session_id_for(&snapshot)),
     );
-    let bytes = prompt_bytes(prompt).map_err(|_| "prompt agente non valido".to_string())?;
-    app.state::<TerminalManager>()
+    let bytes = match prompt_bytes(prompt) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            emit_checkpoint(
+                app,
+                &invocation.request_id,
+                &invocation.target_workspace_id,
+                "writing",
+                "Scrittura non riuscita.",
+                JarvisActivityStatus::Failed,
+                None,
+            );
+            return Err("prompt agente non valido".to_string());
+        }
+    };
+    if app
+        .state::<TerminalManager>()
         .write_typed(
             app,
             &target.terminal.terminal_id,
@@ -962,7 +1019,19 @@ async fn send_to_target(
             TerminalInputOrigin::JarvisPrompt,
         )
         .await
-        .map_err(|_| "non sono riuscito a scrivere nella PTY".to_string())?;
+        .is_err()
+    {
+        emit_checkpoint(
+            app,
+            &invocation.request_id,
+            &invocation.target_workspace_id,
+            "writing",
+            "Scrittura non riuscita.",
+            JarvisActivityStatus::Failed,
+            None,
+        );
+        return Err("non sono riuscito a scrivere nella PTY".to_string());
+    }
     app.state::<crate::jarvis::JarvisState>()
         .registry
         .observe_jarvis_send(&snapshot, prompt, &now());
@@ -1192,7 +1261,11 @@ async fn open_agent(
         JarvisActivityStatus::Running,
         None,
     );
-    manager.spawn(app.clone(), config.clone(), 100, 30).await?;
+    let mut checkpoint = CheckpointGuard::new(app, invocation, "opening_agent");
+    manager
+        .spawn(app.clone(), config.clone(), 100, 30)
+        .await
+        .map_err(|_| "non sono riuscito ad aprire il terminale dell'agente".to_string())?;
     let mut updated = workspace.clone();
     updated.terminals.push(config.clone());
     updated.updated_at = now();
@@ -1229,14 +1302,24 @@ async fn open_agent(
     }
     let mut sent = false;
     if let Some(prompt) = initial_prompt {
-        let prompt =
-            validate_agent_text(&prompt).map_err(|_| "prompt iniziale non valido".to_string())?;
-        let snapshot = app
+        let prompt = match validate_agent_text(&prompt) {
+            Ok(prompt) => prompt,
+            Err(_) => {
+                rollback_open_agent(app, &workspace, &terminal_id).await;
+                return Err("prompt iniziale non valido".to_string());
+            }
+        };
+        let snapshot = match app
             .state::<TerminalManager>()
             .get_agent_snapshot(&terminal_id)
             .await
-            .map_err(|_| "sessione agente non disponibile".to_string())?
-            .ok_or_else(|| "sessione agente non disponibile".to_string())?;
+        {
+            Ok(Some(snapshot)) => snapshot,
+            _ => {
+                rollback_open_agent(app, &workspace, &terminal_id).await;
+                return Err("sessione agente non disponibile".to_string());
+            }
+        };
         if let Err(error) = send_to_target(
             app,
             invocation,
@@ -1262,12 +1345,11 @@ async fn open_agent(
         JarvisActivityStatus::Done,
         None,
     );
-    let generation = manager
-        .get_agent_snapshot(&terminal_id)
-        .await
-        .map_err(|_| "sessione agente non disponibile".to_string())?
-        .ok_or_else(|| "sessione agente non disponibile".to_string())?
-        .generation;
+    checkpoint.complete();
+    let generation = match manager.get_agent_snapshot(&terminal_id).await {
+        Ok(Some(snapshot)) => snapshot.generation,
+        _ => return Err("sessione agente non disponibile".to_string()),
+    };
     Ok(OpenResult::Opened {
         provider: definition.name,
         sent,
@@ -1416,6 +1498,7 @@ async fn restart_target(
         JarvisActivityStatus::Running,
         Some(session_id_for(&snapshot)),
     );
+    let mut checkpoint = CheckpointGuard::new(app, invocation, "restarting_agent");
     app.state::<TerminalManager>()
         .kill(app, &target.terminal.terminal_id)
         .await
@@ -1461,6 +1544,7 @@ async fn restart_target(
         JarvisActivityStatus::Done,
         None,
     );
+    checkpoint.complete();
     let _ = generation;
     Ok(())
 }

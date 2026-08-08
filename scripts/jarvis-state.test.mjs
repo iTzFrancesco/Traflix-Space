@@ -231,7 +231,7 @@ test("voice utility output is safe and bounded", () => {
 });
 
 test("idle and active status hierarchy stays compact", () => {
-  assert.equal(collapsedJarvisStatus(idle()), "Ready when you are");
+  assert.equal(collapsedJarvisStatus(idle()), "Pronto quando vuoi");
   assert.equal(
     collapsedJarvisStatus(
       idle({
@@ -244,7 +244,7 @@ test("idle and active status hierarchy stays compact", () => {
         },
       }),
     ),
-    "Listening…",
+    "In ascolto…",
   );
   assert.equal(
     collapsedJarvisStatus(
@@ -258,11 +258,11 @@ test("idle and active status hierarchy stays compact", () => {
         },
       }),
     ),
-    "Transcribing…",
+    "Trascrizione…",
   );
   assert.equal(
     collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })),
-    "Speaking…",
+    "Sto parlando…",
   );
 });
 
@@ -381,7 +381,7 @@ test("agent.open creates the same visible Traflix PTY and waits for readiness", 
   assert.match(commandsSource, /jarvis_agent_open/);
   assert.match(
     controlSource,
-    /manager\.spawn\(app\.clone\(\), config\.clone\(\)/,
+    /manager\s*\.spawn\(\s*app\.clone\(\),\s*config\.clone\(\),/s,
   );
   assert.match(controlSource, /READINESS_TIMEOUT/);
   assert.match(controlSource, /wait_until_ready/);

@@ -138,6 +138,7 @@ export function JarvisGlobalOverlay() {
       }
       store.clearVoiceError();
     }
+    if (!nextMuted) store.clearVoiceError();
     await store.toggleMuted();
   }, []);
 
@@ -241,14 +242,13 @@ export function JarvisGlobalOverlay() {
   // workspace. Armed is intentionally visually neutral; only actual detected
   // speech changes the request to Recording and turns the widget green.
   useEffect(() => {
+    if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
     if (
       !settingsLoaded ||
+      voiceError ||
       !isJarvisOwnerModeReady(settings.jarvis) ||
-      !activeWorkspaceId ||
-      !settings.jarvis.enabled ||
       settings.jarvis.muted ||
       settings.jarvis.voiceInput.activationMode !== "vad" ||
-      settingsOpen ||
       activeVoiceRequestId
     ) {
       return;
@@ -266,15 +266,17 @@ export function JarvisGlobalOverlay() {
         request.workspaceId === activeWorkspaceId &&
         (request.status === "running" || request.status === "cancellation_requested"),
     );
-    const ttsBusy =
-      ttsStatus.status === "synthesizing" || ttsStatus.status === "playing";
-    if (chatBusy || ttsBusy) return;
+    // Keep the microphone armed while Jarvis speaks so VAD can detect a real
+    // user interruption. TTS is stopped only after the request transitions to
+    // `recording`, not merely when it is armed.
+    if (chatBusy) return;
 
     const workspaceId = activeWorkspaceId;
     const timer = window.setTimeout(() => {
       const store = useJarvisStore.getState();
       if (
         !store.settingsLoaded ||
+        store.voiceError ||
         !isJarvisOwnerModeReady(store.settings.jarvis) ||
         useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
         !store.settings.jarvis.enabled ||
@@ -291,10 +293,7 @@ export function JarvisGlobalOverlay() {
           (request.status === "running" ||
             request.status === "cancellation_requested"),
       );
-      const liveTtsBusy =
-        store.ttsStatus.status === "synthesizing" ||
-        store.ttsStatus.status === "playing";
-      if (!liveChatBusy && !liveTtsBusy) void store.startVoice();
+      if (!liveChatBusy) void store.startVoice();
     }, AUTO_ARM_DELAY_MS);
 
     return () => window.clearTimeout(timer);
@@ -305,7 +304,7 @@ export function JarvisGlobalOverlay() {
     settings,
     settingsLoaded,
     settingsOpen,
-    ttsStatus.status,
+    voiceError,
     voiceRequest?.requestId,
     voiceRequest?.status,
   ]);
@@ -410,7 +409,7 @@ export function JarvisGlobalOverlay() {
                   current.status,
                 )
               ) {
-                void startVoice();
+                void startVoice({ interruptTts: true });
               }
             } else if (
               current?.status === "recording" ||
@@ -421,7 +420,7 @@ export function JarvisGlobalOverlay() {
               !current ||
               !["transcribing", "stopping"].includes(current.status)
             ) {
-              void startVoice();
+              void startVoice({ interruptTts: true });
             }
           } else {
             const press = releaseVoicePress(shortcutPressedRef.current);

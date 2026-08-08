@@ -116,7 +116,7 @@ interface JarvisStore {
   updatePendingAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   loadProviderStatus: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
-  startVoice: () => Promise<void>;
+  startVoice: (options?: { interruptTts?: boolean }) => Promise<void>;
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
@@ -247,6 +247,10 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       return true;
     } catch (error) {
       const cancelled = error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "chat_cancelled";
+      // invokeWithTimeout cannot cancel a Tauri command by itself. Best-effort
+      // cancellation keeps Rust from continuing to emit Thinking checkpoints
+      // after the UI has already timed out.
+      if (!cancelled) void cancelChat(invocation.requestId).catch(() => undefined);
       set((state) => ({ requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: cancelled ? "cancelled" : "failed", error: errorMessage(error) } }), chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) } }));
       return false;
     }
@@ -264,13 +268,13 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   updatePendingAction: async (action, text) => { try { const result = await updatePendingAction(action.id, action.invocation, text); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); return result; } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); throw error; } },
   loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
-  startVoice: async () => {
+  startVoice: async (options = {}) => {
     const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
     if (!workspaceId || get().activeVoiceRequestId) return;
     const requestId = crypto.randomUUID();
     set({ activeVoiceRequestId: requestId, voiceStopRequested: false, voiceCancelRequested: false, voiceError: null });
     try {
-      if (get().settings.jarvis.voiceOutput.stopOnUserSpeech && (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing")) {
+      if (options.interruptTts && get().settings.jarvis.voiceOutput.stopOnUserSpeech && (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing")) {
         const stopped = await ttsStop();
         get().setTtsStatus(stopped);
         if (stopped.status === "playing" || stopped.status === "synthesizing") {
@@ -362,9 +366,18 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   },
   setVoiceRequest: (voiceRequest) => {
     let shouldAutoSubmit = false;
+    let shouldInterruptTts = false;
     set((state) => {
       const current = state.voiceRequests[voiceRequest.workspaceId];
-      if (current && current.requestId !== voiceRequest.requestId && voiceRequest.status !== "recording" && voiceRequest.status !== "armed") return state;
+      // A new request is allowed to replace a previous terminal draft only
+      // when it is the request currently being started. Late events from an
+      // older capture must never overwrite a newer recording.
+      if (current && current.requestId !== voiceRequest.requestId && state.activeVoiceRequestId !== voiceRequest.requestId) return state;
+      shouldInterruptTts = voiceRequest.status === "recording"
+        && current?.requestId === voiceRequest.requestId
+        && current.status !== "recording"
+        && state.settings.jarvis.voiceOutput.stopOnUserSpeech
+        && (state.ttsStatus.status === "playing" || state.ttsStatus.status === "synthesizing");
       shouldAutoSubmit = voiceRequest.status === "transcript_ready"
         && Boolean(voiceRequest.transcript?.trim())
         && state.settings.jarvis.voiceInput.autoSubmitTranscript
@@ -378,6 +391,14 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         voiceError: voiceRequest.error?.code === "voice_vad_timeout" ? null : voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError,
       };
     });
+    // Stop only once VAD has crossed into real speech. Arming the microphone
+    // during TTS is intentional; stopping at arm-time would cancel every reply
+    // before the user has actually spoken.
+    if (shouldInterruptTts) {
+      void ttsStop()
+        .then((status) => get().setTtsStatus(status))
+        .catch((error) => set({ voiceError: sanitizedVoiceError(error) }));
+    }
     if (shouldAutoSubmit && !autoSubmittedVoiceRequests.has(voiceRequest.requestId)) {
       autoSubmittedVoiceRequests.add(voiceRequest.requestId);
       while (autoSubmittedVoiceRequests.size > 128) autoSubmittedVoiceRequests.delete(autoSubmittedVoiceRequests.values().next().value as string);
