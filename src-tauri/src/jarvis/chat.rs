@@ -1349,6 +1349,7 @@ fn request_error(
             ("request_registry_full", "troppe richieste Jarvis attive")
         }
         ChatRequestError::NotFound => ("request_not_found", "richiesta non trovata"),
+        #[cfg(test)]
         ChatRequestError::Cancelled => ("chat_cancelled", "richiesta annullata"),
     };
     JarvisErrorEnvelope::new(

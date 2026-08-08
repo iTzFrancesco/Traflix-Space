@@ -52,6 +52,7 @@ impl ContextBroker {
         }
     }
 
+    #[cfg(test)]
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             clock,
@@ -59,6 +60,7 @@ impl ContextBroker {
         }
     }
 
+    #[cfg(test)]
     pub fn with_source_and_clock(
         source: Arc<dyn AgentContextSource>,
         clock: Arc<dyn Clock>,
@@ -74,12 +76,6 @@ impl ContextBroker {
         Self {
             source,
             ..Self::new()
-        }
-    }
-
-    pub fn invalidate(&self, workspace_id: &str) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.invalidate(workspace_id);
         }
     }
 
@@ -228,17 +224,6 @@ impl ContextBroker {
         self.build(invocation, workspace_root, terminals, requested_depth)
     }
 
-    pub fn force_rebuild(
-        &self,
-        invocation: InvocationBinding,
-        workspace_root: &Path,
-        terminals: Vec<TerminalSummary>,
-        requested_depth: RequestedDepth,
-    ) -> Result<ContextPackageV1, crate::jarvis::types::JarvisErrorEnvelope> {
-        self.invalidate(&invocation.target_workspace_id);
-        self.build(invocation, workspace_root, terminals, requested_depth)
-    }
-
     pub(crate) fn source(&self) -> &dyn AgentContextSource {
         self.source.as_ref()
     }
@@ -256,9 +241,11 @@ impl ContextBroker {
                 "workspace_root_invalid",
                 "workspace root is not a directory",
             ),
+            #[cfg(test)]
             DocumentationError::PathTraversal => {
                 ("path_traversal", "path rejected by workspace policy")
             }
+            #[cfg(test)]
             DocumentationError::OutsideWorkspace => (
                 "path_outside_workspace",
                 "path rejected by workspace policy",
@@ -269,6 +256,12 @@ impl ContextBroker {
             DocumentationError::Cancelled => {
                 ("context_cancelled", "documentation collection cancelled")
             }
+            #[cfg(not(test))]
+            DocumentationError::Io => (
+                "documentation_unavailable",
+                "documentation collection unavailable",
+            ),
+            #[cfg(test)]
             DocumentationError::NotMarkdown
             | DocumentationError::SensitivePath
             | DocumentationError::ExcludedPath

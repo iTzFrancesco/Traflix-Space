@@ -17,8 +17,6 @@ pub struct CachedDocument {
 struct WorkspaceCacheEntry {
     root: PathBuf,
     documents: BTreeMap<String, CachedDocument>,
-    revision: String,
-    last_updated: String,
 }
 
 #[derive(Debug, Default)]
@@ -29,16 +27,15 @@ pub struct ContextCache {
 #[derive(Debug, Clone)]
 pub struct CacheBuildOutput {
     pub context: DocumentationContext,
+    #[cfg(test)]
     pub documents_read: usize,
+    #[cfg(test)]
     pub reused_documents: usize,
+    #[cfg(test)]
     pub removed_documents: usize,
 }
 
 impl ContextCache {
-    pub fn invalidate(&mut self, workspace_id: &str) {
-        self.workspaces.remove(workspace_id);
-    }
-
     pub fn build(
         &mut self,
         workspace_id: &str,
@@ -67,6 +64,7 @@ impl ContextCache {
         let mut warnings = discovery.warnings;
         let mut total_bytes = 0usize;
         let mut documents_read = 0usize;
+        #[cfg(test)]
         let mut reused_documents = 0usize;
 
         for discovered in discovery.documents {
@@ -85,7 +83,10 @@ impl ContextCache {
             let cached = if let Some(cached) = reusable {
                 let content_bytes = cached.entry.content.as_bytes().len();
                 if total_bytes.saturating_add(content_bytes) <= limits.max_total_bytes {
-                    reused_documents += 1;
+                    #[cfg(test)]
+                    {
+                        reused_documents += 1;
+                    }
                     cached
                 } else {
                     omitted_documents.push(OmittedDocument {
@@ -165,26 +166,18 @@ impl ContextCache {
 
         self.workspaces.insert(
             workspace_id.to_string(),
-            WorkspaceCacheEntry {
-                root,
-                documents,
-                revision,
-                last_updated: generated_at.to_string(),
-            },
+            WorkspaceCacheEntry { root, documents },
         );
 
         Ok(CacheBuildOutput {
             context,
+            #[cfg(test)]
             documents_read,
+            #[cfg(test)]
             reused_documents,
+            #[cfg(test)]
             removed_documents,
         })
-    }
-
-    pub fn revision(&self, workspace_id: &str) -> Option<String> {
-        self.workspaces
-            .get(workspace_id)
-            .map(|entry| format!("{}@{}", entry.revision, entry.last_updated))
     }
 }
 

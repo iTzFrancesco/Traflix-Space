@@ -49,8 +49,9 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
     let mut tokens = line.split_whitespace();
     let first = normalize_executable(tokens.next()?)?;
 
-    let candidate = match first.as_str() {
-        "npx" | "bunx" | "uvx" => next_provider_token(&mut tokens),
+    let provider = match first.as_str() {
+        "npx" | "bunx" | "uvx" => next_provider_token(&mut tokens)
+            .and_then(|candidate| provider_from_executable(&candidate)),
         "pnpm" => {
             let mut token = tokens.next();
             while let Some(value) = token {
@@ -58,6 +59,11 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
                 if normalized.as_deref() == Some("exec") {
                     token = tokens.next();
                     break;
+                }
+                if normalized.as_deref() == Some("run") {
+                    // A package script is not proof that this provider was
+                    // launched; only the explicit `pnpm exec` form is safe.
+                    return None;
                 }
                 if normalized
                     .as_deref()
@@ -71,16 +77,17 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
                 }
                 token = tokens.next();
             }
-            token.and_then(normalize_executable)
+            token.and_then(|candidate| provider_from_executable(&candidate))
         }
         "deno" => {
             // `deno run npm:codex` and `deno codex` are both common wrappers.
             next_provider_token(&mut tokens)
+                .and_then(|candidate| provider_from_executable(&candidate))
         }
         provider => provider_from_executable(provider),
     }?;
 
-    provider_from_executable(&candidate).map(|provider| AgentDetection {
+    Some(AgentDetection {
         provider,
         source: "command-observed".to_string(),
         confidence: 0.7,
@@ -110,18 +117,9 @@ fn normalize_executable(value: &str) -> Option<String> {
         .trim_start_matches(".\\");
     let value = value.strip_prefix("npm:").unwrap_or(value);
     let leaf = value.rsplit(['/', '\\']).next().unwrap_or(value);
-    let leaf = leaf.strip_suffix(".exe").unwrap_or(leaf);
-    (!leaf.is_empty()).then(|| leaf.to_ascii_lowercase())
-}
-
-/// Inspect a process tree on Windows. This compatibility helper is kept for
-/// callers that need one root; the live terminal manager uses the bulk async
-/// service below so a single CIM snapshot serves all terminals. Process-tree
-/// promotion remains limited to readiness-verified providers.
-#[cfg(windows)]
-pub fn detect_from_process_tree(root_pid: Option<u32>) -> Option<AgentDetection> {
-    let root_pid = root_pid?;
-    detect_from_process_tree_for_roots(&[root_pid]).remove(&root_pid)
+    let leaf = leaf.to_ascii_lowercase();
+    let leaf = leaf.strip_suffix(".exe").unwrap_or(&leaf);
+    (!leaf.is_empty()).then(|| leaf.to_string())
 }
 
 #[cfg(windows)]
@@ -220,11 +218,6 @@ pub async fn detect_from_process_tree_async(root_pids: Vec<u32>) -> HashMap<u32,
 }
 
 #[cfg(not(windows))]
-pub fn detect_from_process_tree(_root_pid: Option<u32>) -> Option<AgentDetection> {
-    None
-}
-
-#[cfg(not(windows))]
 pub async fn detect_from_process_tree_async(_root_pids: Vec<u32>) -> HashMap<u32, AgentDetection> {
     HashMap::new()
 }
@@ -235,24 +228,46 @@ mod tests {
 
     #[test]
     fn recognizes_launch_commands_without_classifying_arbitrary_shell_text() {
-        for command in [
-            "agy\r\n",
-            "codex --resume\r\n",
-            "npx -y opencode\r\n",
-            "pnpm exec claude\r\n",
-            "bunx pi\r\n",
-            "cmdc\r\n",
-            "cline\r\n",
-            "uvx freebuff\r\n",
-            "deno run codex\r\n",
-            "deno run npm:codex\r\n",
-        ] {
-            assert!(detect_from_command(command).is_some(), "{command}");
+        let expected = [
+            ("agy\r\n", "anti-gravity"),
+            ("codex --resume\r\n", "codex"),
+            ("npx -y opencode\r\n", "opencode"),
+            ("pnpm exec claude\r\n", "claude"),
+            ("bunx pi\r\n", "pi"),
+            ("cmdc\r\n", "cmdc"),
+            ("cline\r\n", "cline"),
+            ("uvx freebuff\r\n", "freebuff"),
+            ("deno run codex\r\n", "codex"),
+            ("deno run npm:codex\r\n", "codex"),
+        ];
+        for (command, provider) in expected {
+            let detection = detect_from_command(command).expect(command);
+            assert_eq!(detection.provider, provider, "{command}");
+            assert_eq!(detection.source, "command-observed");
+            assert_eq!(detection.confidence, 0.7);
         }
-        assert!(detect_from_command("Get-ChildItem\r\n").is_none());
-        assert!(detect_from_command("echo codex\r\n").is_none());
-        assert!(detect_from_command("powershell codex\r\n").is_none());
-        assert!(detect_from_command("pnpm run codex\r\n").is_none());
+        for command in [
+            "Get-ChildItem\r\n",
+            "echo codex\r\n",
+            "powershell codex\r\n",
+            "pnpm run codex\r\n",
+            "pnpm install codex\r\n",
+        ] {
+            assert!(detect_from_command(command).is_none(), "{command}");
+        }
+    }
+
+    #[test]
+    fn executable_normalization_handles_windows_paths_and_extensions() {
+        let detection = detect_from_command("C:\\tools\\CODEX.EXE --resume\r\n")
+            .expect("Windows executable path should be recognized");
+        assert_eq!(detection.provider, "codex");
+        assert_eq!(
+            detect_from_command("'./agy'\r\n")
+                .expect("quoted executable")
+                .provider,
+            "anti-gravity"
+        );
     }
 
     #[test]

@@ -43,7 +43,6 @@ pub struct AgentStatusSnapshot {
     pub warnings: Vec<String>,
     pub current_task: Option<AgentTaskContext>,
     pub last_activity_at: Option<String>,
-    pub activity_timeline: Vec<AgentActivityEvent>,
 }
 
 pub trait AgentContextSource: Send + Sync {
@@ -98,7 +97,6 @@ impl AgentContextSource for LiveAgentContextSource {
             warnings: status.warnings,
             current_task: status.current_task,
             last_activity_at: status.last_activity_at,
-            activity_timeline: status.activity_timeline,
         })
     }
 
@@ -255,7 +253,6 @@ impl AgentContextSource for FakeAgentContextSource {
             warnings: Vec::new(),
             current_task: None,
             last_activity_at: None,
-            activity_timeline: Vec::new(),
         })
     }
 

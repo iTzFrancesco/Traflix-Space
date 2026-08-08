@@ -5,8 +5,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+#[cfg(not(debug_assertions))]
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+#[cfg(debug_assertions)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(debug_assertions)]
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
@@ -76,11 +79,14 @@ pub struct EdgeTextToSpeechProvider {
 
 #[derive(Clone)]
 enum EdgeHelper {
+    #[cfg(debug_assertions)]
     Python(PathBuf),
+    #[cfg(not(debug_assertions))]
     Sidecar(tauri::AppHandle),
 }
 
 impl EdgeTextToSpeechProvider {
+    #[cfg(debug_assertions)]
     pub fn new(helper_path: PathBuf) -> Self {
         Self {
             helper: EdgeHelper::Python(helper_path),
@@ -88,10 +94,12 @@ impl EdgeTextToSpeechProvider {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub fn debug(helper_path: PathBuf) -> Self {
         Self::new(helper_path)
     }
 
+    #[cfg(not(debug_assertions))]
     pub fn release(app: tauri::AppHandle) -> Self {
         Self {
             helper: EdgeHelper::Sidecar(app),
@@ -110,10 +118,6 @@ impl EdgeTextToSpeechProvider {
         } else {
             Err(VoiceErrorCode::HelperFailed)
         }
-    }
-
-    pub async fn shutdown(&self) {
-        shutdown_shared_worker().await;
     }
 
     async fn worker_sender(&self) -> Result<HelperSender, VoiceErrorCode> {
@@ -263,11 +267,14 @@ impl TextToSpeechProvider for EdgeTextToSpeechProvider {
 
 async fn spawn_helper_worker(helper: EdgeHelper) -> Result<HelperSender, VoiceErrorCode> {
     match helper {
+        #[cfg(debug_assertions)]
         EdgeHelper::Python(path) => spawn_python_worker(path).await,
+        #[cfg(not(debug_assertions))]
         EdgeHelper::Sidecar(app) => spawn_sidecar_worker(app).await,
     }
 }
 
+#[cfg(debug_assertions)]
 async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, VoiceErrorCode> {
     // Windows App Execution Aliases can leave `python.exe` pointing at the
     // Microsoft Store stub even when the real launcher is available as `py`.
@@ -327,6 +334,7 @@ async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, Voice
     Ok(sender)
 }
 
+#[cfg(not(debug_assertions))]
 async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, VoiceErrorCode> {
     let command = app
         .shell()
@@ -511,6 +519,7 @@ pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
     }
 }
 
+#[cfg(debug_assertions)]
 fn spawn_helper_process(path: &Path) -> Result<tokio::process::Child, VoiceErrorCode> {
     if path.extension().and_then(|value| value.to_str()) == Some("exe") {
         return Command::new(path)

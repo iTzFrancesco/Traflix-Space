@@ -1,14 +1,20 @@
 use crate::jarvis::types::InvocationBinding;
-use chrono::{Duration, Utc};
+#[cfg(test)]
+use chrono::Duration;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+#[cfg(test)]
 const MAX_PENDING_ACTIONS: usize = 64;
+#[cfg(test)]
 const ACTION_TTL_MINUTES: i64 = 10;
 pub const MAX_ACTION_TEXT_BYTES: usize = 16 * 1024;
+#[cfg(test)]
 static NEXT_ACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +50,7 @@ pub struct PendingActionRecord {
     pub payload: Value,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct PendingActionInput {
     pub operation: String,
@@ -72,6 +79,7 @@ pub struct PendingActionRegistry {
 }
 
 impl PendingActionRegistry {
+    #[cfg(test)]
     pub fn create(&self, input: PendingActionInput) -> PendingAction {
         let now = Utc::now();
         let action = PendingAction {
@@ -257,6 +265,7 @@ fn preview_text(text: &str) -> String {
     value[..end].to_string()
 }
 
+#[cfg(test)]
 fn prune_actions(actions: &mut HashMap<String, PendingActionRecord>) {
     if actions.len() <= MAX_PENDING_ACTIONS {
         return;
@@ -295,6 +304,7 @@ fn prune_actions(actions: &mut HashMap<String, PendingActionRecord>) {
     }
 }
 
+#[cfg(test)]
 fn uuid_like_id() -> String {
     format!(
         "{}-{}-{}",

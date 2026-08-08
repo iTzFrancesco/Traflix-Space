@@ -530,7 +530,7 @@ fn prune(requests: &mut HashMap<String, ActiveVoiceRequest>) {
 pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
     match code {
         VoiceErrorCode::ConsentRequired => "Attiva il consenso privacy vocale nelle impostazioni.",
-        VoiceErrorCode::ProviderNotConfigured => "Configura GROQ_API_KEY nel backend.",
+        VoiceErrorCode::ProviderNotConfigured => "Credenziale audio non rilevata. Apri Impostazioni → Connessioni e verifica Groq, poi riprova.",
         VoiceErrorCode::AuthFailed => "La credenziale Groq non è valida.",
         VoiceErrorCode::Forbidden => "Groq ha rifiutato l'accesso.",
         VoiceErrorCode::RateLimited => "Limite Groq raggiunto; riprova più tardi.",

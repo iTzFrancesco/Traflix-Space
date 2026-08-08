@@ -9,6 +9,7 @@ pub enum ChatRequestError {
     AlreadyRunning,
     RegistryFull,
     NotFound,
+    #[cfg(test)]
     Cancelled,
 }
 
@@ -76,6 +77,7 @@ impl ChatRequestRegistry {
     /// while `operation` runs, so cancellation either wins before the action
     /// is created or is ordered after it and can discard that action before
     /// the cancel IPC returns.
+    #[cfg(test)]
     pub fn with_active<T, F>(&self, request_id: &str, operation: F) -> Result<T, ChatRequestError>
     where
         F: FnOnce() -> T,
@@ -105,18 +107,6 @@ impl ChatRequestRegistry {
             requests.remove(request_id);
         }
     }
-
-    pub fn is_cancelled(&self, request_id: &str) -> bool {
-        self.requests
-            .lock()
-            .ok()
-            .and_then(|requests| {
-                requests
-                    .get(request_id)
-                    .map(|record| record.cancellation.is_cancelled())
-            })
-            .unwrap_or(true)
-    }
 }
 
 #[cfg(test)]
@@ -129,12 +119,15 @@ mod tests {
     #[test]
     fn requests_are_isolated_by_workspace_and_cancel_is_single_request() {
         let registry = ChatRequestRegistry::default();
-        let a = registry.start("a", "workspace-a").unwrap();
-        let b = registry.start("b", "workspace-b").unwrap();
+        registry.start("a", "workspace-a").unwrap();
+        registry.start("b", "workspace-b").unwrap();
         assert!(registry.start("a2", "workspace-a").is_err());
         assert!(registry.cancel("a").is_ok());
-        assert!(a.is_cancelled());
-        assert!(!b.is_cancelled());
+        assert_eq!(
+            registry.status("a"),
+            Ok(super::ChatRequestStatus::CancellationRequested)
+        );
+        assert_eq!(registry.status("b"), Ok(super::ChatRequestStatus::Running));
         registry.finish("a");
         assert_eq!(registry.status("a"), Err(ChatRequestError::NotFound));
         assert!(registry.status("b").is_ok());

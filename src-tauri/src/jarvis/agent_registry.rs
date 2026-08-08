@@ -67,6 +67,7 @@ pub struct AgentRegistryStatus {
     pub warnings: Vec<String>,
     pub current_task: Option<AgentTaskContext>,
     pub last_activity_at: Option<String>,
+    #[cfg(test)]
     pub activity_timeline: Vec<AgentActivityEvent>,
 }
 
@@ -419,6 +420,7 @@ impl AgentSessionRegistry {
         Some(reference)
     }
 
+    #[cfg(test)]
     pub fn observe_input(&self, terminal: &TerminalAgentSnapshot, observed_at: &str) {
         let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
             return;
@@ -907,6 +909,7 @@ impl AgentSessionRegistry {
             warnings: record.warnings.clone(),
             current_task: record.current_task.clone(),
             last_activity_at: record.last_activity_at.clone(),
+            #[cfg(test)]
             activity_timeline: record.activity_timeline.iter().cloned().collect(),
         })
     }
@@ -1163,6 +1166,7 @@ fn prune_sessions(sessions: &mut HashMap<String, AgentSessionRecord>, selected: 
     }
 }
 
+#[cfg(test)]
 pub fn fallback_result_from_terminal(text: &str, observed_at: &str) -> Option<AgentResult> {
     fallback_result_from_terminal_with_truncation(text, false, observed_at)
 }

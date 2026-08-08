@@ -1,15 +1,12 @@
-use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
-
 use super::vad::VadState;
 use crate::settings::store::VoiceActivationMode;
+use serde::{Deserialize, Serialize};
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const MIN_RECORDING_MS: u64 = 250;
 pub const MAX_RECORDING_MS: u64 = 45_000;
 pub const MAX_WAV_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_VOICE_REQUESTS: usize = 32;
-pub const MAX_VOICE_LEVEL_EVENTS_PER_SECOND: u32 = 20;
 pub const GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
 pub const MAX_MP3_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -66,12 +63,6 @@ pub struct VoiceLevelEvent {
 pub struct VoiceErrorView {
     pub code: String,
     pub message: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct VoiceRequest {
-    pub view: VoiceRequestStatusView,
-    pub cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

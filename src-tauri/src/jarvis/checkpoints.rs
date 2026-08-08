@@ -15,7 +15,6 @@ pub enum JarvisActivityStatus {
     Running,
     Done,
     Failed,
-    WaitingConfirmation,
 }
 
 #[derive(Debug, Clone, Serialize)]

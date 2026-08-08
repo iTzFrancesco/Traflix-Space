@@ -2,7 +2,9 @@ use crate::jarvis::types::{DocumentationEntry, OmittedDocument};
 use std::cmp::min;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
@@ -27,10 +29,15 @@ const EXCLUDED_DIRECTORIES: &[&str] = &[
 pub enum DocumentationError {
     RootResolution,
     RootNotDirectory,
+    #[cfg(test)]
     PathTraversal,
+    #[cfg(test)]
     NotMarkdown,
+    #[cfg(test)]
     SensitivePath,
+    #[cfg(test)]
     ExcludedPath,
+    #[cfg(test)]
     OutsideWorkspace,
     Timeout,
     Cancelled,
@@ -97,6 +104,7 @@ impl DocumentationCollector {
         Self { limits }
     }
 
+    #[cfg(test)]
     pub fn read_markdown(
         &self,
         root: &Path,
@@ -126,11 +134,6 @@ impl DocumentationCollector {
             None,
         )
         .map(|document| document.entry)
-    }
-
-    pub fn discover(&self, root: &Path) -> Result<DiscoveryResult, DocumentationError> {
-        let deadline = Instant::now() + self.limits.timeout;
-        self.discover_until(root, deadline, None)
     }
 
     pub(crate) fn discover_until(
@@ -350,6 +353,7 @@ impl DocumentationCollector {
         Ok(())
     }
 
+    #[cfg(test)]
     fn discover_candidate(
         &self,
         root: &Path,
@@ -470,7 +474,7 @@ pub(crate) fn content_hash(bytes: &[u8], truncated: bool) -> String {
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     if truncated {
-        hash ^= 0x5452_554e_43415445;
+        hash ^= 0x5452_554e_4341_5445;
     }
     format!("fnv1a-{hash:016x}")
 }

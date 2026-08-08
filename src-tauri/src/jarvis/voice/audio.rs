@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::io::Cursor;
 use std::ops::Range;
 
@@ -9,7 +10,7 @@ use super::types::{
 // edge silence from an already captured turn; it must not eat quiet speech.
 const CLOUD_SILENCE_THRESHOLD: f32 = 0.003;
 const CLOUD_SILENCE_PADDING_MS: u64 = 160;
-const LEVEL_FLOOR_DB: f32 = -45.0;
+const LEVEL_FLOOR_DB: f32 = -52.0;
 const LEVEL_CEILING_DB: f32 = 0.0;
 
 /// Converts a linear microphone block into a perceptual 0..1 level.
@@ -21,14 +22,13 @@ pub fn perceptual_level(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
-    let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
-        / samples.len() as f32)
-        .sqrt();
+    let rms =
+        (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
     let peak = samples
         .iter()
         .map(|sample| sample.abs())
         .fold(0.0_f32, f32::max);
-    let effective = rms.max(peak * 0.08).max(0.000001);
+    let effective = rms.max(peak * 0.12).max(0.000001);
     let db = 20.0 * effective.log10();
     ((db - LEVEL_FLOOR_DB) / (LEVEL_CEILING_DB - LEVEL_FLOOR_DB)).clamp(0.0, 1.0)
 }
@@ -95,6 +95,7 @@ fn trim_silence_range(samples: &[f32], sample_rate: u32) -> Option<Range<usize>>
     Some(first.saturating_sub(pad)..last.saturating_add(pad + 1).min(samples.len()))
 }
 
+#[cfg(test)]
 pub fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     trim_silence_range(samples, sample_rate)
         .map(|range| samples[range].to_vec())
@@ -170,6 +171,7 @@ pub fn wav_duration_ms(wav: &[u8]) -> Option<u64> {
     Some(data_len.saturating_mul(1000) / rate.max(1) as u64 / 2)
 }
 
+#[cfg(test)]
 pub fn validate_wav(wav: &[u8]) -> bool {
     Cursor::new(wav).get_ref().len() >= 44 && &wav[0..4] == b"RIFF" && &wav[8..12] == b"WAVE"
 }
