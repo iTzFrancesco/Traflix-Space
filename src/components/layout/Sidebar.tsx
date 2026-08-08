@@ -140,7 +140,6 @@ export function Sidebar() {
           <button type="button" onClick={() => setWizardOpen(true)} className="ui-icon-button mt-1 text-primary" title="Nuovo spazio" aria-label="Nuovo spazio">
             <Plus size={17} />
           </button>
-
           <div className="my-2 h-px w-6 bg-neutral-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-1 py-1">
             {workspaces.map((workspace, index) => {
@@ -190,7 +189,7 @@ export function Sidebar() {
           <button
             type="button"
             onClick={() => setWizardOpen(true)}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/[0.10] bg-white/[0.025] px-2.5 text-[11px] font-semibold text-neutral-text-dim transition-colors hover:border-primary/35 hover:bg-white/[0.05] hover:text-neutral-text"
+            className="inline-flex h-7 min-w-[156px] items-center justify-center gap-1.5 rounded-md border border-white/[0.10] bg-white/[0.025] px-3.5 text-[11px] font-semibold text-neutral-text-dim transition-colors hover:border-primary/35 hover:bg-white/[0.05] hover:text-neutral-text"
           >
             <Plus size={13} className="text-primary" />
             Nuovo spazio

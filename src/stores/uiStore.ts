@@ -7,7 +7,9 @@ const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 380;
 const MIN_RIGHT_PANEL_WIDTH = 360;
 const MAX_RIGHT_PANEL_WIDTH = 560;
-const RIGHT_PANEL_LAYOUT_VERSION = 2;
+// Reset the expanded tools panel once after the merge. The workspace should
+// start with the compact rail; users can still open the tools explicitly.
+const RIGHT_PANEL_LAYOUT_VERSION = 3;
 
 function clamp(value: unknown, min: number, max: number, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -94,9 +96,8 @@ export const useUIStore = create<UIStore>()(
               ? saved.isCollapsed
               : current.isCollapsed,
           rightPanelOpen:
-            typeof saved.rightPanelOpen === "boolean"
-              ? saved.rightPanelOpen
-              : current.rightPanelOpen,
+            saved.rightPanelLayoutVersion === RIGHT_PANEL_LAYOUT_VERSION &&
+            saved.rightPanelOpen === true,
           sidebarWidth: clamp(
             saved.sidebarWidth,
             MIN_SIDEBAR_WIDTH,

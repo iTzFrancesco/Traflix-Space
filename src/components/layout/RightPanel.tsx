@@ -117,10 +117,6 @@ export function RightPanel() {
           <span className="truncate text-xs font-semibold text-neutral-text">{activeSlot.label}</span>
         </div>
         <div className="flex items-center gap-1">
-          <button type="button" onClick={toggleJarvis} className={`right-rail-jarvis h-8 px-2.5 ${jarvisEnabled ? "right-rail-jarvis--active" : ""}`} title={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-label={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-pressed={jarvisEnabled}>
-            <Sparkles size={15} />
-            <span className="text-[10px] font-semibold">Jarvis</span>
-          </button>
           <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
             <PanelRightClose size={15} />
           </button>

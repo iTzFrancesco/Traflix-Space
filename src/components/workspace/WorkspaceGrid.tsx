@@ -31,6 +31,7 @@ export function WorkspaceGrid({
     ? focusedTerminalId
     : null;
   const isFocusMode = localFocusId !== null;
+  const isDense = terminals.length > 4;
 
   const stableOnActivate = useCallback((id: string) => onActivate(id), [onActivate]);
   const stableOnToggleFocus = useCallback((id: string) => toggleFocusTerminal(id), [toggleFocusTerminal]);
@@ -55,10 +56,9 @@ export function WorkspaceGrid({
   if (terminals.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center px-8">
-        <div className="text-center">
-          <p className="text-xs font-semibold text-neutral-text-dim">Nessun terminale in questo spazio di lavoro</p>
-          <p className="mt-1 text-[10px] text-neutral-text-muted">Aggiungi un terminale dalla configurazione dello spazio di lavoro.</p>
-        </div>
+        <p className="surface-card px-6 py-4 text-center text-sm leading-relaxed text-neutral-text-muted">
+          Nessun terminale configurato per questo workspace.
+        </p>
       </div>
     );
   }
@@ -68,14 +68,17 @@ export function WorkspaceGrid({
       style={{
         display: "grid",
         flex: 1,
-        gap: isFocusMode ? 0 : "4px",
-        padding: isFocusMode ? "4px" : "5px",
-        gridTemplateColumns: isFocusMode ? "1fr" : `repeat(${cols}, minmax(0, 1fr))`,
-        gridTemplateRows: isFocusMode ? "1fr" : `repeat(${rows}, minmax(0, 1fr))`,
+        gap: isFocusMode ? 0 : isDense ? "12px" : "16px",
+        padding: isFocusMode
+          ? "8px 12px 12px"
+          : isDense
+            ? "12px"
+            : "12px 16px 16px",
+        gridTemplateColumns: isFocusMode ? "1fr" : `repeat(${cols}, 1fr)`,
+        gridTemplateRows: isFocusMode ? "1fr" : `repeat(${rows}, 1fr)`,
         minHeight: 0,
         overflow: "hidden",
         position: "relative",
-        background: "var(--color-neutral-darkest)",
       }}
     >
       {terminals.map((terminal) => {
