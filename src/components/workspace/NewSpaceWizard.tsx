@@ -44,9 +44,7 @@ const agentIcons: Record<string, typeof Bot> = {
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
   const addWorkspace = useWorkspaceStore((state) => state.addWorkspace);
-  const setActiveWorkspace = useWorkspaceStore(
-    (state) => state.setActiveWorkspace,
-  );
+  const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const { addPreset, updatePreset, removePreset, presets } = usePresetStore();
   const addToast = useToastStore((state) => state.addToast);
 
@@ -121,10 +119,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   const changeAgentCount = (agentId: string, delta: number) => {
     setAgentCounts((current) => {
-      const total = Object.values(current).reduce(
-        (sum, count) => sum + count,
-        0,
-      );
+      const total = Object.values(current).reduce((sum, count) => sum + count, 0);
       const existing = current[agentId] ?? 0;
       if (delta > 0 && total >= terminalCount) return current;
       if (delta < 0 && existing <= 0) return current;
@@ -141,15 +136,18 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
 
   const handleSelectFolder = async () => {
     try {
-      const path = await invokeWithTimeout(
-        () => invoke<string>("select_folder"),
-        30000,
-      );
+      // Native human interaction must never inherit an arbitrary request timeout.
+      const path = await invoke<string>("select_folder");
       setFolderPath(path);
       setPresetSourceId(null);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("folder-selection-cancelled")) return;
       console.error("Selezione cartella fallita:", error);
-      addToast({ type: "error", message: "Impossibile aprire il selettore cartelle" });
+      addToast({
+        type: "error",
+        message: "Impossibile aprire il selettore cartelle",
+      });
     }
   };
 
@@ -206,9 +204,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       for (const [agentId, count] of Object.entries(
         supportedAgentCounts(agentCounts),
       )) {
-        for (let index = 0; index < count; index += 1) {
-          agentIds.push(agentId);
-        }
+        for (let index = 0; index < count; index += 1) agentIds.push(agentId);
       }
       while (agentIds.length < terminalCount) agentIds.push(null);
 
@@ -260,7 +256,10 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
       handleClose();
     } catch (error) {
       console.error("Creazione spazio di lavoro fallita:", error);
-      addToast({ type: "error", message: "Impossibile creare lo spazio di lavoro" });
+      addToast({
+        type: "error",
+        message: "Impossibile creare lo spazio di lavoro",
+      });
     } finally {
       setCreating(false);
     }
@@ -308,11 +307,7 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               }}
             />
           )}
-
-          {step === 2 && (
-            <TerminalStep count={terminalCount} onChange={setCount} />
-          )}
-
+          {step === 2 && <TerminalStep count={terminalCount} onChange={setCount} />}
           {step === 3 && (
             <AgentStep
               terminalCount={terminalCount}
@@ -322,7 +317,6 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
               onFill={fillWithAgent}
             />
           )}
-
           {step === 4 && (
             <ReviewStep
               workspaceName={workspaceName}
@@ -345,7 +339,6 @@ export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {
           >
             <ChevronLeft size={14} /> Indietro
           </button>
-
           {step < STEPS.length ? (
             <button
               type="button"
@@ -393,11 +386,14 @@ function FolderStep({
           Ogni terminale di questo spazio di lavoro partirà da questa cartella.
         </p>
       </div>
-
       <div className="flex gap-2">
         <div className="flex h-10 min-w-0 flex-1 items-center gap-2 border border-neutral-border bg-neutral-surface px-3">
           <FolderOpen size={15} className="shrink-0 text-primary" />
-          <span className={`truncate font-mono text-[11px] ${folderPath ? "text-neutral-text-dim" : "text-neutral-text-muted"}`}>
+          <span
+            className={`truncate font-mono text-[11px] ${
+              folderPath ? "text-neutral-text-dim" : "text-neutral-text-muted"
+            }`}
+          >
             {folderPath || "Scegli una cartella progetto"}
           </span>
         </div>
@@ -405,7 +401,6 @@ function FolderStep({
           Sfoglia
         </button>
       </div>
-
       {presets.length > 0 && (
         <div>
           <div className="mb-2 flex items-center justify-between">
@@ -414,18 +409,13 @@ function FolderStep({
           </div>
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
             {presets.map((preset) => (
-              <div
-                key={preset.id}
-                className="group flex min-h-12 items-center gap-3 px-1 py-2"
-              >
+              <div key={preset.id} className="group flex min-h-12 items-center gap-3 px-1 py-2">
                 <button
                   type="button"
                   onClick={() => onLoadPreset(preset)}
                   className="min-w-0 flex-1 text-left"
                 >
-                  <p className="truncate text-xs font-medium text-neutral-text">
-                    {preset.name}
-                  </p>
+                  <p className="truncate text-xs font-medium text-neutral-text">{preset.name}</p>
                   <p className="mt-0.5 truncate font-mono text-[10px] text-neutral-text-muted">
                     {preset.folderPath} · {preset.terminalCount} terminali
                   </p>
@@ -448,13 +438,7 @@ function FolderStep({
   );
 }
 
-function TerminalStep({
-  count,
-  onChange,
-}: {
-  count: number;
-  onChange: (count: number) => void;
-}) {
+function TerminalStep({ count, onChange }: { count: number; onChange: (count: number) => void }) {
   const nextLayout = computeLayout(count);
   return (
     <div className="space-y-7">
@@ -464,7 +448,6 @@ function TerminalStep({
           Parti con pochi terminali. Potrai aggiungerne altri in qualsiasi momento.
         </p>
       </div>
-
       <div className="flex items-center gap-4">
         <button
           type="button"
@@ -488,7 +471,6 @@ function TerminalStep({
           <Plus size={15} />
         </button>
       </div>
-
       <div className="flex flex-wrap gap-2">
         {QUICK_COUNTS.map((quickCount) => (
           <button
@@ -505,10 +487,8 @@ function TerminalStep({
           </button>
         ))}
       </div>
-
       <div className="flex items-center gap-2 text-[11px] text-neutral-text-muted">
-        <LayoutGrid size={13} />
-        Layout {nextLayout.rows}×{nextLayout.cols}
+        <LayoutGrid size={13} /> Layout {nextLayout.rows}×{nextLayout.cols}
       </div>
     </div>
   );
@@ -540,7 +520,6 @@ function AgentStep({
           {assignedCount}/{terminalCount}
         </span>
       </div>
-
       <div className="divide-y divide-neutral-border border-y border-neutral-border">
         {AGENTS.map((agent) => {
           const Icon = agentIcons[agent.id] ?? Bot;
@@ -616,11 +595,13 @@ function ReviewStep({
         <h3 className="text-base font-semibold text-neutral-text">
           {workspaceName || "Spazio di lavoro"}
         </h3>
-        <p className="mt-1 truncate font-mono text-[11px] text-neutral-text-muted" title={folderPath}>
+        <p
+          className="mt-1 truncate font-mono text-[11px] text-neutral-text-muted"
+          title={folderPath}
+        >
           {folderPath}
         </p>
       </div>
-
       <dl className="divide-y divide-neutral-border border-y border-neutral-border text-xs">
         <SummaryRow label="Terminali" value={String(terminalCount)} />
         <SummaryRow label="Layout" value={`${nextLayout.rows}×${nextLayout.cols}`} />
@@ -629,7 +610,6 @@ function ReviewStep({
           value={assignments.length > 0 ? assignments.join(" · ") : "Nessuno precaricato"}
         />
       </dl>
-
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={onSavePreset} className="secondary-button">
           <Save size={13} /> {presetSourceId ? "Aggiorna preset" : "Salva preset"}
