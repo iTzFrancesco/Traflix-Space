@@ -51,7 +51,7 @@ test("voice widget contract no longer carries dead drawer state", () => {
 test("ready voice draft resumes only in its origin workspace, while enabled, and retries without duplicate sends", () => {
   assert.match(
     overlaySource,
-    /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled\) return/,
+    /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled \|\| settingsOpen\) return/,
   );
   assert.match(
     overlaySource,
@@ -66,7 +66,7 @@ test("ready voice draft resumes only in its origin workspace, while enabled, and
   assert.match(overlaySource, /\.finally\(\(\) => resumeVoiceDraftRef\.current\.delete\(draft\.requestId\)\)/);
   assert.match(overlaySource, /draft\?\.status === "transcript_ready"/);
   assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.autoSubmitTranscript/);
-  assert.match(overlaySource, /store\.sendVoiceTranscript\(/);
+  assert.match(overlaySource, /store\s*\.sendVoiceTranscript\(/);
 });
 
 test("hands-free Jarvis arms VAD automatically and mute is the primary microphone control", () => {
@@ -77,10 +77,12 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
   assert.match(overlaySource, /store\.startVoice\(\)/);
   assert.match(overlaySource, /toggleMicrophoneMuted/);
+  assert.match(overlaySource, /voiceError \|\|/);
+  assert.match(settingsSource, /clearVoiceError\(\)/);
   assert.match(widgetSource, /onToggleMuted/);
   assert.match(widgetSource, /MicOff/);
-  assert.match(widgetSource, /Microphone muted/);
-  assert.match(widgetSource, /Always ready · speak normally/);
+  assert.match(widgetSource, /Microfono disattivato/);
+  assert.match(widgetSource, /Sempre pronto · parla normalmente/);
   assert.match(widgetSource, /voiceRequest\?\.status === "armed"/);
   assert.match(widgetSource, /voiceRequest\?\.status === "recording"/);
   assert.match(widgetSource, /bg-danger\/\[0\.10\] text-danger/);
@@ -95,7 +97,8 @@ test("hands-free ambient capture follows workspace focus without stealing an act
 });
 
 test("Jarvis widget drag mirrors native release semantics instead of sticky pointer capture", () => {
-  assert.match(widgetSource, /const DRAG_HOLD_MS = 220/);
+  assert.match(widgetSource, /const DRAG_START_DISTANCE = 5/);
+  assert.doesNotMatch(widgetSource, /DRAG_HOLD_MS|EARLY_MOVE_CANCEL_DISTANCE/);
   assert.match(widgetSource, /window\.addEventListener\("pointermove", handleMove/);
   assert.match(widgetSource, /window\.addEventListener\("pointerup", handleUp\)/);
   assert.match(widgetSource, /window\.addEventListener\("pointercancel", handleCancel\)/);
@@ -191,6 +194,7 @@ test("frontend agent launch is deduplicated and rolls back after bounded write f
 
 test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(widgetSource, /VoiceMeter/);
+  assert.match(widgetSource, /voiceArmed \|\| voiceListening/);
   assert.match(globalsSource, /\.jarvis-level-meter > span[\s\S]*height: 12px/);
   assert.match(globalsSource, /transform-origin: center/);
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
@@ -242,6 +246,8 @@ test("skill rows retain stable accent colors without reverting the compact layou
 test("sidebar new workspace action stays compact, framed and localized", () => {
   assert.match(sidebarSource, /h-\[45px\]/);
   assert.match(sidebarSource, /Nuovo spazio/);
+  assert.match(sidebarSource, /group\/sidebar-jarvis/);
+  assert.match(sidebarSource, /aria-label=\{jarvisEnabled \? "Jarvis è visibile" : "Mostra Jarvis"\}/);
   assert.match(sidebarSource, /Spazi di lavoro/);
   assert.match(sidebarSource, /h-7 items-center gap-1\.5 rounded-md border border-white\/\[0\.10\]/);
   assert.doesNotMatch(sidebarSource, /New workspace|New space|Workspaces|No workspaces yet/);

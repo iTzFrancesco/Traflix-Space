@@ -1,4 +1,4 @@
-import type { AppSettings, JarvisSettings } from "./types";
+import type { AppSettings, JarvisSettings, VoiceActivationMode } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
 const ALWAYS_READY_ARM_SECONDS = 120;
@@ -10,7 +10,7 @@ const ALWAYS_READY_ARM_SECONDS = 120;
  * hold-to-talk remains available as an explicit advanced choice.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
-  const activationMode =
+  const activationMode: VoiceActivationMode =
     settings.voiceInput.activationMode === "hold_to_talk" ? "hold_to_talk" : "vad";
   const voiceInput = {
     ...settings.voiceInput,

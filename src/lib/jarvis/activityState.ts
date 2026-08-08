@@ -138,14 +138,29 @@ export function currentActivityLabel(
   pendingActions: PendingAction[] = [],
 ): string | null {
   if (!workspaceId) return null;
-  return (
-    events
-      .filter(
-        (event) =>
-          event.workspaceId === workspaceId && isEffectiveOpenCheckpoint(event, pendingActions),
-      )
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.label ?? null
-  );
+  const label = events
+    .filter(
+      (event) =>
+        event.workspaceId === workspaceId && isEffectiveOpenCheckpoint(event, pendingActions),
+    )
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.label;
+  return label ? localizeActivityLabel(label) : null;
+}
+
+/** Normalize backend checkpoint labels at the UI boundary so the compact
+ * widget remains Italian even when an older backend emits English labels. */
+function localizeActivityLabel(label: string): string {
+  const normalized = label.trim();
+  if (normalized === "Checking agents…") return "Controllo agenti…";
+  if (normalized === "Checking agent…") return "Controllo agente…";
+  if (normalized.startsWith("Checking ")) return `Controllo ${normalized.slice(9)}`;
+  if (normalized === "Reading last result…") return "Leggo l'ultimo risultato…";
+  if (normalized === "Reading agent timeline…") return "Leggo attività agente…";
+  if (normalized === "Reading terminal tail…") return "Leggo coda del terminale…";
+  if (normalized.startsWith("Writing to ")) return `Scrivo su ${normalized.slice(11)}`;
+  if (normalized.startsWith("Interrupting ")) return `Interrompo ${normalized.slice(13)}`;
+  if (normalized === "Sent.") return "Inviato.";
+  return label;
 }
 
 export function hasTerminalStatus(status: CheckpointStatus): boolean {
@@ -196,7 +211,7 @@ export interface CollapsedStatusInput {
  * The compact bar represents Jarvis, never the agent registry. Agent sessions
  * can be working in the background while the bar remains idle. Priority:
  * voice error → no workspace → voice → Jarvis checkpoint → pending action →
- * LLM thinking → TTS → exact idle copy "Ready when you are".
+ * LLM thinking → TTS → stato inattivo localizzato.
  */
 export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   const {
@@ -209,10 +224,10 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
     pendingActions,
     activities,
   } = input;
-  if (voiceError) return "Voice error";
-  if (!workspaceName || !workspaceId) return "Select a workspace";
-  if (voiceRequest?.status === "recording" || voiceRequest?.status === "armed") return "Listening…";
-  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Transcribing…";
+  if (voiceError) return "Errore voce";
+  if (!workspaceName || !workspaceId) return "Seleziona uno spazio di lavoro";
+  if (voiceRequest?.status === "recording" || voiceRequest?.status === "armed") return "In ascolto…";
+  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Trascrizione…";
 
   const activityLabel = currentActivityLabel(activities, workspaceId, pendingActions);
   if (activityLabel) return activityLabel;
@@ -220,14 +235,14 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   const hasPending = pendingActions.some(
     (action) => action.status === "pending" && action.invocation.targetWorkspaceId === workspaceId,
   );
-  if (hasPending) return "Waiting for confirmation…";
+  if (hasPending) return "In attesa di conferma…";
 
   const thinking = Object.values(requests).some(
     (request) =>
       request.workspaceId === workspaceId &&
       (request.status === "running" || request.status === "cancellation_requested"),
   );
-  if (thinking) return "Thinking…";
-  if (ttsStatus.status === "synthesizing" || ttsStatus.status === "playing") return "Speaking…";
-  return "Ready when you are";
+  if (thinking) return "Sto elaborando…";
+  if (ttsStatus.status === "synthesizing" || ttsStatus.status === "playing") return "Sto parlando…";
+  return "Pronto quando vuoi";
 }

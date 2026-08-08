@@ -312,7 +312,7 @@ a:not(:disabled),
   background: oklch(0.185 0.006 85 / 0.985);
   box-shadow: 0 8px 24px oklch(0.05 0 0 / 0.28);
   transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
-  cursor: default;
+  cursor: grab;
 }
 
 [data-jarvis-dragging="true"] .jarvis-pill {

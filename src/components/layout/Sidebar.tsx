@@ -194,8 +194,8 @@ export function Sidebar() {
           <span className="absolute inset-y-0 left-1 w-px bg-transparent transition-colors group-hover:bg-primary/60" />
         </div>
 
-        <div className="flex h-[45px] shrink-0 items-center justify-between gap-2 border-b border-neutral-border px-2">
-          <button type="button" onClick={toggleSidebar} className="ui-icon-button h-7 w-7" title="Comprimi barra laterale" aria-label="Comprimi barra laterale">
+        <div className="relative flex h-[45px] shrink-0 items-center justify-center gap-2 border-b border-neutral-border px-2">
+          <button type="button" onClick={toggleSidebar} className="ui-icon-button absolute left-2 h-7 w-7" title="Comprimi barra laterale" aria-label="Comprimi barra laterale">
             <PanelLeftClose size={15} />
           </button>
           <button
@@ -208,18 +208,25 @@ export function Sidebar() {
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={openJarvis}
-          className="mx-2.5 mt-2 flex h-9 items-center gap-2 rounded-md px-2.5 text-left text-xs transition-colors hover:bg-white/[0.045]"
-          title={jarvisEnabled ? "Jarvis è visibile" : "Mostra Jarvis"}
-        >
-          <Sparkles size={15} className="text-primary" />
-          <span className="flex-1 font-semibold text-neutral-text">Jarvis</span>
-          <span className={`h-1.5 w-1.5 rounded-full ${jarvisEnabled ? "bg-signal" : "bg-neutral-text-muted"}`} />
-        </button>
+        <div className="flex h-10 items-center justify-end px-2.5 pt-1">
+          <div className="group/sidebar-jarvis relative">
+            <button
+              type="button"
+              onClick={openJarvis}
+              className="relative flex h-8 w-8 items-center justify-center rounded-md text-primary transition-colors hover:bg-white/[0.07] hover:text-primary-light"
+              title={jarvisEnabled ? "Jarvis è visibile" : "Mostra Jarvis"}
+              aria-label={jarvisEnabled ? "Jarvis è visibile" : "Mostra Jarvis"}
+            >
+              <Sparkles size={16} />
+              <span className={`absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full border border-neutral-surface ${jarvisEnabled ? "bg-signal" : "bg-neutral-text-muted"}`} />
+            </button>
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded border border-neutral-border bg-neutral-elevated px-2 py-1 text-[10px] font-medium text-neutral-text-dim opacity-0 shadow-lg transition-opacity group-hover/sidebar-jarvis:opacity-100">
+              Jarvis
+            </span>
+          </div>
+        </div>
 
-        <div className="flex items-center justify-between px-3 pb-2 pt-4">
+        <div className="flex items-center justify-between px-3 pb-2 pt-2">
           <span className="text-[11px] font-semibold text-neutral-text-dim">Spazi di lavoro</span>
           <span className="font-mono text-[10px] text-neutral-text-muted">{workspaces.length}</span>
         </div>

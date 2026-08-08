@@ -42,7 +42,6 @@ interface JarvisWidgetProps {
 
 type DragIntent = {
   pointerId: number;
-  armed: boolean;
   activated: boolean;
   startX: number;
   startY: number;
@@ -50,12 +49,9 @@ type DragIntent = {
   offsetY: number;
 };
 
-// Traflix Voice lets the native mouse-up own the end of a drag. Space keeps
-// the widget inside the main window, so we mirror that lifecycle with global
-// listeners instead of pointer capture: hold briefly, move, release anywhere.
-const DRAG_HOLD_MS = 220;
+// The widget starts dragging on the first intentional movement. A small
+// distance threshold keeps ordinary clicks from becoming accidental drags.
 const DRAG_START_DISTANCE = 5;
-const EARLY_MOVE_CANCEL_DISTANCE = 14;
 
 export function JarvisWidget(props: JarvisWidgetProps) {
   const position = useJarvisStore(
@@ -71,7 +67,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   );
   const widgetRef = useRef<HTMLDivElement>(null);
   const dragIntentRef = useRef<DragIntent | null>(null);
-  const dragTimerRef = useRef<number | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const previousVoiceStatusRef = useRef<
@@ -114,9 +109,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   useEffect(
     () => () => {
       dragCleanupRef.current?.();
-      if (dragTimerRef.current !== null) {
-        window.clearTimeout(dragTimerRef.current);
-      }
       audioContextRef.current?.close().catch(() => undefined);
     },
     [],
@@ -176,12 +168,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     previousVoiceStatusRef.current = status;
   }, [playCue, props.voiceRequest?.status]);
 
-  const clearDragTimer = () => {
-    if (dragTimerRef.current === null) return;
-    window.clearTimeout(dragTimerRef.current);
-    dragTimerRef.current = null;
-  };
-
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (
       event.button !== 0 ||
@@ -194,12 +180,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     if (!element) return;
 
     dragCleanupRef.current?.();
-    clearDragTimer();
 
     const rect = element.getBoundingClientRect();
     const intent: DragIntent = {
       pointerId: event.pointerId,
-      armed: false,
       activated: false,
       startX: event.clientX,
       startY: event.clientY,
@@ -219,12 +203,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     const finish = (persist: boolean) => {
       if (finished) return;
       finished = true;
-      clearDragTimer();
       cleanupListeners();
       dragIntentRef.current = null;
       dragCleanupRef.current = null;
       delete element.dataset.jarvisDragging;
-      delete element.dataset.jarvisDragArmed;
 
       if (!intent.activated) return;
       setDragging(false);
@@ -251,10 +233,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         moveEvent.clientY - intent.startY,
       );
 
-      if (!intent.armed) {
-        if (distance >= EARLY_MOVE_CANCEL_DISTANCE) clearDragTimer();
-        return;
-      }
       if (!intent.activated) {
         if (distance < DRAG_START_DISTANCE) return;
         intent.activated = true;
@@ -284,13 +262,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     window.addEventListener("pointerup", handleUp);
     window.addEventListener("pointercancel", handleCancel);
     window.addEventListener("blur", handleCancel);
-
-    dragTimerRef.current = window.setTimeout(() => {
-      if (finished || dragIntentRef.current !== intent) return;
-      intent.armed = true;
-      element.dataset.jarvisDragArmed = "true";
-      dragTimerRef.current = null;
-    }, DRAG_HOLD_MS);
 
     dragCleanupRef.current = () => finish(false);
   };
@@ -326,15 +297,15 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.voiceRequest?.status === "transcribing" ||
     props.voiceRequest?.status === "stopping";
   const statusText = props.muted
-    ? "Microphone muted"
+    ? "Microfono disattivato"
     : props.voiceError
-      ? "Audio setup needed"
+      ? "Configura l'audio"
       : props.chatError
-        ? "Jarvis unavailable"
+        ? "Jarvis non disponibile"
         : ttsFailed
-          ? "Voice unavailable"
+          ? "Voce non disponibile"
           : voiceArmed
-            ? "Ready when you are"
+            ? "Pronto ad ascoltare"
             : rawStatusText;
   const level = Math.max(
     0,
@@ -447,19 +418,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const active =
     activeRequests > 0 || speaking || jarvisActive || voiceListening || voiceBusy;
   const helperText = props.muted
-    ? "Click the microphone to resume"
+    ? "Premi il microfono per riattivarlo"
     : props.voiceError
-      ? "Open settings to check microphone and Groq"
+      ? "Apri le impostazioni per controllare microfono e Groq"
       : props.chatError
-        ? "Retry, or check OpenCode Zen in settings"
+        ? "Riprova o controlla OpenCode Zen nelle impostazioni"
         : ttsFailed
-          ? "Check voice output in settings"
+          ? "Controlla l'uscita audio nelle impostazioni"
           : voiceListening
-            ? "Listening · silence sends automatically"
+            ? "In ascolto · il silenzio invia automaticamente"
             : voiceArmed
-              ? "Always ready · speak normally"
+              ? "Sempre pronto · parla normalmente"
               : speaking
-                ? "Jarvis is speaking"
+                ? "Jarvis sta parlando"
                 : props.workspaceName ?? "Jarvis";
 
   return (
@@ -477,7 +448,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         className={`jarvis-pill cursor-grab ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
-        title="Hold briefly, then drag to reposition Jarvis"
+        title="Premi e trascina per spostare Jarvis"
       >
         <JarvisOrb active={active} listening={voiceListening} speaking={speaking} />
 
@@ -486,7 +457,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             <p className="truncate text-[13px] font-semibold leading-none text-neutral-text">
               {statusText}
             </p>
-            {voiceListening && <VoiceMeter level={level} />}
+
           </div>
           <p className="mt-1 truncate text-[10px] leading-none text-neutral-text-muted">
             {helperText}
@@ -505,19 +476,20 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             onKeyDown={handleVoiceKeyDown}
             onKeyUp={handleVoiceKeyUp}
             className={`jarvis-control ${props.muted ? "bg-danger/[0.10] text-danger hover:bg-danger/[0.14] hover:text-danger" : voiceListening ? "jarvis-control--listening" : ""}`}
-            title={props.muted ? "Unmute Jarvis microphone" : "Mute Jarvis microphone"}
-            aria-label={props.muted ? "Unmute Jarvis microphone" : "Mute Jarvis microphone"}
+            title={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
+            aria-label={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
             aria-pressed={props.muted}
           >
             {props.muted ? <MicOff size={15} /> : <Mic size={15} />}
           </button>
+          {(voiceArmed || voiceListening) && <VoiceMeter level={level} />}
           <button
             type="button"
             data-jarvis-control
             onClick={props.onOpenSettings}
             className={`jarvis-control ${props.voiceError || props.chatError || ttsFailed ? "text-warning" : ""}`}
-            title="Jarvis settings"
-            aria-label="Jarvis settings"
+            title="Impostazioni di Jarvis"
+            aria-label="Impostazioni di Jarvis"
           >
             <Settings size={15} />
           </button>
@@ -526,8 +498,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             data-jarvis-control
             onClick={props.onHide}
             className="jarvis-control"
-            title="Hide Jarvis"
-            aria-label="Hide Jarvis"
+            title="Nascondi Jarvis"
+            aria-label="Nascondi Jarvis"
           >
             <X size={15} />
           </button>
@@ -538,14 +510,14 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 }
 
 function VoiceMeter({ level }: { level: number }) {
-  const visibleLevel = Math.max(0.08, Math.min(1, level * 3.2));
+  const visibleLevel = Math.max(0.04, Math.min(1, level * 3.2));
   return (
-    <span className="jarvis-level-meter" aria-hidden="true">
-      {[0.45, 0.8, 1, 0.68].map((factor, index) => (
+    <span className="jarvis-level-meter" aria-label={`Livello microfono ${Math.round(level * 100)}%`} role="img">
+      {[0.3, 0.52, 0.76, 1, 0.64].map((factor, index) => (
         <span
           key={factor}
           style={{
-            transform: `scaleY(${Math.max(0.22, visibleLevel * factor)})`,
+            transform: `scaleY(${Math.max(0.12, visibleLevel * factor)})`,
             transitionDelay: `${index * 12}ms`,
           }}
         />

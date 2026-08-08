@@ -117,6 +117,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         jarvis: ownerModeJarvisSettings(draft.jarvis),
       };
       await saveSettings(normalized);
+      useJarvisStore.getState().clearVoiceError();
       setDraft(normalized);
       setSaved(true);
     } catch (reason) {
@@ -134,6 +135,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     try {
       const next = await jarvisSetSecret(secret, value);
       setSecretStatus(next);
+      useJarvisStore.getState().clearVoiceError();
       setSecretDrafts((current) => ({ ...current, [secret]: "" }));
       await useJarvisStore.getState().loadProviderStatus();
     } catch (reason) {
@@ -149,6 +151,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     try {
       const next = await jarvisClearSecret(secret);
       setSecretStatus(next);
+      useJarvisStore.getState().clearVoiceError();
       setSecretDrafts((current) => ({ ...current, [secret]: "" }));
       await useJarvisStore.getState().loadProviderStatus();
     } catch (reason) {
