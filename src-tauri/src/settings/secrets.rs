@@ -41,6 +41,17 @@ pub fn hydrate_process_environment(app: &AppHandle) {
     load_dotenv_environment(dotenv_candidates(app));
 }
 
+/// Re-check the supported `.env` locations before a voice request. This keeps
+/// development runs plug-and-play when the file was created after the app
+/// process started, without ever exposing the values to the frontend.
+pub fn refresh_dotenv_environment(app: &AppHandle) {
+    // Resolve persisted Windows user variables first so they keep precedence
+    // over the project `.env`, then fill any missing values from dotenv.
+    let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
+    let _ = read_secret_env(GROQ_API_KEY_ENV);
+    load_dotenv_environment(dotenv_candidates(app));
+}
+
 fn load_dotenv_environment(candidates: Vec<PathBuf>) {
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -68,13 +79,14 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>) {
 
 fn dotenv_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    // Development uses the repository root. In a packaged app, the executable
-    // directory is the predictable user-managed location for a sidecar .env.
+
+    // Development uses the repository root. In a packaged app, also inspect
+    // the executable/resource ancestry so launching from a shortcut does not
+    // change whether the user-managed `.env` is found.
     if cfg!(debug_assertions) {
-        candidates.push(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join(".env"),
+        push_ancestor_candidates(
+            &mut candidates,
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."),
         );
     }
     if let Ok(app_data_dir) = app.path().app_data_dir() {
@@ -82,17 +94,23 @@ fn dotenv_candidates(app: &AppHandle) -> Vec<PathBuf> {
     }
     if let Ok(executable) = env::current_exe() {
         if let Some(parent) = executable.parent() {
-            candidates.push(parent.join(".env"));
+            push_ancestor_candidates(&mut candidates, parent);
         }
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join(".env"));
+        push_ancestor_candidates(&mut candidates, &resource_dir);
     }
     if let Ok(current_dir) = env::current_dir() {
-        candidates.push(current_dir.join(".env"));
+        push_ancestor_candidates(&mut candidates, &current_dir);
     }
     candidates.dedup();
     candidates
+}
+
+fn push_ancestor_candidates(candidates: &mut Vec<PathBuf>, start: &std::path::Path) {
+    for directory in start.ancestors().take(5) {
+        candidates.push(directory.join(".env"));
+    }
 }
 
 fn parse_dotenv_assignment(line: &str) -> Option<(&str, String)> {
@@ -107,6 +125,14 @@ fn parse_dotenv_assignment(line: &str) -> Option<(&str, String)> {
         return None;
     }
     let value = raw_value.trim();
+    let value = if value.starts_with('"') || value.starts_with('\'') {
+        value
+    } else {
+        value
+            .split_once(" #")
+            .map(|(value, _)| value.trim())
+            .unwrap_or(value)
+    };
     let value = value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
@@ -267,6 +293,15 @@ mod tests {
         assert_eq!(
             parse_dotenv_assignment("GROQ_API_KEY='groq-demo'").map(|(_, value)| value),
             Some("groq-demo".to_string())
+        );
+        assert_eq!(
+            parse_dotenv_assignment("GROQ_API_KEY=groq-demo # local development")
+                .map(|(_, value)| value),
+            Some("groq-demo".to_string())
+        );
+        assert_eq!(
+            parse_dotenv_assignment("GROQ_API_KEY=\"groq # demo\"").map(|(_, value)| value),
+            Some("groq # demo".to_string())
         );
         assert!(parse_dotenv_assignment("# GROQ_API_KEY=ignored").is_none());
         assert!(parse_dotenv_assignment("not valid").is_none());

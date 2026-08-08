@@ -49,6 +49,7 @@ pub async fn jarvis_voice_start(
     settings: State<'_, SettingsManager>,
     request: VoiceStartRequest,
 ) -> Result<VoiceRequestStatusView, VoiceErrorView> {
+    crate::settings::secrets::refresh_dotenv_environment(&app);
     let configured = settings.get().await;
     let provider = GroqSpeechToTextProvider::from_environment().map_err(to_error)?;
     ensure_input_allowed(&configured.jarvis.voice_input, provider.configured())?;
@@ -248,6 +249,7 @@ async fn finish_voice_stop(
         }
     };
     let duration_ms = wav_duration_ms(&wav);
+    crate::settings::secrets::refresh_dotenv_environment(app);
     let provider = GroqSpeechToTextProvider::from_environment().map_err(to_error)?;
     if !provider.configured() {
         let status = state

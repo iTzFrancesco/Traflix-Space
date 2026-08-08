@@ -12,6 +12,15 @@ export function sanitizedVoiceError(error: unknown): string {
     .slice(0, 240);
 }
 
+export function isVoiceConfigurationError(message: string | null): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return normalized.includes("groq_api_key")
+    || normalized.includes("provider non configur")
+    || normalized.includes("credenzial")
+    || normalized.includes("consenso privacy");
+}
+
 export function italianVoices(voices: TtsVoice[]): TtsVoice[] {
   return voices.filter((voice) => voice.locale.toLowerCase().startsWith("it-"));
 }

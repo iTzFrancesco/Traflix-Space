@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use super::secrets::{self, JarvisSecretId, JarvisSecretStatus};
 use super::store::{AppSettings, SettingsManager};
@@ -17,7 +17,11 @@ pub async fn set_settings(
 }
 
 #[tauri::command]
-pub fn jarvis_secret_status() -> JarvisSecretStatus {
+pub fn jarvis_secret_status(app: AppHandle) -> JarvisSecretStatus {
+    // The settings screen must report the same effective credentials used by
+    // voice requests, including supported dotenv locations and Windows user
+    // environment variables.
+    secrets::refresh_dotenv_environment(&app);
     secrets::status()
 }
 
