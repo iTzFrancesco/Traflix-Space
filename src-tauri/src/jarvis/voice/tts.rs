@@ -101,10 +101,7 @@ impl EdgeTextToSpeechProvider {
 
     pub async fn prewarm(&self) -> Result<(), VoiceErrorCode> {
         let bytes = self
-            .run_helper(
-                r#"{"action":"ping"}"#.to_string(),
-                CancellationToken::new(),
-            )
+            .run_helper(r#"{"action":"ping"}"#.to_string(), CancellationToken::new())
             .await?;
         let result: HelperResult =
             serde_json::from_slice(&bytes).map_err(|_| VoiceErrorCode::HelperFailed)?;
@@ -352,9 +349,7 @@ async fn spawn_sidecar_worker(app: tauri::AppHandle) -> Result<HelperSender, Voi
                         let _ = response.send(Err(VoiceErrorCode::HelperFailed));
                         break;
                     };
-                    if running.write(payload.as_bytes()).is_err()
-                        || running.write(b"\n").is_err()
-                    {
+                    if running.write(payload.as_bytes()).is_err() || running.write(b"\n").is_err() {
                         if let Some(running) = child.take() {
                             let _ = running.kill();
                         }
@@ -519,6 +514,8 @@ pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
 fn spawn_helper_process(path: &Path) -> Result<tokio::process::Child, VoiceErrorCode> {
     if path.extension().and_then(|value| value.to_str()) == Some("exe") {
         return Command::new(path)
+            .env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV)
+            .env_remove(crate::settings::secrets::GROQ_API_KEY_ENV)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -543,6 +540,9 @@ fn spawn_helper_process(path: &Path) -> Result<tokio::process::Child, VoiceError
     }
 
     for mut command in commands {
+        command
+            .env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV)
+            .env_remove(crate::settings::secrets::GROQ_API_KEY_ENV);
         match command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

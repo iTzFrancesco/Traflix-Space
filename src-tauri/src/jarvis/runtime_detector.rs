@@ -59,7 +59,11 @@ pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
                     token = tokens.next();
                     break;
                 }
-                if normalized.as_deref().and_then(provider_from_executable).is_some() {
+                if normalized
+                    .as_deref()
+                    .and_then(provider_from_executable)
+                    .is_some()
+                {
                     break;
                 }
                 if !value.starts_with('-') {
