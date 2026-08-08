@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::env;
 #[cfg(windows)]
 use std::io::Write;
+use std::path::PathBuf;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
+use tauri::{AppHandle, Manager};
 
 pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
 pub const GROQ_API_KEY_ENV: &str = "GROQ_API_KEY";
@@ -32,9 +34,91 @@ pub fn status() -> JarvisSecretStatus {
     }
 }
 
-pub fn hydrate_process_environment() {
+pub fn hydrate_process_environment(app: &AppHandle) {
+    // Existing process/user environment variables always win over `.env`.
     let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
     let _ = read_secret_env(GROQ_API_KEY_ENV);
+    load_dotenv_environment(dotenv_candidates(app));
+}
+
+fn load_dotenv_environment(candidates: Vec<PathBuf>) {
+    for path in candidates {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for line in contents.lines() {
+            let Some((name, value)) = parse_dotenv_assignment(line) else {
+                continue;
+            };
+            if !matches!(name, OPENCODE_ZEN_API_KEY_ENV | GROQ_API_KEY_ENV) {
+                continue;
+            }
+            let already_configured = env::var(name)
+                .ok()
+                .is_some_and(|current| !current.trim().is_empty());
+            if already_configured {
+                continue;
+            }
+            if let Ok(value) = normalize_secret(&value) {
+                env::set_var(name, value);
+            }
+        }
+    }
+}
+
+fn dotenv_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    // Development uses the repository root. In a packaged app, the executable
+    // directory is the predictable user-managed location for a sidecar .env.
+    if cfg!(debug_assertions) {
+        candidates.push(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(".env"),
+        );
+    }
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        candidates.push(app_data_dir.join(".env"));
+    }
+    if let Ok(executable) = env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join(".env"));
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join(".env"));
+    }
+    if let Ok(current_dir) = env::current_dir() {
+        candidates.push(current_dir.join(".env"));
+    }
+    candidates.dedup();
+    candidates
+}
+
+fn parse_dotenv_assignment(line: &str) -> Option<(&str, String)> {
+    let line = line.trim().trim_start_matches('\u{feff}');
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (name, raw_value) = line.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') {
+        return None;
+    }
+    let value = raw_value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value)
+        .trim()
+        .to_string();
+    Some((name, value))
 }
 
 pub fn set_secret(secret: JarvisSecretId, value: String) -> Result<JarvisSecretStatus, String> {
@@ -159,7 +243,7 @@ fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_secret;
+    use super::{normalize_secret, parse_dotenv_assignment};
 
     #[test]
     fn secret_normalization_trims_copy_paste_whitespace() {
@@ -171,5 +255,20 @@ mod tests {
         assert!(normalize_secret("   ").is_err());
         assert!(normalize_secret("token\nvalue").is_err());
         assert!(normalize_secret(&"x".repeat(1025)).is_err());
+    }
+
+    #[test]
+    fn dotenv_parser_accepts_comments_exports_and_quotes() {
+        assert_eq!(
+            parse_dotenv_assignment("export OPENCODE_ZEN_API_KEY=\"demo-key\"")
+                .map(|(_, value)| value),
+            Some("demo-key".to_string())
+        );
+        assert_eq!(
+            parse_dotenv_assignment("GROQ_API_KEY='groq-demo'").map(|(_, value)| value),
+            Some("groq-demo".to_string())
+        );
+        assert!(parse_dotenv_assignment("# GROQ_API_KEY=ignored").is_none());
+        assert!(parse_dotenv_assignment("not valid").is_none());
     }
 }

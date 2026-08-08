@@ -667,6 +667,8 @@ impl TerminalManager {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV)
+            .env_remove(crate::settings::secrets::GROQ_API_KEY_ENV)
             .env("GIT_PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "Never");

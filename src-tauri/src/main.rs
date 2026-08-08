@@ -72,7 +72,7 @@ fn main() {
     builder
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
-            settings::secrets::hydrate_process_environment();
+            settings::secrets::hydrate_process_environment(app.handle());
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(jarvis::JarvisState::default());

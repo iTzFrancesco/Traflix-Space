@@ -234,6 +234,8 @@ impl TerminalSession {
             })?;
 
         let mut cmd = CommandBuilder::new(&self.shell);
+        cmd.env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV);
+        cmd.env_remove(crate::settings::secrets::GROQ_API_KEY_ENV);
         cmd.cwd(self.cwd.lock().unwrap().as_str());
         cmd.env("TERM", "xterm-256color");
         cmd.env("TRAFLIX_TERMINAL_ID", &self.id);
