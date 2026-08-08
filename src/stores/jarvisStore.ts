@@ -153,13 +153,13 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   voiceError: null,
 
   loadSettings: async () => {
-    set({ settingsLoading: true, settingsError: null });
+    set({ settingsLoading: true, settingsError: null, voiceError: null });
     try {
       const loaded = await getSettings();
-      set({ settings: loaded, settingsLoaded: true, settingsLoading: false });
+      set({ settings: loaded, settingsLoaded: true, settingsLoading: false, voiceError: null });
       await voiceSyncShortcut();
     }
-    catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error) }); }
+    catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error), voiceError: null }); }
   },
   saveSettings: async (settings) => {
     if (!settings.jarvis.enabled) {
@@ -270,7 +270,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
   startVoice: async (options = {}) => {
     const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-    if (!workspaceId || get().activeVoiceRequestId) return;
+    if (!get().settingsLoaded || !workspaceId || get().activeVoiceRequestId) return;
     const requestId = crypto.randomUUID();
     set({ activeVoiceRequestId: requestId, voiceStopRequested: false, voiceCancelRequested: false, voiceError: null });
     try {

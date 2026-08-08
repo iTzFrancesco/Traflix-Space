@@ -3,7 +3,6 @@ import { Mic, MicOff, Settings, X } from "lucide-react";
 import { JarvisOrb } from "./JarvisOrb";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
 import {
-  collapsedJarvisStatus,
   hasOpenActivity,
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
@@ -23,7 +22,6 @@ import type {
 
 interface JarvisWidgetProps {
   workspaceId: string | null;
-  workspaceName: string | null;
   pendingActions: PendingAction[];
   requests: Record<string, JarvisRequestState>;
   chatError: string | null;
@@ -281,35 +279,14 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.workspaceId,
     props.pendingActions,
   );
-  const rawStatusText = collapsedJarvisStatus({
-    workspaceId: props.workspaceId,
-    workspaceName: props.workspaceName,
-    voiceError: props.voiceError,
-    voiceRequest: props.voiceRequest,
-    ttsStatus: props.ttsStatus,
-    requests: props.requests,
-    pendingActions: props.pendingActions,
-    activities: props.activities,
-  });
   const voiceArmed = props.voiceRequest?.status === "armed";
   const voiceListening = props.voiceRequest?.status === "recording";
   const voiceBusy =
     props.voiceRequest?.status === "transcribing" ||
     props.voiceRequest?.status === "stopping";
-  const statusText = props.muted
-    ? "Microfono disattivato"
-    : props.voiceError
-      ? "Configura l'audio"
-      : props.chatError
-        ? "Jarvis non disponibile"
-        : ttsFailed
-          ? "Voce non disponibile"
-          : voiceArmed
-            ? "Pronto ad ascoltare"
-            : rawStatusText;
   const level = Math.max(
     0,
-    Math.min(1, props.voiceRequest?.normalizedLevel ?? 0),
+    Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
   );
 
   const handleMicrophoneClick = async () => {
@@ -417,21 +394,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
   const active =
     activeRequests > 0 || speaking || jarvisActive || voiceListening || voiceBusy;
-  const helperText = props.muted
-    ? "Premi il microfono per riattivarlo"
+  const accessibilityStatus = props.muted
+    ? "Microfono disattivato"
     : props.voiceError
-      ? "Apri le impostazioni per controllare microfono e Groq"
+      ? "Audio non disponibile"
       : props.chatError
-        ? "Riprova o controlla OpenCode Zen nelle impostazioni"
-        : ttsFailed
-          ? "Controlla l'uscita audio nelle impostazioni"
-          : voiceListening
-            ? "In ascolto · il silenzio invia automaticamente"
-            : voiceArmed
-              ? "Sempre pronto · parla normalmente"
-              : speaking
-                ? "Jarvis sta parlando"
-                : props.workspaceName ?? "Jarvis";
+        ? "Jarvis non disponibile"
+        : voiceListening
+          ? "In ascolto"
+          : voiceArmed
+            ? "Pronto"
+            : speaking
+              ? "Jarvis sta parlando"
+              : "Pronto";
 
   return (
     <div
@@ -445,22 +420,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
       }}
     >
       <div
-        className={`jarvis-pill cursor-grab ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
+        className={`jarvis-pill cursor-grab ${props.muted ? "jarvis-pill--muted" : ""} ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Premi e trascina per spostare Jarvis"
+        aria-label={`Jarvis · ${accessibilityStatus}`}
+        role="status"
+        aria-live="polite"
       >
-        <JarvisOrb active={active} listening={voiceListening} speaking={speaking} />
+        <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-[13px] font-semibold leading-none text-neutral-text">
-              {statusText}
-            </p>
-
-          </div>
-          <p className="mt-1 truncate text-[10px] leading-none text-neutral-text-muted">
-            {helperText}
+          <p className="truncate text-[12px] font-semibold leading-none tracking-[0.02em] text-neutral-text">
+            Jarvis
           </p>
         </div>
 
@@ -478,7 +450,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             onBlur={releaseHeldVoice}
             onKeyDown={handleVoiceKeyDown}
             onKeyUp={handleVoiceKeyUp}
-            className={`jarvis-control ${props.muted ? "bg-danger/[0.10] text-danger hover:bg-danger/[0.14] hover:text-danger" : voiceListening ? "jarvis-control--listening" : ""}`}
+            className={`jarvis-control ${props.muted ? "jarvis-control--muted" : voiceListening ? "jarvis-control--listening" : ""}`}
             title={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
             aria-label={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
             aria-pressed={props.muted}

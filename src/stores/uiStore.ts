@@ -5,8 +5,9 @@ export type RightPanelView = "browser" | "files" | "git" | "skills" | null;
 
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 380;
-const MIN_RIGHT_PANEL_WIDTH = 330;
-const MAX_RIGHT_PANEL_WIDTH = 520;
+const MIN_RIGHT_PANEL_WIDTH = 360;
+const MAX_RIGHT_PANEL_WIDTH = 560;
+const RIGHT_PANEL_LAYOUT_VERSION = 2;
 
 function clamp(value: unknown, min: number, max: number, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -28,6 +29,7 @@ interface UIStore {
   sidebarWidth: number;
   rightPanelOpen: boolean;
   rightPanelWidth: number;
+  rightPanelLayoutVersion: number;
   rightPanelActiveView: RightPanelView;
   toggleSidebar: () => void;
   openModal: (modal: string) => void;
@@ -49,7 +51,8 @@ export const useUIStore = create<UIStore>()(
       wizardOpen: false,
       sidebarWidth: 300,
       rightPanelOpen: false,
-      rightPanelWidth: 390,
+      rightPanelWidth: 420,
+      rightPanelLayoutVersion: RIGHT_PANEL_LAYOUT_VERSION,
       rightPanelActiveView: null,
       toggleSidebar: () => set((state) => ({ isCollapsed: !state.isCollapsed })),
       openModal: (modal) => set({ activeModal: modal }),
@@ -66,7 +69,7 @@ export const useUIStore = create<UIStore>()(
             width,
             MIN_RIGHT_PANEL_WIDTH,
             MAX_RIGHT_PANEL_WIDTH,
-            390,
+            420,
           ),
         }),
       setRightPanelActiveView: (view) =>
@@ -78,6 +81,7 @@ export const useUIStore = create<UIStore>()(
         sidebarWidth: state.sidebarWidth,
         isCollapsed: state.isCollapsed,
         rightPanelWidth: state.rightPanelWidth,
+        rightPanelLayoutVersion: state.rightPanelLayoutVersion,
         rightPanelOpen: state.rightPanelOpen,
         rightPanelActiveView: state.rightPanelActiveView,
       }),
@@ -100,11 +104,16 @@ export const useUIStore = create<UIStore>()(
             current.sidebarWidth,
           ),
           rightPanelWidth: clamp(
-            saved.rightPanelWidth,
+            saved.rightPanelLayoutVersion === RIGHT_PANEL_LAYOUT_VERSION
+              ? saved.rightPanelWidth
+              : saved.rightPanelWidth === 390
+                ? 420
+                : saved.rightPanelWidth,
             MIN_RIGHT_PANEL_WIDTH,
             MAX_RIGHT_PANEL_WIDTH,
             current.rightPanelWidth,
           ),
+          rightPanelLayoutVersion: RIGHT_PANEL_LAYOUT_VERSION,
           rightPanelActiveView: normalizeRightPanelView(saved.rightPanelActiveView),
         };
       },

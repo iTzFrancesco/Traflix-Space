@@ -575,25 +575,28 @@ function VoiceOptions({
         </label>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr]">
-        <TextField
-          label="Scorciatoia globale"
-          value={normalizedInput.globalShortcut}
-          onChange={(globalShortcut) =>
-            onInputChange({ ...normalizedInput, globalShortcut })
-          }
-        />
-        <ToggleRow
-          label="Abilita scorciatoia"
-          checked={normalizedInput.globalShortcutEnabled}
-          onChange={(globalShortcutEnabled) =>
-            onInputChange({ ...normalizedInput, globalShortcutEnabled })
-          }
-        />
-      </div>
-
       <details className="details-panel mt-4">
-        <summary>Regolazione voce</summary>
+        <summary>Altre opzioni voce</summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr]">
+          <TextField
+            label="Scorciatoia globale"
+            value={normalizedInput.globalShortcut}
+            onChange={(globalShortcut) =>
+              onInputChange({ ...normalizedInput, globalShortcut })
+            }
+          />
+          <ToggleRow
+            label="Abilita scorciatoia"
+            checked={normalizedInput.globalShortcutEnabled}
+            onChange={(globalShortcutEnabled) =>
+              onInputChange({ ...normalizedInput, globalShortcutEnabled })
+            }
+          />
+        </div>
+      </details>
+
+      <details className="details-panel mt-3">
+        <summary>Sensibilità e comportamento</summary>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <SelectField
             label="Modalità di interazione"

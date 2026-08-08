@@ -22,7 +22,6 @@ import { JarvisWidget } from "./JarvisWidget";
 const AUTO_ARM_DELAY_MS = 180;
 
 export function JarvisGlobalOverlay() {
-  const workspaces = useWorkspaceStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
   const settings = useJarvisStore((state) => state.settings);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
@@ -74,9 +73,6 @@ export function JarvisGlobalOverlay() {
   const resumeVoiceDraftRef = useRef<Set<string>>(new Set());
   const settingsRecoveryDraftRef = useRef<Set<string>>(new Set());
   const settingsWasOpenRef = useRef(settingsOpen);
-  const workspace = workspaces.find(
-    (candidate) => candidate.id === activeWorkspaceId,
-  );
   const chatError = activeWorkspaceId
     ? chatErrors[activeWorkspaceId] ?? null
     : null;
@@ -473,7 +469,6 @@ export function JarvisGlobalOverlay() {
     <>
       <JarvisWidget
         workspaceId={activeWorkspaceId}
-        workspaceName={workspace?.name ?? null}
         pendingActions={pendingActions}
         requests={requests}
         chatError={chatError}

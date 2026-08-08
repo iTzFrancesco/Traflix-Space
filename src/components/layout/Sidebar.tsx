@@ -6,7 +6,6 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -17,7 +16,6 @@ import { useUIStore } from "../../stores/uiStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
-import { useJarvisStore } from "../../stores/jarvisStore";
 
 const IS_DEV = import.meta.env.DEV;
 const MIN_SIDEBAR = 260;
@@ -38,8 +36,6 @@ export function Sidebar() {
   const setWizardOpen = useUIStore((state) => state.setWizardOpen);
   const sidebarWidth = useUIStore((state) => state.sidebarWidth);
   const setSidebarWidth = useUIStore((state) => state.setSidebarWidth);
-  const jarvisEnabled = useJarvisStore((state) => state.settings.jarvis.enabled);
-  const showJarvis = useJarvisStore((state) => state.showJarvis);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -80,10 +76,6 @@ export function Sidebar() {
       document.removeEventListener("contextmenu", close);
     };
   }, [contextMenu]);
-
-  const openJarvis = () => {
-    if (!jarvisEnabled) void showJarvis();
-  };
 
   const startRename = (id: string, currentName: string) => {
     setRenamingId(id);
@@ -148,9 +140,6 @@ export function Sidebar() {
           <button type="button" onClick={() => setWizardOpen(true)} className="ui-icon-button mt-1 text-primary" title="Nuovo spazio" aria-label="Nuovo spazio">
             <Plus size={17} />
           </button>
-          <button type="button" onClick={openJarvis} className="ui-icon-button mt-1 text-primary" title="Jarvis" aria-label="Jarvis">
-            <Sparkles size={16} />
-          </button>
 
           <div className="my-2 h-px w-6 bg-neutral-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-1 py-1">
@@ -206,24 +195,6 @@ export function Sidebar() {
             <Plus size={13} className="text-primary" />
             Nuovo spazio
           </button>
-        </div>
-
-        <div className="flex h-10 items-center justify-end px-2.5 pt-1">
-          <div className="group/sidebar-jarvis relative">
-            <button
-              type="button"
-              onClick={openJarvis}
-              className="relative flex h-8 w-8 items-center justify-center rounded-md text-primary transition-colors hover:bg-white/[0.07] hover:text-primary-light"
-              title={jarvisEnabled ? "Jarvis è visibile" : "Mostra Jarvis"}
-              aria-label={jarvisEnabled ? "Jarvis è visibile" : "Mostra Jarvis"}
-            >
-              <Sparkles size={16} />
-              <span className={`absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full border border-neutral-surface ${jarvisEnabled ? "bg-signal" : "bg-neutral-text-muted"}`} />
-            </button>
-            <span className="pointer-events-none absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded border border-neutral-border bg-neutral-elevated px-2 py-1 text-[10px] font-medium text-neutral-text-dim opacity-0 shadow-lg transition-opacity group-hover/sidebar-jarvis:opacity-100">
-              Jarvis
-            </span>
-          </div>
         </div>
 
         <div className="flex items-center justify-between px-3 pb-2 pt-2">

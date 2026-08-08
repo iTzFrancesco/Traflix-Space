@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
-import { Blocks, FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Blocks, FolderTree, GitBranch, Globe2, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
 import { useUIStore, type RightPanelView } from "../../stores/uiStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useJarvisStore } from "../../stores/jarvisStore";
 import { ProjectGitChanges } from "../project/ProjectGitChanges";
 import { ProjectExplorer } from "../project/ProjectExplorer";
 import { SkillsModule } from "../skills/SkillsModule";
@@ -25,6 +26,9 @@ export function RightPanel() {
   const setPanelWidth = useUIStore((state) => state.setRightPanelWidth);
   const setActiveView = useUIStore((state) => state.setRightPanelActiveView);
   const clearSelection = useProjectStore((state) => state.clearSelection);
+  const jarvisEnabled = useJarvisStore((state) => state.settings.jarvis.enabled);
+  const showJarvis = useJarvisStore((state) => state.showJarvis);
+  const hideJarvis = useJarvisStore((state) => state.hideJarvis);
   const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -47,6 +51,10 @@ export function RightPanel() {
     if (!isOpen) togglePanel();
   };
 
+  const toggleJarvis = () => {
+    void (jarvisEnabled ? hideJarvis() : showJarvis());
+  };
+
   const handleResizeMouseDown = (event: React.MouseEvent) => {
     event.preventDefault();
     const element = panelRef.current;
@@ -54,7 +62,7 @@ export function RightPanel() {
     const startX = event.clientX;
     const startWidth = element.getBoundingClientRect().width;
     const handleMove = (moveEvent: MouseEvent) => {
-      const nextWidth = Math.max(330, Math.min(520, startWidth + startX - moveEvent.clientX));
+      const nextWidth = Math.max(360, Math.min(560, startWidth + startX - moveEvent.clientX));
       element.style.width = `${nextWidth}px`;
     };
     const cleanup = () => {
@@ -77,15 +85,18 @@ export function RightPanel() {
 
   if (!isOpen) {
     return (
-      <aside className="flex h-full w-10 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Strumenti dello spazio di lavoro">
-        <button type="button" onClick={openPanel} className="ui-icon-button h-8 w-8 text-primary" title="Apri strumenti" aria-label="Apri strumenti dello spazio di lavoro">
-          <PanelRightOpen size={15} />
+      <aside className="flex h-full w-12 shrink-0 flex-col items-center border-l border-neutral-border bg-neutral-surface py-2" aria-label="Strumenti dello spazio di lavoro">
+        <button type="button" onClick={openPanel} className="ui-icon-button h-9 w-9 text-primary" title="Apri strumenti" aria-label="Apri strumenti dello spazio di lavoro">
+          <PanelRightOpen size={17} />
+        </button>
+        <button type="button" onClick={toggleJarvis} className={`right-rail-jarvis mt-2 h-9 w-9 ${jarvisEnabled ? "right-rail-jarvis--active" : ""}`} title={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-label={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-pressed={jarvisEnabled}>
+          <Sparkles size={17} />
         </button>
       </aside>
     );
   }
 
-  const panelWidth = Math.max(330, Math.min(520, width));
+  const panelWidth = Math.max(360, Math.min(560, width));
   const activeSlot = PANEL_SLOTS.find((slot) => slot.id === activeView) ?? PANEL_SLOTS[1];
   const ActiveIcon = activeSlot.icon;
 
@@ -93,7 +104,7 @@ export function RightPanel() {
     <aside
       ref={panelRef}
       className="relative flex h-full shrink-0 flex-col border-l border-neutral-border bg-neutral-surface"
-      style={{ width: panelWidth, minWidth: 330 }}
+      style={{ width: panelWidth, minWidth: 360 }}
       aria-label="Strumenti dello spazio di lavoro"
     >
       <div onMouseDown={handleResizeMouseDown} className="group absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize" aria-hidden="true">
@@ -105,9 +116,15 @@ export function RightPanel() {
           <ActiveIcon size={15} className="text-primary" />
           <span className="truncate text-xs font-semibold text-neutral-text">{activeSlot.label}</span>
         </div>
-        <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
-          <PanelRightClose size={15} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={toggleJarvis} className={`right-rail-jarvis h-8 px-2.5 ${jarvisEnabled ? "right-rail-jarvis--active" : ""}`} title={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-label={jarvisEnabled ? "Nascondi Jarvis" : "Mostra Jarvis"} aria-pressed={jarvisEnabled}>
+            <Sparkles size={15} />
+            <span className="text-[10px] font-semibold">Jarvis</span>
+          </button>
+          <button type="button" onClick={togglePanel} className="ui-icon-button h-8 w-8" title="Chiudi pannello" aria-label="Chiudi pannello">
+            <PanelRightClose size={15} />
+          </button>
+        </div>
       </div>
 
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-neutral-border px-2">
