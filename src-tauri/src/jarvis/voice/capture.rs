@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 #[cfg(windows)]
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::thread::{self, JoinHandle};
 #[cfg(any(windows, test))]
@@ -143,50 +145,57 @@ fn run_cpal_capture(
             sample_rate,
             options,
         )));
-        let callback_buffer = Arc::clone(&buffer);
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(32);
+        let callback_failed = Arc::new(AtomicBool::new(false));
+        let callback_sender = sample_tx.clone();
+        let callback_failed_for_samples = Arc::clone(&callback_failed);
         let config: cpal::StreamConfig = supported.clone().into();
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => device.build_input_stream(
                 &config,
-                move |data: &[f32], _| push_samples(&callback_buffer, data.iter().copied()),
+                move |data: &[f32], _| {
+                    push_samples(&callback_sender, data.iter().copied(), &callback_failed_for_samples)
+                },
                 {
-                    let error_buffer = Arc::clone(&buffer);
-                    move |_error| record_failure(&error_buffer)
+                    let error_flag = Arc::clone(&callback_failed);
+                    move |_error| record_failure(&error_flag)
                 },
                 None,
             ),
             cpal::SampleFormat::I16 => {
-                let callback_buffer = Arc::clone(&buffer);
+                let callback_sender = sample_tx.clone();
+                let callback_failed_for_samples = Arc::clone(&callback_failed);
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _| {
                         push_samples(
-                            &callback_buffer,
-                            data.iter()
-                                .map(|sample| super::audio::normalize_i16(*sample)),
+                            &callback_sender,
+                            data.iter().map(|sample| super::audio::normalize_i16(*sample)),
+                            &callback_failed_for_samples,
                         )
                     },
                     {
-                        let error_buffer = Arc::clone(&buffer);
-                        move |_error| record_failure(&error_buffer)
+                        let error_flag = Arc::clone(&callback_failed);
+                        move |_error| record_failure(&error_flag)
                     },
                     None,
                 )
             }
             cpal::SampleFormat::U16 => {
-                let callback_buffer = Arc::clone(&buffer);
+                let callback_sender = sample_tx.clone();
+                let callback_failed_for_samples = Arc::clone(&callback_failed);
                 device.build_input_stream(
                     &config,
                     move |data: &[u16], _| {
                         push_samples(
-                            &callback_buffer,
-                            data.iter()
-                                .map(|sample| super::audio::normalize_u16(*sample)),
+                            &callback_sender,
+                            data.iter().map(|sample| super::audio::normalize_u16(*sample)),
+                            &callback_failed_for_samples,
                         )
                     },
                     {
-                        let error_buffer = Arc::clone(&buffer);
-                        move |_error| record_failure(&error_buffer)
+                        let error_flag = Arc::clone(&callback_failed);
+                        move |_error| record_failure(&error_flag)
                     },
                     None,
                 )
@@ -197,20 +206,44 @@ fn run_cpal_capture(
         stream
             .play()
             .map_err(|_| VoiceErrorCode::DeviceUnavailable)?;
-        Ok((stream, buffer))
+        Ok((stream, buffer, sample_rx, callback_failed))
     })();
 
-    let (stream, buffer) = match setup {
+    let (stream, buffer, sample_rx, callback_failed) = match setup {
         Ok(setup) => setup,
         Err(error) => {
             let _ = ready_tx.send(Err(error));
             return;
         }
     };
-    if ready_tx.send(Ok(buffer)).is_err() {
+    if ready_tx.send(Ok(buffer.clone())).is_err() {
         return;
     }
-    let _ = stop_rx.recv();
+    let mut stopping = false;
+    loop {
+        if !stopping && stop_rx.try_recv().is_ok() {
+            stopping = true;
+        }
+        if stopping {
+            // Drain buffers accepted before stop so the last syllable is not
+            // lost between the CPAL callback and the capture worker.
+            match sample_rx.try_recv() {
+                Ok(samples) => process_samples(&buffer, samples),
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+            }
+        } else {
+            match sample_rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(samples) => process_samples(&buffer, samples),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+    if callback_failed.load(Ordering::Acquire) {
+        if let Ok(mut buffer) = buffer.lock() {
+            buffer.failure = Some(VoiceErrorCode::DeviceUnavailable);
+        }
+    }
     drop(stream);
 }
 
@@ -363,15 +396,30 @@ impl CaptureBuffer {
 }
 
 #[cfg(windows)]
-fn record_failure(buffer: &Arc<Mutex<CaptureBuffer>>) {
-    if let Ok(mut buffer) = buffer.lock() {
-        buffer.failure = Some(VoiceErrorCode::DeviceUnavailable);
+fn record_failure(failed: &Arc<AtomicBool>) {
+    failed.store(true, Ordering::Release);
+}
+
+#[cfg(windows)]
+fn push_samples<I: IntoIterator<Item = f32>>(
+    sender: &SyncSender<Vec<f32>>,
+    samples: I,
+    failed: &Arc<AtomicBool>,
+) {
+    let incoming: Vec<f32> = samples.into_iter().collect();
+    if incoming.is_empty() {
+        return;
+    }
+    if let Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) = sender.try_send(incoming) {
+        // Never block the realtime callback. A full queue is still a hard
+        // capture failure rather than silently corrupting the transcript.
+        failed.store(true, Ordering::Release);
     }
 }
 
-fn push_samples<I: IntoIterator<Item = f32>>(buffer: &Arc<Mutex<CaptureBuffer>>, samples: I) {
-    if let Ok(mut buffer) = buffer.try_lock() {
-        let incoming: Vec<f32> = samples.into_iter().collect();
+#[cfg(windows)]
+fn process_samples(buffer: &Arc<Mutex<CaptureBuffer>>, incoming: Vec<f32>) {
+    if let Ok(mut buffer) = buffer.lock() {
         buffer.level =
             incoming.iter().map(|sample| sample.abs()).sum::<f32>() / incoming.len().max(1) as f32;
         let speech_started = if let Some(vad) = buffer.vad.as_mut() {

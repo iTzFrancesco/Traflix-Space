@@ -18,6 +18,9 @@ const rustSettings = source("../src-tauri/src/settings/store.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
 const windowsTauriConfig = source("../src-tauri/tauri.windows.conf.json");
 const windowsPrebuild = source("./tauri-before-build.ps1");
+const voiceCapture = source("../src-tauri/src/jarvis/voice/capture.rs");
+const voiceTts = source("../src-tauri/src/jarvis/voice/tts.rs");
+const voiceStt = source("../src-tauri/src/jarvis/voice/stt.rs");
 const releaseWorkflow = source("../.github/workflows/release.yml");
 
 test("exited PTY generations remain recoverable until the user chooses an action", () => {
@@ -102,12 +105,23 @@ test("hands-free VAD is authoritative in backend defaults and legacy click-toggl
   assert.match(rustSettings, /owner_mode_migrates_click_toggle_but_preserves_hold_to_talk/);
 });
 
+test("voice runtime avoids callback data loss, survives Windows Python aliases, and bounds STT language input", () => {
+  assert.match(voiceCapture, /sync_channel::<Vec<f32>>\(32\)/);
+  assert.match(voiceCapture, /sender\.try_send\(incoming\)/);
+  assert.match(voiceCapture, /process_samples\(&buffer, samples\)/);
+  assert.match(voiceTts, /launcher\.args\(\["-3", "-u"\]\)/);
+  assert.match(voiceTts, /child\.try_wait\(\)/);
+  assert.match(voiceStt, /language\.chars\(\)\.any\(\|ch\| ch\.is_control\(\)\)/);
+  assert.match(voiceTts, /child\.try_wait\(\)/);
+});
+
 test("chat completion reserves TTS state before IPC so hands-free cannot rearm into Jarvis speech", () => {
   assert.match(jarvisStore, /const ttsRequestId = `tts-\$\{response\.message\.id\}`/);
   assert.match(jarvisStore, /setTtsStatus\(\{ requestId: ttsRequestId, status: "synthesizing" \}\)/);
   assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId/);
   assert.match(jarvisStore, /status: "failed"/);
   assert.match(jarvisStore, /code: "tts_failed"/);
+  assert.match(jarvisStore, /cancelChat\(invocation\.requestId\)/);
 });
 
 test("failed voice transcript submissions stay preserved without automatic retry loops", () => {

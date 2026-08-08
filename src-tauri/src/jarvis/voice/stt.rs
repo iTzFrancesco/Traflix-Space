@@ -159,6 +159,7 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
 fn normalized_language(language: &str) -> String {
     let trimmed = language.trim();
     if trimmed.is_empty()
+        || language.chars().any(|ch| ch.is_control())
         || trimmed.len() > 16
         || !trimmed
             .chars()

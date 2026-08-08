@@ -272,12 +272,11 @@ async fn spawn_helper_worker(helper: EdgeHelper) -> Result<HelperSender, VoiceEr
 }
 
 async fn spawn_python_worker(helper_path: PathBuf) -> Result<HelperSender, VoiceErrorCode> {
-    let mut child = helper_command(helper_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| VoiceErrorCode::HelperFailed)?;
+    // Windows App Execution Aliases can leave `python.exe` pointing at the
+    // Microsoft Store stub even when the real launcher is available as `py`.
+    // Prefer the Windows launcher, then fall back to the conventional names.
+    // This keeps dev mode working without requiring a machine-wide alias.
+    let mut child = spawn_helper_process(&helper_path)?;
     let mut stdin = child.stdin.take().ok_or(VoiceErrorCode::HelperFailed)?;
     let stdout = child.stdout.take().ok_or(VoiceErrorCode::HelperFailed)?;
     let mut lines = BufReader::new(stdout).lines();
@@ -517,14 +516,53 @@ pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
     }
 }
 
-fn helper_command(path: PathBuf) -> Command {
+fn spawn_helper_process(path: &Path) -> Result<tokio::process::Child, VoiceErrorCode> {
     if path.extension().and_then(|value| value.to_str()) == Some("exe") {
-        Command::new(path)
-    } else {
-        let mut command = Command::new(if cfg!(windows) { "python" } else { "python3" });
-        command.arg("-u").arg(path);
-        command
+        return Command::new(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|_| VoiceErrorCode::HelperFailed);
     }
+
+    let mut commands = Vec::new();
+    if cfg!(windows) {
+        let mut launcher = Command::new("py");
+        launcher.args(["-3", "-u"]).arg(path);
+        commands.push(launcher);
+    }
+    for executable in if cfg!(windows) {
+        vec!["python", "python3"]
+    } else {
+        vec!["python3", "python"]
+    } {
+        let mut command = Command::new(executable);
+        command.args(["-u"]).arg(path);
+        commands.push(command);
+    }
+
+    for mut command in commands {
+        match command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                // The Windows Store execution alias can spawn successfully
+                // and terminate immediately. Treat that as a failed candidate
+                // so the next launcher (`python`/`python3`) gets a chance.
+                match child.try_wait() {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => return Ok(child),
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(VoiceErrorCode::HelperFailed)
 }
 
 fn temp_audio_path(request_id: &str) -> PathBuf {
