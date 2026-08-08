@@ -28,8 +28,8 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 
 ## Decisioni consolidate per Fase 4
 
-- Il provider testuale runtime è OpenCode Zen; `longcat-2.0-free` è il primary
-  configurabile e `deepseek-v4-flash-free` il fallback configurabile.
+- Il provider testuale runtime è OpenCode Zen; `deepseek-v4-flash-free` è il primary
+  configurabile e `longcat-2.0-free` il fallback configurabile.
 - La sola credenziale backend è `OPENCODE_ZEN_API_KEY`; il consenso privacy è
   necessario prima di ogni richiesta di rete.
 - La PTY resta l'adapter universale e ogni mutazione passa da Pending Action,

@@ -17,8 +17,8 @@ Il runtime usa `OpenCodeZenProvider` verso
 `OPENCODE_ZEN_API_KEY`; non viene letta da file di autenticazione, salvata nei
 settings, inviata al frontend o inclusa in errori e log.
 
-Il default primario è configurabile e vale `longcat-2.0-free`. Il fallback è
-configurabile e vale `deepseek-v4-flash-free`. L'ID primario è desiderato ma
+Il default primario è configurabile e vale `deepseek-v4-flash-free`. Il fallback è
+configurabile e vale `longcat-2.0-free`. L'ID primario è desiderato ma
 non garantito dalla disponibilità corrente di Zen: il primo errore esplicito di
 modello non disponibile apre un circuit breaker in memoria e usa il fallback,
 senza riprovare il primario negli altri tool round. La UI espone il modello

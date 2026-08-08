@@ -241,7 +241,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             <TextField
               label="Modello principale"
               value={jarvis.textModel.primaryModel}
-              placeholder="longcat-2.0-free"
+              placeholder="deepseek-v4-flash-free"
               onChange={(primaryModel) =>
                 updateJarvis((current) => ({
                   ...current,
@@ -252,7 +252,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             <TextField
               label="Modello di fallback"
               value={jarvis.textModel.fallbackModel}
-              placeholder="deepseek-v4-flash-free"
+              placeholder="longcat-2.0-free"
               onChange={(fallbackModel) =>
                 updateJarvis((current) => ({
                   ...current,

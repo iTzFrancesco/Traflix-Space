@@ -322,9 +322,7 @@ impl<'de> Deserialize<'de> for JarvisSettings {
                 text_model.fallback_model = default_fallback_model();
             }
         }
-        if !has_new_text_model {
-            migrate_text_model(&mut text_model);
-        }
+        migrate_text_model(&mut text_model);
 
         let mut settings = Self {
             enabled: raw.enabled.unwrap_or_else(default_true),
@@ -488,10 +486,10 @@ fn default_gemini_provider() -> String {
     "Gemini Live".to_string()
 }
 fn default_primary_model() -> String {
-    "longcat-2.0-free".to_string()
+    "deepseek-v4-flash-free".to_string()
 }
 fn default_fallback_model() -> String {
-    "deepseek-v4-flash-free".to_string()
+    "longcat-2.0-free".to_string()
 }
 fn default_groq_provider() -> String {
     "groq".to_string()
@@ -546,8 +544,10 @@ fn default_max_spoken_chars() -> usize {
 }
 
 fn migrate_text_model(settings: &mut TextModelSettings) {
-    settings.primary_model = migrate_legacy_primary_model(&settings.primary_model);
-    if is_legacy_deepseek_model(&settings.fallback_model) {
+    let legacy_primary = settings.primary_model.trim().to_ascii_lowercase();
+    let legacy_fallback = settings.fallback_model.trim().to_ascii_lowercase();
+    if legacy_primary == "longcat-2.0-free" && legacy_fallback == "deepseek-v4-flash-free" {
+        settings.primary_model = default_primary_model();
         settings.fallback_model = default_fallback_model();
     }
 }
@@ -684,10 +684,13 @@ mod tests {
                 }}"##
             );
             let settings: AppSettings = serde_json::from_str(&legacy).unwrap();
-            assert_eq!(settings.jarvis.text_model.primary_model, "longcat-2.0-free");
+            assert_eq!(
+                settings.jarvis.text_model.primary_model,
+                "deepseek-v4-flash-free"
+            );
             assert_eq!(
                 settings.jarvis.text_model.fallback_model,
-                "deepseek-v4-flash-free"
+                "longcat-2.0-free"
             );
         }
     }
@@ -700,10 +703,13 @@ mod tests {
             "jarvis": { "modelProvider": "deepseek", "model": "deepseek-chat", "fallbackToDeepseek": true }
         }"##;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(settings.jarvis.text_model.primary_model, "longcat-2.0-free");
+        assert_eq!(
+            settings.jarvis.text_model.primary_model,
+            "deepseek-v4-flash-free"
+        );
         assert_eq!(
             settings.jarvis.text_model.fallback_model,
-            "deepseek-v4-flash-free"
+            "longcat-2.0-free"
         );
     }
 
@@ -747,16 +753,38 @@ mod tests {
     }
 
     #[test]
+    fn serialized_custom_text_model_is_not_rewritten_by_default_migration() {
+        let mut original = AppSettings::default();
+        original.jarvis.text_model.primary_model = "my-custom-primary".to_string();
+        original.jarvis.text_model.fallback_model = "my-custom-fallback".to_string();
+
+        let serialized = serde_json::to_string(&original).unwrap();
+        let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            reloaded.jarvis.text_model.primary_model,
+            "my-custom-primary"
+        );
+        assert_eq!(
+            reloaded.jarvis.text_model.fallback_model,
+            "my-custom-fallback"
+        );
+    }
+
+    #[test]
     fn new_defaults_are_owner_mode_safe() {
         let settings = AppSettings::default();
         assert_eq!(
             settings.jarvis.text_model.provider,
             ModelProvider::OpenCodeZen
         );
-        assert_eq!(settings.jarvis.text_model.primary_model, "longcat-2.0-free");
+        assert_eq!(
+            settings.jarvis.text_model.primary_model,
+            "deepseek-v4-flash-free"
+        );
         assert_eq!(
             settings.jarvis.text_model.fallback_model,
-            "deepseek-v4-flash-free"
+            "longcat-2.0-free"
         );
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(settings.jarvis.text_model.privacy_consent_at.is_some());

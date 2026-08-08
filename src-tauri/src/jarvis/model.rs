@@ -565,8 +565,8 @@ mod tests {
     fn settings() -> TextModelSettings {
         TextModelSettings {
             provider: ModelProvider::OpenCodeZen,
-            primary_model: "longcat-2.0-free".into(),
-            fallback_model: "deepseek-v4-flash-free".into(),
+            primary_model: "deepseek-v4-flash-free".into(),
+            fallback_model: "longcat-2.0-free".into(),
             fallback_enabled: true,
             privacy_consent: true,
             privacy_consent_at: Some("now".into()),
@@ -617,7 +617,7 @@ mod tests {
             .complete(request(), CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.model_used, "longcat-2.0-free");
+        assert_eq!(result.model_used, "deepseek-v4-flash-free");
         assert!(!result.fallback_used);
         handle.await.unwrap();
     }
@@ -648,7 +648,7 @@ mod tests {
             .complete(request(), CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.model_used, "deepseek-v4-flash-free");
+        assert_eq!(result.model_used, "longcat-2.0-free");
         assert_eq!(
             result.fallback_reason,
             Some(FallbackReason::PrimaryModelUnavailable)
