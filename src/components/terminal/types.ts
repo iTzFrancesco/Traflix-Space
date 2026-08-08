@@ -41,13 +41,17 @@ export interface FrameSnapshot {
 
 export interface TerminalOutput {
   terminalId: string;
+  /** PTY lifetime; stale events from an older reopen are ignored. */
+  generation: number;
   data: number[];
   sequence: number;
   /** Internal batch metadata retained so rehydrate can filter exact chunks. */
-  chunks?: Array<{ sequence: number; data: Uint8Array }>;
+  chunks?: Array<{ generation: number; sequence: number; data: Uint8Array }>;
 }
 
 export interface TerminalRehydrateState {
+  /** PTY lifetime represented by this snapshot. */
+  generation: number;
   history: number[];
   state: number[];
   outputSequence: number;
@@ -57,6 +61,8 @@ export interface TerminalRehydrateState {
 
 export interface TerminalExited {
   terminalId: string;
+  /** PTY lifetime; stale exit notifications must not close a reopened pane. */
+  generation: number;
   exitCode: number;
 }
 

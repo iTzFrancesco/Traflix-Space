@@ -592,6 +592,22 @@ export function WorkspaceView() {
     }
   }, [activeWorkspaceId, loadedMap, loadWorkspace]);
 
+  // A cached workspace does not pass through loadWorkspace again. Reassert
+  // the active terminal when returning to it so focus/resize state cannot
+  // remain attached to a terminal from the previous workspace.
+  useEffect(() => {
+    if (!activeWorkspaceId || !activeLoaded) return;
+    const firstActiveTerminalId = activeLoaded.terminals[0]?.id;
+    if (!firstActiveTerminalId) return;
+
+    const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+    if (
+      !activeLoaded.terminals.some((terminal) => terminal.id === activeTerminalId)
+    ) {
+      useTerminalStore.getState().setActiveTerminal(firstActiveTerminalId);
+    }
+  }, [activeWorkspaceId, activeLoaded]);
+
   // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
   useEffect(() => {
     const allIds = new Set(workspaces.map((w) => w.id));
@@ -663,13 +679,15 @@ export function WorkspaceView() {
           minHeight: 0,
         }}
       >
-        {/* Compact workspace identity bar. Terminal content gets the space. */}
-        <div className="flex h-12 shrink-0 items-center border-b border-neutral-border bg-neutral-surface px-4">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate font-display text-[13px] font-semibold tracking-[-0.02em] text-neutral-text">
+        {/* Workspace identity bar. The terminal grid gets the remaining space. */}
+        <div
+          className="shrink-0 border-b border-neutral-border bg-black/5 px-6 pb-3.5 pt-4 backdrop-blur-sm"
+        >
+          <div className="min-w-0">
+            <h1 className="font-display text-lg font-extrabold leading-tight tracking-[-0.02em] text-neutral-text">
               {activeLoaded.name}
             </h1>
-            <p className="mt-0.5 truncate font-mono text-[9px] text-neutral-text-muted" title={activeLoaded.rootPath}>
+            <p className="mt-1 truncate font-mono text-[11px] leading-relaxed text-neutral-text-muted" title={activeLoaded.rootPath}>
               {activeLoaded.rootPath}
             </p>
           </div>

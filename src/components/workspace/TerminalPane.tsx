@@ -15,12 +15,14 @@ import { agentLaunchQueue } from "../../lib/agentLauncher";
 import {
   subscribeTerminalExit,
   subscribeTerminalOutput,
+  waitForTerminalOutputListener,
 } from "../../lib/terminalEvents";
 import { encodeForPty } from "../../lib/ptyWrite";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
 import { AGENTS } from "../../lib/agents";
 import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
 import { invokeWithTimeout } from "../../lib/timeout";
+import { isStableTerminalLayout } from "../../lib/terminalPolicies";
 import type { TerminalRehydrateState } from "../terminal/types";
 import "xterm/css/xterm.css";
 
@@ -95,10 +97,10 @@ const ACTIVE_STYLE: React.CSSProperties = {
   minHeight: 0,
   background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid color-mix(in oklch, var(--color-primary) 38%, transparent)",
+  border: "1px solid var(--color-primary)",
   overflow: "hidden",
   isolation: "isolate",
-  boxShadow: "none",
+  boxShadow: "0 4px 20px rgba(255, 157, 36, 0.04)",
 };
 
 const FOCUSED_STYLE: React.CSSProperties = {
@@ -110,10 +112,10 @@ const FOCUSED_STYLE: React.CSSProperties = {
   minHeight: 0,
   background: "var(--color-neutral-bg)",
   borderRadius: "var(--radius-pane)",
-  border: "1px solid color-mix(in oklch, var(--color-primary) 52%, transparent)",
+  border: "1px solid var(--color-primary-strong)",
   overflow: "hidden",
   isolation: "isolate",
-  boxShadow: "none",
+  boxShadow: "0 4px 20px rgba(255, 107, 33, 0.05)",
 };
 
 const INACTIVE_STYLE: React.CSSProperties = {
@@ -156,7 +158,7 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  background: "var(--color-neutral-surface)",
+  background: "rgba(255, 255, 255, 0.015)",
   borderBottom: "1px solid var(--color-neutral-border)",
   userSelect: "none",
   overflow: "hidden",
@@ -164,15 +166,15 @@ const TITLE_BAR_STYLE: React.CSSProperties = {
 
 function getTitleBarMetrics(terminalCount: number) {
   if (terminalCount <= 1) {
-    return { height: 34, padding: "0 9px", fontSize: 12, buttonSize: 26, iconSize: 13, dotSize: 7 };
+    return { height: 42, padding: "0 14px", fontSize: 13, buttonSize: 32, iconSize: 16, dotSize: 10 };
   }
   if (terminalCount === 2) {
-    return { height: 32, padding: "0 8px", fontSize: 11, buttonSize: 25, iconSize: 12, dotSize: 6 };
+    return { height: 40, padding: "0 12px", fontSize: 12, buttonSize: 32, iconSize: 15, dotSize: 9 };
   }
   if (terminalCount <= 4) {
-    return { height: 30, padding: "0 7px", fontSize: 11, buttonSize: 24, iconSize: 12, dotSize: 6 };
+    return { height: 38, padding: "0 10px", fontSize: 12, buttonSize: 32, iconSize: 14, dotSize: 8 };
   }
-  return { height: 29, padding: "0 7px", fontSize: 10, buttonSize: 23, iconSize: 11, dotSize: 5 };
+  return { height: 36, padding: "0 9px", fontSize: 12, buttonSize: 30, iconSize: 14, dotSize: 7 };
 }
 
 /** Return the latest complete PowerShell prompt, including wrapped paths. */
@@ -224,7 +226,7 @@ interface TerminalCwdChangedPayload {
 const TITLE_BAR_LEFT: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: "7px",
+  gap: "10px",
   minWidth: 0,
   flex: 1,
 };
@@ -239,14 +241,14 @@ const TITLE_BAR_DOT: React.CSSProperties = {
 const TITLE_BAR_NAME: React.CSSProperties = {
   fontSize: 12,
   fontFamily: 'var(--font-mono)',
-  color: "var(--color-neutral-text-dim)",
+  color: "rgba(255,255,255,0.8)",
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
   cursor: "text",
   lineHeight: 1,
   minWidth: 0,
-  letterSpacing: 0,
+  letterSpacing: "0.02em",
 };
 
 const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
@@ -287,16 +289,16 @@ const TITLE_BAR_RIGHT: React.CSSProperties = {
 };
 
 const TOOL_BTN_BASE: React.CSSProperties = {
-  width: "26px",
-  height: "26px",
-  borderRadius: "5px",
+  width: "30px",
+  height: "30px",
+  borderRadius: "8px",
   border: "none",
   cursor: "pointer",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
   lineHeight: 1,
-  transition: "background-color 120ms ease, color 120ms ease",
+  transition: "background 0.15s ease, color 0.15s ease",
   padding: 0,
 };
 
@@ -467,6 +469,7 @@ async function syncMeasuredPtySize(
   skipHiddenPane: boolean,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
+  windowFocusedRef: React.MutableRefObject<boolean>,
 ) {
   if (skipHiddenPane) return;
 
@@ -474,9 +477,29 @@ async function syncMeasuredPtySize(
   // the xterm canvas settle before FitAddon reads its cell dimensions.
   await waitForAnimationFrame();
   await waitForAnimationFrame();
+  if (!windowFocusedRef.current || document.visibilityState === "hidden") return;
   if (!term.element?.isConnected) return;
-  const rect = term.element.getBoundingClientRect();
+  const layoutElement = term.element.parentElement ?? term.element;
+  const rect = layoutElement.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
+
+  const proposed = fitAddon.proposeDimensions();
+  if (
+    !proposed ||
+    !isStableTerminalLayout({
+      windowFocused: windowFocusedRef.current,
+      documentVisible: document.visibilityState === "visible",
+      width: rect.width,
+      height: rect.height,
+      cols: proposed.cols,
+      rows: proposed.rows,
+    })
+  ) {
+    // A transient measurement must not resize a live PTY to an arbitrary
+    // fallback. ResizeObserver/focus will schedule another pass once the real
+    // layout is available; that valid pass also repairs an older bad size.
+    return;
+  }
 
   try {
     fitInProgressRef.current = true;
@@ -486,8 +509,18 @@ async function syncMeasuredPtySize(
   } finally {
     fitInProgressRef.current = false;
   }
-  if (term.cols <= 0 || term.rows <= 0) return;
-
+  if (
+    !isStableTerminalLayout({
+      windowFocused: windowFocusedRef.current,
+      documentVisible: document.visibilityState === "visible",
+      width: rect.width,
+      height: rect.height,
+      cols: term.cols,
+      rows: term.rows,
+    })
+  ) {
+    return;
+  }
   await enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows);
 }
 
@@ -500,7 +533,28 @@ function fitAndResizePty(
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
+  windowFocusedRef: React.MutableRefObject<boolean>,
 ) {
+  if (!windowFocusedRef.current || document.visibilityState === "hidden") return;
+
+  const layoutElement = term.element?.parentElement ?? term.element;
+  const rect = layoutElement?.getBoundingClientRect();
+  const proposed = fitAddon.proposeDimensions();
+  if (
+    !rect ||
+    !proposed ||
+    !isStableTerminalLayout({
+      windowFocused: windowFocusedRef.current,
+      documentVisible: document.visibilityState === "visible",
+      width: rect.width,
+      height: rect.height,
+      cols: proposed.cols,
+      rows: proposed.rows,
+    })
+  ) {
+    return;
+  }
+
   // The refs are the authoritative viewport intent. xterm can temporarily
   // report y=0 during a hidden-pane/window reflow, so reading its live ydisp
   // here would turn follow mode into a false history position.
@@ -516,6 +570,18 @@ function fitAndResizePty(
     return;
   } finally {
     fitInProgressRef.current = false;
+  }
+  if (
+    !isStableTerminalLayout({
+      windowFocused: windowFocusedRef.current,
+      documentVisible: document.visibilityState === "visible",
+      width: rect.width,
+      height: rect.height,
+      cols: term.cols,
+      rows: term.rows,
+    })
+  ) {
+    return;
   }
   if (positionBeforeFit.followsOutput) {
     // Following the live stream is the one case where an explicit bottom
@@ -630,12 +696,16 @@ export const TerminalPane = memo(function TerminalPane({
   const rehydratingRef = useRef(false);
   /** PTY chunks received around the backend snapshot; replayed after filtering. */
   const queuedRehydrateOutputRef = useRef<Array<{
+    generation: number;
     sequence: number;
     data: Uint8Array;
   }>>([]);
   /** Snapshot watermark; chunks at or below it are already in the snapshot. */
   const rehydrateWatermarkRef = useRef<number | null>(null);
+  const terminalGenerationRef = useRef<number | null>(null);
+  const reopeningRef = useRef(false);
   const unsubOutputRef = useRef<(() => void) | null>(null);
+  const outputWarmupUnsubRef = useRef<(() => void) | null>(null);
   const unsubExitRef = useRef<(() => void) | null>(null);
   const terminalIdRef = useRef(terminalId);
   terminalIdRef.current = terminalId;
@@ -740,6 +810,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [currentCwd, setCurrentCwd] = useState(cwd);
+  const [restartToken, setRestartToken] = useState(0);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [confirmClose, setConfirmClose] = useState(false);
@@ -766,6 +837,7 @@ export const TerminalPane = memo(function TerminalPane({
       const fitAddon = fitAddonRef.current;
       if (!term || !fitAddon) return;
       if (focusModeActive && !isFocused) return;
+      if (!windowFocusedRef.current || document.visibilityState === "hidden") return;
       fitAndResizePty(
         term,
         fitAddon,
@@ -775,6 +847,7 @@ export const TerminalPane = memo(function TerminalPane({
         programmaticScrollTargetRef,
         ptyResizeStateRef,
         fitInProgressRef,
+        windowFocusedRef,
       );
       if (scrollPositionRef.current.followsOutput) {
         stabilizeFollowBottom();
@@ -1041,23 +1114,23 @@ export const TerminalPane = memo(function TerminalPane({
         offsetFromBottom: Math.max(1, scrollPositionRef.current.offsetFromBottom),
       };
     };
+    // WebView2 can expose the native scrollbar as a mouse event without a
+    // reliable pointer event. Treat both paths as explicit user navigation.
+    const onMouseDown = (event: MouseEvent) => {
+      onPointerDown(event as unknown as PointerEvent);
+    };
     const container = containerRef.current;
     container?.addEventListener("wheel", onWheel, { passive: false, capture: true });
     container?.addEventListener("keydown", onKeyDown, { capture: true });
     container?.addEventListener("pointerdown", onPointerDown, { capture: true });
+    container?.addEventListener("mousedown", onMouseDown, { capture: true });
 
     return () => {
       disposed = true;
-      if (
-        !scrollPositionRef.current.followsOutput &&
-        isTerminalScrollLayoutUsable(
-          term,
-          paneVisibilityRef,
-          windowFocusedRef,
-        )
-      ) {
-        captureScrollPosition(term, autoScrollRef, scrollPositionRef);
-      }
+      // Do not sample xterm during teardown. React can unmount this pane while
+      // its host grid is collapsing, and xterm may report viewportY=0 for that
+      // layout-only transition. All valid user scroll events have already
+      // updated scrollPositionRef, so saving the last known intent is safer.
       useTerminalStore.getState().saveScrollPosition(
         terminalIdRef.current,
         scrollPositionRef.current,
@@ -1073,6 +1146,7 @@ export const TerminalPane = memo(function TerminalPane({
       container?.removeEventListener("wheel", onWheel, { capture: true });
       container?.removeEventListener("keydown", onKeyDown, { capture: true });
       container?.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      container?.removeEventListener("mousedown", onMouseDown, { capture: true });
       if (fitScheduleRef.current.raf !== null) {
         cancelAnimationFrame(fitScheduleRef.current.raf);
         fitScheduleRef.current.raf = null;
@@ -1092,6 +1166,18 @@ export const TerminalPane = memo(function TerminalPane({
       fitAddonRef.current = null;
     };
   }, [refreshTerminalContext, shell, terminalId]);
+
+  // Prime the shared output listener before the spawn effect below runs. The
+  // Tauri listen registration is asynchronous, so the spawn effect also waits
+  // for it before the shell can emit its first prompt.
+  useEffect(() => {
+    outputWarmupUnsubRef.current?.();
+    outputWarmupUnsubRef.current = subscribeTerminalOutput(terminalId, () => {});
+    return () => {
+      outputWarmupUnsubRef.current?.();
+      outputWarmupUnsubRef.current = null;
+    };
+  }, [terminalId]);
 
   // 2. Spawn PTY + optional screen rehydrate + agent launch
   useEffect(() => {
@@ -1120,6 +1206,10 @@ export const TerminalPane = memo(function TerminalPane({
         const currentTerm = xtermRef.current;
         if (!next || !currentTerm) return;
         const watermark = rehydrateWatermarkRef.current;
+        if (
+          terminalGenerationRef.current !== null &&
+          next.generation !== terminalGenerationRef.current
+        ) continue;
         if (watermark !== null && next.sequence <= watermark) continue;
         await new Promise<void>((resolve) => currentTerm.write(next.data, resolve));
       }
@@ -1128,7 +1218,11 @@ export const TerminalPane = memo(function TerminalPane({
       const rehydrateState = await invoke<TerminalRehydrateState>("terminal_get_screen_text", {
         terminalId,
       });
+      terminalGenerationRef.current = rehydrateState.generation;
       rehydrateWatermarkRef.current = rehydrateState.outputSequence;
+      queuedRehydrateOutputRef.current = queuedRehydrateOutputRef.current.filter(
+        (chunk) => chunk.generation === rehydrateState.generation,
+      );
       const termNow = xtermRef.current;
       if (!termNow) return;
 
@@ -1170,7 +1264,8 @@ export const TerminalPane = memo(function TerminalPane({
 
     (async () => {
       try {
-        await invoke("terminal_spawn", {
+        await waitForTerminalOutputListener();
+        const generation = await invoke<number>("terminal_spawn", {
           terminalId,
           shell,
           cwd,
@@ -1179,6 +1274,7 @@ export const TerminalPane = memo(function TerminalPane({
           workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
           agentId: agentId ?? null,
         });
+        terminalGenerationRef.current = generation;
         spawnSucceeded = true;
         useTerminalStore.getState().markSpawned(terminalId);
 
@@ -1196,6 +1292,7 @@ export const TerminalPane = memo(function TerminalPane({
                 focusModeActive && !isFocused,
                 ptyResizeStateRef,
                 fitInProgressRef,
+                windowFocusedRef,
               );
             }
             await restoreSnapshot();
@@ -1213,6 +1310,7 @@ export const TerminalPane = memo(function TerminalPane({
           } finally {
             rehydratingRef.current = false;
             rehydrateWatermarkRef.current = null;
+            reopeningRef.current = false;
           }
       } catch (error) {
         if (isTerminalExitedError(error)) {
@@ -1225,7 +1323,11 @@ export const TerminalPane = memo(function TerminalPane({
           } catch {
             await replayQueuedOutput();
           }
-          useTerminalStore.getState().markExited(terminalId, 0);
+          const exitCodeMatch = String(error).match(/exit(?:[-_ ]?code)?\s*[:=]\s*(-?\d+)/i);
+          useTerminalStore.getState().markExited(
+            terminalId,
+            exitCodeMatch ? Number(exitCodeMatch[1]) : 0,
+          );
           rehydratingRef.current = false;
         } else {
           await replayQueuedOutput();
@@ -1233,6 +1335,7 @@ export const TerminalPane = memo(function TerminalPane({
         spawnedRef.current = false;
         rehydratingRef.current = false;
         rehydrateWatermarkRef.current = null;
+        reopeningRef.current = false;
       }
 
       if (agentId && spawnSucceeded) {
@@ -1244,7 +1347,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     })();
-  }, [terminalId, shell, cwd, agentId, refreshTerminalContext, stabilizeFollowBottom]);
+  }, [terminalId, shell, cwd, agentId, refreshTerminalContext, stabilizeFollowBottom, restartToken]);
 
   // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
   useEffect(() => {
@@ -1355,14 +1458,24 @@ export const TerminalPane = memo(function TerminalPane({
 
   // 4a. Output — shared bus + rAF batch (already coalesced in terminalEvents)
   useEffect(() => {
+    outputWarmupUnsubRef.current?.();
+    outputWarmupUnsubRef.current = null;
     unsubOutputRef.current?.();
     unsubOutputRef.current = subscribeTerminalOutput(terminalId, (payload) => {
+      // Ignore events from an older PTY lifetime after a reopen reuses this id.
+      if (
+        terminalGenerationRef.current !== null &&
+        payload.generation !== terminalGenerationRef.current
+      ) {
+        return;
+      }
       // While rehydrate runs, backend history is authoritative — applying live
       // chunks mid-reset would race and corrupt the buffer. Keep them and
       // replay them after the snapshot so a working agent never loses output.
       if (rehydratingRef.current) {
         const chunks = payload.chunks ?? [{
           sequence: payload.sequence,
+          generation: payload.generation,
           data: new Uint8Array(payload.data),
         }];
         const watermark = rehydrateWatermarkRef.current;
@@ -1412,7 +1525,14 @@ export const TerminalPane = memo(function TerminalPane({
     unsubExitRef.current?.();
     unsubExitRef.current = subscribeTerminalExit(
       terminalId,
-      ({ terminalId: tid, exitCode: code }) => {
+      ({ terminalId: tid, generation, exitCode: code }) => {
+        if (reopeningRef.current) return;
+        if (
+          terminalGenerationRef.current !== null &&
+          generation !== terminalGenerationRef.current
+        ) {
+          return;
+        }
         useTerminalStore.getState().markExited(tid, code);
       },
     );
@@ -1583,7 +1703,11 @@ export const TerminalPane = memo(function TerminalPane({
 
   const handleRestart = useCallback(async () => {
     try {
-      await invoke("terminal_reopen", {
+      reopeningRef.current = true;
+      rehydratingRef.current = true;
+      rehydrateWatermarkRef.current = null;
+      queuedRehydrateOutputRef.current = [];
+      const generation = await invoke<number>("terminal_reopen", {
         terminalId,
         shell,
         cwd: currentCwd,
@@ -1592,13 +1716,16 @@ export const TerminalPane = memo(function TerminalPane({
         workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
         agentId: agentId ?? null,
       });
+      terminalGenerationRef.current = generation;
       useTerminalStore.getState().markSpawned(terminalId);
-      spawnedRef.current = true;
-      xtermRef.current?.reset();
+      spawnedRef.current = false;
+      setRestartToken((token) => token + 1);
     } catch (err) {
+      reopeningRef.current = false;
+      rehydratingRef.current = false;
       console.error("Errore reopen terminale:", err);
     }
-  }, [terminalId, shell, currentCwd]);
+  }, [terminalId, shell, currentCwd, agentId]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1675,7 +1802,8 @@ export const TerminalPane = memo(function TerminalPane({
   const dragOverlayStyle = isDragOver
     ? {
         borderColor: "var(--color-primary)",
-        boxShadow: "inset 0 0 0 1px var(--color-primary)",
+        boxShadow:
+          "inset 0 0 0 1px var(--color-primary), 0 0 16px rgba(232,93,4,0.15)",
       }
     : {};
   const attentionClass =
@@ -1714,6 +1842,7 @@ export const TerminalPane = memo(function TerminalPane({
             position: "absolute",
             inset: 0,
             zIndex: 100,
+            pointerEvents: "none",
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
@@ -1721,8 +1850,8 @@ export const TerminalPane = memo(function TerminalPane({
             background: isDragHovered ? "rgba(18, 18, 18, 0.92)" : "rgba(18, 18, 18, 0.45)",
             border: isDragHovered ? "2px dashed var(--color-primary)" : "2px dashed rgba(255, 255, 255, 0.12)",
             borderRadius: "var(--radius-pane)",
-            backdropFilter: "none",
-            transition: "background-color 120ms ease, border-color 120ms ease",
+            backdropFilter: isDragHovered ? "blur(4px)" : "none",
+            transition: "all 0.2s ease-in-out",
           }}
         >
           {isDragHovered && (
@@ -1736,7 +1865,7 @@ export const TerminalPane = memo(function TerminalPane({
                 fontFamily: "var(--font-display)",
                 fontWeight: 700,
                 fontSize: "14px",
-                textShadow: "none",
+                textShadow: "0 0 10px rgba(232, 93, 4, 0.4)",
               }}
             >
               <svg
@@ -1879,9 +2008,9 @@ export const TerminalPane = memo(function TerminalPane({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: "38px",
-              height: "20px",
-              borderRadius: "4px",
+              width: "48px",
+              height: "24px",
+              borderRadius: "6px",
               cursor: "grab",
               color: "rgba(255,255,255,0.35)",
               backgroundColor: "rgba(255,255,255,0.02)",
@@ -1893,7 +2022,7 @@ export const TerminalPane = memo(function TerminalPane({
               e.currentTarget.style.background = "rgba(255,255,255,0.07)";
               e.currentTarget.style.borderColor = "var(--color-primary)";
               e.currentTarget.style.color = "var(--color-primary)";
-              e.currentTarget.style.boxShadow = "none";
+              e.currentTarget.style.boxShadow = "0 0 10px rgba(232,93,4,0.2)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "rgba(255,255,255,0.02)";
@@ -1956,16 +2085,22 @@ export const TerminalPane = memo(function TerminalPane({
                 ...TOOL_BTN_BASE,
                 width: titleBarMetrics.buttonSize,
                 height: titleBarMetrics.buttonSize,
-                background: isFocused ? "rgba(233,138,45,0.10)" : "transparent",
-                color: isFocused ? "var(--color-primary)" : "var(--color-neutral-text-muted)",
+                background: isFocused
+                  ? "rgba(59,130,246,0.25)"
+                  : "rgba(255,255,255,0.08)",
+                color: isFocused ? "#60a5fa" : "#a1a1aa",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = isFocused ? "rgba(233,138,45,0.14)" : "rgba(255,255,255,0.06)";
-                e.currentTarget.style.color = isFocused ? "var(--color-primary-light)" : "var(--color-neutral-text)";
+                e.currentTarget.style.background = isFocused
+                  ? "rgba(59,130,246,0.4)"
+                  : "rgba(255,255,255,0.14)";
+                e.currentTarget.style.color = isFocused ? "#93c5fd" : "#f4f4f5";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = isFocused ? "rgba(233,138,45,0.10)" : "transparent";
-                e.currentTarget.style.color = isFocused ? "var(--color-primary)" : "var(--color-neutral-text-muted)";
+                e.currentTarget.style.background = isFocused
+                  ? "rgba(59,130,246,0.25)"
+                  : "rgba(255,255,255,0.08)";
+                e.currentTarget.style.color = isFocused ? "#60a5fa" : "#a1a1aa";
               }}
             >
               {isFocused ? (
@@ -1987,7 +2122,7 @@ export const TerminalPane = memo(function TerminalPane({
                   borderRadius: "8px",
                   padding: "2px 4px",
                   border: "1px solid rgba(239,68,68,0.35)",
-                  boxShadow: "none",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
                 }}
               >
                 <span
@@ -2057,16 +2192,14 @@ export const TerminalPane = memo(function TerminalPane({
                   ...TOOL_BTN_BASE,
                   width: titleBarMetrics.buttonSize,
                   height: titleBarMetrics.buttonSize,
-                  background: "transparent",
-                  color: "var(--color-neutral-text-muted)",
+                  background: "rgba(239,68,68,0.2)",
+                  color: "#ef4444",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(255,98,107,0.10)";
-                  e.currentTarget.style.color = "var(--color-danger)";
+                  e.currentTarget.style.background = "rgba(239,68,68,0.35)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = "var(--color-neutral-text-muted)";
+                  e.currentTarget.style.background = "rgba(239,68,68,0.2)";
                 }}
               >
                 <X size={titleBarMetrics.iconSize} />
@@ -2089,14 +2222,14 @@ export const TerminalPane = memo(function TerminalPane({
             alignItems: "center",
             gap: "6px",
             padding: "6px 14px",
-            borderRadius: "5px",
+            borderRadius: "10px",
             fontSize: "12px",
             fontFamily: "var(--font-mono)",
             fontWeight: 500,
             color: "var(--color-primary)",
             backgroundColor: "rgba(232,93,4,0.12)",
             border: "1px solid rgba(232,93,4,0.25)",
-            backdropFilter: "none",
+            backdropFilter: "blur(8px)",
             whiteSpace: "nowrap",
             pointerEvents: "none",
           }}
@@ -2108,7 +2241,7 @@ export const TerminalPane = memo(function TerminalPane({
               height: "8px",
               borderRadius: "50%",
               background: "currentColor",
-              boxShadow: "none",
+            boxShadow: "0 0 8px currentColor",
             }}
           />
           <span>
@@ -2129,7 +2262,7 @@ export const TerminalPane = memo(function TerminalPane({
             justifyContent: "center",
             gap: "14px",
             zIndex: 20,
-            backdropFilter: "none",
+            backdropFilter: "blur(8px)",
             padding: "24px",
           }}
         >

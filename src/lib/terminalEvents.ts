@@ -23,6 +23,7 @@ const agentCompletionHandlers = new Set<AgentCompletionHandler>();
 
 /** Pending raw chunks waiting for the next animation frame flush. */
 interface PendingOutputChunk {
+  generation: number;
   sequence: number;
   data: Uint8Array;
 }
@@ -61,12 +62,16 @@ function flushOutput(terminalId: string) {
   // Consume whole chunks in order; never discard or reorder ANSI bytes.
   let batchBytes = 0;
   let batchEnd = 0;
+  const generation = chunks[0].generation;
   while (batchEnd < chunks.length) {
-    const nextSize = chunks[batchEnd].data.length;
-    if (batchEnd > 0 && batchBytes + nextSize > MAX_OUTPUT_BYTES_PER_FRAME) {
+    const next = chunks[batchEnd];
+    // Never merge chunks from different PTY lifetimes: a reopened terminal
+    // can reuse the same id while a late old-generation event is in flight.
+    if (next.generation !== generation) break;
+    if (batchEnd > 0 && batchBytes + next.data.length > MAX_OUTPUT_BYTES_PER_FRAME) {
       break;
     }
-    batchBytes += nextSize;
+    batchBytes += next.data.length;
     batchEnd++;
   }
   const batch = chunks.splice(0, batchEnd);
@@ -80,6 +85,7 @@ function flushOutput(terminalId: string) {
         : mergeChunks(batch);
     const payload: TerminalOutput = {
       terminalId,
+      generation,
       data,
       sequence: batch[batch.length - 1].sequence,
       chunks: batch,
@@ -102,6 +108,7 @@ function flushOutput(terminalId: string) {
 function enqueueOutput(
   terminalId: string,
   data: number[] | Uint8Array,
+  generation: number,
   sequence: number,
 ) {
   // No subscribers (e.g. mid-remount): drop — rehydrate will restore from backend.
@@ -115,7 +122,7 @@ function enqueueOutput(
     list = [];
     pendingChunks.set(terminalId, list);
   }
-  list.push({ sequence, data: bytes });
+  list.push({ generation, sequence, data: bytes });
 
   // PTY output is an unframed ANSI byte stream. Never drop an old chunk here:
   // it can contain half of an escape sequence or an incremental TUI repaint.
@@ -134,9 +141,9 @@ async function ensureOutputListener() {
     return;
   }
   outputSetup = listen<TerminalOutput>("terminal-output", (event) => {
-    const { terminalId, data, sequence } = event.payload;
+    const { terminalId, generation, data, sequence } = event.payload;
     if (!outputHandlers.has(terminalId)) return;
-    enqueueOutput(terminalId, data, sequence);
+    enqueueOutput(terminalId, data, generation, sequence);
   })
     .then((unlisten) => {
       outputUnlisten = unlisten;
@@ -148,6 +155,11 @@ async function ensureOutputListener() {
       outputSetup = null;
     });
   await outputSetup;
+}
+
+/** Wait until the global PTY output listener is registered with Tauri. */
+export async function waitForTerminalOutputListener(): Promise<void> {
+  await ensureOutputListener();
 }
 
 async function ensureExitListener() {

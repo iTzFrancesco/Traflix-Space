@@ -6,7 +6,7 @@ use crate::terminal_engine::parser::AnsiParser;
 use crate::terminal_engine::TerminalAgentSnapshot;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
@@ -137,7 +137,6 @@ pub struct TerminalSession {
     pub detection_source: String,
     pub detection_confidence: f32,
     pub identity_warnings: Vec<String>,
-    pub last_observed_command: Option<String>,
     pub process_id: Option<u32>,
     pub is_agent_terminal: bool,
     /// Owning workspace, if known. Injected into the PTY environment so the
@@ -152,6 +151,8 @@ pub struct TerminalSession {
     /// manager after a natural exit so the frontend can display its output,
     /// therefore `pty.is_some()` alone is not a valid liveness check.
     pub process_alive: Arc<AtomicBool>,
+    /// Last observed child exit code; -1 means the watcher has not collected it.
+    pub process_exit_code: Arc<AtomicI32>,
     pub output_sequence: Arc<AtomicU64>,
     /// Set to true when resolve_and_update_cwd updates the CWD.
     /// Read+reset by TerminalManager::write to emit cwd-changed event.
@@ -192,7 +193,6 @@ impl TerminalSession {
             detection_source: "fallback".to_string(),
             detection_confidence: 0.2,
             identity_warnings: Vec::new(),
-            last_observed_command: None,
             process_id: None,
             is_agent_terminal: false,
             workspace_id: None,
@@ -201,6 +201,7 @@ impl TerminalSession {
             reader_stop: Arc::new(AtomicBool::new(false)),
             exit_emitted: Arc::new(AtomicBool::new(false)),
             process_alive: Arc::new(AtomicBool::new(false)),
+            process_exit_code: Arc::new(AtomicI32::new(-1)),
             output_sequence: Arc::new(AtomicU64::new(0)),
             cwd_changed: AtomicBool::new(false),
             cd_buffer: Mutex::new(String::new()),
@@ -217,6 +218,7 @@ impl TerminalSession {
         // (normally sessions are removed from the map; reopen creates fresh ones).
         self.reader_stop.store(false, Ordering::Relaxed);
         self.exit_emitted.store(false, Ordering::Relaxed);
+        self.process_exit_code.store(-1, Ordering::Release);
         self.output_sequence.store(0, Ordering::Release);
 
         let pty_system = portable_pty::native_pty_system();
@@ -299,6 +301,9 @@ impl TerminalSession {
         let exit_emitted_reader = self.exit_emitted.clone();
         let process_alive_reader = self.process_alive.clone();
         let output_sequence_reader = self.output_sequence.clone();
+        let child_for_reader = child_arc.clone();
+        let process_exit_code_reader = self.process_exit_code.clone();
+        let process_exit_code_watch = self.process_exit_code.clone();
         let registry_workspace_id = self.workspace_id.clone().unwrap_or_default();
         let registry_is_agent_terminal = self.is_agent_terminal;
         let registry_agent_id = self.agent_id.clone();
@@ -356,6 +361,7 @@ impl TerminalSession {
                     "terminal-output",
                     TerminalOutput {
                         terminal_id: id.to_string(),
+                        generation: registry_generation,
                         data,
                         sequence,
                     },
@@ -403,19 +409,21 @@ impl TerminalSession {
 
             info!(terminal_id = %id, "PTY reader task ended");
 
-            if natural_exit
-                && !stop.load(Ordering::Acquire)
-                && exit_emitted_reader
+            if natural_exit && !stop.load(Ordering::Acquire) {
+                let exit_code = collect_exit_code(&child_for_reader, &process_exit_code_reader);
+                if exit_emitted_reader
                     .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
-            {
-                let _ = app_reader.emit(
-                    "terminal-exited",
-                    TerminalExited {
-                        terminal_id: id.to_string(),
-                        exit_code: 0,
-                    },
-                );
+                {
+                    let _ = app_reader.emit(
+                        "terminal-exited",
+                        TerminalExited {
+                            terminal_id: id.to_string(),
+                            generation: registry_generation,
+                            exit_code,
+                        },
+                    );
+                }
             }
         });
 
@@ -440,7 +448,10 @@ impl TerminalSession {
                     Err(_) => return,
                 };
                 match c.try_wait() {
-                    Ok(Some(_status)) => true,
+                    Ok(Some(status)) => {
+                        process_exit_code_watch.store(status.exit_code() as i32, Ordering::Release);
+                        true
+                    }
                     Ok(None) => false,
                     Err(_) => true,
                 }
@@ -473,7 +484,8 @@ impl TerminalSession {
                         "terminal-exited",
                         TerminalExited {
                             terminal_id: watch_id.to_string(),
-                            exit_code: 0,
+                            generation: registry_generation_watch,
+                            exit_code: process_exit_code_watch.load(Ordering::Acquire).max(0),
                         },
                     );
                 }
@@ -796,6 +808,27 @@ impl TerminalSession {
 
         info!(terminal_id = %self.id, "Terminal session cleaned up");
     }
+}
+
+fn collect_exit_code(
+    child: &Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    shared: &AtomicI32,
+) -> i32 {
+    for _ in 0..20 {
+        if let Ok(mut child) = child.lock() {
+            if let Ok(Some(status)) = child.try_wait() {
+                let code = status.exit_code() as i32;
+                shared.store(code, Ordering::Release);
+                return code.max(0);
+            }
+        }
+        let known = shared.load(Ordering::Acquire);
+        if known >= 0 {
+            return known;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    shared.load(Ordering::Acquire).max(0)
 }
 
 fn resolve_agent_bridge_path(app: &AppHandle) -> Option<PathBuf> {

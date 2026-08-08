@@ -17,7 +17,7 @@ pub async fn terminal_spawn(
     rows: u16,
     workspace_id: Option<String>,
     agent_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     info!(%terminal_id, "terminal_spawn called");
     let manager = app.state::<TerminalManager>();
     let config = crate::workspace::registry::TerminalConfig {
@@ -30,7 +30,7 @@ pub async fn terminal_spawn(
         workspace_id,
     };
     manager.spawn(app.clone(), config, cols, rows).await?;
-    Ok(())
+    manager.generation(&terminal_id).await
 }
 
 #[tauri::command]
@@ -100,7 +100,7 @@ pub async fn terminal_reopen(
     rows: u16,
     workspace_id: Option<String>,
     agent_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     info!(%terminal_id, "terminal_reopen called");
     let manager = app.state::<TerminalManager>();
 
@@ -121,7 +121,7 @@ pub async fn terminal_reopen(
         workspace_id,
     };
     manager.spawn(app.clone(), config, cols, rows).await?;
-    Ok(())
+    manager.generation(&terminal_id).await
 }
 
 /// Visible screen, parser modes, geometry, and output watermark for rehydrating

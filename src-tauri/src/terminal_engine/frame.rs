@@ -6,6 +6,9 @@ use crate::terminal_engine::cell::Cell;
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOutput {
     pub terminal_id: String,
+    /// Unique PTY lifetime. Events from an older lifetime must never update a
+    /// reopened terminal that reuses the same terminal id.
+    pub generation: u64,
     pub data: Vec<u8>,
     /// Monotonic chunk number within this PTY lifetime. It lets a frontend
     /// discard events already included in a rehydrate snapshot without
@@ -16,6 +19,8 @@ pub struct TerminalOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalRehydrateState {
+    /// PTY lifetime represented by this snapshot.
+    pub generation: u64,
     /// Bounded scrollback + visible rows, formatted as terminal input. This
     /// must be written before `state` so a remounted xterm regains its buffer.
     pub history: Vec<u8>,
@@ -68,5 +73,7 @@ pub struct FrameSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalExited {
     pub terminal_id: String,
+    /// Unique PTY lifetime, used to discard late exit events after reopen.
+    pub generation: u64,
     pub exit_code: i32,
 }

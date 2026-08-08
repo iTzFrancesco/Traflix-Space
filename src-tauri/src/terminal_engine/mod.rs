@@ -201,11 +201,26 @@ impl TerminalManager {
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         if session.pty.is_some() {
-            return Ok(());
+            if session.process_alive.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            return Err(format!("terminal-exited: {}", id));
+        }
+        if session.process_id.is_some() && !session.process_alive.load(Ordering::Acquire) {
+            return Err(format!("terminal-exited: {}", id));
         }
         session.spawn(app.clone()).await?;
         info!(terminal_id = %id, "Shell spawned");
         Ok(())
+    }
+
+    pub async fn generation(&self, id: &str) -> Result<u64, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let generation = session.read().await.generation;
+        Ok(generation)
     }
 
     pub fn has_session(&self, id: &str) -> bool {
@@ -328,39 +343,34 @@ impl TerminalManager {
     }
 
     pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
-        // No-op when already active (short lock).
-        {
-            let active = self.active_id.lock().await;
-            if active.as_deref() == id {
-                return Ok(());
+        // Validate and recover the target before changing either active marker.
+        // A failed spawn must leave the previous terminal active.
+        if let Some(new_id) = id {
+            if !self.sessions.contains_key(new_id) {
+                return Err(format!("Terminal {} not found", new_id));
             }
+            self.spawn_shell(app, new_id).await?;
         }
 
-        // Snapshot previous id, then update flags without holding active_id
-        // across session write locks longer than needed.
-        let prev = {
-            let mut active = self.active_id.lock().await;
-            let prev = active.clone();
-            *active = id.map(|s| s.to_string());
-            prev
-        };
+        let mut active = self.active_id.lock().await;
+        if active.as_deref() == id {
+            return Ok(());
+        }
+        let prev = active.clone();
+        *active = id.map(str::to_owned);
+        drop(active);
 
-        if let Some(ref prev_id) = prev {
+        if let Some(prev_id) = prev {
             if Some(prev_id.as_str()) != id {
-                if let Some(entry) = self.sessions.get(prev_id) {
-                    let mut session = entry.write().await;
-                    session.active = false;
+                if let Some(entry) = self.sessions.get(&prev_id) {
+                    entry.write().await.active = false;
                 }
             }
         }
-
         if let Some(new_id) = id {
             if let Some(entry) = self.sessions.get(new_id) {
-                let mut session = entry.write().await;
-                session.active = true;
+                entry.write().await.active = true;
             }
-            // Recovery path if spawn was missed.
-            self.spawn_shell(app, new_id).await?;
         }
 
         info!(terminal_id = ?id, "Active terminal set");
@@ -389,6 +399,7 @@ impl TerminalManager {
         let state = parser.state_for_rehydrate();
         let output_sequence = session.output_sequence.load(Ordering::Acquire);
         Ok(TerminalRehydrateState {
+            generation: session.generation,
             history,
             state,
             output_sequence,
@@ -464,38 +475,6 @@ impl TerminalManager {
         }
         snapshots.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
         snapshots
-    }
-
-    pub async fn get_normalized_screen_text(
-        &self,
-        id: &str,
-        max_bytes: usize,
-    ) -> Result<NormalizedTerminalText, String> {
-        let session = self
-            .sessions
-            .get(id)
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
-        let parser = session
-            .parser
-            .lock()
-            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
-        let text = parser.screen_text(session.grid.rows, session.grid.cols);
-        let text = text.trim_end().to_string();
-        if text.len() <= max_bytes {
-            return Ok(NormalizedTerminalText {
-                content: text,
-                truncated: false,
-            });
-        }
-        let mut start = text.len() - max_bytes;
-        while !text.is_char_boundary(start) {
-            start += 1;
-        }
-        Ok(NormalizedTerminalText {
-            content: text[start..].to_string(),
-            truncated: true,
-        })
     }
 
     pub async fn get_recent_normalized_terminal_text(
