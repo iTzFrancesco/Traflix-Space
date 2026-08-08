@@ -23,6 +23,7 @@ function run(command, args, options = {}) {
 
 run(npmCommand, ["exec", "tsc", "--", "--noEmit"]);
 run(npmCommand, ["run", "test:jarvis"]);
+run(npmCommand, ["run", "test:terminal"]);
 run(cargoCommand, ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--all", "--check"]);
 run(cargoCommand, ["check", "--manifest-path", "src-tauri/Cargo.toml", "--release"]);
 run(cargoCommand, [
@@ -78,4 +79,4 @@ run(cargoCommand, ["test", "--manifest-path", "src-tauri/Cargo.toml"], {
   env: { ...process.env, RUSTFLAGS: rustFlags },
 });
 
-console.log("Strict regression suite passed: TypeScript, frontend tests, rustfmt, release check, explicit Clippy baseline, and warning-free Rust tests.");
+console.log("Strict regression suite passed: TypeScript, frontend tests, terminal tests, rustfmt, release check, explicit Clippy baseline, and warning-free Rust tests.");
