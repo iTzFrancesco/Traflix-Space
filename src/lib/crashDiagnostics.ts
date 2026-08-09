@@ -74,6 +74,12 @@ export function installFrontendCrashDiagnostics(): () => void {
       source: sourceName(event.filename),
       line: event.lineno || undefined,
       column: event.colno || undefined,
+      // The code alone ("TypeError") cannot pinpoint the failing property;
+      // the message ("Cannot read properties of null (reading 'x')") can.
+      state: (event.error instanceof Error
+        ? event.error.message
+        : String(event.error)
+      ).slice(0, 128),
     });
   };
   const handleRejection = (event: PromiseRejectionEvent) => {

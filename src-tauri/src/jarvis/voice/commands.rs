@@ -115,6 +115,7 @@ pub async fn jarvis_voice_start(
         vad_post_speech_ms: input.vad_post_speech_ms,
     }
     .bounded();
+    let request_id_for_log = request.request_id.clone();
     let status = state
         .start(
             request.request_id,
@@ -123,7 +124,7 @@ pub async fn jarvis_voice_start(
             options,
         )
         .map_err(|code| {
-            warn!(error_code = %code.as_str(), "Voice registry rejected start");
+            warn!(request_id = %request_id_for_log, error_code = %code.as_str(), "Voice registry rejected start");
             to_error(code)
         })?;
     info!(

@@ -480,8 +480,28 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     voiceLog("transcript submission started", { requestId, workspaceId: origin.workspaceId, transcriptChars: text.trim().length });
     const accepted = await get().sendMessage(text);
     if (!accepted) {
-      voiceWarn("transcript submission rejected; keeping draft and allowing a new capture", { requestId });
-      set({ voiceError: "La trascrizione non è stata inviata a Jarvis. Riprovare quando vuoi." });
+      const chatError = get().chatErrors[origin.workspaceId];
+      voiceWarn("transcript submission rejected; keeping draft and allowing a new capture", {
+        requestId,
+        chatError,
+      });
+      // The rejection happens in the frontend (chat busy, IPC failure, no
+      // active workspace) and would otherwise be invisible in the backend
+      // log; report the exact reason so voice failures are diagnosable.
+      reportFrontendDiagnosticCode(
+        "jarvis-voice-submit-error",
+        chatError ? "chat-rejected" : "submit-rejected",
+        {
+          workspaceId: origin.workspaceId,
+          requestId,
+          state: chatError ?? "send-message-failed",
+        },
+      );
+      set({
+        voiceError: chatError
+          ? `Jarvis non ha accettato la trascrizione: ${chatError}`
+          : "La trascrizione non è stata inviata a Jarvis. Riprovare quando vuoi.",
+      });
       return false;
     }
     voiceLog("transcript accepted by Jarvis chat", { requestId });

@@ -250,16 +250,6 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub async fn generation(&self, id: &str) -> Result<u64, String> {
-        let session = self
-            .sessions
-            .get(id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let generation = session.read().await.generation;
-        Ok(generation)
-    }
-
     pub async fn runtime_identity(&self, id: &str) -> Result<TerminalRuntimeIdentity, String> {
         let session = self
             .sessions
@@ -459,26 +449,10 @@ impl TerminalManager {
         self.sessions.contains_key(id)
     }
 
-    pub async fn write(&self, app: &AppHandle, id: &str, data: &[u8]) -> Result<(), String> {
-        self.write_typed(app, id, data, TerminalInputOrigin::User)
-            .await
-    }
-
     /// Write into the PTY and observe the write according to its origin.
     /// User writes feed the bounded input tracker (a task is registered only
     /// when Enter commits a reliable line); Jarvis writes are registered by
     /// the caller with the exact text after this call succeeds.
-    pub async fn write_typed(
-        &self,
-        app: &AppHandle,
-        id: &str,
-        data: &[u8],
-        origin: TerminalInputOrigin,
-    ) -> Result<(), String> {
-        self.write_typed_inner(app, id, None, None, data, origin)
-            .await
-    }
-
     async fn write_typed_inner(
         &self,
         app: &AppHandle,
@@ -645,17 +619,6 @@ impl TerminalManager {
         .await
     }
 
-    pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let session = self
-            .sessions
-            .get(id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.write().await;
-        session.resize(cols, rows)?;
-        Ok(())
-    }
-
     pub async fn resize_generation(
         &self,
         id: &str,
@@ -684,15 +647,6 @@ impl TerminalManager {
             return Err("stale-terminal-generation: session was replaced".to_string());
         }
         session.resize(cols, rows)
-    }
-
-    pub async fn kill(&self, app: &AppHandle, id: &str) -> Result<(), String> {
-        let _lifecycle = self.workspace_lifecycle.lock().await;
-        let session = self
-            .sessions
-            .remove(id)
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        self.finish_removed_session(app, id, session.1).await
     }
 
     pub async fn kill_generation(
@@ -1063,23 +1017,6 @@ impl TerminalManager {
         Ok(Some(snapshot_from_session(&session)))
     }
 
-    pub async fn observe_agent_provider(
-        &self,
-        id: &str,
-        provider: &str,
-        source: &str,
-        confidence: f32,
-    ) -> Result<(), String> {
-        let session = self
-            .sessions
-            .get(id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.write().await;
-        apply_observed_provider(&mut session, provider, source, confidence);
-        Ok(())
-    }
-
     pub async fn observe_agent_provider_for_runtime(
         &self,
         id: &str,
@@ -1156,25 +1093,6 @@ impl TerminalManager {
         }
         snapshots.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
         snapshots
-    }
-
-    pub async fn get_recent_normalized_terminal_text(
-        &self,
-        id: &str,
-        max_bytes: usize,
-    ) -> Result<NormalizedTerminalText, String> {
-        let session = self
-            .sessions
-            .get(id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
-        let mut parser = session
-            .parser
-            .lock()
-            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
-        let text = parser.recent_normalized_text();
-        bounded_terminal_text(&text, max_bytes)
     }
 
     pub async fn get_snapshot(
@@ -1279,12 +1197,6 @@ impl TerminalManager {
     }
 
     /// Returns a CWD and its branch from the same backend snapshot.
-    pub async fn get_terminal_context(&self, id: &str) -> Result<TerminalContext, String> {
-        let cwd = self.get_terminal_cwd(id).await?;
-        let git_branch = self.get_git_branch_for_cwd(id, &cwd).await?;
-        Ok(TerminalContext { cwd, git_branch })
-    }
-
     pub async fn get_terminal_context_for_runtime(
         &self,
         id: &str,
@@ -1312,43 +1224,6 @@ impl TerminalManager {
     /// Synchronizes the tracked CWD with the shell prompt rendered in xterm.
     /// This covers PowerShell tab completion, whose completed path never passes
     /// back through the PTY input stream as literal keystrokes.
-    pub async fn sync_terminal_cwd(&self, id: &str, cwd: &str) -> Result<TerminalContext, String> {
-        let canonical = std::path::Path::new(cwd)
-            .canonicalize()
-            .map_err(|error| format!("Could not resolve terminal CWD: {error}"))?;
-        if !canonical.is_dir() {
-            return Err("Terminal CWD is not a directory".to_string());
-        }
-        let normalized = canonical
-            .to_string_lossy()
-            .trim_start_matches("\\\\?\\")
-            .trim_start_matches("\\\\.\\")
-            .to_string();
-
-        {
-            let session = self
-                .sessions
-                .get(id)
-                .map(|entry| entry.value().clone())
-                .ok_or_else(|| format!("Terminal {} not found", id))?;
-            let session = session.read().await;
-            let mut current = session
-                .cwd
-                .lock()
-                .map_err(|_| format!("Terminal {} CWD lock poisoned", id))?;
-            if *current != normalized {
-                info!(terminal_id = %id, from = %current, to = %normalized, "Terminal CWD synchronized from PowerShell prompt");
-                *current = normalized.clone();
-            }
-        }
-
-        let git_branch = self.get_git_branch_for_cwd(id, &normalized).await?;
-        Ok(TerminalContext {
-            cwd: normalized,
-            git_branch,
-        })
-    }
-
     pub async fn sync_terminal_cwd_for_runtime(
         &self,
         id: &str,

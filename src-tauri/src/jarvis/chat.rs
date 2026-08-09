@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 
 const MAX_USER_MESSAGE_BYTES: usize = crate::jarvis::memory::MAX_USER_MESSAGE_BYTES;
 const MAX_TOOL_ROUNDS: usize = 4;
@@ -196,8 +197,26 @@ pub async fn jarvis_chat(
             )
         })?;
     let request_id = request.invocation.request_id.clone();
+    info!(
+        request_id = %request_id,
+        workspace_id = %request.invocation.target_workspace_id,
+        message_chars = request.message.chars().count(),
+        "Jarvis chat request started"
+    );
     let result = run_chat(&app, request, cancellation).await;
     state.chat_requests.finish(&request_id);
+    match &result {
+        Ok(response) => info!(
+            request_id = %request_id,
+            response_chars = response.message.content.chars().count(),
+            "Jarvis chat request completed"
+        ),
+        Err(error) => error!(
+            request_id = %request_id,
+            error_code = %error.code,
+            "Jarvis chat request failed"
+        ),
+    }
     result
 }
 

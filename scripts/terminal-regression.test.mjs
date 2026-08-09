@@ -103,13 +103,12 @@ test("hidden-window PTY batching is bounded and requests an identity-scoped resy
   assert.match(terminalPane, /xterm-write-backpressure/);
 });
 
-test("window blur cannot send transient two-column PTY resizes", async () => {
+test("transient two-column PTY resizes are rejected by the stability probe", async () => {
   const { isStableTerminalLayout } = await import("../src/lib/terminalPolicies.ts");
 
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: false,
-      documentVisible: true,
+      documentVisible: false,
       width: 500,
       height: 400,
       cols: 80,
@@ -119,7 +118,6 @@ test("window blur cannot send transient two-column PTY resizes", async () => {
   );
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: true,
       documentVisible: true,
       width: 500,
       height: 400,
@@ -130,7 +128,6 @@ test("window blur cannot send transient two-column PTY resizes", async () => {
   );
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: true,
       documentVisible: true,
       width: Number.NaN,
       height: 400,
@@ -141,7 +138,6 @@ test("window blur cannot send transient two-column PTY resizes", async () => {
   );
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: true,
       documentVisible: true,
       width: 500,
       height: 400,
@@ -152,7 +148,6 @@ test("window blur cannot send transient two-column PTY resizes", async () => {
   );
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: true,
       documentVisible: true,
       width: 500,
       height: 400,
@@ -163,7 +158,6 @@ test("window blur cannot send transient two-column PTY resizes", async () => {
   );
   assert.equal(
     isStableTerminalLayout({
-      windowFocused: true,
       documentVisible: true,
       width: 500,
       height: 400,
@@ -356,6 +350,21 @@ test("fullscreen and close transitions cannot retain stale grid tracks or an emp
     "layout transitions must wait for the settled grid before fitting xterm",
   );
   assert.match(
+    terminalPaneSource,
+    /window\.addEventListener\("resize", onWindowResize\)[\s\S]*window\.removeEventListener\("resize", onWindowResize\)/,
+    "window maximize/restore must re-arm the debounced fit as a guaranteed trigger",
+  );
+  assert.match(
+    terminalPaneSource,
+    /const onWindowResize = \(\) => \{[\s\S]*scheduleFitAndResize\(0\);/,
+    "a window resize must arm the fit immediately without waiting for the observer debounce",
+  );
+  assert.match(
+    terminalPaneSource,
+    /terminal-resize-guard-error[\s\S]*resize-observer-callback[\s\S]*scheduleFitAndResize\(2\);/,
+    "an observer callback exception must be reported and still arm the fit",
+  );
+  assert.match(
     terminalPane,
     /layoutRevision[\s\S]*scheduleFitAndResize\(2\)/,
     "the pane must receive an explicit layout epoch in addition to ResizeObserver",
@@ -363,8 +372,38 @@ test("fullscreen and close transitions cannot retain stale grid tracks or an emp
   assert.match(terminalPane, /MAX_LAYOUT_FIT_RETRY_FRAMES = 5/);
   assert.match(
     terminalPane,
-    /const fitted = fitAndResizePty[\s\S]*if \(!fitted && schedule\.retryFrames > 0\)[\s\S]*schedule\.retryFrames -= 1/,
+    /let fitted = false;[\s\S]*fitted = fitAndResizePty\([\s\S]*if \(!fitted && schedule\.retryFrames > 0\)[\s\S]*schedule\.retryFrames -= 1/,
     "a transient grid measurement must get bounded frame retries instead of waiting for a later click",
+  );
+  assert.match(
+    terminalPane,
+    /terminal-fit-error[\s\S]*state: "fit-callback"[\s\S]*retryWhileSettling\(\);/,
+    "a measurement exception must re-arm the fit inside the settle window instead of killing the loop",
+  );
+  assert.match(
+    terminalPane,
+    /MAX_LAYOUT_SETTLE_MS = 1500/,
+    "explicit layout transitions must keep a bounded settle window",
+  );
+  assert.match(
+    terminalPane,
+    /waitFrames > 0[\s\S]*schedule\.deadline = Math\.max\([\s\S]*MAX_LAYOUT_SETTLE_MS/,
+    "an explicit transition must arm the settle deadline",
+  );
+  assert.match(
+    terminalPane,
+    /const retryWhileSettling = \(\) => \{[\s\S]*performance\.now\(\) < schedule\.deadline[\s\S]*requestAnimationFrame\(run\)/,
+    "a failed fit must re-arm while the transition is still settling",
+  );
+  assert.match(
+    terminalPane,
+    /rehydratingRef\.current\) \{[\s\S]*schedule\.retryFrames = 0;[\s\S]*retryWhileSettling\(\);/,
+    "rehydrate and focus bails must retry inside the settle window instead of abandoning the fit",
+  );
+  assert.match(
+    terminalPane,
+    /document\.visibilityState === "hidden"\) \{[\s\S]*retryWhileSettling\(\);/,
+    "a hidden document must pause the fit inside the settle window instead of abandoning it",
   );
 });
 

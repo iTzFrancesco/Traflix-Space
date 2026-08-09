@@ -97,11 +97,7 @@ fn watch_events(
 ) {
     let debounce = Duration::from_millis(500);
 
-    loop {
-        let first = match rx.recv() {
-            Ok(event) => event,
-            Err(_) => break,
-        };
+    while let Ok(first) = rx.recv() {
         let mut events = vec![first];
         while let Ok(event) = rx.recv_timeout(debounce) {
             events.push(event);

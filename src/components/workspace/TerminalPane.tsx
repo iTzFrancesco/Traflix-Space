@@ -24,7 +24,7 @@ import { getWorkspaceColor } from "../../lib/workspaceColors";
 import { AGENTS } from "../../lib/agents";
 import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
 import { invokeWithTimeout } from "../../lib/timeout";
-import { reportFrontendDiagnostic } from "../../lib/crashDiagnostics";
+import { reportFrontendDiagnostic, reportFrontendDiagnosticCode } from "../../lib/crashDiagnostics";
 import { isStableTerminalLayout } from "../../lib/terminalPolicies";
 import {
   cancelProgrammaticScroll,
@@ -306,6 +306,14 @@ const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
 // bounded number of animation frames when a measurement is still transient.
 const MAX_LAYOUT_FIT_RETRY_FRAMES = 5;
 
+// An explicit layout transition (focus/fullscreen, close, sidebar drag) can
+// commit late in WebView2: the grid template changes in one frame while the
+// xterm canvas and the ConPTY resize settle afterwards. Instead of abandoning
+// the fit once the frame retries are exhausted, keep a bounded settle window
+// during which a failed or transient measurement is re-armed continuously.
+// A successful fit clears the window; otherwise it expires silently.
+const MAX_LAYOUT_SETTLE_MS = 1500;
+
 const TITLE_BAR_BRANCH: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -557,7 +565,6 @@ async function syncMeasuredPtySize(
   skipHiddenPane: boolean,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
-  windowFocusedRef: React.MutableRefObject<boolean>,
 ) {
   if (skipHiddenPane) return;
 
@@ -565,7 +572,10 @@ async function syncMeasuredPtySize(
   // the xterm canvas settle before FitAddon reads its cell dimensions.
   await waitForAnimationFrame();
   await waitForAnimationFrame();
-  if (!windowFocusedRef.current || document.visibilityState === "hidden") return;
+  // The DOM box is authoritative even while the window is unfocused: a
+  // visible but unfocused window still has real layout dimensions. Only a
+  // hidden/minimized document must be skipped (its boxes are degenerate).
+  if (document.visibilityState === "hidden") return;
   if (!term.element?.isConnected) return;
   const layoutElement = term.element.parentElement ?? term.element;
   const rect = layoutElement.getBoundingClientRect();
@@ -575,7 +585,6 @@ async function syncMeasuredPtySize(
   if (
     !proposed ||
     !isStableTerminalLayout({
-      windowFocused: windowFocusedRef.current,
       documentVisible: document.visibilityState === "visible",
       width: rect.width,
       height: rect.height,
@@ -599,7 +608,6 @@ async function syncMeasuredPtySize(
   }
   if (
     !isStableTerminalLayout({
-      windowFocused: windowFocusedRef.current,
       documentVisible: document.visibilityState === "visible",
       width: rect.width,
       height: rect.height,
@@ -639,13 +647,8 @@ function fitAndResizePty(
   programmaticScrollGuardRef: React.MutableRefObject<ProgrammaticScrollGuard>,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
-  windowFocusedRef: React.MutableRefObject<boolean>,
 ): boolean {
-  if (
-    runtime === null ||
-    !windowFocusedRef.current ||
-    document.visibilityState === "hidden"
-  ) return false;
+  if (runtime === null || document.visibilityState === "hidden") return false;
 
   const layoutElement = term.element?.parentElement ?? term.element;
   const rect = layoutElement?.getBoundingClientRect();
@@ -654,7 +657,6 @@ function fitAndResizePty(
     !rect ||
     !proposed ||
     !isStableTerminalLayout({
-      windowFocused: windowFocusedRef.current,
       documentVisible: document.visibilityState === "visible",
       width: rect.width,
       height: rect.height,
@@ -694,7 +696,6 @@ function fitAndResizePty(
   }
   if (
     !isStableTerminalLayout({
-      windowFocused: windowFocusedRef.current,
       documentVisible: document.visibilityState === "visible",
       width: rect.width,
       height: rect.height,
@@ -912,10 +913,12 @@ export const TerminalPane = memo(function TerminalPane({
     raf: number | null;
     remainingFrames: number;
     retryFrames: number;
+    deadline: number;
   }>({
     raf: null,
     remainingFrames: 0,
     retryFrames: 0,
+    deadline: 0,
   });
   const resizeDebounceRef = useRef<number | null>(null);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
@@ -1056,6 +1059,15 @@ export const TerminalPane = memo(function TerminalPane({
       schedule.retryFrames,
       waitFrames > 0 ? MAX_LAYOUT_FIT_RETRY_FRAMES : 2,
     );
+    // Explicit layout transitions keep a bounded settle window: the grid can
+    // commit late in WebView2, so one failed fit must not leave the pane at
+    // the pre-transition size until an unrelated event re-triggers it.
+    if (waitFrames > 0) {
+      schedule.deadline = Math.max(
+        schedule.deadline,
+        performance.now() + MAX_LAYOUT_SETTLE_MS,
+      );
+    }
     if (schedule.raf !== null) return;
 
     const run = () => {
@@ -1066,6 +1078,16 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       schedule.raf = null;
+      // A failed or transient attempt keeps re-arming while the transition is
+      // still inside its settle window; once the window expires it stops.
+      const retryWhileSettling = () => {
+        if (performance.now() < schedule.deadline) {
+          schedule.remainingFrames = 1;
+          schedule.raf = requestAnimationFrame(run);
+        } else {
+          schedule.deadline = 0;
+        }
+      };
       const term = xtermRef.current;
       const fitAddon = fitAddonRef.current;
       if (!term || !fitAddon) {
@@ -1073,9 +1095,12 @@ export const TerminalPane = memo(function TerminalPane({
         return;
       }
       // Snapshot reset/history/state replay owns xterm's dimensions until its
-      // atomic cutover. A fit here would reflow a half-restored buffer.
+      // atomic cutover. A fit here would reflow a half-restored buffer. The
+      // completion path re-arms the schedule, and the settle window covers a
+      // cutover that lands after the first attempt.
       if (rehydratingRef.current) {
         schedule.retryFrames = 0;
+        retryWhileSettling();
         return;
       }
       if (
@@ -1085,31 +1110,46 @@ export const TerminalPane = memo(function TerminalPane({
         schedule.retryFrames = 0;
         return;
       }
-      if (
-        !windowFocusedRef.current ||
-        document.visibilityState === "hidden"
-      ) {
+      if (document.visibilityState === "hidden") {
+        // A hidden/minimized document has degenerate boxes; nothing to fit
+        // until it becomes visible again. Visibility changes re-arm the fit.
         schedule.retryFrames = 0;
+        retryWhileSettling();
         return;
       }
-      const fitted = fitAndResizePty(
-        term,
-        fitAddon,
-        terminalId,
-        terminalGenerationRef.current === null || !terminalWorkspaceId
-          ? null
-          : {
-              workspaceId: terminalWorkspaceId,
-              generation: terminalGenerationRef.current,
-              processId: terminalProcessIdRef.current,
-            },
-        autoScrollRef,
-        scrollPositionRef,
-        programmaticScrollGuardRef,
-        ptyResizeStateRef,
-        fitInProgressRef,
-        windowFocusedRef,
-      );
+      let fitted = false;
+      try {
+        fitted = fitAndResizePty(
+          term,
+          fitAddon,
+          terminalId,
+          terminalGenerationRef.current === null || !terminalWorkspaceId
+            ? null
+            : {
+                workspaceId: terminalWorkspaceId,
+                generation: terminalGenerationRef.current,
+                processId: terminalProcessIdRef.current,
+              },
+          autoScrollRef,
+          scrollPositionRef,
+          programmaticScrollGuardRef,
+          ptyResizeStateRef,
+          fitInProgressRef,
+        );
+      } catch (error) {
+        // An unexpected measurement exception must not kill the fit loop;
+        // re-arm inside the settle window and report the exact failure once
+        // so the backend diagnostic log can pinpoint the root cause.
+        reportFrontendDiagnostic("terminal-fit-error", error, {
+          terminalId,
+          workspaceId: terminalWorkspaceId,
+          generation: terminalGenerationRef.current ?? undefined,
+          processId: terminalProcessIdRef.current,
+          state: "fit-callback",
+        });
+        retryWhileSettling();
+        return;
+      }
       if (!fitted && schedule.retryFrames > 0) {
         schedule.retryFrames -= 1;
         schedule.remainingFrames = 1;
@@ -1117,6 +1157,28 @@ export const TerminalPane = memo(function TerminalPane({
         return;
       }
       schedule.retryFrames = 0;
+      if (!fitted) {
+        // Frame retries are exhausted but the transition may still be
+        // settling (late WebView2 commit, rehydrate cutover). Re-arm within
+        // the settle window instead of staying at the stale size; report the
+        // permanent failure once for the backend diagnostic log.
+        retryWhileSettling();
+        if (schedule.deadline === 0 && schedule.raf === null) {
+          reportFrontendDiagnosticCode(
+            "terminal-fit-unstable",
+            "layout-settle-expired",
+            {
+              terminalId,
+              workspaceId: terminalWorkspaceId,
+              generation: terminalGenerationRef.current ?? undefined,
+              processId: terminalProcessIdRef.current,
+              state: "settle-expired",
+            },
+          );
+        }
+        return;
+      }
+      schedule.deadline = 0;
       if (scrollPositionRef.current.followsOutput) {
         scheduleFollowBottomRepair();
       }
@@ -1756,7 +1818,6 @@ export const TerminalPane = memo(function TerminalPane({
               !paneVisibilityRef.current.isFocused,
             ptyResizeStateRef,
             fitInProgressRef,
-            windowFocusedRef,
           );
         }
         await restoreWithBoundedRetry(runtimeKey(runtime));
@@ -2227,15 +2288,37 @@ export const TerminalPane = memo(function TerminalPane({
   // terminal count changes; this is the same deterministic barrier used by
   // focus-mode transitions and never sends an unstable PTY size.
   useEffect(() => {
+    let guardWarningShown = false;
+    // An observer callback must never kill the resize pipeline: any exception
+    // is reported once to the backend diagnostic log and the fit is re-armed
+    // anyway, so a maximize/restore still converges on the final layout.
+    const reportGuardError = (error: unknown, state: string) => {
+      if (guardWarningShown) return;
+      guardWarningShown = true;
+      reportFrontendDiagnostic("terminal-resize-guard-error", error, {
+        terminalId,
+        workspaceId: terminalWorkspaceId,
+        generation: terminalGenerationRef.current ?? undefined,
+        processId: terminalProcessIdRef.current,
+        state,
+      });
+    };
     const handleResize = () => {
-      if (focusModeActive && !isFocused) return;
-      if (resizeDebounceRef.current !== null) {
-        window.clearTimeout(resizeDebounceRef.current);
-      }
-      resizeDebounceRef.current = window.setTimeout(() => {
-        resizeDebounceRef.current = null;
+      try {
+        if (focusModeActive && !isFocused) return;
+        if (resizeDebounceRef.current !== null) {
+          window.clearTimeout(resizeDebounceRef.current);
+        }
+        resizeDebounceRef.current = window.setTimeout(() => {
+          resizeDebounceRef.current = null;
+          scheduleFitAndResize(2);
+        }, 150);
+      } catch (error) {
+        reportGuardError(error, "resize-observer-callback");
+        // Even when the debounce path broke, the fit must still be armed:
+        // the rAF loop is its own throttle and the settle window bounds it.
         scheduleFitAndResize(2);
-      }, 150);
+      }
     };
 
     const container = containerRef.current;
@@ -2261,11 +2344,25 @@ export const TerminalPane = memo(function TerminalPane({
       observed = observed.parentElement;
     }
 
+    // Window maximize/restore and live drags are the primary growth triggers
+    // on Windows and ResizeObserver can miss the WebView2 transition, so the
+    // window resize event arms the fit directly. No debounce here: the rAF
+    // loop inside scheduleFitAndResize is its own throttle and the pending
+    // PTY resize queue coalesces bursts, so a maximize or a drag tracks the
+    // container almost frame-by-frame instead of waiting for the 150ms
+    // observer debounce to expire.
+    const onWindowResize = () => {
+      if (focusModeActive && !isFocused) return;
+      scheduleFitAndResize(0);
+    };
+    window.addEventListener("resize", onWindowResize);
+
     return () => {
       if (resizeDebounceRef.current !== null) {
         window.clearTimeout(resizeDebounceRef.current);
         resizeDebounceRef.current = null;
       }
+      window.removeEventListener("resize", onWindowResize);
       observer.disconnect();
     };
   }, [terminalId, terminalCount, layoutRevision, focusModeActive, isFocused, scheduleFitAndResize]);

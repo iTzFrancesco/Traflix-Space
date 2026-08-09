@@ -174,7 +174,7 @@ pub fn clear_secret(secret: JarvisSecretId) -> Result<JarvisSecretStatus, String
 }
 
 pub fn read_secret_env(name: &str) -> Option<String> {
-    if let Some(value) = env::var(name).ok() {
+    if let Ok(value) = env::var(name) {
         if let Ok(value) = normalize_secret(&value) {
             if env::var(name).ok().as_deref() != Some(value.as_str()) {
                 env::set_var(name, &value);

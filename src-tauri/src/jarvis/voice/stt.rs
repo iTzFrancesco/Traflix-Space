@@ -1,10 +1,11 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::{header::CONTENT_TYPE, Client, StatusCode};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
 use super::types::{VoiceErrorCode, GROQ_STT_MODEL, MAX_WAV_BYTES};
 
@@ -117,6 +118,7 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
 
             let language = normalized_language(&language);
             let body = build_groq_multipart(&wav, &language);
+            let started = Instant::now();
             let request = this
                 .client
                 .post(&this.endpoint)
@@ -154,6 +156,11 @@ impl SpeechToTextProvider for GroqSpeechToTextProvider {
             if text.is_empty() {
                 return Err(VoiceErrorCode::InvalidResponse);
             }
+            debug!(
+                wav_bytes = wav.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Groq STT round-trip completed"
+            );
             Ok(text)
         })
     }
@@ -204,6 +211,7 @@ fn build_groq_multipart(wav: &[u8], language: &str) -> Vec<u8> {
 }
 
 fn classify_status(status: StatusCode) -> VoiceErrorCode {
+    warn!(stt_status = %status, "Groq STT request rejected by HTTP status");
     match status {
         StatusCode::UNAUTHORIZED => VoiceErrorCode::AuthFailed,
         StatusCode::FORBIDDEN => VoiceErrorCode::Forbidden,
@@ -215,6 +223,11 @@ fn classify_status(status: StatusCode) -> VoiceErrorCode {
 }
 
 fn classify_transport(error: reqwest::Error) -> VoiceErrorCode {
+    warn!(
+        stt_error = %error,
+        stt_timeout = error.is_timeout(),
+        "Groq STT transport failure"
+    );
     if error.is_timeout() {
         VoiceErrorCode::Timeout
     } else {

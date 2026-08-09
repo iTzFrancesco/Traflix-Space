@@ -125,12 +125,9 @@ pub async fn status_for_workspace(
         }
     };
 
-    let repository_root = std::fs::canonicalize(
-        String::from_utf8_lossy(&repository_output.stdout)
-            .trim()
-            .to_string(),
-    )
-    .map_err(|error| format!("Impossibile risolvere la root Git: {error}"))?;
+    let repository_root =
+        std::fs::canonicalize(String::from_utf8_lossy(&repository_output.stdout).trim())
+            .map_err(|error| format!("Impossibile risolvere la root Git: {error}"))?;
     let workspace_prefix = workspace_relative_prefix(&repository_root, &workspace_root)?;
 
     let status_output = match run_git(
@@ -169,7 +166,7 @@ pub async fn repository_root_for_workspace(workspace_root: &Path) -> Option<Path
     if !output.status.success() {
         return None;
     }
-    std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim().to_string()).ok()
+    std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok()
 }
 
 pub async fn diff_for_workspace(

@@ -1,5 +1,4 @@
 export interface TerminalResizeProbe {
-  windowFocused: boolean;
   documentVisible: boolean;
   width: number;
   height: number;
@@ -15,7 +14,6 @@ export const MIN_USABLE_TERMINAL_ROWS = 2;
 
 export function isStableTerminalLayout(probe: TerminalResizeProbe): boolean {
   return (
-    probe.windowFocused &&
     probe.documentVisible &&
     Number.isFinite(probe.width) &&
     Number.isFinite(probe.height) &&

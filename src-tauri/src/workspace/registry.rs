@@ -9,6 +9,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
+#[cfg(unix)]
 use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
