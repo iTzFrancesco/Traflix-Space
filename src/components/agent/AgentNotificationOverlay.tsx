@@ -18,19 +18,29 @@ export function AgentNotificationOverlay() {
     document.body.style.backgroundColor = "transparent";
     const overlay = WebviewWindow.getCurrent();
     let unlisten: (() => void) | undefined;
+    let disposed = false;
 
     void overlay.listen<AgentNotificationPayload>(AGENT_NOTIFICATION_SHOW_EVENT, (event) => {
       setNotification(event.payload);
       if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
       hideTimer.current = window.setTimeout(() => {
         setNotification(null);
-        void overlay.hide();
+        void overlay.hide().catch((error) => {
+          console.warn("Traflix agent overlay could not hide:", error);
+        });
       }, DISPLAY_MS);
     }).then((cleanup) => {
-      unlisten = cleanup;
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    }).catch((error) => {
+      console.error("Traflix agent overlay listener failed:", error);
     });
 
     return () => {
+      disposed = true;
       document.body.style.backgroundColor = "";
       if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
       unlisten?.();
@@ -39,7 +49,9 @@ export function AgentNotificationOverlay() {
 
   const close = () => {
     setNotification(null);
-    void WebviewWindow.getCurrent().hide();
+    void WebviewWindow.getCurrent().hide().catch((error) => {
+      console.warn("Traflix agent overlay could not close:", error);
+    });
   };
 
   const openTerminal = async () => {
@@ -63,6 +75,8 @@ export function AgentNotificationOverlay() {
       await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT, {
         workspaceId: currentNotification.workspaceId,
         terminalId: currentNotification.terminalId,
+        generation: currentNotification.event.generation,
+        processId: currentNotification.event.processId,
       });
       console.info("[agent-notification] open event dispatched", {
         terminalId: currentNotification.terminalId,

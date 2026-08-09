@@ -12,6 +12,7 @@ import type {
   TerminalExited,
   TerminalOutput,
 } from "../components/terminal/types";
+import { reportFrontendDiagnostic } from "./crashDiagnostics";
 
 type OutputHandler = (payload: TerminalOutput) => void;
 type ExitHandler = (payload: TerminalExited) => void;
@@ -23,7 +24,9 @@ const agentCompletionHandlers = new Set<AgentCompletionHandler>();
 
 /** Pending raw chunks waiting for the next animation frame flush. */
 interface PendingOutputChunk {
+  workspaceId: string;
   generation: number;
+  processId: number | null;
   sequence: number;
   data: Uint8Array;
 }
@@ -63,11 +66,17 @@ function flushOutput(terminalId: string) {
   let batchBytes = 0;
   let batchEnd = 0;
   const generation = chunks[0].generation;
+  const processId = chunks[0].processId;
+  const workspaceId = chunks[0].workspaceId;
   while (batchEnd < chunks.length) {
     const next = chunks[batchEnd];
     // Never merge chunks from different PTY lifetimes: a reopened terminal
     // can reuse the same id while a late old-generation event is in flight.
-    if (next.generation !== generation) break;
+    if (
+      next.workspaceId !== workspaceId ||
+      next.generation !== generation ||
+      next.processId !== processId
+    ) break;
     if (batchEnd > 0 && batchBytes + next.data.length > MAX_OUTPUT_BYTES_PER_FRAME) {
       break;
     }
@@ -85,7 +94,9 @@ function flushOutput(terminalId: string) {
         : mergeChunks(batch);
     const payload: TerminalOutput = {
       terminalId,
+      workspaceId,
       generation,
+      processId,
       data,
       sequence: batch[batch.length - 1].sequence,
       chunks: batch,
@@ -107,8 +118,10 @@ function flushOutput(terminalId: string) {
 
 function enqueueOutput(
   terminalId: string,
+  workspaceId: string,
   data: number[] | Uint8Array,
   generation: number,
+  processId: number | null,
   sequence: number,
 ) {
   // No subscribers (e.g. mid-remount): drop — rehydrate will restore from backend.
@@ -122,7 +135,7 @@ function enqueueOutput(
     list = [];
     pendingChunks.set(terminalId, list);
   }
-  list.push({ generation, sequence, data: bytes });
+  list.push({ workspaceId, generation, processId, sequence, data: bytes });
 
   // PTY output is an unframed ANSI byte stream. Never drop an old chunk here:
   // it can contain half of an escape sequence or an incremental TUI repaint.
@@ -141,15 +154,19 @@ async function ensureOutputListener() {
     return;
   }
   outputSetup = listen<TerminalOutput>("terminal-output", (event) => {
-    const { terminalId, generation, data, sequence } = event.payload;
+    const { terminalId, workspaceId, generation, processId, data, sequence } = event.payload;
     if (!outputHandlers.has(terminalId)) return;
-    enqueueOutput(terminalId, data, generation, sequence);
+    enqueueOutput(terminalId, workspaceId, data, generation, processId, sequence);
   })
     .then((unlisten) => {
       outputUnlisten = unlisten;
     })
     .catch((err) => {
+      reportFrontendDiagnostic("terminal-listener-error", err, {
+        state: "terminal-output",
+      });
       console.error("Failed to subscribe terminal-output:", err);
+      throw err;
     })
     .finally(() => {
       outputSetup = null;
@@ -181,9 +198,6 @@ async function ensureExitListener() {
   })
     .then((unlisten) => {
       exitUnlisten = unlisten;
-    })
-    .catch((err) => {
-      console.error("Failed to subscribe terminal-exited:", err);
     })
     .finally(() => {
       exitSetup = null;
@@ -218,9 +232,6 @@ async function ensureAgentCompletionListener() {
     .then((unlisten) => {
       agentCompletionUnlisten = unlisten;
     })
-    .catch((err) => {
-      console.error("Failed to subscribe agent-turn-completed:", err);
-    })
     .finally(() => {
       agentCompletionSetup = null;
     });
@@ -238,7 +249,11 @@ export function subscribeTerminalOutput(
     outputHandlers.set(terminalId, set);
   }
   set.add(handler);
-  void ensureOutputListener();
+  void ensureOutputListener().catch(() => {
+    // waitForTerminalOutputListener surfaces this failure to TerminalPane;
+    // this branch only prevents the warm-up subscription from becoming an
+    // unhandled rejection.
+  });
 
   return () => {
     const current = outputHandlers.get(terminalId);
@@ -265,7 +280,12 @@ export function subscribeTerminalExit(
     exitHandlers.set(terminalId, set);
   }
   set.add(handler);
-  void ensureExitListener();
+  void ensureExitListener().catch((err) => {
+    reportFrontendDiagnostic("terminal-listener-error", err, {
+      state: "terminal-exit",
+    });
+    console.error("Failed to subscribe terminal-exited:", err);
+  });
 
   return () => {
     const current = exitHandlers.get(terminalId);
@@ -282,7 +302,12 @@ export function subscribeAgentTurnCompleted(
   handler: AgentCompletionHandler,
 ): () => void {
   agentCompletionHandlers.add(handler);
-  void ensureAgentCompletionListener();
+  void ensureAgentCompletionListener().catch((err) => {
+    reportFrontendDiagnostic("terminal-listener-error", err, {
+      state: "agent-completion",
+    });
+    console.error("Failed to subscribe agent-turn-completed:", err);
+  });
 
   return () => {
     agentCompletionHandlers.delete(handler);

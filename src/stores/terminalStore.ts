@@ -4,6 +4,11 @@ import { shallow } from "zustand/shallow";
 import { invoke } from "@tauri-apps/api/core";
 import { useSkillStore } from "./skillStore";
 import type { AgentTurnCompleted } from "../components/terminal/types";
+import { canonicalTerminalIds } from "../lib/terminalOrdering";
+import type { TerminalScrollPosition } from "../lib/terminalScrollState";
+import { reportFrontendDiagnostic } from "../lib/crashDiagnostics";
+
+export type { TerminalScrollPosition } from "../lib/terminalScrollState";
 
 export type AgentStatus = "idle" | "working" | "completed";
 
@@ -14,21 +19,19 @@ export interface TerminalState {
   shell: string;
   cwd: string;
   agent: string | null;
+  generation: number | null;
+  processId: number | null;
   isActive: boolean;
   spawned: boolean;
   exitCode: number | null;
   agentLaunched: boolean;
+  agentLaunchOwner: "frontend" | "backend" | null;
+  backendLaunchState: "starting" | "ready" | "failed" | null;
   agentStatus: AgentStatus;
   agentAttentionRequired: boolean;
   lastAgentCompletion: AgentTurnCompleted | null;
   /** Last viewport intent, retained while a workspace unmounts its xterm panes. */
   scrollPosition: TerminalScrollPosition;
-}
-
-export interface TerminalScrollPosition {
-  followsOutput: boolean;
-  /** Number of buffer rows between the viewport and the live bottom. */
-  offsetFromBottom: number;
 }
 
 export interface TerminalConfig {
@@ -42,6 +45,7 @@ export interface TerminalConfig {
 
 interface TerminalStore {
   terminals: Record<string, TerminalState>;
+  terminalOrderByWorkspace: Record<string, string[]>;
   activeTerminalId: string | null;
   /** When set, that terminal fills the workspace; others stay mounted but hidden. */
   focusedTerminalId: string | null;
@@ -60,7 +64,7 @@ interface TerminalStore {
     title: string;
     agent: string | null;
   }) => void;
-  removeTerminal: (id: string) => void;
+  removeTerminal: (id: string, expectedGeneration?: number) => void;
   /** Removes FE state and fires backend terminal_kill for each PTY (fire-and-forget). */
   killWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
@@ -69,9 +73,27 @@ interface TerminalStore {
   /** Rename a terminal — stores the custom title in terminalTitles (memory only). */
   renameTerminal: (id: string, title: string) => void;
   updateTitle: (id: string, title: string) => void;
-  markSpawned: (id: string) => void;
-  markExited: (id: string, exitCode: number) => void;
-  markAgentLaunched: (id: string) => void;
+  markSpawned: (
+    id: string,
+    workspaceId: string,
+    generation: number,
+    processId?: number | null,
+  ) => void;
+  markExited: (
+    id: string,
+    workspaceId: string,
+    generation: number,
+    processId: number | null,
+    exitCode: number,
+  ) => void;
+  markAgentLaunched: (id: string, generation: number) => void;
+  markBackendAgentLaunch: (
+    id: string,
+    workspaceId: string,
+    generation: number,
+    processId: number | null,
+    launchState: "starting" | "ready" | "failed",
+  ) => void;
   markAgentInput: (id: string) => void;
   markAgentTurnCompleted: (
     id: string,
@@ -79,21 +101,42 @@ interface TerminalStore {
     attentionRequired: boolean,
   ) => void;
   clearAgentAttention: (id: string) => void;
-  saveScrollPosition: (id: string, position: TerminalScrollPosition) => void;
+  saveScrollPosition: (
+    id: string,
+    expectedGeneration: number | null,
+    position: TerminalScrollPosition,
+  ) => void;
+  syncWorkspaceTerminalOrder: (workspaceId: string, terminalIds: string[]) => void;
   getByWorkspace: (workspaceId: string) => TerminalState[];
   setDraggedTerminalId: (id: string | null) => void;
   setDragHoveredTerminalId: (id: string | null) => void;
 }
 
 /** Best-effort backend PTY kill — never throws into the store. */
-function killBackendSession(terminalId: string) {
-  invoke("terminal_kill", { terminalId }).catch(() => {
-    // Session may already be gone (natural exit / double-kill).
+function killBackendSession(terminal: TerminalState) {
+  if (terminal.generation === null) return;
+  invoke("terminal_kill", {
+    terminalId: terminal.id,
+    workspaceId: terminal.workspaceId,
+    generation: terminal.generation,
+    processId: terminal.processId,
+  }).catch((error) => {
+    // Session may already be gone (natural exit / double-kill), but retaining
+    // the identity in the persistent diagnostic log makes a genuine orphaned
+    // child process distinguishable from that harmless race.
+    reportFrontendDiagnostic("terminal-kill-error", error, {
+      terminalId: terminal.id,
+      workspaceId: terminal.workspaceId,
+      generation: terminal.generation ?? undefined,
+      processId: terminal.processId,
+      state: "workspace-cleanup",
+    });
   });
 }
 
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   terminals: {},
+  terminalOrderByWorkspace: {},
   activeTerminalId: null,
   focusedTerminalId: null,
   terminalTitles: {},
@@ -116,30 +159,56 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             shell: config.shell,
             cwd: config.cwd,
             agent: config.agent,
+            generation: null,
+            processId: null,
             isActive: false,
             spawned: false,
             exitCode: null,
             agentLaunched: false,
+            agentLaunchOwner: null,
+            backendLaunchState: null,
             agentStatus: "idle",
             agentAttentionRequired: false,
             lastAgentCompletion: null,
             scrollPosition: { followsOutput: true, offsetFromBottom: 0 },
           },
         },
+        terminalOrderByWorkspace: {
+          ...state.terminalOrderByWorkspace,
+          [config.workspaceId]: canonicalTerminalIds(
+            state.terminalOrderByWorkspace[config.workspaceId] ?? [],
+            [
+              ...Object.values(state.terminals)
+                .filter((terminal) => terminal.workspaceId === config.workspaceId)
+                .map((terminal) => terminal.id),
+              config.id,
+            ],
+          ),
+        },
       };
     }),
 
-  removeTerminal: (id) =>
+  removeTerminal: (id, expectedGeneration) =>
     set((state) => {
+      const candidate = state.terminals[id];
+      if (
+        !candidate ||
+        (expectedGeneration !== undefined && candidate.generation !== expectedGeneration)
+      ) {
+        return state;
+      }
       const { [id]: removed, ...rest } = state.terminals;
       let newActive = state.activeTerminalId;
       if (newActive === id) {
         const workspaceId = removed?.workspaceId;
         if (workspaceId) {
-          const sameWs = Object.values(rest).find(
-            (t) => t.workspaceId === workspaceId,
-          );
-          newActive = sameWs?.id ?? null;
+          const runtimeIds = Object.values(rest)
+            .filter((terminal) => terminal.workspaceId === workspaceId)
+            .map((terminal) => terminal.id);
+          newActive = canonicalTerminalIds(
+            state.terminalOrderByWorkspace[workspaceId] ?? [],
+            runtimeIds,
+          )[0] ?? null;
         } else {
           newActive = null;
         }
@@ -149,6 +218,13 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         activeTerminalId: newActive,
         focusedTerminalId:
           state.focusedTerminalId === id ? null : state.focusedTerminalId,
+        terminalOrderByWorkspace: removed
+          ? {
+              ...state.terminalOrderByWorkspace,
+              [removed.workspaceId]: (state.terminalOrderByWorkspace[removed.workspaceId] ?? [])
+                .filter((terminalId) => terminalId !== id),
+            }
+          : state.terminalOrderByWorkspace,
       };
     }),
 
@@ -162,7 +238,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     }
     const skillStore = useSkillStore.getState();
     for (const id of idsToKill) {
-      killBackendSession(id);
+      const terminal = state.terminals[id];
+      if (terminal && terminal.generation !== null) {
+        killBackendSession(terminal);
+      }
       skillStore.clearPendingDrop(id);
     }
 
@@ -182,6 +261,9 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         terminals: next,
         activeTerminalId: activeCleared ? null : s.activeTerminalId,
         focusedTerminalId: focusCleared ? null : s.focusedTerminalId,
+        terminalOrderByWorkspace: Object.fromEntries(
+          Object.entries(s.terminalOrderByWorkspace).filter(([id]) => id !== workspaceId),
+        ),
       };
     });
   },
@@ -191,18 +273,21 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   setActiveTerminal: (id) =>
     set((state) => {
       if (state.activeTerminalId === id) return state;
+      if (!state.terminals[id]) return state;
       return { activeTerminalId: id };
     }),
 
   setFocusedTerminal: (id) =>
     set((state) => {
       if (state.focusedTerminalId === id) return state;
+      if (id !== null && !state.terminals[id]) return state;
       return { focusedTerminalId: id };
     }),
 
   toggleFocusTerminal: (id) =>
     set((state) => {
       const next = state.focusedTerminalId === id ? null : id;
+      if (next && !state.terminals[id]) return state;
       // Entering focus also activates the terminal.
       if (next) {
         return { focusedTerminalId: next, activeTerminalId: id };
@@ -229,27 +314,55 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       };
     }),
 
-  markSpawned: (id) =>
+  markSpawned: (id, workspaceId, generation, processId = null) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t || (t.spawned && t.exitCode === null)) return state;
+      if (!t || t.workspaceId !== workspaceId) return state;
+      if (t.generation !== null && t.generation > generation) return state;
+      if (
+        t.generation === generation &&
+        t.processId !== null &&
+        t.processId !== processId
+      ) return state;
+      if (
+        t.spawned &&
+        t.exitCode === null &&
+        t.generation === generation &&
+        t.processId === processId
+      ) return state;
+      const generationChanged = t.generation !== generation;
       return {
         terminals: {
           ...state.terminals,
           [id]: {
             ...t,
+            generation,
+            processId,
             spawned: true,
             exitCode: null,
+            agentLaunched: generationChanged ? false : t.agentLaunched,
+            agentLaunchOwner: generationChanged ? null : t.agentLaunchOwner,
+            backendLaunchState: generationChanged ? null : t.backendLaunchState,
+            agentStatus: generationChanged ? "idle" : t.agentStatus,
             agentAttentionRequired: false,
+            lastAgentCompletion: generationChanged ? null : t.lastAgentCompletion,
+            scrollPosition: generationChanged
+              ? { followsOutput: true, offsetFromBottom: 0 }
+              : t.scrollPosition,
           },
         },
       };
     }),
 
-  markExited: (id, exitCode) =>
+  markExited: (id, workspaceId, generation, processId, exitCode) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t) return state;
+      if (
+        !t ||
+        t.workspaceId !== workspaceId ||
+        t.generation !== generation ||
+        t.processId !== processId
+      ) return state;
       return {
         terminals: {
           ...state.terminals,
@@ -261,6 +374,8 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             // marks this true authoritatively after backend-owned restarts;
             // manual reopens are recovered by the frontend launch queue.
             agentLaunched: false,
+            agentLaunchOwner: null,
+            backendLaunchState: null,
             agentStatus: "idle",
             agentAttentionRequired: false,
             lastAgentCompletion: null,
@@ -271,19 +386,62 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       };
     }),
 
-  markAgentLaunched: (id) =>
+  markAgentLaunched: (id, generation) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t || t.agentLaunched) return state;
+      if (!t || t.generation !== generation || t.agentLaunched) return state;
       return {
         terminals: {
           ...state.terminals,
           [id]: {
             ...t,
             agentLaunched: true,
+            agentLaunchOwner: "frontend",
+            backendLaunchState: null,
             agentStatus: "working",
             agentAttentionRequired: false,
             lastAgentCompletion: null,
+          },
+        },
+      };
+    }),
+
+  markBackendAgentLaunch: (id, workspaceId, generation, processId, launchState) =>
+    set((state) => {
+      const t = state.terminals[id];
+      if (
+        !t ||
+        t.workspaceId !== workspaceId ||
+        (t.generation !== null && t.generation > generation) ||
+        (t.generation === generation &&
+          t.processId !== null &&
+          t.processId !== processId) ||
+        (t.generation === generation &&
+          (t.backendLaunchState === "ready" || t.backendLaunchState === "failed") &&
+          launchState === "starting") ||
+        (t.generation === generation &&
+          t.backendLaunchState === "ready" &&
+          launchState === "failed")
+      ) return state;
+      const generationChanged = t.generation !== generation;
+      return {
+        terminals: {
+          ...state.terminals,
+          [id]: {
+            ...t,
+            generation,
+            processId,
+            spawned: true,
+            exitCode: null,
+            agentLaunched: launchState === "ready",
+            agentLaunchOwner: "backend",
+            backendLaunchState: launchState,
+            agentStatus: launchState === "ready" ? "working" : "idle",
+            agentAttentionRequired: false,
+            lastAgentCompletion: null,
+            scrollPosition: generationChanged
+              ? { followsOutput: true, offsetFromBottom: 0 }
+              : t.scrollPosition,
           },
         },
       };
@@ -313,6 +471,12 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     set((state) => {
       const t = state.terminals[id];
       if (!t) return state;
+      if (
+        event.generation == null ||
+        t.generation !== event.generation ||
+        event.processId !== t.processId ||
+        event.workspaceId !== t.workspaceId
+      ) return state;
       if (t.lastAgentCompletion?.eventId && t.lastAgentCompletion.eventId === event.eventId) {
         return state;
       }
@@ -351,10 +515,10 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       };
     }),
 
-  saveScrollPosition: (id, position) =>
+  saveScrollPosition: (id, expectedGeneration, position) =>
     set((state) => {
       const t = state.terminals[id];
-      if (!t) return state;
+      if (!t || t.generation !== expectedGeneration) return state;
       const previous = t.scrollPosition;
       if (
         previous.followsOutput === position.followsOutput &&
@@ -368,16 +532,47 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       };
     }),
 
+  syncWorkspaceTerminalOrder: (workspaceId, terminalIds) =>
+    set((state) => {
+      const runtimeIds = Object.values(state.terminals)
+        .filter((terminal) => terminal.workspaceId === workspaceId)
+        .map((terminal) => terminal.id);
+      const nextOrder = canonicalTerminalIds(terminalIds, runtimeIds);
+      const current = state.terminalOrderByWorkspace[workspaceId] ?? [];
+      if (
+        current.length === nextOrder.length &&
+        current.every((id, index) => id === nextOrder[index])
+      ) return state;
+      return {
+        terminalOrderByWorkspace: {
+          ...state.terminalOrderByWorkspace,
+          [workspaceId]: nextOrder,
+        },
+      };
+    }),
+
   getByWorkspace: (workspaceId) => {
-    const { terminals } = get();
-    return Object.values(terminals).filter((t) => t.workspaceId === workspaceId);
+    const { terminals, terminalOrderByWorkspace } = get();
+    const runtimeIds = Object.values(terminals)
+      .filter((terminal) => terminal.workspaceId === workspaceId)
+      .map((terminal) => terminal.id);
+    return canonicalTerminalIds(terminalOrderByWorkspace[workspaceId] ?? [], runtimeIds)
+      .map((id) => terminals[id])
+      .filter((terminal): terminal is TerminalState => Boolean(terminal));
   },
 }));
 
 export function useTerminalsByWorkspace(workspaceId: string) {
   return useStoreWithEqualityFn(
     useTerminalStore,
-    (s) => Object.values(s.terminals).filter((t) => t.workspaceId === workspaceId),
+    (s) => {
+      const runtimeIds = Object.values(s.terminals)
+        .filter((terminal) => terminal.workspaceId === workspaceId)
+        .map((terminal) => terminal.id);
+      return canonicalTerminalIds(s.terminalOrderByWorkspace[workspaceId] ?? [], runtimeIds)
+        .map((id) => s.terminals[id])
+        .filter((terminal): terminal is TerminalState => Boolean(terminal));
+    },
     shallow,
   );
 }

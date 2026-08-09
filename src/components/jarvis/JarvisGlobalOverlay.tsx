@@ -17,6 +17,10 @@ import {
   type VoicePress,
 } from "../../lib/jarvis/voiceActivation";
 import { isJarvisOwnerModeReady } from "../../lib/jarvis/settings";
+import {
+  reportFrontendDiagnostic,
+  reportFrontendDiagnosticCode,
+} from "../../lib/crashDiagnostics";
 import { isVoiceConfigurationError, sanitizedVoiceError } from "../../lib/jarvis/voiceSettings";
 import { JarvisWidget } from "./JarvisWidget";
 
@@ -374,7 +378,7 @@ export function JarvisGlobalOverlay() {
 
   useEffect(() => {
     let disposed = false;
-    const listeners = Promise.all([
+    const listeners = Promise.allSettled([
       listen<VoiceRequestStatusView>("jarvis://voice-state", (event) => {
         if (disposed) return;
         console.info("[Jarvis voice] frontend state event", {
@@ -384,6 +388,17 @@ export function JarvisGlobalOverlay() {
           errorCode: event.payload.error?.code,
           transcriptChars: event.payload.transcript?.length ?? 0,
         });
+        if (event.payload.status === "failed" && event.payload.error?.code) {
+          reportFrontendDiagnosticCode(
+            "jarvis-voice-error",
+            event.payload.error.code,
+            {
+              requestId: event.payload.requestId,
+              workspaceId: event.payload.workspaceId ?? undefined,
+              state: "failed",
+            },
+          );
+        }
         setVoiceRequest(event.payload);
       }),
       listen<VoiceLevelEvent>("jarvis://voice-level", (event) => {
@@ -394,10 +409,23 @@ export function JarvisGlobalOverlay() {
         if (disposed) return;
         console.info("[Jarvis TTS] frontend state event", {
           requestId: event.payload.requestId,
+          workspaceId: event.payload.workspaceId,
+          sequence: event.payload.sequence,
           status: event.payload.status,
           errorCode: event.payload.error?.code,
           errorMessage: event.payload.error?.message,
         });
+        if (event.payload.status === "failed" && event.payload.error?.code) {
+          reportFrontendDiagnosticCode(
+            "jarvis-tts-error",
+            event.payload.error.code,
+            {
+              requestId: event.payload.requestId,
+              workspaceId: event.payload.workspaceId ?? undefined,
+              state: "failed",
+            },
+          );
+        }
         setTtsStatus(event.payload);
       }),
       listen<ActivityCheckpoint>("jarvis://activity", (event) => {
@@ -471,7 +499,20 @@ export function JarvisGlobalOverlay() {
           }
         },
       ),
-    ]);
+    ]).then((results) => {
+      const active: Array<() => void> = [];
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          active.push(result.value);
+        } else {
+          reportFrontendDiagnostic("jarvis-listener-error", result.reason, {
+            state: "voice-events",
+          });
+          console.error("[Jarvis voice] event listener setup failed", result.reason);
+        }
+      }
+      return active;
+    });
 
     return () => {
       disposed = true;

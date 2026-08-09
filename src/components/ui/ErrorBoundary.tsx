@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { reportFrontendDiagnostic } from "../../lib/crashDiagnostics";
 
 interface Props {
   children: ReactNode;
@@ -23,6 +24,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[ErrorBoundary]", error, errorInfo);
+    reportFrontendDiagnostic("react-render-error", error);
   }
 
   handleRetry = () => {

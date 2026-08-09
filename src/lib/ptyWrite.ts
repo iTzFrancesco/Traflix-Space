@@ -10,20 +10,38 @@ export function encodeForPty(text: string): number[] {
   return out;
 }
 
-export function writeToPty(terminalId: string, text: string): Promise<void> {
+export function writeToPty(
+  terminalId: string,
+  workspaceId: string,
+  generation: number,
+  processId: number | null,
+  text: string,
+): Promise<void> {
   return invoke("terminal_write", {
     terminalId,
+    workspaceId,
+    generation,
+    processId,
     data: encodeForPty(text),
   });
 }
 
 export function writeBytesToPty(
   terminalId: string,
+  workspaceId: string,
+  generation: number,
+  processId: number | null,
   data: number[] | Uint8Array,
 ): Promise<void> {
   const arr =
     data instanceof Uint8Array
       ? Array.from(data)
       : data;
-  return invoke("terminal_write", { terminalId, data: arr });
+  return invoke("terminal_write", {
+    terminalId,
+    workspaceId,
+    generation,
+    processId,
+    data: arr,
+  });
 }

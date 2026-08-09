@@ -7,8 +7,8 @@ mod scheduler;
 mod session;
 
 pub use cell::{Cell, Color};
-pub use frame::{FrameSnapshot, TerminalRehydrateState};
-pub use session::TerminalSession;
+pub use frame::{FrameSnapshot, TerminalRehydrateState, TerminalRuntimeIdentity};
+pub use session::{TerminalSession, MIN_TERMINAL_COLS, MIN_TERMINAL_ROWS};
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
@@ -63,6 +63,9 @@ pub struct TerminalContext {
 #[serde(rename_all = "camelCase")]
 struct TerminalCwdChanged {
     terminal_id: String,
+    workspace_id: String,
+    generation: u64,
+    process_id: Option<u32>,
     cwd: String,
 }
 
@@ -74,11 +77,19 @@ impl Default for TerminalManager {
 
 impl TerminalManager {
     pub fn new() -> Self {
+        // Persisted terminal ids survive app restarts. Seed the lifetime token
+        // from wall-clock microseconds so a late hook/event from the previous
+        // Traflix process cannot collide with generation 1 in the new process.
+        // Microseconds remain exact in JavaScript's Number representation.
+        let generation_seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_micros().min(9_007_199_254_740_990_u128) as u64)
+            .unwrap_or(1);
         Self {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
             active_id: tokio::sync::Mutex::new(None),
-            next_generation: AtomicU64::new(1),
+            next_generation: AtomicU64::new(generation_seed),
             detector_started: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -91,8 +102,8 @@ impl TerminalManager {
         rows: u16,
     ) -> Result<String, String> {
         let id = config.id.clone();
-        let initial_cols = cols.max(1);
-        let initial_rows = rows.max(1);
+        let initial_cols = cols.max(MIN_TERMINAL_COLS);
+        let initial_rows = rows.max(MIN_TERMINAL_ROWS);
 
         // Reuse a live PTY. If it exited while the frontend was unmounted,
         // report that state instead of silently replacing an agent session
@@ -223,6 +234,200 @@ impl TerminalManager {
         Ok(generation)
     }
 
+    pub async fn runtime_identity(&self, id: &str) -> Result<TerminalRuntimeIdentity, String> {
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session.read().await;
+        Ok(TerminalRuntimeIdentity {
+            workspace_id: session.workspace_id.clone().unwrap_or_default(),
+            generation: session.generation,
+            process_id: session.process_id,
+            agent_launch_owner: session
+                .backend_agent_launch_state
+                .as_ref()
+                .map(|_| "backend".to_string()),
+            agent_launch_state: session.backend_agent_launch_state.clone(),
+        })
+    }
+
+    pub async fn set_backend_agent_launch_state(
+        &self,
+        id: &str,
+        expected: &TerminalRuntimeIdentity,
+        launch_state: &str,
+    ) -> Result<(), String> {
+        if !matches!(launch_state, "starting" | "ready" | "failed") {
+            return Err("invalid backend agent launch state".to_string());
+        }
+        let session_arc = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let mut session = session_arc.write().await;
+        if session.workspace_id.as_deref().unwrap_or_default() != expected.workspace_id.as_str() {
+            return Err("stale-terminal-workspace: backend launch session changed".to_string());
+        }
+        if session.generation != expected.generation {
+            return Err("stale-terminal-generation: backend launch session changed".to_string());
+        }
+        if session.process_id != expected.process_id {
+            return Err("stale-terminal-process: backend launch session changed".to_string());
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        session.backend_agent_launch_state = Some(launch_state.to_string());
+        Ok(())
+    }
+
+    /// Validate all stable coordinates of a PTY lifetime before an IPC-side
+    /// mutation. Generation prevents reopen races, process id prevents an
+    /// accidental same-generation process substitution, and workspace id
+    /// prevents a globally reused terminal id from crossing workspace seams.
+    pub async fn validate_runtime_identity(
+        &self,
+        id: &str,
+        expected_workspace_id: &str,
+        expected_generation: u64,
+        expected_process_id: Option<u32>,
+    ) -> Result<(), String> {
+        let session_arc = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session_arc.read().await;
+        let workspace_id = session.workspace_id.as_deref().unwrap_or_default();
+        if workspace_id != expected_workspace_id {
+            return Err(format!(
+                "stale-terminal-workspace: expected {}, current {}",
+                expected_workspace_id, workspace_id
+            ));
+        }
+        if session.generation != expected_generation {
+            return Err(format!(
+                "stale-terminal-generation: expected {}, current {}",
+                expected_generation, session.generation
+            ));
+        }
+        if session.process_id != expected_process_id {
+            return Err(format!(
+                "stale-terminal-process: expected {:?}, current {:?}",
+                expected_process_id, session.process_id
+            ));
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        Ok(())
+    }
+
+    async fn session_for_runtime(
+        &self,
+        id: &str,
+        expected_workspace_id: &str,
+        expected_generation: u64,
+        expected_process_id: Option<u32>,
+    ) -> Result<Arc<RwLock<TerminalSession>>, String> {
+        let session_arc = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        {
+            let session = session_arc.read().await;
+            let workspace_id = session.workspace_id.as_deref().unwrap_or_default();
+            if workspace_id != expected_workspace_id {
+                return Err(format!(
+                    "stale-terminal-workspace: expected {}, current {}",
+                    expected_workspace_id, workspace_id
+                ));
+            }
+            if session.generation != expected_generation {
+                return Err(format!(
+                    "stale-terminal-generation: expected {}, current {}",
+                    expected_generation, session.generation
+                ));
+            }
+            if session.process_id != expected_process_id {
+                return Err(format!(
+                    "stale-terminal-process: expected {:?}, current {:?}",
+                    expected_process_id, session.process_id
+                ));
+            }
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        Ok(session_arc)
+    }
+
+    /// Snapshot discovery still validates workspace. Once generation/process
+    /// are known, the caller supplies them and receives the same exact checks
+    /// used by mutations.
+    async fn validate_rehydrate_scope(
+        &self,
+        id: &str,
+        expected_workspace_id: &str,
+        expected_generation: Option<u64>,
+        expected_process_id: Option<u32>,
+    ) -> Result<(), String> {
+        let session_arc = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let session = session_arc.read().await;
+        let workspace_id = session.workspace_id.as_deref().unwrap_or_default();
+        if workspace_id != expected_workspace_id {
+            return Err(format!(
+                "stale-terminal-workspace: expected {}, current {}",
+                expected_workspace_id, workspace_id
+            ));
+        }
+        if let Some(generation) = expected_generation {
+            if session.generation != generation {
+                return Err(format!(
+                    "stale-terminal-generation: expected {}, current {}",
+                    generation, session.generation
+                ));
+            }
+            if session.process_id != expected_process_id {
+                return Err(format!(
+                    "stale-terminal-process: expected {:?}, current {:?}",
+                    expected_process_id, session.process_id
+                ));
+            }
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        Ok(())
+    }
+
     pub fn has_session(&self, id: &str) -> bool {
         self.sessions.contains_key(id)
     }
@@ -243,12 +448,79 @@ impl TerminalManager {
         data: &[u8],
         origin: TerminalInputOrigin,
     ) -> Result<(), String> {
-        let session = self
+        self.write_typed_inner(app, id, None, None, data, origin)
+            .await
+    }
+
+    async fn write_typed_inner(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_runtime: Option<(&str, u64, Option<u32>)>,
+        operation_id: Option<&str>,
+        data: &[u8],
+        origin: TerminalInputOrigin,
+    ) -> Result<(), String> {
+        let session_arc = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.write().await;
-        session.write(data)?;
+        let mut session = session_arc.write().await;
+        if let Some((expected_workspace_id, expected_generation, expected_process_id)) =
+            expected_runtime
+        {
+            let workspace_id = session.workspace_id.as_deref().unwrap_or_default();
+            if workspace_id != expected_workspace_id {
+                return Err(format!(
+                    "stale-terminal-workspace: expected {}, current {}",
+                    expected_workspace_id, workspace_id
+                ));
+            }
+            if session.generation != expected_generation {
+                return Err(format!(
+                    "stale-terminal-generation: expected {}, current {}",
+                    expected_generation, session.generation
+                ));
+            }
+            if session.process_id != expected_process_id {
+                return Err(format!(
+                    "stale-terminal-process: expected {:?}, current {:?}",
+                    expected_process_id, session.process_id
+                ));
+            }
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        if let Some(operation_id) = operation_id {
+            if operation_id.is_empty()
+                || operation_id.len() > 512
+                || !operation_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b":-_.".contains(&byte))
+            {
+                return Err("invalid-input-operation-id".to_string());
+            }
+            if let Some(previous) = session.previous_input_operation(operation_id, data)? {
+                return previous;
+            }
+        }
+
+        if let Err(error) = session.write(data) {
+            if let Some(operation_id) = operation_id {
+                session.record_input_operation(operation_id.to_string(), data, Err(error.clone()));
+            }
+            return Err(error);
+        }
+        if let Some(operation_id) = operation_id {
+            session.record_input_operation(operation_id.to_string(), data, Ok(()));
+        }
         let command_detections = session.observe_agent_commands(data);
         for detection in command_detections {
             apply_runtime_identity(&mut session, &detection);
@@ -266,6 +538,9 @@ impl TerminalManager {
                 "terminal-cwd-changed",
                 TerminalCwdChanged {
                     terminal_id: id.to_string(),
+                    workspace_id: agent_snapshot.workspace_id.clone(),
+                    generation: agent_snapshot.generation,
+                    process_id: agent_snapshot.process_id,
                     cwd,
                 },
             );
@@ -287,6 +562,62 @@ impl TerminalManager {
         Ok(())
     }
 
+    pub async fn write_typed_for_generation(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_generation: u64,
+        data: &[u8],
+        origin: TerminalInputOrigin,
+    ) -> Result<(), String> {
+        let runtime = self.runtime_identity(id).await?;
+        if runtime.generation != expected_generation {
+            return Err(format!(
+                "stale-terminal-generation: expected {}, current {}",
+                expected_generation, runtime.generation
+            ));
+        }
+        self.write_typed_inner(
+            app,
+            id,
+            Some((
+                &runtime.workspace_id,
+                expected_generation,
+                runtime.process_id,
+            )),
+            None,
+            data,
+            origin,
+        )
+        .await
+    }
+
+    pub async fn write_typed_for_runtime(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_workspace_id: &str,
+        expected_generation: u64,
+        expected_process_id: Option<u32>,
+        operation_id: Option<&str>,
+        data: &[u8],
+        origin: TerminalInputOrigin,
+    ) -> Result<(), String> {
+        self.write_typed_inner(
+            app,
+            id,
+            Some((
+                expected_workspace_id,
+                expected_generation,
+                expected_process_id,
+            )),
+            operation_id,
+            data,
+            origin,
+        )
+        .await
+    }
+
     pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let session = self
             .sessions
@@ -297,12 +628,76 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub async fn kill(&self, _app: &AppHandle, id: &str) -> Result<(), String> {
+    pub async fn resize_generation(
+        &self,
+        id: &str,
+        expected_generation: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let session_arc = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let mut session = session_arc.write().await;
+        if session.generation != expected_generation {
+            return Err(format!(
+                "stale-terminal-generation: expected {}, current {}",
+                expected_generation, session.generation
+            ));
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        session.resize(cols, rows)
+    }
+
+    pub async fn kill(&self, app: &AppHandle, id: &str) -> Result<(), String> {
         let session = self
             .sessions
             .remove(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.1.write().await;
+        self.finish_removed_session(app, id, session.1).await
+    }
+
+    pub async fn kill_generation(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_generation: u64,
+    ) -> Result<(), String> {
+        let expected_session = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {} not found", id))?;
+        let current_generation = expected_session.read().await.generation;
+        if current_generation != expected_generation {
+            return Err(format!(
+                "stale-terminal-generation: expected {}, current {}",
+                expected_generation, current_generation
+            ));
+        }
+        let removed = self
+            .sessions
+            .remove_if(id, |_, current| Arc::ptr_eq(current, &expected_session))
+            .ok_or_else(|| "stale-terminal-generation: session was replaced".to_string())?;
+        self.finish_removed_session(app, id, removed.1).await
+    }
+
+    async fn finish_removed_session(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        session: Arc<RwLock<TerminalSession>>,
+    ) -> Result<(), String> {
+        let mut session = session.write().await;
         let mut agent_snapshot = snapshot_from_session(&session);
         agent_snapshot.process_alive = false;
         session.kill();
@@ -314,7 +709,7 @@ impl TerminalManager {
         }
 
         if agent_snapshot.is_agent_terminal {
-            notify_agent_exit(_app, &agent_snapshot);
+            notify_agent_exit(app, &agent_snapshot);
         }
 
         info!(terminal_id = %id, "Terminal killed and removed");
@@ -377,19 +772,96 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// Activate only the exact PTY lifetime named by the frontend. The
+    /// identity is rechecked while the target session is locked so a delayed
+    /// focus callback cannot activate a replacement that reused the same id.
+    pub async fn set_active_for_runtime(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        generation: u64,
+        process_id: Option<u32>,
+    ) -> Result<(), String> {
+        let target = self
+            .session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        {
+            let mut session = target.write().await;
+            if session.workspace_id.as_deref().unwrap_or_default() != workspace_id
+                || session.generation != generation
+                || session.process_id != process_id
+            {
+                return Err("stale-terminal-generation: active target changed".to_string());
+            }
+            let current = self
+                .sessions
+                .get(id)
+                .map(|entry| Arc::ptr_eq(entry.value(), &target))
+                .unwrap_or(false);
+            if !current {
+                return Err("stale-terminal-generation: session was replaced".to_string());
+            }
+            if !session.process_alive.load(Ordering::Acquire) {
+                return Err(format!("terminal-exited: {id}"));
+            }
+            session.active = true;
+        }
+
+        let mut active = self.active_id.lock().await;
+        if active.as_deref() == Some(id) {
+            return Ok(());
+        }
+        let previous = active.replace(id.to_string());
+        drop(active);
+        if let Some(previous_id) = previous.filter(|previous_id| previous_id != id) {
+            if let Some(entry) = self.sessions.get(&previous_id) {
+                entry.write().await.active = false;
+            }
+        }
+        info!(terminal_id = %id, generation, process_id = ?process_id, "Active terminal lifetime set");
+        Ok(())
+    }
+
     /// Formatted scrollback, visible screen, parser modes, geometry, and the
     /// output watermark for rehydrating xterm after a workspace switch while
     /// the PTY remains alive.
     pub async fn get_state_for_rehydrate(
         &self,
         id: &str,
+        expected_workspace_id: &str,
+        expected_generation: Option<u64>,
+        expected_process_id: Option<u32>,
     ) -> Result<TerminalRehydrateState, String> {
-        let session = self
+        self.validate_rehydrate_scope(
+            id,
+            expected_workspace_id,
+            expected_generation,
+            expected_process_id,
+        )
+        .await?;
+        let session_arc = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
 
-        let session = session.read().await;
+        let session = session_arc.read().await;
+        if let Some(expected_generation) = expected_generation {
+            if session.generation != expected_generation {
+                return Err(format!(
+                    "stale-terminal-generation: expected {}, current {}",
+                    expected_generation, session.generation
+                ));
+            }
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
 
         let mut parser = session
             .parser
@@ -399,7 +871,9 @@ impl TerminalManager {
         let state = parser.state_for_rehydrate();
         let output_sequence = session.output_sequence.load(Ordering::Acquire);
         Ok(TerminalRehydrateState {
+            workspace_id: session.workspace_id.clone().unwrap_or_default(),
             generation: session.generation,
+            process_id: session.process_id,
             history,
             state,
             output_sequence,
@@ -432,32 +906,69 @@ impl TerminalManager {
             .get(id)
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
-        let current_priority = identity_source_priority(&session.detection_source);
-        if session.observed_provider.is_some()
-            && identity_source_priority(source) < current_priority
-        {
-            return Ok(());
-        }
-        let normalized = provider.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return Ok(());
-        }
-        session.observed_provider = Some(normalized.clone());
-        session.detection_source = source.to_string();
-        session.detection_confidence = confidence;
-        session.is_agent_terminal = true;
-        if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
-            if configured != normalized {
-                push_identity_warning(
-                    &mut session.identity_warnings,
-                    &format!(
-                        "Identity mismatch: configured agent '{}' but observed provider '{}'",
-                        configured, normalized
-                    ),
-                );
-            }
-        }
+        apply_observed_provider(&mut session, provider, source, confidence);
         Ok(())
+    }
+
+    pub async fn observe_agent_provider_for_runtime(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        generation: u64,
+        process_id: Option<u32>,
+        provider: &str,
+        source: &str,
+        confidence: f32,
+    ) -> Result<(), String> {
+        let session_arc = self
+            .session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        let mut session = session_arc.write().await;
+        if session.workspace_id.as_deref().unwrap_or_default() != workspace_id
+            || session.generation != generation
+            || session.process_id != process_id
+        {
+            return Err("stale-terminal-generation: provider target changed".to_string());
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        apply_observed_provider(&mut session, provider, source, confidence);
+        Ok(())
+    }
+
+    pub async fn get_recent_normalized_terminal_text_for_runtime(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        generation: u64,
+        process_id: Option<u32>,
+        max_bytes: usize,
+    ) -> Result<NormalizedTerminalText, String> {
+        let session_arc = self
+            .session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        let session = session_arc.read().await;
+        let mut parser = session
+            .parser
+            .lock()
+            .map_err(|_| format!("Terminal {} parser lock poisoned", id))?;
+        let text = parser.recent_normalized_text();
+        drop(parser);
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
+        bounded_terminal_text(&text, max_bytes)
     }
 
     pub async fn list_agent_snapshots(&self) -> Vec<TerminalAgentSnapshot> {
@@ -495,12 +1006,31 @@ impl TerminalManager {
         bounded_terminal_text(&text, max_bytes)
     }
 
-    pub async fn get_snapshot(&self, id: &str) -> Result<FrameSnapshot, String> {
-        let session = self
+    pub async fn get_snapshot(
+        &self,
+        id: &str,
+        expected_generation: u64,
+    ) -> Result<FrameSnapshot, String> {
+        let session_arc = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let session = session.read().await;
+        let session = session_arc.read().await;
+        if session.generation != expected_generation {
+            return Err(format!(
+                "stale-terminal-generation: expected {}, current {}",
+                expected_generation, session.generation
+            ));
+        }
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was replaced".to_string());
+        }
 
         let rows = session.grid.rows;
         let cols = session.grid.cols;
@@ -583,6 +1113,30 @@ impl TerminalManager {
         Ok(TerminalContext { cwd, git_branch })
     }
 
+    pub async fn get_terminal_context_for_runtime(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        generation: u64,
+        process_id: Option<u32>,
+    ) -> Result<TerminalContext, String> {
+        let session = self
+            .session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        let cwd = {
+            let session = session.read().await;
+            session
+                .cwd
+                .lock()
+                .map(|cwd| cwd.clone())
+                .map_err(|_| format!("Terminal {} CWD lock poisoned", id))?
+        };
+        let git_branch = self.get_git_branch_for_cwd(id, &cwd).await?;
+        self.session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        Ok(TerminalContext { cwd, git_branch })
+    }
+
     /// Synchronizes the tracked CWD with the shell prompt rendered in xterm.
     /// This covers PowerShell tab completion, whose completed path never passes
     /// back through the PTY input stream as literal keystrokes.
@@ -616,6 +1170,62 @@ impl TerminalManager {
         }
 
         let git_branch = self.get_git_branch_for_cwd(id, &normalized).await?;
+        Ok(TerminalContext {
+            cwd: normalized,
+            git_branch,
+        })
+    }
+
+    pub async fn sync_terminal_cwd_for_runtime(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        generation: u64,
+        process_id: Option<u32>,
+        cwd: &str,
+    ) -> Result<TerminalContext, String> {
+        let canonical = std::path::Path::new(cwd)
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve terminal CWD: {error}"))?;
+        if !canonical.is_dir() {
+            return Err("Terminal CWD is not a directory".to_string());
+        }
+        let normalized = canonical
+            .to_string_lossy()
+            .trim_start_matches("\\\\?\\")
+            .trim_start_matches("\\\\.\\")
+            .to_string();
+        let session_arc = self
+            .session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
+        {
+            let session = session_arc.read().await;
+            if session.workspace_id.as_deref().unwrap_or_default() != workspace_id
+                || session.generation != generation
+                || session.process_id != process_id
+            {
+                return Err("stale-terminal-generation: CWD target changed".to_string());
+            }
+            let current_session = self
+                .sessions
+                .get(id)
+                .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+                .unwrap_or(false);
+            if !current_session {
+                return Err("stale-terminal-generation: session was replaced".to_string());
+            }
+            let mut current = session
+                .cwd
+                .lock()
+                .map_err(|_| format!("Terminal {} CWD lock poisoned", id))?;
+            if *current != normalized {
+                info!(terminal_id = %id, generation, from = %current, to = %normalized, "Terminal CWD synchronized from exact PowerShell runtime");
+                *current = normalized.clone();
+            }
+        }
+        let git_branch = self.get_git_branch_for_cwd(id, &normalized).await?;
+        self.session_for_runtime(id, workspace_id, generation, process_id)
+            .await?;
         Ok(TerminalContext {
             cwd: normalized,
             git_branch,
@@ -826,6 +1436,7 @@ fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
         detection_confidence: session.detection_confidence,
         identity_warnings: session.identity_warnings.clone(),
         generation: session.generation,
+        process_id: session.process_id,
         process_alive: session.process_alive.load(Ordering::Acquire),
     }
 }
@@ -847,6 +1458,37 @@ fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetect
                 &format!(
                     "Identity mismatch: configured agent '{}' but observed provider '{}'",
                     configured, detection.provider
+                ),
+            );
+        }
+    }
+}
+
+fn apply_observed_provider(
+    session: &mut TerminalSession,
+    provider: &str,
+    source: &str,
+    confidence: f32,
+) {
+    let current_priority = identity_source_priority(&session.detection_source);
+    if session.observed_provider.is_some() && identity_source_priority(source) < current_priority {
+        return;
+    }
+    let normalized = provider.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return;
+    }
+    session.observed_provider = Some(normalized.clone());
+    session.detection_source = source.to_string();
+    session.detection_confidence = confidence;
+    session.is_agent_terminal = true;
+    if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
+        if configured != normalized {
+            push_identity_warning(
+                &mut session.identity_warnings,
+                &format!(
+                    "Identity mismatch: configured agent '{}' but observed provider '{}'",
+                    configured, normalized
                 ),
             );
         }

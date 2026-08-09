@@ -2,7 +2,10 @@ import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
-import { playAgentCompletionChime } from "../../lib/agentNotificationSound";
+import {
+  chimeNeedsVisualFallback,
+  playAgentCompletionChime,
+} from "../../lib/agentNotificationSound";
 import {
   AGENT_NOTIFICATION_OPEN_EVENT,
   showAgentNotificationOverlay,
@@ -50,7 +53,27 @@ async function handleCompletion(event: AgentTurnCompleted) {
   const terminalStore = useTerminalStore.getState();
   const terminal = terminalStore.terminals[event.terminalId];
 
-  const completionWorkspaceId = terminal?.workspaceId ?? event.workspaceId ?? null;
+  if (
+    !terminal ||
+    event.generation == null ||
+    event.generation !== terminal.generation ||
+    event.workspaceId == null ||
+    event.workspaceId !== terminal.workspaceId ||
+    event.processId !== terminal.processId
+  ) {
+    console.warn("[agent-notification] stale or incomplete completion ignored", {
+      terminalId: event.terminalId,
+      eventGeneration: event.generation ?? null,
+      currentGeneration: terminal?.generation ?? null,
+      eventProcessId: event.processId ?? null,
+      currentProcessId: terminal?.processId ?? null,
+      eventWorkspaceId: event.workspaceId ?? null,
+      currentWorkspaceId: terminal?.workspaceId ?? null,
+    });
+    return;
+  }
+
+  const completionWorkspaceId = terminal.workspaceId;
   const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
   const isCompletionInActiveWorkspace =
     completionWorkspaceId !== null &&
@@ -60,23 +83,27 @@ async function handleCompletion(event: AgentTurnCompleted) {
     terminalId: event.terminalId,
     eventId: event.eventId ?? "-",
     workspaceId: completionWorkspaceId,
+    generation: event.generation ?? null,
     isCompletionInActiveWorkspace,
-    terminalKnown: Boolean(terminal),
+    terminalKnown: true,
   });
   // Completion state is always marked as requiring attention. The visual
   // indicator must remain available in every focus/workspace combination until
   // explicitly cleared.
   const attentionRequired = true;
 
-  if (terminal) {
-    terminalStore.markAgentTurnCompleted(
-      event.terminalId,
-      event,
-      attentionRequired,
-    );
-  }
+  terminalStore.markAgentTurnCompleted(
+    event.terminalId,
+    event,
+    attentionRequired,
+  );
   // The terminal/workspace attention indicator and sound are always emitted.
-  playAgentCompletionChime();
+  const chime = playAgentCompletionChime({
+    eventId: event.eventId,
+    terminalId: event.terminalId,
+    workspaceId: completionWorkspaceId,
+    generation: event.generation,
+  });
 
   let appHasFocus = document.hasFocus();
   try {
@@ -90,12 +117,23 @@ async function handleCompletion(event: AgentTurnCompleted) {
     terminalId: event.terminalId,
     appHasFocus,
   });
+  const chimeResult = await chime;
+  const audioFallbackRequired = chimeNeedsVisualFallback(chimeResult);
+  if (audioFallbackRequired) {
+    console.warn("[agent-notification] visual fallback required for chime", {
+      terminalId: event.terminalId,
+      workspaceId: completionWorkspaceId,
+      generation: event.generation ?? null,
+      eventId: event.eventId ?? "-",
+      chimeStatus: chimeResult.status,
+    });
+  }
 
   // A completion in the workspace currently visible to the user only needs
   // the sound and the terminal/workspace attention indicator. Completions in
   // another workspace use the in-app toast, while completions received while
   // Traflix is unfocused use the external overlay.
-  if (appHasFocus && isCompletionInActiveWorkspace) {
+  if (appHasFocus && isCompletionInActiveWorkspace && !audioFallbackRequired) {
     console.info("[agent-notification] local attention only", {
       terminalId: event.terminalId,
     });
@@ -104,7 +142,7 @@ async function handleCompletion(event: AgentTurnCompleted) {
 
   const workspaceId = completionWorkspaceId;
   const terminalTitle =
-    terminalStore.terminalTitles[event.terminalId] ?? terminal?.title ?? "un terminale";
+    terminalStore.terminalTitles[event.terminalId] ?? terminal.title;
   const agentName = providerName(event.provider);
   const projectName = projectNameForEvent(event, terminal);
 
@@ -117,20 +155,28 @@ async function handleCompletion(event: AgentTurnCompleted) {
       type: "success",
       message: `${agentName} ha completato il turno in ${terminalTitle}`,
       duration: 8000,
-      ...(terminal
-        ? {
-            action: {
-              label: "Apri",
-              onClick: () => {
-                if (workspaceId) {
-                  useWorkspaceStore.getState().setActiveWorkspace(workspaceId);
-                }
-                useTerminalStore.getState().setActiveTerminal(event.terminalId);
-                useTerminalStore.getState().clearAgentAttention(event.terminalId);
-              },
-            },
+      action: {
+        label: "Apri",
+        onClick: () => {
+          const live = useTerminalStore.getState().terminals[event.terminalId];
+          if (
+            !live ||
+            live.workspaceId !== event.workspaceId ||
+            live.generation !== event.generation ||
+            live.processId !== event.processId
+          ) {
+            console.warn("[agent-notification] expired toast target ignored", {
+              terminalId: event.terminalId,
+              eventGeneration: event.generation ?? null,
+              currentGeneration: live?.generation ?? null,
+            });
+            return;
           }
-        : {}),
+          useWorkspaceStore.getState().setActiveWorkspace(workspaceId);
+          useTerminalStore.getState().setActiveTerminal(event.terminalId);
+          useTerminalStore.getState().clearAgentAttention(event.terminalId);
+        },
+      },
     });
   } else {
     console.info("[agent-notification] showing external overlay", {
@@ -144,7 +190,7 @@ async function handleCompletion(event: AgentTurnCompleted) {
       terminalTitle,
       terminalId: event.terminalId,
       workspaceId,
-      canOpenTerminal: Boolean(terminal),
+      canOpenTerminal: true,
       event,
     });
   }
@@ -154,14 +200,37 @@ export function AgentCompletionListener() {
   useEffect(() => {
     const unsubscribe = subscribeAgentTurnCompleted(handleCompletion);
     let unlisten: UnlistenFn | undefined;
-    const setup = listen<{ workspaceId?: string | null; terminalId: string }>(
+    const setup = listen<{
+      workspaceId?: string | null;
+      terminalId: string;
+      generation?: number | null;
+      processId?: number | null;
+    }>(
       AGENT_NOTIFICATION_OPEN_EVENT,
       async (event) => {
-        const { workspaceId, terminalId } = event.payload;
+        const { workspaceId, terminalId, generation, processId } = event.payload;
         console.info("[agent-notification] open requested", {
           terminalId,
           workspaceId: workspaceId ?? null,
+          generation: generation ?? null,
+          processId: processId ?? null,
         });
+        const terminal = useTerminalStore.getState().terminals[terminalId];
+        if (
+          !terminal ||
+          generation == null ||
+          workspaceId == null ||
+          terminal.generation !== generation ||
+          terminal.processId !== processId ||
+          terminal.workspaceId !== workspaceId
+        ) {
+          console.warn("[agent-notification] expired overlay target ignored", {
+            terminalId,
+            requestedGeneration: generation ?? null,
+            currentGeneration: terminal?.generation ?? null,
+          });
+          return;
+        }
         if (workspaceId) {
           useWorkspaceStore.getState().setActiveWorkspace(workspaceId);
         }
@@ -182,11 +251,13 @@ export function AgentCompletionListener() {
       },
     ).then((cleanup) => {
       unlisten = cleanup;
+    }).catch((error) => {
+      console.error("Agent notification open listener failed:", error);
     });
 
     return () => {
       unsubscribe();
-      void setup.then(() => unlisten?.());
+      void setup.then(() => unlisten?.()).catch(() => undefined);
     };
   }, []);
   return null;

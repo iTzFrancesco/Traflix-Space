@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::thread::{self, JoinHandle};

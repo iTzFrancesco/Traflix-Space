@@ -6,9 +6,7 @@ use crate::jarvis::model::{
     ModelToolCall, ModelToolDefinition, ProviderStatus,
 };
 use crate::jarvis::requests::{ChatRequestError, ChatRequestStatus};
-use crate::jarvis::tools::{
-    apply_workspace_titles, list_terminals_for_workspace, JarvisState, JarvisToolService,
-};
+use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
     InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth, ToolEnvelope,
 };
@@ -559,9 +557,10 @@ pub async fn jarvis_confirm_action(
                 match prompt_bytes(text) {
                     Ok(bytes) => {
                         let written = manager
-                            .write_typed(
+                            .write_typed_for_generation(
                                 &app,
                                 &terminal_id,
+                                snapshot.generation,
                                 &bytes,
                                 TerminalInputOrigin::JarvisPrompt,
                             )
@@ -596,16 +595,21 @@ pub async fn jarvis_confirm_action(
                     Some(target_session_id.clone()),
                 );
                 manager
-                    .write_typed(
+                    .write_typed_for_generation(
                         &app,
                         &terminal_id,
+                        snapshot.generation,
                         &[0x03],
                         TerminalInputOrigin::JarvisAbort,
                     )
                     .await
             }
         }
-        "terminal.kill" => manager.kill(&app, &terminal_id).await,
+        "terminal.kill" => {
+            manager
+                .kill_generation(&app, &terminal_id, snapshot.generation)
+                .await
+        }
         _ => Err("unsupported action".to_string()),
     };
     match result {
@@ -776,9 +780,7 @@ async fn build_context_for_chat(
     invocation: InvocationBinding,
 ) -> Result<ModelContextViewV1, JarvisErrorEnvelope> {
     let manager = app.state::<TerminalManager>();
-    let mut terminals =
-        list_terminals_for_workspace(&manager, &workspace.id, &invocation.created_at).await;
-    apply_workspace_titles(&mut terminals, workspace);
+    let terminals = list_terminals_for_workspace(&manager, workspace, &invocation.created_at).await;
     let all_agents = manager.list_agent_snapshots().await;
     app.state::<JarvisState>()
         .registry
@@ -1049,8 +1051,7 @@ async fn read_markdown(
     path: String,
 ) -> Result<ModelContextViewV1, JarvisErrorEnvelope> {
     let manager = app.state::<TerminalManager>();
-    let terminals =
-        list_terminals_for_workspace(&manager, &workspace.id, &invocation.created_at).await;
+    let terminals = list_terminals_for_workspace(&manager, workspace, &invocation.created_at).await;
     JarvisToolService::new(&app.state::<JarvisState>().broker)
         .build_context(workspace, invocation, terminals, RequestedDepth::Summary)
         .and_then(|package| {

@@ -6,9 +6,14 @@ use crate::terminal_engine::cell::Cell;
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOutput {
     pub terminal_id: String,
+    /// Persisted workspace identity captured when this PTY lifetime started.
+    /// Frontend panes must reject output for a different workspace even when
+    /// a terminal id is accidentally reused.
+    pub workspace_id: String,
     /// Unique PTY lifetime. Events from an older lifetime must never update a
     /// reopened terminal that reuses the same terminal id.
     pub generation: u64,
+    pub process_id: Option<u32>,
     pub data: Vec<u8>,
     /// Monotonic chunk number within this PTY lifetime. It lets a frontend
     /// discard events already included in a rehydrate snapshot without
@@ -19,8 +24,10 @@ pub struct TerminalOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalRehydrateState {
+    pub workspace_id: String,
     /// PTY lifetime represented by this snapshot.
     pub generation: u64,
+    pub process_id: Option<u32>,
     /// Bounded scrollback + visible rows, formatted as terminal input. This
     /// must be written before `state` so a remounted xterm regains its buffer.
     pub history: Vec<u8>,
@@ -73,7 +80,19 @@ pub struct FrameSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalExited {
     pub terminal_id: String,
+    pub workspace_id: String,
     /// Unique PTY lifetime, used to discard late exit events after reopen.
     pub generation: u64,
+    pub process_id: Option<u32>,
     pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalRuntimeIdentity {
+    pub workspace_id: String,
+    pub generation: u64,
+    pub process_id: Option<u32>,
+    pub agent_launch_owner: Option<String>,
+    pub agent_launch_state: Option<String>,
 }

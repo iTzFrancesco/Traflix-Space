@@ -202,7 +202,7 @@ impl ContextBroker {
 
         warnings.sort();
         warnings.dedup();
-        let agent_sessions = compact_agent_overview(agent_sessions);
+        let agent_sessions = compact_agent_overview(agent_sessions, &terminals);
         Ok(ContextPackageV1 {
             package_version: "1".to_string(),
             invocation,
@@ -290,22 +290,45 @@ impl ContextBroker {
 }
 
 /// Keep the agent overview of a Context Package compact: at most
-/// `MAX_AGENT_OVERVIEW_SESSIONS` sessions (most recently created first) and a
-/// serialized budget of `MAX_AGENT_OVERVIEW_BYTES`. Older sessions are dropped
-/// only from the model-facing overview; the registry keeps its own bounded
-/// history for identity and reconciliation.
-fn compact_agent_overview(mut sessions: Vec<AgentSessionContext>) -> Vec<AgentSessionContext> {
+/// `MAX_AGENT_OVERVIEW_SESSIONS` sessions and a serialized budget of
+/// `MAX_AGENT_OVERVIEW_BYTES`. Current sessions follow the same canonical
+/// persisted-terminal order as the UI/model terminal list; historical sessions
+/// follow by recency. Older history is dropped only from the model overview.
+fn compact_agent_overview(
+    mut sessions: Vec<AgentSessionContext>,
+    terminals: &[TerminalSummary],
+) -> Vec<AgentSessionContext> {
+    let terminal_order = terminals
+        .iter()
+        .enumerate()
+        .map(|(index, terminal)| ((terminal.terminal_id.clone(), terminal.generation), index))
+        .collect::<std::collections::HashMap<_, _>>();
     sessions.sort_by(|left, right| {
-        right
+        let left_index = left.reference.terminal_id.as_ref().and_then(|terminal_id| {
+            terminal_order.get(&(terminal_id.clone(), left.reference.generation))
+        });
+        let right_index = right
             .reference
-            .created_at
-            .cmp(&left.reference.created_at)
-            .then_with(|| {
-                right
-                    .reference
-                    .agent_session_id
-                    .cmp(&left.reference.agent_session_id)
-            })
+            .terminal_id
+            .as_ref()
+            .and_then(|terminal_id| {
+                terminal_order.get(&(terminal_id.clone(), right.reference.generation))
+            });
+        match (left_index, right_index) {
+            (Some(left), Some(right)) => left.cmp(right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => right
+                .reference
+                .created_at
+                .cmp(&left.reference.created_at)
+                .then_with(|| {
+                    right
+                        .reference
+                        .agent_session_id
+                        .cmp(&left.reference.agent_session_id)
+                }),
+        }
     });
     sessions.truncate(MAX_AGENT_OVERVIEW_SESSIONS);
     while sessions.len() > 1 {
@@ -322,7 +345,7 @@ fn compact_agent_overview(mut sessions: Vec<AgentSessionContext>) -> Vec<AgentSe
 
 #[cfg(test)]
 mod compact_tests {
-    use super::super::types::{AgentSessionContext, AgentSessionRef, Provenance};
+    use super::super::types::{AgentSessionContext, AgentSessionRef, Provenance, TerminalSummary};
     use super::compact_agent_overview;
 
     fn session(id: &str, created_at: &str) -> AgentSessionContext {
@@ -378,7 +401,7 @@ mod compact_tests {
                 )
             })
             .collect::<Vec<_>>();
-        let compact = compact_agent_overview(sessions);
+        let compact = compact_agent_overview(sessions, &[]);
         assert!(compact.len() <= 8);
         assert_eq!(compact[0].reference.agent_session_id, "session-20");
         assert!(compact.iter().all(|item| {
@@ -411,9 +434,45 @@ mod compact_tests {
                 item
             })
             .collect::<Vec<_>>();
-        let compact = compact_agent_overview(sessions);
+        let compact = compact_agent_overview(sessions, &[]);
         assert!(compact.len() < 8);
         let size = serde_json::to_vec(&compact).unwrap().len();
         assert!(size <= 6 * 1024);
+    }
+
+    #[test]
+    fn current_agents_follow_the_canonical_terminal_order() {
+        let terminal = |id: &str| TerminalSummary {
+            terminal_id: format!("terminal-{id}"),
+            workspace_id: "workspace-a".to_string(),
+            title: id.to_string(),
+            shell: "powershell.exe".to_string(),
+            cwd: "C:\\repo".to_string(),
+            active: false,
+            process_alive: true,
+            agent_id: Some("codex".to_string()),
+            configured_agent_id: Some("codex".to_string()),
+            observed_provider: Some("codex".to_string()),
+            resolved_provider: "codex".to_string(),
+            detection_source: "test".to_string(),
+            detection_confidence: 1.0,
+            identity_warnings: Vec::new(),
+            generation: 1,
+            provenance: Provenance::trusted("test", "now"),
+        };
+        let compact = compact_agent_overview(
+            vec![
+                session("left", "2026-08-07T00:20:00Z"),
+                session("right", "2026-08-07T00:10:00Z"),
+            ],
+            &[terminal("right"), terminal("left")],
+        );
+        assert_eq!(
+            compact
+                .iter()
+                .map(|session| session.reference.agent_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["right", "left"]
+        );
     }
 }

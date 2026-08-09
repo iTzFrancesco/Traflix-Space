@@ -41,17 +41,29 @@ export interface FrameSnapshot {
 
 export interface TerminalOutput {
   terminalId: string;
+  /** Workspace owning this exact PTY lifetime. */
+  workspaceId: string;
   /** PTY lifetime; stale events from an older reopen are ignored. */
   generation: number;
+  /** OS process identity for the same PTY lifetime, when available. */
+  processId: number | null;
   data: number[];
   sequence: number;
   /** Internal batch metadata retained so rehydrate can filter exact chunks. */
-  chunks?: Array<{ generation: number; sequence: number; data: Uint8Array }>;
+  chunks?: Array<{
+    workspaceId: string;
+    generation: number;
+    processId: number | null;
+    sequence: number;
+    data: Uint8Array;
+  }>;
 }
 
 export interface TerminalRehydrateState {
+  workspaceId: string;
   /** PTY lifetime represented by this snapshot. */
   generation: number;
+  processId: number | null;
   history: number[];
   state: number[];
   outputSequence: number;
@@ -61,9 +73,19 @@ export interface TerminalRehydrateState {
 
 export interface TerminalExited {
   terminalId: string;
+  workspaceId: string;
   /** PTY lifetime; stale exit notifications must not close a reopened pane. */
   generation: number;
+  processId: number | null;
   exitCode: number;
+}
+
+export interface TerminalRuntimeIdentity {
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
+  agentLaunchOwner: "backend" | null;
+  agentLaunchState: "starting" | "ready" | "failed" | null;
 }
 
 export interface AgentTurnCompleted {
@@ -72,6 +94,7 @@ export interface AgentTurnCompleted {
   kind: "turn_completed";
   terminalId: string;
   generation?: number | null;
+  processId?: number | null;
   eventId?: string | null;
   workspaceId?: string | null;
   providerSessionId?: string | null;

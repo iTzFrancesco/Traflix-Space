@@ -79,6 +79,8 @@ pub enum TtsStatus {
 #[serde(rename_all = "camelCase")]
 pub struct TtsStatusView {
     pub request_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub sequence: u64,
     pub status: TtsStatus,
     pub error: Option<VoiceErrorView>,
 }
@@ -87,6 +89,7 @@ pub struct TtsStatusView {
 #[serde(rename_all = "camelCase")]
 pub struct TtsSpeakRequest {
     pub request_id: String,
+    pub workspace_id: Option<String>,
     pub text: String,
     pub voice: Option<String>,
     pub rate: Option<String>,
@@ -172,8 +175,16 @@ pub enum VoiceErrorCode {
     InvalidTransition,
     ShortcutUnavailable,
     ShortcutInvalid,
+    TtsDisabled,
+    TtsProviderInvalid,
     HelperFailed,
+    TtsNetwork,
+    TtsSynthesisFailed,
+    TtsAudioFileInvalid,
+    TtsAudioDecodeFailed,
+    PlaybackDeviceUnavailable,
     PlaybackFailed,
+    TtsTimeout,
 }
 
 pub fn normalize_max_duration_seconds(value: u32) -> u32 {
@@ -236,8 +247,16 @@ impl VoiceErrorCode {
             Self::InvalidTransition => "voice_invalid_transition",
             Self::ShortcutUnavailable => "voice_shortcut_unavailable",
             Self::ShortcutInvalid => "voice_shortcut_invalid",
+            Self::TtsDisabled => "tts_output_disabled",
+            Self::TtsProviderInvalid => "tts_provider_invalid",
             Self::HelperFailed => "tts_helper_failed",
+            Self::TtsNetwork => "tts_network_failed",
+            Self::TtsSynthesisFailed => "tts_synthesis_failed",
+            Self::TtsAudioFileInvalid => "tts_audio_file_invalid",
+            Self::TtsAudioDecodeFailed => "tts_audio_decode_failed",
+            Self::PlaybackDeviceUnavailable => "tts_output_device_unavailable",
             Self::PlaybackFailed => "tts_playback_failed",
+            Self::TtsTimeout => "tts_timeout",
         }
     }
 }

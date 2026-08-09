@@ -11,6 +11,7 @@ const ttsSource = source("../src-tauri/src/jarvis/voice/tts.rs");
 const playbackSource = source("../src-tauri/src/jarvis/voice/playback.rs");
 const helperSource = source("./jarvis-edge-tts.py");
 const mainSource = source("../src-tauri/src/main.rs");
+const beforeBuildSource = source("./tauri-before-build.ps1");
 
 test("STT audio preparation keeps mono/16k zero-copy fast paths", () => {
   assert.match(audioSource, /if audio\.channels <= 1/);
@@ -38,6 +39,7 @@ test("Groq STT reuses transport and avoids generic multipart/JSON success parsin
   assert.match(sttSource, /std::str::from_utf8\(&body\)/);
   assert.doesNotMatch(sttSource, /reqwest::\{multipart/);
   assert.doesNotMatch(sttSource, /serde_json::from_slice/);
+  assert.doesNotMatch(sttSource, /build\(\)\s*\.expect\("voice HTTP client"\)/);
 });
 
 test("Edge TTS helper stays alive and caches the imported module", () => {
@@ -56,10 +58,49 @@ test("Rust TTS shares one warm worker and prewarms it at startup", () => {
   assert.match(mainSource, /jarvis::voice::tts::shutdown_runtime\(\)\.await/);
 });
 
-test("Windows playback keeps the output stream warm between replies", () => {
-  assert.match(playbackSource, /static WORKER: OnceLock<mpsc::Sender<PlaybackRequest>>/);
+test("Windows playback keeps healthy output warm and can replace failed workers or devices", () => {
+  assert.match(playbackSource, /static WORKER: OnceLock<Mutex<Option<std::sync::mpsc::Sender<PlaybackRequest>>>>/);
   assert.match(playbackSource, /fn playback_loop/);
-  assert.match(playbackSource, /OutputStream::try_default\(\)/);
+  assert.match(playbackSource, /ensure_cached\(output, OutputStream::try_default\)/);
+  assert.match(playbackSource, /output\.take\(\)/);
+  assert.match(playbackSource, /reset_playback_sender/);
+  assert.match(playbackSource, /PlaybackDeviceUnavailable/);
   assert.match(playbackSource, /while let Ok\(request\) = receiver\.recv\(\)/);
   assert.match(playbackSource, /Duration::from_millis\(8\)/);
+});
+
+test("Windows config merge retains MSI settings and binds a verified x86_64 TTS sidecar", () => {
+  const base = JSON.parse(source("../src-tauri/tauri.conf.json"));
+  const windows = JSON.parse(source("../src-tauri/tauri.windows.conf.json"));
+  const merged = {
+    ...base,
+    build: { ...base.build, ...windows.build },
+    bundle: { ...base.bundle, ...windows.bundle },
+  };
+  assert.equal(
+    merged.build.beforeBuildCommand,
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-before-build.ps1",
+  );
+  assert.equal(merged.build.frontendDist, "../dist");
+  assert.deepEqual(merged.bundle.targets, ["msi"]);
+  assert.deepEqual(merged.bundle.externalBin, ["binaries/jarvis-edge-tts"]);
+  assert.ok(merged.bundle.resources["../scripts/agent-notifications/*"]);
+
+  const artifact = readFileSync(
+    new URL(
+      "../src-tauri/binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe",
+      import.meta.url,
+    ),
+  );
+  assert.ok(artifact.length > 1024 * 1024);
+  assert.equal(artifact.subarray(0, 2).toString("ascii"), "MZ");
+  const peOffset = artifact.readUInt32LE(0x3c);
+  assert.equal(artifact.subarray(peOffset, peOffset + 4).toString("binary"), "PE\u0000\u0000");
+  assert.equal(artifact.readUInt16LE(peOffset + 4), 0x8664);
+
+  assert.match(beforeBuildSource, /& \$sidecarScript -Python \$python/);
+  assert.match(beforeBuildSource, /embedded helper always matches/);
+  assert.match(beforeBuildSource, /ReadAllBytes\(\$sidecar\)/);
+  assert.match(beforeBuildSource, /machine -ne 0x8664/);
+  assert.match(beforeBuildSource, /Verified Jarvis Edge TTS x86_64 sidecar/);
 });

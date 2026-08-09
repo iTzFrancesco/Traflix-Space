@@ -106,9 +106,9 @@ export interface VoiceRequestStatusView { requestId: string; workspaceId: string
 export type VadState = "silence" | "maybe_speech" | "speech";
 export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; vadState: VadState; }
 export type TtsStatus = "idle" | "synthesizing" | "playing" | "stopped" | "failed";
-export interface TtsStatusView { requestId?: string; status: TtsStatus; error?: VoiceErrorView; }
+export interface TtsStatusView { requestId?: string; workspaceId?: string; sequence?: number; status: TtsStatus; error?: VoiceErrorView; }
 export interface TtsVoice { shortName: string; locale: string; gender?: string; }
-export interface TtsSpeakRequest { requestId: string; text: string; voice?: string; rate?: string; volume?: string; pitch?: string; }
+export interface TtsSpeakRequest { requestId: string; workspaceId?: string; text: string; voice?: string; rate?: string; volume?: string; pitch?: string; }
 
 export type CacheStatus = "miss" | "hit" | "incremental" | "invalidated";
 

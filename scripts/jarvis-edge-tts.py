@@ -45,6 +45,17 @@ def _safe_output_path(raw: object) -> Path:
     return path
 
 
+def _synthesis_error_code(error: Exception) -> str:
+    module = type(error).__module__.lower()
+    if isinstance(error, (TimeoutError, ConnectionError)) or module.startswith(
+        ("aiohttp", "asyncio")
+    ):
+        return "edge_tts_network_failed"
+    if isinstance(error, OSError):
+        return "edge_tts_output_file_failed"
+    return "edge_tts_failed"
+
+
 async def _speak(payload: dict[str, object]) -> None:
     edge_tts = _load_edge_tts()
     if edge_tts is None:
@@ -67,8 +78,10 @@ async def _speak(payload: dict[str, object]) -> None:
         )
         await communicate.save(str(output_path))
         _result(True, outputPath=str(output_path))
-    except Exception:
-        _result(False, error="edge_tts_failed")
+    except Exception as error:
+        # Never return the exception message: network/library errors can carry
+        # request details. The stable code is enough for safe diagnostics.
+        _result(False, error=_synthesis_error_code(error))
 
 
 async def _list_voices() -> None:
@@ -88,8 +101,15 @@ async def _list_voices() -> None:
             if str(item.get("Locale", "")).lower().startswith("it-")
         ][:64]
         _result(True, voices=bounded)
-    except Exception:
-        _result(False, error="edge_tts_voice_list_failed")
+    except Exception as error:
+        module = type(error).__module__.lower()
+        code = (
+            "edge_tts_voice_list_network_failed"
+            if isinstance(error, (TimeoutError, ConnectionError))
+            or module.startswith(("aiohttp", "asyncio"))
+            else "edge_tts_voice_list_failed"
+        )
+        _result(False, error=code)
 
 
 async def _handle(payload: dict[str, object]) -> bool:

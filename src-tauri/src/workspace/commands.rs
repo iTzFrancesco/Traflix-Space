@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -97,10 +96,11 @@ pub async fn create_workspace(
     info!(name = %config.name, path = %config.root_path, "Creazione workspace");
 
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
 
     // Workspace metadata belongs exclusively to the app-data registry, never
     // to the user's project directory.
-    registry.insert(config.clone()).await;
+    registry.insert(config.clone()).await?;
     registry.save().await?;
 
     info!(name = %config.name, "Workspace creato con successo");
@@ -131,6 +131,7 @@ pub async fn update_workspace(
     app: AppHandle,
     id: String,
     mut config: WorkspaceConfig,
+    expected_updated_at: String,
 ) -> Result<WorkspaceConfig, String> {
     if id != config.id {
         warn!(%id, new_id = %config.id, "ID mismatch nell'update workspace");
@@ -148,13 +149,16 @@ pub async fn update_workspace(
 
     info!(%id, name = %config.name, "Aggiornamento workspace");
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
 
     // Keep the project directory untouched; update only the app-data registry.
-    registry.insert(config.clone()).await;
+    let updated = registry
+        .replace_if_updated_at(&id, &expected_updated_at, config.clone())
+        .await?;
     registry.save().await?;
 
     info!(%id, "Workspace aggiornato");
-    Ok(config)
+    Ok(updated)
 }
 
 /// Persist a user-requested terminal title so Jarvis can use the same
@@ -172,18 +176,9 @@ pub async fn update_terminal_title(
     }
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
-    let mut workspace = registry
-        .get(&workspace_id)
-        .await
-        .ok_or_else(|| "Workspace non trovata".to_string())?;
-    let terminal = workspace
-        .terminals
-        .iter_mut()
-        .find(|terminal| terminal.id == terminal_id)
-        .ok_or_else(|| "Terminale non trovato".to_string())?;
-    terminal.title = title.to_string();
-    workspace.updated_at = Utc::now().to_rfc3339();
-    registry.insert(workspace.clone()).await;
+    let workspace = registry
+        .update_terminal_title(&workspace_id, &terminal_id, title)
+        .await?;
     registry.save().await?;
     Ok(workspace)
 }
@@ -192,6 +187,7 @@ pub async fn update_terminal_title(
 pub async fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     info!(%id, "Eliminazione workspace");
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     registry.remove(&id).await;
     registry.save().await?;
     info!(%id, "Workspace eliminato");

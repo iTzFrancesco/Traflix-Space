@@ -23,7 +23,13 @@ import {
   inputDeviceOptions,
   italianVoices,
   sanitizedVoiceError,
+  sanitizedVoiceErrorView,
 } from "../src/lib/jarvis/voiceSettings.ts";
+import {
+  applyTtsStatusTransition,
+  beginLocalTtsRequest,
+} from "../src/lib/jarvis/ttsState.ts";
+import { chimeNeedsVisualFallback } from "../src/lib/agentNotificationSound.ts";
 import {
   defaultJarvisSettings,
   isJarvisOwnerModeReady,
@@ -216,6 +222,13 @@ test("voice utility output is safe and bounded", () => {
   assert.equal(message.includes("gsk_test_secret_value"), false);
   assert.ok(message.length <= 240);
   assert.deepEqual(
+    sanitizedVoiceErrorView(
+      { code: "tts_output_device_unavailable", message: "Speaker assente" },
+      "tts_ipc_failed",
+    ),
+    { code: "tts_output_device_unavailable", message: "Speaker assente" },
+  );
+  assert.deepEqual(
     inputDeviceOptions([
       { id: "mic", name: "Desk mic", isDefault: true, available: true },
     ]),
@@ -230,8 +243,69 @@ test("voice utility output is safe and bounded", () => {
   );
 });
 
+test("TTS state is monotonic and an older request cannot replace a local successor", () => {
+  const initial = {
+    ttsStatus: {
+      requestId: "tts-a",
+      workspaceId: "workspace-a",
+      sequence: 4,
+      status: "playing",
+    },
+    pendingTtsRequestId: null,
+  };
+  const pendingB = beginLocalTtsRequest(initial, "tts-b", "workspace-b");
+  const staleA = applyTtsStatusTransition(pendingB, {
+    requestId: "tts-a",
+    workspaceId: "workspace-a",
+    sequence: 5,
+    status: "idle",
+  });
+  assert.equal(staleA.accepted, false);
+  assert.equal(staleA.ttsStatus.requestId, "tts-b");
+
+  const synthesizingB = applyTtsStatusTransition(pendingB, {
+    requestId: "tts-b",
+    workspaceId: "workspace-b",
+    sequence: 6,
+    status: "synthesizing",
+  });
+  assert.equal(synthesizingB.accepted, true);
+  assert.equal(synthesizingB.pendingTtsRequestId, null);
+  const outOfOrderB = applyTtsStatusTransition(synthesizingB, {
+    requestId: "tts-b",
+    workspaceId: "workspace-b",
+    sequence: 5,
+    status: "playing",
+  });
+  assert.equal(outOfOrderB.accepted, false);
+  assert.equal(outOfOrderB.ttsStatus.status, "synthesizing");
+});
+
+test("completion chime failures require a visual notification fallback", () => {
+  assert.equal(chimeNeedsVisualFallback({ status: "scheduled" }), false);
+  assert.equal(chimeNeedsVisualFallback({ status: "throttled" }), false);
+  assert.equal(chimeNeedsVisualFallback({ status: "resume_failed" }), true);
+  assert.equal(chimeNeedsVisualFallback({ status: "unsupported" }), true);
+  const chimeSource = source("../src/lib/agentNotificationSound.ts");
+  assert.ok(
+    chimeSource.indexOf("scheduleChime(context)") <
+      chimeSource.indexOf("lastPlayedAt = performance.now()"),
+    "only a successfully scheduled chime may start the throttle window",
+  );
+  assert.match(
+    chimeSource,
+    /lastPlayedAt > 0 && now - lastPlayedAt < 180/,
+    "the first completion must not be throttled before any chime was scheduled",
+  );
+  assert.match(chimeSource, /remainingNotes === 0\) master\.disconnect\(\)/);
+});
+
 test("idle and active status hierarchy stays compact", () => {
   assert.equal(collapsedJarvisStatus(idle()), "Pronto quando vuoi");
+  assert.equal(
+    collapsedJarvisStatus(idle({ voiceError: "Nessun dispositivo audio disponibile." })),
+    "Nessun dispositivo audio disponibile.",
+  );
   assert.equal(
     collapsedJarvisStatus(
       idle({
@@ -372,7 +446,7 @@ test("every PTY mutation revalidates workspace, generation, process and identity
 });
 
 test("Jarvis registers provenance only after shared-PTY writes", () => {
-  assert.match(controlSource, /write_typed\(/);
+  assert.match(controlSource, /write_typed_for_generation\(/);
   assert.match(controlSource, /TerminalInputOrigin::JarvisPrompt/);
   assert.match(controlSource, /observe_jarvis_send/);
   assert.match(registrySource, /observe_jarvis_send/);
@@ -407,7 +481,10 @@ test("agent.open creates the same visible Traflix PTY and waits for readiness", 
   assert.match(controlSource, /wait_until_ready/);
   assert.match(workspaceViewSource, /jarvis-agent-opened/);
   assert.match(workspaceViewSource, /markSpawned/);
-  assert.match(workspaceViewSource, /markAgentLaunched/);
+  assert.match(workspaceViewSource, /markBackendAgentLaunch/);
+  assert.match(controlSource, /set_backend_agent_launch_state/);
+  assert.match(controlSource, /launch_state: "starting"/);
+  assert.match(controlSource, /launch_state: "ready"/);
 });
 
 test("no hidden provider session or completion-triggered future chain exists", () => {

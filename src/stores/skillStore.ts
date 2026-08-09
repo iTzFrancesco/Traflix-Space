@@ -17,6 +17,10 @@ export interface SkillInfo {
 }
 
 export interface PendingSkillDrop {
+  /** Exact PTY lifetime targeted when the drop gesture occurred. */
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
   /** Nomi accumulati delle skill droppate */
   names: string[];
   /** Timer per il debounce di invio */
@@ -46,7 +50,11 @@ interface SkillStore {
   reorder: (draggedId: string, targetId: string) => void;
 
   /* Pending drops */
-  addPendingDrop: (terminalId: string, skillName: string) => void;
+  addPendingDrop: (
+    terminalId: string,
+    runtime: Pick<PendingSkillDrop, "workspaceId" | "generation" | "processId">,
+    skillName: string,
+  ) => void;
   flushPendingDrop: (terminalId: string) => string[];
   clearPendingDrop: (terminalId: string) => void;
 }
@@ -101,10 +109,15 @@ export const useSkillStore = create<SkillStore>()(
         }),
 
       /* Pending drops: accumula nomi con debounce */
-      addPendingDrop: (terminalId, skillName) =>
+      addPendingDrop: (terminalId, runtime, skillName) =>
         set((state) => {
           const existing = state.pendingDrops[terminalId];
-          if (existing) {
+          if (
+            existing &&
+            existing.workspaceId === runtime.workspaceId &&
+            existing.generation === runtime.generation &&
+            existing.processId === runtime.processId
+          ) {
             // Se già esiste, aggiungi nome (senza mutare, evita duplicati)
             const names = existing.names.includes(skillName)
               ? existing.names
@@ -117,11 +130,12 @@ export const useSkillStore = create<SkillStore>()(
             return {
               pendingDrops: {
                 ...state.pendingDrops,
-                [terminalId]: { names, timer },
+                [terminalId]: { ...runtime, names, timer },
               },
             };
           }
 
+          if (existing?.timer) clearTimeout(existing.timer);
           const timer = setTimeout(() => {
             get().flushPendingDrop(terminalId);
           }, 500);
@@ -129,7 +143,7 @@ export const useSkillStore = create<SkillStore>()(
           return {
             pendingDrops: {
               ...state.pendingDrops,
-              [terminalId]: { names: [skillName], timer },
+            [terminalId]: { ...runtime, names: [skillName], timer },
             },
           };
         }),
@@ -152,6 +166,9 @@ export const useSkillStore = create<SkillStore>()(
         const data = Array.from(encoder.encode(msg));
         invoke("terminal_write", {
           terminalId,
+          workspaceId: pending.workspaceId,
+          generation: pending.generation,
+          processId: pending.processId,
           data,
         }).catch((err) => {
           console.error("Errore scrittura skill drop:", err);

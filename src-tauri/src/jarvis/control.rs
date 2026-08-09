@@ -11,7 +11,7 @@ use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
     AgentSessionContext, AgentState, AgentTail, InvocationBinding, Provenance, TerminalSummary,
 };
-use crate::terminal_engine::{TerminalInputOrigin, TerminalManager};
+use crate::terminal_engine::{TerminalInputOrigin, TerminalManager, TerminalRuntimeIdentity};
 use crate::workspace::registry::{TerminalConfig, WorkspaceConfig, WorkspaceRegistry};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,9 @@ impl ConversationalControlState {
 pub struct AgentOpenedEvent {
     pub workspace_id: String,
     pub terminal: TerminalConfig,
+    pub generation: u64,
+    pub process_id: Option<u32>,
+    pub launch_state: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,6 +211,7 @@ pub struct AgentClosedEvent {
     pub workspace_id: String,
     pub terminal_id: String,
     pub generation: u64,
+    pub process_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -555,9 +559,10 @@ async fn execute_step(
             }
             let snapshot = fresh_snapshot(app, invocation, &target).await?;
             app.state::<TerminalManager>()
-                .write_typed(
+                .write_typed_for_generation(
                     app,
                     &target.terminal.terminal_id,
+                    snapshot.generation,
                     &[0x03],
                     TerminalInputOrigin::JarvisAbort,
                 )
@@ -780,7 +785,7 @@ async fn resolve_target(
         );
     }
 
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     let top_score = candidates[0].0;
     if candidates.len() > 1 && candidates[1].0 == top_score {
         let mut with_tail = Vec::new();
@@ -790,7 +795,7 @@ async fn resolve_target(
                 with_tail.push((tail_score, *session, *terminal));
             }
         }
-        with_tail.sort_by(|left, right| right.0.cmp(&left.0));
+        with_tail.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
         if with_tail.first().is_some_and(|item| item.0 > 0)
             && with_tail.get(1).map(|item| item.0).unwrap_or(-1) < with_tail[0].0
         {
@@ -1012,9 +1017,10 @@ async fn send_to_target(
     };
     if app
         .state::<TerminalManager>()
-        .write_typed(
+        .write_typed_for_generation(
             app,
             &target.terminal.terminal_id,
+            snapshot.generation,
             &bytes,
             TerminalInputOrigin::JarvisPrompt,
         )
@@ -1266,12 +1272,33 @@ async fn open_agent(
         .spawn(app.clone(), config.clone(), 100, 30)
         .await
         .map_err(|_| "non sono riuscito ad aprire il terminale dell'agente".to_string())?;
-    let mut updated = workspace.clone();
-    updated.terminals.push(config.clone());
-    updated.updated_at = now();
-    app.state::<WorkspaceRegistry>().insert(updated).await;
+    let runtime = manager
+        .runtime_identity(&terminal_id)
+        .await
+        .map_err(|_| "sessione agente non disponibile".to_string())?;
+    if runtime.workspace_id.as_str() != workspace.id.as_str() {
+        let _ = manager
+            .kill_generation(app, &terminal_id, runtime.generation)
+            .await;
+        return Err("sessione agente associata alla workspace sbagliata".to_string());
+    }
+    manager
+        .set_backend_agent_launch_state(&terminal_id, &runtime, "starting")
+        .await
+        .map_err(|_| "sessione agente sostituita durante l'avvio".to_string())?;
+    if app
+        .state::<WorkspaceRegistry>()
+        .append_terminal(&workspace.id, config.clone(), 8)
+        .await
+        .is_err()
+    {
+        let _ = manager
+            .kill_generation(app, &terminal_id, runtime.generation)
+            .await;
+        return Err("limite di otto terminali raggiunto in questa workspace".to_string());
+    }
     if app.state::<WorkspaceRegistry>().save().await.is_err() {
-        rollback_open_agent(app, &workspace, &terminal_id).await;
+        rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
         return Err("non sono riuscito a registrare il nuovo terminale".to_string());
     }
     let _ = app.emit(
@@ -1279,25 +1306,29 @@ async fn open_agent(
         AgentOpenedEvent {
             workspace_id: workspace.id.clone(),
             terminal: config.clone(),
+            generation: runtime.generation,
+            process_id: runtime.process_id,
+            launch_state: "starting",
         },
     );
 
     let command = provider_command(&definition);
     if manager
-        .write_typed(
+        .write_typed_for_generation(
             app,
             &terminal_id,
+            runtime.generation,
             command.as_bytes(),
             TerminalInputOrigin::Internal,
         )
         .await
         .is_err()
     {
-        rollback_open_agent(app, &workspace, &terminal_id).await;
+        rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
         return Err("non sono riuscito ad avviare l'agente nella PTY".to_string());
     }
-    if let Err(error) = wait_until_ready(app, &terminal_id, &definition).await {
-        rollback_open_agent(app, &workspace, &terminal_id).await;
+    if let Err(error) = wait_until_ready(app, &terminal_id, runtime.generation, &definition).await {
+        rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
         return Err(error);
     }
     let mut sent = false;
@@ -1305,7 +1336,7 @@ async fn open_agent(
         let prompt = match validate_agent_text(&prompt) {
             Ok(prompt) => prompt,
             Err(_) => {
-                rollback_open_agent(app, &workspace, &terminal_id).await;
+                rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
                 return Err("prompt iniziale non valido".to_string());
             }
         };
@@ -1316,7 +1347,7 @@ async fn open_agent(
         {
             Ok(Some(snapshot)) => snapshot,
             _ => {
-                rollback_open_agent(app, &workspace, &terminal_id).await;
+                rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
                 return Err("sessione agente non disponibile".to_string());
             }
         };
@@ -1331,11 +1362,25 @@ async fn open_agent(
         )
         .await
         {
-            rollback_open_agent(app, &workspace, &terminal_id).await;
+            rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
             return Err(error);
         }
         sent = true;
     }
+    manager
+        .set_backend_agent_launch_state(&terminal_id, &runtime, "ready")
+        .await
+        .map_err(|_| "sessione agente sostituita durante l'avvio".to_string())?;
+    let _ = app.emit(
+        "jarvis-agent-opened",
+        AgentOpenedEvent {
+            workspace_id: workspace.id.clone(),
+            terminal: config.clone(),
+            generation: runtime.generation,
+            process_id: runtime.process_id,
+            launch_state: "ready",
+        },
+    );
     emit_checkpoint(
         app,
         &invocation.request_id,
@@ -1346,15 +1391,11 @@ async fn open_agent(
         None,
     );
     checkpoint.complete();
-    let generation = match manager.get_agent_snapshot(&terminal_id).await {
-        Ok(Some(snapshot)) => snapshot.generation,
-        _ => return Err("sessione agente non disponibile".to_string()),
-    };
     Ok(OpenResult::Opened {
         provider: definition.name,
         sent,
         terminal_id,
-        generation,
+        generation: runtime.generation,
     })
 }
 
@@ -1366,29 +1407,32 @@ fn provider_command(definition: &AgentDefinition) -> String {
     }
 }
 
-async fn rollback_open_agent(app: &AppHandle, workspace: &WorkspaceConfig, terminal_id: &str) {
+async fn rollback_open_agent(
+    app: &AppHandle,
+    workspace: &WorkspaceConfig,
+    terminal_id: &str,
+    runtime: &TerminalRuntimeIdentity,
+) {
     let manager = app.state::<TerminalManager>();
-    let generation = manager
-        .get_agent_snapshot(terminal_id)
+    let killed = manager
+        .kill_generation(app, terminal_id, runtime.generation)
         .await
-        .ok()
-        .flatten()
-        .map(|snapshot| snapshot.generation)
-        .unwrap_or_default();
-    let _ = manager.kill(app, terminal_id).await;
-    let mut rollback = workspace.clone();
-    rollback
-        .terminals
-        .retain(|terminal| terminal.id != terminal_id);
-    rollback.updated_at = now();
-    app.state::<WorkspaceRegistry>().insert(rollback).await;
+        .is_ok();
+    if !killed {
+        return;
+    }
+    let _ = app
+        .state::<WorkspaceRegistry>()
+        .remove_terminal(&workspace.id, terminal_id)
+        .await;
     let _ = app.state::<WorkspaceRegistry>().save().await;
     let _ = app.emit(
         "jarvis-agent-closed",
         AgentClosedEvent {
             workspace_id: workspace.id.clone(),
             terminal_id: terminal_id.to_string(),
-            generation,
+            generation: runtime.generation,
+            process_id: runtime.process_id,
         },
     );
 }
@@ -1396,6 +1440,7 @@ async fn rollback_open_agent(app: &AppHandle, workspace: &WorkspaceConfig, termi
 async fn wait_until_ready(
     app: &AppHandle,
     terminal_id: &str,
+    expected_generation: u64,
     definition: &AgentDefinition,
 ) -> Result<(), String> {
     let deadline = Instant::now() + READINESS_TIMEOUT;
@@ -1406,6 +1451,9 @@ async fn wait_until_ready(
             .await
             .map_err(|_| "sessione agente non disponibile".to_string())?
             .ok_or_else(|| "sessione agente non disponibile".to_string())?;
+        if snapshot.generation != expected_generation {
+            return Err("sessione agente sostituita durante l'avvio".to_string());
+        }
         if !snapshot.process_alive {
             return Err("l'agente è terminato prima di diventare pronto".to_string());
         }
@@ -1441,15 +1489,13 @@ async fn close_target(
     let snapshot = fresh_snapshot(app, invocation, target).await?;
     let workspace = live_workspace(app, workspace, invocation).await?;
     app.state::<TerminalManager>()
-        .kill(app, &target.terminal.terminal_id)
+        .kill_generation(app, &target.terminal.terminal_id, snapshot.generation)
         .await
         .map_err(|_| "non sono riuscito a chiudere il terminale".to_string())?;
-    let mut updated = workspace.clone();
-    updated
-        .terminals
-        .retain(|terminal| terminal.id != target.terminal.terminal_id);
-    updated.updated_at = now();
-    app.state::<WorkspaceRegistry>().insert(updated).await;
+    app.state::<WorkspaceRegistry>()
+        .remove_terminal(&workspace.id, &target.terminal.terminal_id)
+        .await
+        .ok_or_else(|| "workspace non disponibile".to_string())?;
     app.state::<WorkspaceRegistry>()
         .save()
         .await
@@ -1460,6 +1506,7 @@ async fn close_target(
             workspace_id: workspace.id.clone(),
             terminal_id: target.terminal.terminal_id.clone(),
             generation: snapshot.generation,
+            process_id: snapshot.process_id,
         },
     );
     Ok(())
@@ -1500,31 +1547,97 @@ async fn restart_target(
     );
     let mut checkpoint = CheckpointGuard::new(app, invocation, "restarting_agent");
     app.state::<TerminalManager>()
-        .kill(app, &target.terminal.terminal_id)
+        .kill_generation(app, &target.terminal.terminal_id, snapshot.generation)
         .await
         .map_err(|_| "non sono riuscito a fermare la sessione".to_string())?;
     app.state::<TerminalManager>()
         .spawn(app.clone(), config.clone(), 100, 30)
         .await
         .map_err(|_| "non sono riuscito a riavviare la sessione".to_string())?;
-    let generation = app
+    let runtime = app
         .state::<TerminalManager>()
-        .get_agent_snapshot(&target.terminal.terminal_id)
+        .runtime_identity(&target.terminal.terminal_id)
         .await
-        .map_err(|_| "sessione riavviata non disponibile".to_string())?
-        .ok_or_else(|| "sessione riavviata non disponibile".to_string())?
-        .generation;
-    let command = provider_command(&definition);
+        .map_err(|_| "sessione riavviata non disponibile".to_string())?;
+    if runtime.workspace_id.as_str() != workspace.id.as_str() {
+        let _ = app
+            .state::<TerminalManager>()
+            .kill_generation(app, &target.terminal.terminal_id, runtime.generation)
+            .await;
+        return Err("sessione riavviata associata alla workspace sbagliata".to_string());
+    }
     app.state::<TerminalManager>()
-        .write_typed(
+        .set_backend_agent_launch_state(&target.terminal.terminal_id, &runtime, "starting")
+        .await
+        .map_err(|_| "sessione riavviata sostituita durante l'avvio".to_string())?;
+    let _ = app.emit(
+        "jarvis-agent-opened",
+        AgentOpenedEvent {
+            workspace_id: workspace.id.clone(),
+            terminal: config.clone(),
+            generation: runtime.generation,
+            process_id: runtime.process_id,
+            launch_state: "starting",
+        },
+    );
+    let command = provider_command(&definition);
+    if app
+        .state::<TerminalManager>()
+        .write_typed_for_generation(
             app,
             &target.terminal.terminal_id,
+            runtime.generation,
             command.as_bytes(),
             TerminalInputOrigin::Internal,
         )
         .await
-        .map_err(|_| "non sono riuscito a rilanciare l'agente".to_string())?;
-    wait_until_ready(app, &target.terminal.terminal_id, &definition).await?;
+        .is_err()
+    {
+        let _ = app
+            .state::<TerminalManager>()
+            .set_backend_agent_launch_state(&target.terminal.terminal_id, &runtime, "failed")
+            .await;
+        let _ = app.emit(
+            "jarvis-agent-opened",
+            AgentOpenedEvent {
+                workspace_id: workspace.id.clone(),
+                terminal: config,
+                generation: runtime.generation,
+                process_id: runtime.process_id,
+                launch_state: "failed",
+            },
+        );
+        return Err("non sono riuscito a rilanciare l'agente".to_string());
+    }
+    if let Err(error) = wait_until_ready(
+        app,
+        &target.terminal.terminal_id,
+        runtime.generation,
+        &definition,
+    )
+    .await
+    {
+        let _ = app
+            .state::<TerminalManager>()
+            .set_backend_agent_launch_state(&target.terminal.terminal_id, &runtime, "failed")
+            .await;
+        let _ = app.emit(
+            "jarvis-agent-opened",
+            AgentOpenedEvent {
+                workspace_id: workspace.id.clone(),
+                terminal: config,
+                generation: runtime.generation,
+                process_id: runtime.process_id,
+                launch_state: "failed",
+            },
+        );
+        return Err(error);
+    }
+
+    app.state::<TerminalManager>()
+        .set_backend_agent_launch_state(&target.terminal.terminal_id, &runtime, "ready")
+        .await
+        .map_err(|_| "sessione riavviata sostituita durante l'avvio".to_string())?;
 
     // Re-announce the same visible pane so the frontend clears any stale exit
     // state and marks the provider as already launched by the backend.
@@ -1533,6 +1646,9 @@ async fn restart_target(
         AgentOpenedEvent {
             workspace_id: workspace.id.clone(),
             terminal: config,
+            generation: runtime.generation,
+            process_id: runtime.process_id,
+            launch_state: "ready",
         },
     );
     emit_checkpoint(
@@ -1545,7 +1661,6 @@ async fn restart_target(
         None,
     );
     checkpoint.complete();
-    let _ = generation;
     Ok(())
 }
 

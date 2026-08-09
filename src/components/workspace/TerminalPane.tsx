@@ -22,8 +22,23 @@ import { getWorkspaceColor } from "../../lib/workspaceColors";
 import { AGENTS } from "../../lib/agents";
 import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
 import { invokeWithTimeout } from "../../lib/timeout";
+import { reportFrontendDiagnostic } from "../../lib/crashDiagnostics";
 import { isStableTerminalLayout } from "../../lib/terminalPolicies";
-import type { TerminalRehydrateState } from "../terminal/types";
+import {
+  positionAfterHiddenOutput,
+  positionFromViewport,
+  reconcileScrollSample,
+  viewportForPosition,
+} from "../../lib/terminalScrollState";
+import {
+  TerminalOutputProtocol,
+  type SequencedTerminalChunk,
+  type TerminalRuntimeKey,
+} from "../../lib/terminalOutputProtocol";
+import type {
+  TerminalRehydrateState,
+  TerminalRuntimeIdentity,
+} from "../terminal/types";
 import "xterm/css/xterm.css";
 
 /** Map agent id to a short display name for the title bar. */
@@ -218,9 +233,11 @@ interface TerminalContext {
 }
 
 interface TerminalCwdChangedPayload {
-  terminalId?: string;
-  terminal_id?: string;
-  cwd?: string;
+  terminalId: string;
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
+  cwd: string;
 }
 
 const TITLE_BAR_LEFT: React.CSSProperties = {
@@ -308,10 +325,9 @@ function captureScrollPosition(
   scrollPositionRef: React.MutableRefObject<TerminalScrollPosition>,
 ) {
   const buffer = term.buffer.active;
-  const offsetFromBottom = Math.max(0, buffer.baseY - buffer.viewportY);
-  const followsOutput = offsetFromBottom === 0;
-  autoScrollRef.current = followsOutput;
-  scrollPositionRef.current = { followsOutput, offsetFromBottom };
+  const position = positionFromViewport(buffer.baseY, buffer.viewportY);
+  autoScrollRef.current = position.followsOutput;
+  scrollPositionRef.current = position;
 }
 
 interface TerminalPaneVisibility {
@@ -425,7 +441,7 @@ function restoreScrollPosition(
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
   position: TerminalScrollPosition = scrollPositionRef.current,
 ) {
-  const { followsOutput, offsetFromBottom } = position;
+  const { followsOutput } = position;
   if (followsOutput) {
     scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
     programmaticScrollTargetRef.current = -1;
@@ -448,7 +464,7 @@ function restoreScrollPosition(
   // the live bottom keeps the same reading context and, crucially, never turns
   // a layout change into a jump to the first line of the buffer.
   programmaticScrollTargetRef.current = -1;
-  term.scrollToLine(Math.max(0, term.buffer.active.baseY - offsetFromBottom));
+  term.scrollToLine(viewportForPosition(term.buffer.active.baseY, position));
   programmaticScrollTargetRef.current = term.buffer.active.viewportY;
   captureScrollPosition(term, autoScrollRef, scrollPositionRef);
 }
@@ -461,11 +477,53 @@ function isTerminalExitedError(error: unknown): boolean {
   return String(error).toLowerCase().includes("terminal-exited");
 }
 
+function runtimeKey(identity: TerminalRuntimeKey): TerminalRuntimeKey {
+  return {
+    workspaceId: identity.workspaceId,
+    generation: identity.generation,
+    processId: identity.processId,
+  };
+}
+
+function currentRuntimeKey(terminalId: string): TerminalRuntimeKey | null {
+  const terminal = useTerminalStore.getState().terminals[terminalId];
+  if (!terminal || terminal.generation === null) return null;
+  return {
+    workspaceId: terminal.workspaceId,
+    generation: terminal.generation,
+    processId: terminal.processId,
+  };
+}
+
+function sameRuntimeKey(
+  left: TerminalRuntimeKey | null,
+  right: TerminalRuntimeKey,
+): boolean {
+  return left !== null &&
+    left.workspaceId === right.workspaceId &&
+    left.generation === right.generation &&
+    left.processId === right.processId;
+}
+
+function mergeOutputChunks(chunks: readonly SequencedTerminalChunk[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0].data;
+  let total = 0;
+  for (const chunk of chunks) total += chunk.data.length;
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk.data, offset);
+    offset += chunk.data.length;
+  }
+  return merged;
+}
+
 /** Measure the mounted pane before taking a backend snapshot or resizing a PTY. */
 async function syncMeasuredPtySize(
   term: Terminal,
   fitAddon: FitAddon,
   terminalId: string,
+  runtime: TerminalRuntimeKey,
   skipHiddenPane: boolean,
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
@@ -521,13 +579,31 @@ async function syncMeasuredPtySize(
   ) {
     return;
   }
-  await enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows);
+  try {
+    await enqueuePtyResize(resizeStateRef, terminalId, runtime, term.cols, term.rows);
+  } catch (error) {
+    if (String(error).includes("stale-terminal-runtime")) return;
+    reportFrontendDiagnostic("terminal-resize-error", error, {
+      terminalId,
+      workspaceId: runtime.workspaceId,
+      generation: runtime.generation,
+      processId: runtime.processId,
+      state: "initial-fit",
+    });
+    console.warn("[terminal-lifecycle] initial PTY resize rejected", {
+      terminalId,
+      generation: runtime.generation,
+      processId: runtime.processId,
+      error: String(error),
+    });
+  }
 }
 
 function fitAndResizePty(
   term: Terminal,
   fitAddon: FitAddon,
   terminalId: string,
+  runtime: TerminalRuntimeKey | null,
   autoScrollRef: React.MutableRefObject<boolean>,
   scrollPositionRef: React.MutableRefObject<TerminalScrollPosition>,
   programmaticScrollTargetRef: React.MutableRefObject<number | null>,
@@ -535,7 +611,11 @@ function fitAndResizePty(
   fitInProgressRef: React.MutableRefObject<boolean>,
   windowFocusedRef: React.MutableRefObject<boolean>,
 ) {
-  if (!windowFocusedRef.current || document.visibilityState === "hidden") return;
+  if (
+    runtime === null ||
+    !windowFocusedRef.current ||
+    document.visibilityState === "hidden"
+  ) return;
 
   const layoutElement = term.element?.parentElement ?? term.element;
   const rect = layoutElement?.getBoundingClientRect();
@@ -559,7 +639,18 @@ function fitAndResizePty(
   // report y=0 during a hidden-pane/window reflow, so reading its live ydisp
   // here would turn follow mode into a false history position.
   const positionBeforeFit = scrollPositionRef.current;
-  const viewportAnchor = positionBeforeFit.followsOutput
+  const expectedViewport = viewportForPosition(
+    term.buffer.active.baseY,
+    positionBeforeFit,
+  );
+  // A pane that has just returned from blur/focus mode can expose a transient
+  // viewportY=0 even though its saved reader position is in the middle. Do not
+  // turn that layout artifact into a content anchor at the top.
+  const transientTop =
+    !positionBeforeFit.followsOutput &&
+    term.buffer.active.viewportY === 0 &&
+    expectedViewport > 0;
+  const viewportAnchor = positionBeforeFit.followsOutput || transientTop
     ? null
     : captureViewportAnchor(term);
   try {
@@ -601,8 +692,25 @@ function fitAndResizePty(
     // changes both columns and rows, however, its row arithmetic can still
     // land at the first line. Restore the visible content anchor in that
     // case, then capture the new bottom-relative position for later remounts.
-    restoreViewportAnchor(term, viewportAnchor, programmaticScrollTargetRef);
-    captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+    const anchorRestored = restoreViewportAnchor(
+      term,
+      viewportAnchor,
+      programmaticScrollTargetRef,
+    );
+    if (anchorRestored) {
+      captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+    } else {
+      // If reflow removed/truncated the anchor, preserve the last stable
+      // bottom-relative intent. Sampling xterm here could persist its transient
+      // viewportY=0 and turn a middle position into a jump to the top.
+      restoreScrollPosition(
+        term,
+        autoScrollRef,
+        scrollPositionRef,
+        programmaticScrollTargetRef,
+        positionBeforeFit,
+      );
+    }
   } else {
     // There is no scrollback yet. Preserve the reader intent until rehydrate
     // or output creates a scrollable buffer.
@@ -611,12 +719,34 @@ function fitAndResizePty(
     programmaticScrollTargetRef.current = null;
   }
   if (term.cols > 0 && term.rows > 0) {
-    void enqueuePtyResize(resizeStateRef, terminalId, term.cols, term.rows).catch(() => {});
+    void enqueuePtyResize(
+      resizeStateRef,
+      terminalId,
+      runtime,
+      term.cols,
+      term.rows,
+    ).catch((error) => {
+      if (String(error).includes("stale-terminal-runtime")) return;
+      reportFrontendDiagnostic("terminal-resize-error", error, {
+        terminalId,
+        workspaceId: runtime.workspaceId,
+        generation: runtime.generation,
+        processId: runtime.processId,
+        state: "fit-resize",
+      });
+      console.warn("[terminal-lifecycle] PTY resize rejected", {
+        terminalId,
+        generation: runtime.generation,
+        processId: runtime.processId,
+        error: String(error),
+      });
+    });
   }
 }
 
 interface PtyResizeState {
   pending: {
+    runtime: TerminalRuntimeKey;
     cols: number;
     rows: number;
     waiters: Array<{
@@ -631,13 +761,23 @@ interface PtyResizeState {
 function enqueuePtyResize(
   stateRef: React.MutableRefObject<PtyResizeState>,
   terminalId: string,
+  runtime: TerminalRuntimeKey,
   cols: number,
   rows: number,
 ): Promise<void> {
   const state = stateRef.current;
   const promise = new Promise<void>((resolve, reject) => {
-    const waiters = state.pending?.waiters ?? [];
+    const sameRuntime =
+      state.pending?.runtime.workspaceId === runtime.workspaceId &&
+      state.pending.runtime.generation === runtime.generation &&
+      state.pending.runtime.processId === runtime.processId;
+    if (state.pending && !sameRuntime) {
+      const staleError = new Error("stale-terminal-runtime: queued resize superseded");
+      for (const waiter of state.pending.waiters) waiter.reject(staleError);
+    }
+    const waiters = sameRuntime ? state.pending?.waiters ?? [] : [];
     state.pending = {
+      runtime: { ...runtime },
       cols,
       rows,
       waiters: [...waiters, { resolve, reject }],
@@ -655,6 +795,7 @@ function enqueuePtyResize(
           await invokeWithTimeout(
             () => invoke("terminal_resize", {
               terminalId,
+              ...next.runtime,
               cols: next.cols,
               rows: next.rows,
             }),
@@ -692,17 +833,12 @@ export const TerminalPane = memo(function TerminalPane({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const spawnedRef = useRef(false);
-  /** True while backend history is being written into xterm — drop live output to avoid wipe/race. */
+  /** True while backend history is being written and sequenced output is buffered. */
   const rehydratingRef = useRef(false);
-  /** PTY chunks received around the backend snapshot; replayed after filtering. */
-  const queuedRehydrateOutputRef = useRef<Array<{
-    generation: number;
-    sequence: number;
-    data: Uint8Array;
-  }>>([]);
-  /** Snapshot watermark; chunks at or below it are already in the snapshot. */
-  const rehydrateWatermarkRef = useRef<number | null>(null);
+  const outputProtocolRef = useRef(new TerminalOutputProtocol());
+  const streamEpochRef = useRef(0);
   const terminalGenerationRef = useRef<number | null>(null);
+  const terminalProcessIdRef = useRef<number | null>(null);
   const reopeningRef = useRef(false);
   const unsubOutputRef = useRef<(() => void) | null>(null);
   const outputWarmupUnsubRef = useRef<(() => void) | null>(null);
@@ -783,6 +919,15 @@ export const TerminalPane = memo(function TerminalPane({
   const exitCode = useTerminalStore(
     (s) => s.terminals[terminalId]?.exitCode ?? null,
   );
+  const runtimeGeneration = useTerminalStore(
+    (s) => s.terminals[terminalId]?.generation ?? null,
+  );
+  const runtimeProcessId = useTerminalStore(
+    (s) => s.terminals[terminalId]?.processId ?? null,
+  );
+  const terminalWorkspaceId = useTerminalStore(
+    (s) => s.terminals[terminalId]?.workspaceId ?? "",
+  );
   const hasExited = exitCode !== null;
 
   const draggedTerminalId = useTerminalStore((s) => s.draggedTerminalId);
@@ -815,10 +960,47 @@ export const TerminalPane = memo(function TerminalPane({
   const [editValue, setEditValue] = useState("");
   const [confirmClose, setConfirmClose] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [streamSyncFailed, setStreamSyncFailed] = useState(false);
   const dragCounterRef = useRef(0);
   const currentCwdRef = useRef(cwd);
   const contextRequestRef = useRef(0);
   const atPowerShellPromptRef = useRef(false);
+
+  // Jarvis can restart a PTY from the backend while this pane stays mounted.
+  // A store identity change is the authoritative hand-off to the new lifetime;
+  // remount the stream protocol against that exact generation instead of
+  // continuing to display/filter with the old one.
+  useEffect(() => {
+    if (runtimeGeneration === null || !spawnedRef.current) return;
+    if (
+      terminalGenerationRef.current === runtimeGeneration &&
+      terminalProcessIdRef.current === runtimeProcessId
+    ) return;
+
+    console.info("[terminal-lifecycle] runtime identity changed", {
+      terminalId,
+      previousGeneration: terminalGenerationRef.current,
+      generation: runtimeGeneration,
+      previousProcessId: terminalProcessIdRef.current,
+      processId: runtimeProcessId,
+    });
+    const generationChanged = terminalGenerationRef.current !== runtimeGeneration;
+    terminalGenerationRef.current = runtimeGeneration;
+    terminalProcessIdRef.current = runtimeProcessId;
+    outputProtocolRef.current.startRehydrate({
+      workspaceId: terminalWorkspaceId,
+      generation: runtimeGeneration,
+      processId: runtimeProcessId,
+    });
+    if (generationChanged) {
+      scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+      autoScrollRef.current = true;
+      programmaticScrollTargetRef.current = null;
+    }
+    rehydratingRef.current = true;
+    spawnedRef.current = false;
+    setRestartToken((token) => token + 1);
+  }, [runtimeGeneration, runtimeProcessId, terminalId, terminalWorkspaceId]);
 
   const scheduleFitAndResize = useCallback((waitFrames = 0) => {
     const schedule = fitScheduleRef.current;
@@ -842,6 +1024,13 @@ export const TerminalPane = memo(function TerminalPane({
         term,
         fitAddon,
         terminalId,
+        terminalGenerationRef.current === null || !terminalWorkspaceId
+          ? null
+          : {
+              workspaceId: terminalWorkspaceId,
+              generation: terminalGenerationRef.current,
+              processId: terminalProcessIdRef.current,
+            },
         autoScrollRef,
         scrollPositionRef,
         programmaticScrollTargetRef,
@@ -864,11 +1053,17 @@ export const TerminalPane = memo(function TerminalPane({
 
   const refreshTerminalContext = useCallback(async () => {
     const requestId = ++contextRequestRef.current;
+    const runtime = currentRuntimeKey(terminalId);
+    if (!runtime) return;
     try {
       const context = await invoke<TerminalContext>("terminal_get_context", {
         terminalId,
+        ...runtime,
       });
-      if (requestId !== contextRequestRef.current) return;
+      if (
+        requestId !== contextRequestRef.current ||
+        !sameRuntimeKey(currentRuntimeKey(terminalId), runtime)
+      ) return;
       currentCwdRef.current = context.cwd;
       setCurrentCwd(context.cwd);
       setGitBranch(context.gitBranch);
@@ -886,15 +1081,24 @@ export const TerminalPane = memo(function TerminalPane({
     if (atPowerShellPromptRef.current) return;
     atPowerShellPromptRef.current = true;
     const requestId = ++contextRequestRef.current;
+    const runtime = currentRuntimeKey(terminalId);
+    if (!runtime) return;
 
     try {
       const context = sameWindowsPath(prompt.cwd, currentCwdRef.current)
-        ? await invoke<TerminalContext>("terminal_get_context", { terminalId })
+        ? await invoke<TerminalContext>("terminal_get_context", {
+            terminalId,
+            ...runtime,
+          })
         : await invoke<TerminalContext>("terminal_sync_cwd", {
             terminalId,
+            ...runtime,
             cwd: prompt.cwd,
           });
-      if (requestId !== contextRequestRef.current) return;
+      if (
+        requestId !== contextRequestRef.current ||
+        !sameRuntimeKey(currentRuntimeKey(terminalId), runtime)
+      ) return;
       currentCwdRef.current = context.cwd;
       setCurrentCwd(context.cwd);
       setGitBranch(context.gitBranch);
@@ -962,12 +1166,34 @@ export const TerminalPane = memo(function TerminalPane({
       const tid = terminalIdRef.current;
       if (!tid) return;
       const termState = useTerminalStore.getState().terminals[tid];
-      if (termState && termState.exitCode !== null) return;
+      if (
+        !termState ||
+        termState.exitCode !== null ||
+        termState.generation === null
+      ) return;
       useTerminalStore.getState().markAgentInput(tid);
       const write = invoke("terminal_write", {
         terminalId: tid,
+        workspaceId: termState.workspaceId,
+        generation: termState.generation,
+        processId: termState.processId,
         data: encodeForPty(data),
       });
+      const handleWriteError = (error: unknown) => {
+        reportFrontendDiagnostic("terminal-input-error", error, {
+          terminalId: tid,
+          workspaceId: termState.workspaceId,
+          generation: termState.generation ?? undefined,
+          processId: termState.processId,
+          state: "xterm-input",
+        });
+        console.warn("[terminal-lifecycle] PTY input rejected", {
+          terminalId: tid,
+          generation: termState.generation,
+          processId: termState.processId,
+          error: String(error),
+        });
+      };
 
       // PowerShell is refreshed only after its next completed prompt, when
       // commands such as `git checkout` have actually finished. Other shells
@@ -976,9 +1202,9 @@ export const TerminalPane = memo(function TerminalPane({
         !isPowerShell(shell) &&
         (data.includes("\r") || data.includes("\n"))
       ) {
-        write.then(() => void refreshTerminalContext()).catch(() => {});
+        write.then(() => void refreshTerminalContext()).catch(handleWriteError);
       } else {
-        write.catch(() => {});
+        write.catch(handleWriteError);
       }
     });
 
@@ -999,25 +1225,25 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       const userInitiated = userScrollIntentRef.current;
-      if (!userInitiated && scrollPositionRef.current.followsOutput) {
+      const programmaticTarget = programmaticScrollTargetRef.current;
+      const reconciliation = reconcileScrollSample(scrollPositionRef.current, {
+        baseY: term.buffer.active.baseY,
+        viewportY: term.buffer.active.viewportY,
+        layoutStable: true,
+        fitInProgress: false,
+        userInitiated,
+        programmatic: !userInitiated && programmaticTarget !== null,
+      });
+      if (reconciliation.repairFollow) {
         // Follow mode is authoritative across xterm's asynchronous reflow.
         // This also repairs a viewport that was moved to line zero while the
         // window or pane was hidden.
-        if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
-          restoreScrollPosition(
-            term,
-            autoScrollRef,
-            scrollPositionRef,
-            programmaticScrollTargetRef,
-          );
-        } else {
-          autoScrollRef.current = true;
-          scrollPositionRef.current = {
-            followsOutput: true,
-            offsetFromBottom: 0,
-          };
-          programmaticScrollTargetRef.current = null;
-        }
+        restoreScrollPosition(
+          term,
+          autoScrollRef,
+          scrollPositionRef,
+          programmaticScrollTargetRef,
+        );
         return;
       }
 
@@ -1025,20 +1251,20 @@ export const TerminalPane = memo(function TerminalPane({
       // restore, including the sentinel state used by scrollToLine().
       if (userInitiated) {
         programmaticScrollTargetRef.current = null;
-      } else {
-        const programmaticTarget = programmaticScrollTargetRef.current;
-        if (programmaticTarget !== null) {
-          if (programmaticTarget === term.buffer.active.viewportY) {
-            programmaticScrollTargetRef.current = null;
-          }
-          return;
+      } else if (programmaticTarget !== null) {
+        if (programmaticTarget === term.buffer.active.viewportY) {
+          programmaticScrollTargetRef.current = null;
         }
+        return;
       }
 
       // Every non-programmatic xterm scroll event is authoritative. Output
       // can change baseY while a reader is in history, and ignoring these
       // events while writes are pending loses the real viewport under load.
-      captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+      if (reconciliation.captured) {
+        scrollPositionRef.current = reconciliation.position;
+        autoScrollRef.current = reconciliation.position.followsOutput;
+      }
       userScrollIntentRef.current = false;
       if (!scrollPositionRef.current.followsOutput) {
         followBottomRepairUntilRef.current = 0;
@@ -1133,6 +1359,7 @@ export const TerminalPane = memo(function TerminalPane({
       // updated scrollPositionRef, so saving the last known intent is safer.
       useTerminalStore.getState().saveScrollPosition(
         terminalIdRef.current,
+        terminalGenerationRef.current,
         scrollPositionRef.current,
       );
       unsubOutputRef.current?.();
@@ -1186,8 +1413,20 @@ export const TerminalPane = memo(function TerminalPane({
     if (spawnedRef.current) return;
     const storeState = useTerminalStore.getState();
     const t = storeState.terminals[terminalId];
-    if (t && t.exitCode !== null) return;
+    if (t?.generation !== null && t?.generation !== undefined) {
+      terminalGenerationRef.current = t.generation;
+      terminalProcessIdRef.current = t.processId;
+      outputProtocolRef.current.startRehydrate({
+        workspaceId: t.workspaceId,
+        generation: t.generation,
+        processId: t.processId,
+      });
+    }
     spawnedRef.current = true;
+    const epoch = ++streamEpochRef.current;
+    let disposed = false;
+    const isCurrent = () =>
+      !disposed && streamEpochRef.current === epoch && xtermRef.current === term;
 
     // Always take a backend snapshot. On first open the shell can emit its
     // prompt before the React event listener is attached; treating the
@@ -1195,33 +1434,60 @@ export const TerminalPane = memo(function TerminalPane({
     // Set this before any await: terminal_spawn and terminal_resize can
     // trigger output from a live TUI while the new xterm is still empty.
     rehydratingRef.current = true;
-    rehydrateWatermarkRef.current = null;
 
     const cols = Math.max(term.cols, 80);
     const rows = Math.max(term.rows, 24);
     let spawnSucceeded = false;
-    const replayQueuedOutput = async () => {
-      while (queuedRehydrateOutputRef.current.length > 0) {
-        const next = queuedRehydrateOutputRef.current.shift();
-        const currentTerm = xtermRef.current;
-        if (!next || !currentTerm) return;
-        const watermark = rehydrateWatermarkRef.current;
-        if (
-          terminalGenerationRef.current !== null &&
-          next.generation !== terminalGenerationRef.current
-        ) continue;
-        if (watermark !== null && next.sequence <= watermark) continue;
-        await new Promise<void>((resolve) => currentTerm.write(next.data, resolve));
+    const replayBufferedOutput = async () => {
+      while (isCurrent()) {
+        const replay = outputProtocolRef.current.takeReplay();
+        if (replay.kind === "gap") {
+          throw new Error(
+            `terminal-output-gap: expected ${replay.expected}, received ${replay.received}`,
+          );
+        }
+        if (replay.kind === "chunks") {
+          await new Promise<void>((resolve) =>
+            term.write(mergeOutputChunks(replay.chunks), resolve),
+          );
+          continue;
+        }
+        // Empty-check and live transition are one synchronous operation. If an
+        // output callback appended data earlier, cutover returns false and the
+        // loop replays it; no final chunk can be stranded in a dead queue.
+        if (outputProtocolRef.current.cutoverToLive()) {
+          rehydratingRef.current = false;
+          setStreamSyncFailed(false);
+          return;
+        }
       }
+      throw new Error("terminal-stream-superseded");
     };
-    const restoreSnapshot = async () => {
+    const restoreSnapshot = async (expectedRuntime: TerminalRuntimeKey | null) => {
       const rehydrateState = await invoke<TerminalRehydrateState>("terminal_get_screen_text", {
         terminalId,
+        workspaceId: expectedRuntime?.workspaceId ?? terminalWorkspaceId,
+        expectedGeneration: expectedRuntime?.generation ?? null,
+        expectedProcessId: expectedRuntime?.processId ?? null,
       });
+      if (!isCurrent()) throw new Error("terminal-stream-superseded");
+      const snapshotRuntime = runtimeKey(rehydrateState);
+      if (
+        expectedRuntime &&
+        (rehydrateState.workspaceId !== expectedRuntime.workspaceId ||
+          rehydrateState.generation !== expectedRuntime.generation ||
+          rehydrateState.processId !== expectedRuntime.processId)
+      ) {
+        throw new Error("stale-terminal-generation: rehydrate snapshot changed");
+      }
+      if (!outputProtocolRef.current.currentRuntime()) {
+        outputProtocolRef.current.startRehydrate(snapshotRuntime);
+      }
       terminalGenerationRef.current = rehydrateState.generation;
-      rehydrateWatermarkRef.current = rehydrateState.outputSequence;
-      queuedRehydrateOutputRef.current = queuedRehydrateOutputRef.current.filter(
-        (chunk) => chunk.generation === rehydrateState.generation,
+      terminalProcessIdRef.current = rehydrateState.processId;
+      outputProtocolRef.current.installSnapshot(
+        snapshotRuntime,
+        rehydrateState.outputSequence,
       );
       const termNow = xtermRef.current;
       if (!termNow) return;
@@ -1242,12 +1508,14 @@ export const TerminalPane = memo(function TerminalPane({
           termNow.write(new Uint8Array(rehydrateState.history), resolve),
         );
       }
+      if (!isCurrent()) throw new Error("terminal-stream-superseded");
       if (rehydrateState.state.length > 0) {
         await new Promise<void>((resolve) =>
           termNow.write(new Uint8Array(rehydrateState.state), resolve),
         );
       }
-      await replayQueuedOutput();
+      if (!isCurrent()) throw new Error("terminal-stream-superseded");
+      await replayBufferedOutput();
       restoreScrollPosition(
         termNow,
         autoScrollRef,
@@ -1261,11 +1529,46 @@ export const TerminalPane = memo(function TerminalPane({
         termNow.refresh(0, termNow.rows - 1);
       }
     };
+    const restoreWithBoundedRetry = async (
+      expectedRuntime: TerminalRuntimeKey | null,
+    ) => {
+      let expected = expectedRuntime;
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await restoreSnapshot(expected);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!isCurrent() || String(error).includes("stale-terminal")) throw error;
+          if (attempt === 1) {
+            console.warn("[terminal-output] bounded rehydrate retry", {
+              terminalId,
+              generation: expected?.generation ?? null,
+              processId: expected?.processId ?? null,
+              error: String(error),
+            });
+            expected = outputProtocolRef.current.currentRuntime();
+            if (expected) outputProtocolRef.current.startRehydrate(expected);
+          }
+        }
+      }
+      throw lastError;
+    };
 
-    (async () => {
+    void (async () => {
       try {
         await waitForTerminalOutputListener();
-        const generation = await invoke<number>("terminal_spawn", {
+        if (!isCurrent()) return;
+        if (t?.exitCode !== null && t?.generation != null) {
+          await restoreWithBoundedRetry({
+            workspaceId: t.workspaceId,
+            generation: t.generation,
+            processId: t.processId,
+          });
+          return;
+        }
+        const runtime = await invoke<TerminalRuntimeIdentity>("terminal_spawn", {
           terminalId,
           shell,
           cwd,
@@ -1274,101 +1577,177 @@ export const TerminalPane = memo(function TerminalPane({
           workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
           agentId: agentId ?? null,
         });
-        terminalGenerationRef.current = generation;
+        if (!isCurrent()) return;
+        if (!terminalWorkspaceId || runtime.workspaceId !== terminalWorkspaceId) {
+          throw new Error(
+            `stale-terminal-workspace: expected ${terminalWorkspaceId || "missing"}, current ${runtime.workspaceId || "missing"}`,
+          );
+        }
+        terminalGenerationRef.current = runtime.generation;
+        terminalProcessIdRef.current = runtime.processId;
+        outputProtocolRef.current.startRehydrate(runtimeKey(runtime));
         spawnSucceeded = true;
-        useTerminalStore.getState().markSpawned(terminalId);
+        useTerminalStore.getState().markSpawned(
+          terminalId,
+          runtime.workspaceId,
+          runtime.generation,
+          runtime.processId,
+        );
+        if (runtime.agentLaunchOwner === "backend" && runtime.agentLaunchState) {
+          useTerminalStore.getState().markBackendAgentLaunch(
+            terminalId,
+            runtime.workspaceId,
+            runtime.generation,
+            runtime.processId,
+            runtime.agentLaunchState,
+          );
+        }
 
         // Carica il branch git all'avvio del terminale (primo mount + rehydrate).
         // Il backend ritorna Ok(Some("main")) → "main" | Ok(None) → null
         void refreshTerminalContext();
 
-        try {
-            const fitAddon = fitAddonRef.current;
-            if (fitAddon) {
-              await syncMeasuredPtySize(
-                term,
-                fitAddon,
-                terminalId,
-                focusModeActive && !isFocused,
-                ptyResizeStateRef,
-                fitInProgressRef,
-                windowFocusedRef,
-              );
-            }
-            await restoreSnapshot();
-            // The snapshot and every queued post-snapshot chunk are rendered.
-            // Stop intercepting output before the context lookup below; that
-            // lookup is unrelated and must never strand new PTY bytes.
-            rehydratingRef.current = false;
-            if (xtermRef.current) {
-              await syncContextFromPowerShellPrompt(xtermRef.current);
-            }
-          } catch {
-            // If snapshot/resize fails, never discard live output captured
-            // while the backend was being queried.
-            await replayQueuedOutput();
-          } finally {
-            rehydratingRef.current = false;
-            rehydrateWatermarkRef.current = null;
-            reopeningRef.current = false;
-          }
+        const fitAddon = fitAddonRef.current;
+        if (fitAddon) {
+          await syncMeasuredPtySize(
+            term,
+            fitAddon,
+            terminalId,
+            runtimeKey(runtime),
+            focusModeActive && !isFocused,
+            ptyResizeStateRef,
+            fitInProgressRef,
+            windowFocusedRef,
+          );
+        }
+        await restoreWithBoundedRetry(runtimeKey(runtime));
+        if (isCurrent()) {
+          await syncContextFromPowerShellPrompt(term);
+        }
       } catch (error) {
+        if (!isCurrent()) return;
         if (isTerminalExitedError(error)) {
           // The backend keeps the dead parser so the last screen can still be
           // displayed even when the pane was unmounted at exit time.
           rehydratingRef.current = true;
-          rehydrateWatermarkRef.current = null;
           try {
-            await restoreSnapshot();
-          } catch {
-            await replayQueuedOutput();
+            await restoreWithBoundedRetry(
+              terminalGenerationRef.current === null
+                ? null
+                : {
+                    workspaceId: terminalWorkspaceId,
+                    generation: terminalGenerationRef.current,
+                    processId: terminalProcessIdRef.current,
+                  },
+            );
+          } catch (snapshotError) {
+            reportFrontendDiagnostic("terminal-snapshot-error", snapshotError, {
+              terminalId,
+              workspaceId: terminalWorkspaceId,
+              generation: terminalGenerationRef.current ?? undefined,
+              processId: terminalProcessIdRef.current,
+              state: "exited-rehydrate",
+            });
+            console.error("[terminal-output] exited snapshot failed", {
+              terminalId,
+              error: String(snapshotError),
+            });
           }
           const exitCodeMatch = String(error).match(/exit(?:[-_ ]?code)?\s*[:=]\s*(-?\d+)/i);
-          useTerminalStore.getState().markExited(
-            terminalId,
-            exitCodeMatch ? Number(exitCodeMatch[1]) : 0,
-          );
-          rehydratingRef.current = false;
+          const exitedGeneration = terminalGenerationRef.current;
+          if (exitedGeneration !== null) {
+            useTerminalStore.getState().markExited(
+              terminalId,
+              terminalWorkspaceId,
+              exitedGeneration,
+              terminalProcessIdRef.current,
+              exitCodeMatch ? Number(exitCodeMatch[1]) : 0,
+            );
+          }
         } else {
-          await replayQueuedOutput();
+          spawnedRef.current = false;
+          setStreamSyncFailed(true);
+          reportFrontendDiagnostic("terminal-lifecycle-error", error, {
+            terminalId,
+            workspaceId: terminalWorkspaceId,
+            generation: terminalGenerationRef.current ?? undefined,
+            processId: terminalProcessIdRef.current,
+            state: outputProtocolRef.current.isBuffering() ? "buffering" : "live",
+          });
+          console.error("[terminal-output] lifecycle failed", {
+            terminalId,
+            generation: terminalGenerationRef.current,
+            processId: terminalProcessIdRef.current,
+            error: String(error),
+          });
+          term.write(
+            "\r\n\x1b[31m[Traflix: impossibile sincronizzare il terminale; riaprilo per riprovare]\x1b[0m\r\n",
+          );
         }
-        spawnedRef.current = false;
-        rehydratingRef.current = false;
-        rehydrateWatermarkRef.current = null;
-        reopeningRef.current = false;
+      } finally {
+        if (isCurrent()) {
+          rehydratingRef.current = outputProtocolRef.current.isBuffering();
+          reopeningRef.current = false;
+        }
       }
 
-      if (agentId && spawnSucceeded) {
+      if (isCurrent() && agentId && spawnSucceeded) {
         const store = useTerminalStore.getState();
         const terminal = store.terminals[terminalId];
-        if (!terminal?.agentLaunched) {
-          store.markAgentLaunched(terminalId);
-          agentLaunchQueue.enqueue(terminalId, agentId);
+        if (
+          terminal?.generation !== null &&
+          terminal?.generation !== undefined &&
+          !terminal.agentLaunched &&
+          terminal.agentLaunchOwner !== "backend"
+        ) {
+          store.markAgentLaunched(terminalId, terminal.generation);
+          agentLaunchQueue.enqueue(terminalId, terminal.generation, agentId);
         }
       }
     })();
+
+    return () => {
+      disposed = true;
+      if (streamEpochRef.current === epoch) streamEpochRef.current += 1;
+    };
   }, [terminalId, shell, cwd, agentId, refreshTerminalContext, stabilizeFollowBottom, restartToken]);
 
   // 2b. Listen for CWD changes from backend (cd command detected) → refresh git branch.
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
-    listen<TerminalCwdChangedPayload | string>("terminal-cwd-changed", (event) => {
+    let disposed = false;
+    listen<TerminalCwdChangedPayload>("terminal-cwd-changed", (event) => {
       const payload = event.payload;
-      const changedTerminalId =
-        typeof payload === "string"
-          ? payload
-          : payload.terminalId ?? payload.terminal_id;
-      if (changedTerminalId === terminalId) {
-        if (typeof payload !== "string" && payload.cwd) {
-          currentCwdRef.current = payload.cwd;
-          setCurrentCwd(payload.cwd);
-        }
+      if (
+        payload.terminalId === terminalId &&
+        sameRuntimeKey(currentRuntimeKey(terminalId), payload)
+      ) {
+        currentCwdRef.current = payload.cwd;
+        setCurrentCwd(payload.cwd);
         console.log(`[branch] cwd-changed event for ${terminalId}, re-fetching`);
         void refreshTerminalContext();
       }
-    }).then((fn) => { unlistenFn = fn; });
-    return () => { unlistenFn?.(); };
-  }, [terminalId, refreshTerminalContext]);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlistenFn = fn;
+      }
+    }).catch((error) => {
+      reportFrontendDiagnostic("terminal-listener-error", error, {
+        terminalId,
+        workspaceId: terminalWorkspaceId,
+        generation: terminalGenerationRef.current ?? undefined,
+        processId: terminalProcessIdRef.current,
+        state: "cwd-listener",
+      });
+      console.error("[terminal-lifecycle] CWD listener setup failed", error);
+    });
+    return () => {
+      disposed = true;
+      unlistenFn?.();
+    };
+  }, [terminalId, terminalWorkspaceId, refreshTerminalContext]);
 
   // 3. Active focus + backend active flag (skip heavy refresh when hidden in focus mode)
   useEffect(() => {
@@ -1379,14 +1758,31 @@ export const TerminalPane = memo(function TerminalPane({
     if (focusModeActive && !isFocused) return;
 
     if (isActive || isFocused) {
-      requestAnimationFrame(() => {
+      const focusFrame = requestAnimationFrame(() => {
         scheduleFitAndResize();
         if (isActive || isFocused) {
           term.focus();
           term.clearSelection();
         }
       });
-      invoke("terminal_set_active", { terminalId }).catch(() => {});
+      const identity = useTerminalStore.getState().terminals[terminalId];
+      if (identity?.generation != null) {
+        invoke("terminal_set_active", {
+          terminalId,
+          workspaceId: identity.workspaceId,
+          generation: identity.generation,
+          processId: identity.processId,
+        }).catch((error) => {
+          console.warn("[terminal-lifecycle] active PTY rejected", {
+            terminalId,
+            workspaceId: identity.workspaceId,
+            generation: identity.generation,
+            processId: identity.processId,
+            error: String(error),
+          });
+          });
+      }
+      return () => cancelAnimationFrame(focusFrame);
     }
   }, [isActive, isFocused, focusModeActive, terminalId, scheduleFitAndResize]);
 
@@ -1430,13 +1826,11 @@ export const TerminalPane = memo(function TerminalPane({
     };
     const handleWindowFocus = () => {
       windowFocusedRef.current = true;
-      requestAnimationFrame(() => {
-        if (focusModeActive && !isFocused) return;
-        scheduleFitAndResize(1);
-        if (scrollPositionRef.current.followsOutput) {
-          stabilizeFollowBottom(2000);
-        }
-      });
+      if (focusModeActive && !isFocused) return;
+      scheduleFitAndResize(1);
+      if (scrollPositionRef.current.followsOutput) {
+        stabilizeFollowBottom(2000);
+      }
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
@@ -1462,34 +1856,47 @@ export const TerminalPane = memo(function TerminalPane({
     outputWarmupUnsubRef.current = null;
     unsubOutputRef.current?.();
     unsubOutputRef.current = subscribeTerminalOutput(terminalId, (payload) => {
-      // Ignore events from an older PTY lifetime after a reopen reuses this id.
-      if (
-        terminalGenerationRef.current !== null &&
-        payload.generation !== terminalGenerationRef.current
-      ) {
-        return;
-      }
-      // While rehydrate runs, backend history is authoritative — applying live
-      // chunks mid-reset would race and corrupt the buffer. Keep them and
-      // replay them after the snapshot so a working agent never loses output.
-      if (rehydratingRef.current) {
-        const chunks = payload.chunks ?? [{
-          sequence: payload.sequence,
+      const chunks: SequencedTerminalChunk[] = payload.chunks ?? [{
+        workspaceId: payload.workspaceId,
+        sequence: payload.sequence,
+        generation: payload.generation,
+        processId: payload.processId,
+        data: new Uint8Array(payload.data),
+      }];
+      const result = outputProtocolRef.current.ingest(chunks);
+      if (result.resyncRequired) {
+        reportFrontendDiagnostic("terminal-output-resync", "terminal-output-gap", {
+          terminalId,
+          workspaceId: payload.workspaceId,
           generation: payload.generation,
-          data: new Uint8Array(payload.data),
-        }];
-        const watermark = rehydrateWatermarkRef.current;
-        for (const chunk of chunks) {
-          if (watermark === null || chunk.sequence > watermark) {
-            queuedRehydrateOutputRef.current.push(chunk);
-          }
-        }
+          processId: payload.processId,
+          state: "sequence-gap",
+        });
+        console.warn("[terminal-output] sequence gap; requesting authoritative snapshot", {
+          terminalId,
+          generation: payload.generation,
+          processId: payload.processId,
+          receivedSequence: payload.sequence,
+          lastDeliveredSequence: outputProtocolRef.current.lastDeliveredSequence(),
+        });
+        rehydratingRef.current = true;
+        spawnedRef.current = false;
+        setRestartToken((token) => token + 1);
         return;
       }
-      const { data } = payload;
+      if (result.deliver.length === 0) return;
+      const data = mergeOutputChunks(result.deliver);
       const term = xtermRef.current;
       if (!term) return;
-      term.write(new Uint8Array(data), () => {
+      const deliveredRuntime = runtimeKey(result.deliver[0]);
+      const baseYBeforeWrite = term.buffer.active.baseY;
+      term.write(data, () => {
+        if (
+          xtermRef.current !== term ||
+          !sameRuntimeKey(currentRuntimeKey(terminalId), deliveredRuntime)
+        ) {
+          return;
+        }
         void syncContextFromPowerShellPrompt(term);
         // xterm writes asynchronously. Scrolling before this callback uses the
         // previous baseY and leaves the viewport one or more chunks behind.
@@ -1507,10 +1914,26 @@ export const TerminalPane = memo(function TerminalPane({
             );
           }
           stabilizeFollowBottom(1200);
-        } else {
+        } else if (
+          isTerminalScrollLayoutUsable(
+            term,
+            paneVisibilityRef,
+            windowFocusedRef,
+          )
+        ) {
           // Output changes baseY while a reader stays at an older line. Record
           // the new relative offset so a later resize/remount returns here.
           captureScrollPosition(term, autoScrollRef, scrollPositionRef);
+        } else if (!scrollPositionRef.current.followsOutput) {
+          // While hidden, viewportY can be a layout artifact but the increase
+          // in baseY caused by this exact write is still meaningful. Grow the
+          // saved distance from the bottom so continuous TUI output does not
+          // move a reader forward when the pane becomes visible again.
+          scrollPositionRef.current = positionAfterHiddenOutput(
+            scrollPositionRef.current,
+            baseYBeforeWrite,
+            term.buffer.active.baseY,
+          );
         }
       });
     });
@@ -1525,22 +1948,36 @@ export const TerminalPane = memo(function TerminalPane({
     unsubExitRef.current?.();
     unsubExitRef.current = subscribeTerminalExit(
       terminalId,
-      ({ terminalId: tid, generation, exitCode: code }) => {
+      ({ terminalId: tid, workspaceId, generation, processId, exitCode: code }) => {
         if (reopeningRef.current) return;
+        if (workspaceId !== terminalWorkspaceId) return;
         if (
           terminalGenerationRef.current !== null &&
           generation !== terminalGenerationRef.current
         ) {
           return;
         }
-        useTerminalStore.getState().markExited(tid, code);
+        if (
+          terminalProcessIdRef.current !== null &&
+          processId !== null &&
+          processId !== terminalProcessIdRef.current
+        ) {
+          return;
+        }
+        useTerminalStore.getState().markExited(
+          tid,
+          workspaceId,
+          generation,
+          processId,
+          code,
+        );
       },
     );
     return () => {
       unsubExitRef.current?.();
       unsubExitRef.current = null;
     };
-  }, [terminalId]);
+  }, [terminalId, terminalWorkspaceId]);
 
   // 5. ResizeObserver — skip when this pane is hidden under focus mode
   useEffect(() => {
@@ -1626,9 +2063,6 @@ export const TerminalPane = memo(function TerminalPane({
 
   // Titolo visualizzato: prima controlla se l'utente ha rinominato, poi deriva.
   const customTitle = useTerminalStore((s) => s.terminalTitles[terminalId]);
-  const terminalWorkspaceId = useTerminalStore(
-    (s) => s.terminals[terminalId]?.workspaceId,
-  );
   const agentStatus = useTerminalStore(
     (s) => s.terminals[terminalId]?.agentStatus ?? "idle",
   );
@@ -1705,10 +2139,20 @@ export const TerminalPane = memo(function TerminalPane({
     try {
       reopeningRef.current = true;
       rehydratingRef.current = true;
-      rehydrateWatermarkRef.current = null;
-      queuedRehydrateOutputRef.current = [];
-      const generation = await invoke<number>("terminal_reopen", {
+      const expectedGeneration = terminalGenerationRef.current ??
+        useTerminalStore.getState().terminals[terminalId]?.generation;
+      if (expectedGeneration === null || expectedGeneration === undefined) {
+        throw new Error("terminal identity unavailable for reopen");
+      }
+      outputProtocolRef.current.startRehydrate({
+        workspaceId: terminalWorkspaceId,
+        generation: expectedGeneration,
+        processId: terminalProcessIdRef.current,
+      });
+      const runtime = await invoke<TerminalRuntimeIdentity>("terminal_reopen", {
         terminalId,
+        expectedGeneration,
+        expectedProcessId: terminalProcessIdRef.current,
         shell,
         cwd: currentCwd,
         cols: xtermRef.current?.cols ?? 80,
@@ -1716,16 +2160,50 @@ export const TerminalPane = memo(function TerminalPane({
         workspaceId: useTerminalStore.getState().terminals[terminalId]?.workspaceId ?? null,
         agentId: agentId ?? null,
       });
-      terminalGenerationRef.current = generation;
-      useTerminalStore.getState().markSpawned(terminalId);
+      if (!terminalWorkspaceId || runtime.workspaceId !== terminalWorkspaceId) {
+        throw new Error(
+          `stale-terminal-workspace: expected ${terminalWorkspaceId || "missing"}, current ${runtime.workspaceId || "missing"}`,
+        );
+      }
+      terminalGenerationRef.current = runtime.generation;
+      terminalProcessIdRef.current = runtime.processId;
+      outputProtocolRef.current.startRehydrate(runtimeKey(runtime));
+      scrollPositionRef.current = { followsOutput: true, offsetFromBottom: 0 };
+      autoScrollRef.current = true;
+      programmaticScrollTargetRef.current = null;
+      useTerminalStore.getState().markSpawned(
+        terminalId,
+        runtime.workspaceId,
+        runtime.generation,
+        runtime.processId,
+      );
       spawnedRef.current = false;
       setRestartToken((token) => token + 1);
     } catch (err) {
       reopeningRef.current = false;
       rehydratingRef.current = false;
+      reportFrontendDiagnostic("terminal-reopen-error", err, {
+        terminalId,
+        workspaceId: terminalWorkspaceId,
+        generation: terminalGenerationRef.current ?? undefined,
+        processId: terminalProcessIdRef.current,
+        state: "reopen",
+      });
       console.error("Errore reopen terminale:", err);
     }
-  }, [terminalId, shell, currentCwd, agentId]);
+  }, [terminalId, terminalWorkspaceId, shell, currentCwd, agentId]);
+
+  const handleRetryStreamSync = useCallback(() => {
+    const runtime = currentRuntimeKey(terminalId);
+    if (!runtime) return;
+    outputProtocolRef.current.startRehydrate(runtime);
+    terminalGenerationRef.current = runtime.generation;
+    terminalProcessIdRef.current = runtime.processId;
+    rehydratingRef.current = true;
+    spawnedRef.current = false;
+    setStreamSyncFailed(false);
+    setRestartToken((token) => token + 1);
+  }, [terminalId]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1766,8 +2244,15 @@ export const TerminalPane = memo(function TerminalPane({
         if (raw) {
           const data = JSON.parse(raw);
           if (data.type === "skill" && data.name) {
-            useTerminalStore.getState().markAgentInput(terminalId);
-            useSkillStore.getState().addPendingDrop(terminalId, data.name);
+            const store = useTerminalStore.getState();
+            const terminal = store.terminals[terminalId];
+            if (!terminal || terminal.generation === null) return;
+            store.markAgentInput(terminalId);
+            useSkillStore.getState().addPendingDrop(terminalId, {
+              workspaceId: terminal.workspaceId,
+              generation: terminal.generation,
+              processId: terminal.processId,
+            }, data.name);
             return;
           }
         }
@@ -1778,10 +2263,17 @@ export const TerminalPane = memo(function TerminalPane({
             (s) => s.name.toLowerCase() === text.trim().toLowerCase(),
           );
           if (matchedSkill) {
-            useTerminalStore.getState().markAgentInput(terminalId);
+            const store = useTerminalStore.getState();
+            const terminal = store.terminals[terminalId];
+            if (!terminal || terminal.generation === null) return;
+            store.markAgentInput(terminalId);
             useSkillStore
               .getState()
-              .addPendingDrop(terminalId, matchedSkill.name);
+              .addPendingDrop(terminalId, {
+                workspaceId: terminal.workspaceId,
+                generation: terminal.generation,
+                processId: terminal.processId,
+              }, matchedSkill.name);
           }
         }
       } catch {
@@ -2247,6 +2739,22 @@ export const TerminalPane = memo(function TerminalPane({
           <span>
             usa la skill: {pendingNames.join(" e ")}
           </span>
+        </div>
+      )}
+
+      {streamSyncFailed && !hasExited && (
+        <div
+          role="alert"
+          className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-danger/35 bg-neutral-elevated/95 px-3 py-2 text-[11px] text-neutral-text shadow-xl"
+        >
+          <span>Sincronizzazione terminale interrotta.</span>
+          <button
+            type="button"
+            onClick={handleRetryStreamSync}
+            className="rounded-md border border-primary/40 px-2 py-1 font-semibold text-primary hover:bg-primary/10"
+          >
+            Riprova
+          </button>
         </div>
       )}
 

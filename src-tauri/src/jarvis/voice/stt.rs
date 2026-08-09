@@ -50,7 +50,7 @@ impl GroqSpeechToTextProvider {
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty());
         let Some(api_key) = api_key else {
-            return Ok(Self::new(GROQ_ENDPOINT, None));
+            return Self::new(GROQ_ENDPOINT, None);
         };
 
         // Keep one reqwest client alive across voice turns. Besides avoiding
@@ -65,7 +65,7 @@ impl GroqSpeechToTextProvider {
                 return Ok(cached.provider.clone());
             }
         }
-        let provider = Self::new(GROQ_ENDPOINT, Some(api_key.clone()));
+        let provider = Self::new(GROQ_ENDPOINT, Some(api_key.clone()))?;
         *cache = Some(CachedGroqProvider {
             api_key,
             provider: provider.clone(),
@@ -73,7 +73,10 @@ impl GroqSpeechToTextProvider {
         Ok(provider)
     }
 
-    pub fn new(endpoint: impl Into<String>, api_key: Option<String>) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, VoiceErrorCode> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(60))
@@ -81,12 +84,12 @@ impl GroqSpeechToTextProvider {
             .pool_max_idle_per_host(1)
             .tcp_nodelay(true)
             .build()
-            .expect("voice HTTP client");
-        Self {
+            .map_err(|_| VoiceErrorCode::Transport)?;
+        Ok(Self {
             client,
             endpoint: endpoint.into(),
             api_key: api_key.map(|key| key.trim().to_string()),
-        }
+        })
     }
 }
 
@@ -246,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_key_is_not_configured_without_network() {
-        let provider = GroqSpeechToTextProvider::new("http://127.0.0.1:1", None);
+        let provider = GroqSpeechToTextProvider::new("http://127.0.0.1:1", None).unwrap();
         assert!(!provider.configured());
         assert_eq!(
             provider
@@ -260,7 +263,7 @@ mod tests {
     async fn multipart_uses_only_turbo_model() {
         let requests = Arc::new(AtomicUsize::new(0));
         let endpoint = server("ciao", 200, requests.clone()).await;
-        let provider = GroqSpeechToTextProvider::new(endpoint, Some("test-secret".into()));
+        let provider = GroqSpeechToTextProvider::new(endpoint, Some("test-secret".into())).unwrap();
         let result = provider
             .transcribe(vec![0; 128], "it".into(), CancellationToken::new())
             .await

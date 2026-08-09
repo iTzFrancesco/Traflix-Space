@@ -5,6 +5,8 @@ use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
 use crate::terminal_engine::TerminalAgentSnapshot;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
+use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +14,22 @@ use tauri::{AppHandle, Emitter, Manager};
 use tracing::{error, info, warn};
 
 const MAX_COMMAND_BUFFER_BYTES: usize = 8 * 1024;
+const MAX_INPUT_OPERATIONS: usize = 128;
+pub const MIN_TERMINAL_COLS: u16 = 8;
+pub const MIN_TERMINAL_ROWS: u16 = 2;
+
+#[derive(Clone)]
+struct InputOperationOutcome {
+    id: String,
+    payload_fingerprint: u64,
+    result: Result<(), String>,
+}
+
+fn input_payload_fingerprint(data: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[derive(Default)]
 struct CommandInputBuffer {
@@ -139,6 +157,10 @@ pub struct TerminalSession {
     pub identity_warnings: Vec<String>,
     pub process_id: Option<u32>,
     pub is_agent_terminal: bool,
+    /// Set only by Jarvis backend-owned open/restart flows. Returning this in
+    /// runtime identity prevents a missed frontend event from launching the
+    /// provider CLI a second time.
+    pub backend_agent_launch_state: Option<String>,
     /// Owning workspace, if known. Injected into the PTY environment so the
     /// agent-event bridge reports the correct TRAFLIX_WORKSPACE_ID.
     pub workspace_id: Option<String>,
@@ -164,6 +186,10 @@ pub struct TerminalSession {
     /// Separate bounded input tracker for complete command identity. It never
     /// shares the CWD buffer and never stores command text outside the session.
     command_buffer: Mutex<CommandInputBuffer>,
+    /// Bounded, in-memory idempotency ledger for semantic writes such as an
+    /// agent CLI launch. A repeated IPC request receives the first outcome and
+    /// never writes the command twice into the same PTY generation.
+    input_operations: VecDeque<InputOperationOutcome>,
 }
 
 impl TerminalSession {
@@ -195,6 +221,7 @@ impl TerminalSession {
             identity_warnings: Vec::new(),
             process_id: None,
             is_agent_terminal: false,
+            backend_agent_launch_state: None,
             workspace_id: None,
             generation: 0,
             exit_code: None,
@@ -206,6 +233,41 @@ impl TerminalSession {
             cwd_changed: AtomicBool::new(false),
             cd_buffer: Mutex::new(String::new()),
             command_buffer: Mutex::new(CommandInputBuffer::default()),
+            input_operations: VecDeque::new(),
+        }
+    }
+
+    pub fn previous_input_operation(
+        &self,
+        operation_id: &str,
+        data: &[u8],
+    ) -> Result<Option<Result<(), String>>, String> {
+        let Some(operation) = self
+            .input_operations
+            .iter()
+            .find(|operation| operation.id == operation_id)
+        else {
+            return Ok(None);
+        };
+        if operation.payload_fingerprint != input_payload_fingerprint(data) {
+            return Err("input-operation-payload-mismatch".to_string());
+        }
+        Ok(Some(operation.result.clone()))
+    }
+
+    pub fn record_input_operation(
+        &mut self,
+        operation_id: String,
+        data: &[u8],
+        result: Result<(), String>,
+    ) {
+        self.input_operations.push_back(InputOperationOutcome {
+            id: operation_id,
+            payload_fingerprint: input_payload_fingerprint(data),
+            result,
+        });
+        while self.input_operations.len() > MAX_INPUT_OPERATIONS {
+            self.input_operations.pop_front();
         }
     }
 
@@ -238,7 +300,12 @@ impl TerminalSession {
         let mut cmd = CommandBuilder::new(&self.shell);
         cmd.env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV);
         cmd.env_remove(crate::settings::secrets::GROQ_API_KEY_ENV);
-        cmd.cwd(self.cwd.lock().unwrap().as_str());
+        let launch_cwd = self
+            .cwd
+            .lock()
+            .map(|cwd| cwd.clone())
+            .map_err(|_| "Terminal CWD lock poisoned".to_string())?;
+        cmd.cwd(&launch_cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("TRAFLIX_TERMINAL_ID", &self.id);
         cmd.env("TRAFLIX_AGENT_EVENT_PIPE", agent_event_pipe_name());
@@ -284,16 +351,16 @@ impl TerminalSession {
         })?;
 
         let child_arc = Arc::new(Mutex::new(child));
+        let reader_arc = Arc::new(Mutex::new(reader));
         self.child = Some(child_arc.clone());
         self.pty = Some(Arc::new(Mutex::new(child_killer)));
         self.master = Some(Arc::new(Mutex::new(pair.master)));
-        self.reader = Some(Arc::new(Mutex::new(reader)));
+        self.reader = Some(reader_arc.clone());
         self.writer = Some(Arc::new(Mutex::new(writer)));
         self.process_alive.store(true, Ordering::Release);
 
         let app_reader = app.clone();
         let app_watch = app.clone();
-        let reader_arc = self.reader.clone().unwrap();
         let parser = self.parser.clone();
         // Arc<str> avoids allocating a new String on every terminal-output emit.
         let id: Arc<str> = Arc::from(self.id.as_str());
@@ -308,6 +375,7 @@ impl TerminalSession {
         let registry_is_agent_terminal = self.is_agent_terminal;
         let registry_agent_id = self.agent_id.clone();
         let registry_generation = self.generation;
+        let registry_process_id = self.process_id;
 
         // PTY reader thread — exits on stop flag, EOF, or after master is dropped.
         tokio::task::spawn_blocking(move || {
@@ -361,7 +429,9 @@ impl TerminalSession {
                     "terminal-output",
                     TerminalOutput {
                         terminal_id: id.to_string(),
+                        workspace_id: registry_workspace_id.clone(),
                         generation: registry_generation,
+                        process_id: registry_process_id,
                         data,
                         sequence,
                     },
@@ -398,6 +468,7 @@ impl TerminalSession {
                         detection_confidence: 0.2,
                         identity_warnings: Vec::new(),
                         generation: registry_generation,
+                        process_id: registry_process_id,
                         process_alive: false,
                     },
                 );
@@ -419,7 +490,9 @@ impl TerminalSession {
                         "terminal-exited",
                         TerminalExited {
                             terminal_id: id.to_string(),
+                            workspace_id: registry_workspace_id.clone(),
                             generation: registry_generation,
+                            process_id: registry_process_id,
                             exit_code,
                         },
                     );
@@ -437,6 +510,7 @@ impl TerminalSession {
         let registry_is_agent_terminal_watch = self.is_agent_terminal;
         let registry_agent_id_watch = self.agent_id.clone();
         let registry_generation_watch = self.generation;
+        let registry_process_id_watch = self.process_id;
         tokio::task::spawn_blocking(move || loop {
             if watch_stop.load(Ordering::Acquire) {
                 return;
@@ -471,6 +545,7 @@ impl TerminalSession {
                         detection_confidence: 0.2,
                         identity_warnings: Vec::new(),
                         generation: registry_generation_watch,
+                        process_id: registry_process_id_watch,
                         process_alive: false,
                     },
                 );
@@ -484,7 +559,9 @@ impl TerminalSession {
                         "terminal-exited",
                         TerminalExited {
                             terminal_id: watch_id.to_string(),
+                            workspace_id: registry_workspace_id_watch.clone(),
                             generation: registry_generation_watch,
+                            process_id: registry_process_id_watch,
                             exit_code: process_exit_code_watch.load(Ordering::Acquire).max(0),
                         },
                     );
@@ -735,8 +812,11 @@ impl TerminalSession {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
-        if cols == 0 || rows == 0 {
-            return Err("Invalid terminal size".to_string());
+        if cols < MIN_TERMINAL_COLS || rows < MIN_TERMINAL_ROWS {
+            return Err(format!(
+                "unstable-terminal-layout: minimum {}x{}, received {}x{}",
+                MIN_TERMINAL_COLS, MIN_TERMINAL_ROWS, cols, rows
+            ));
         }
         if self.grid.cols == cols && self.grid.rows == rows {
             return Ok(());
@@ -902,5 +982,37 @@ mod tests {
             .observe_agent_commands(b"powershell codex\r")
             .is_empty());
         assert!(session.observe_agent_commands(b"codex\r").len() == 1);
+    }
+
+    #[test]
+    fn semantic_input_operation_replays_outcome_without_reapplying_payload() {
+        let mut session = make_session();
+        let payload = b"codex\r\n";
+        assert!(session
+            .previous_input_operation("agent-launch:test", payload)
+            .unwrap()
+            .is_none());
+
+        session.record_input_operation("agent-launch:test".to_string(), payload, Ok(()));
+        assert_eq!(
+            session
+                .previous_input_operation("agent-launch:test", payload)
+                .unwrap(),
+            Some(Ok(())),
+        );
+        assert_eq!(
+            session
+                .previous_input_operation("agent-launch:test", b"claude\r\n")
+                .unwrap_err(),
+            "input-operation-payload-mismatch",
+        );
+    }
+
+    #[test]
+    fn transient_terminal_sizes_are_rejected_before_reaching_the_pty() {
+        let mut session = make_session();
+        assert!(session.resize(2, 24).is_err());
+        assert!(session.resize(80, 1).is_err());
+        assert!(session.resize(8, 2).is_ok());
     }
 }

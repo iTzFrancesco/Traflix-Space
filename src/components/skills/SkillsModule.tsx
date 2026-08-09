@@ -195,8 +195,18 @@ export function SkillsModule() {
       } else {
         const terminalId = terminalAtPoint(upEvent.clientX, upEvent.clientY);
         if (terminalId) {
-          useTerminalStore.getState().markAgentInput(terminalId);
-          useSkillStore.getState().addPendingDrop(terminalId, drag.skillName);
+          const terminalStore = useTerminalStore.getState();
+          const terminal = terminalStore.terminals[terminalId];
+          if (terminal?.generation !== null && terminal?.generation !== undefined) {
+            terminalStore.markAgentInput(terminalId);
+            useSkillStore
+              .getState()
+              .addPendingDrop(terminalId, {
+                workspaceId: terminal.workspaceId,
+                generation: terminal.generation,
+                processId: terminal.processId,
+              }, drag.skillName);
+          }
         }
       }
 

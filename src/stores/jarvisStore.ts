@@ -26,8 +26,10 @@ import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/setting
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
 import { isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
 import { mergeActivityEvents, type ActivityCheckpoint } from "../lib/jarvis/activityState";
+import { applyTtsStatusTransition, beginLocalTtsRequest } from "../lib/jarvis/ttsState";
+import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
 import { useWorkspaceStore } from "./workspaceStore";
-import { sanitizedVoiceError } from "../lib/jarvis/voiceSettings";
+import { sanitizedVoiceError, sanitizedVoiceErrorView } from "../lib/jarvis/voiceSettings";
 import type {
   AgentResult,
   AgentSessionContext,
@@ -81,6 +83,7 @@ interface JarvisStore {
   voiceCancelRequested: boolean;
   voiceLevel: VoiceLevelEvent | null;
   ttsStatus: TtsStatusView;
+  pendingTtsRequestId: string | null;
   voiceError: string | null;
 
   loadSettings: () => Promise<void>;
@@ -192,7 +195,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
-  activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle" },
+  activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
+  pendingTtsRequestId: null,
   activeVoiceRequestId: null,
   voiceStopRequested: false,
   voiceCancelRequested: false,
@@ -282,6 +286,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         const ttsRequestId = `tts-${response.message.id}`;
         voiceLog("tts request started", {
           requestId: ttsRequestId,
+          workspaceId,
           textChars: response.message.content.length,
           voice: voiceSettings.voice,
           rate: voiceSettings.rate,
@@ -291,28 +296,42 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         // Block the hands-free re-arm immediately. The backend emits the same
         // synthesizing state, but setting it locally closes the small IPC gap
         // between a completed chat response and the first TTS event.
-        get().setTtsStatus({ requestId: ttsRequestId, status: "synthesizing" });
-        void ttsSpeak({ requestId: ttsRequestId, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch })
+        set((state) => ({
+          ...beginLocalTtsRequest(state, ttsRequestId, workspaceId),
+          voiceError: null,
+        }));
+        void ttsSpeak({ requestId: ttsRequestId, workspaceId, text: response.message.content, voice: voiceSettings.voice, rate: voiceSettings.rate, volume: voiceSettings.volume, pitch: voiceSettings.pitch })
           .then((status) => {
             voiceLog("tts request completed", {
               requestId: ttsRequestId,
+              workspaceId,
               status: status.status,
+              sequence: status.sequence,
               errorCode: status.error?.code,
             });
             get().setTtsStatus(status);
           })
           .catch((error) => {
-            const message = sanitizedVoiceError(error);
+            const errorView = sanitizedVoiceErrorView(error, "tts_ipc_failed");
+            const message = errorView.message;
             voiceWarn("tts request failed", {
               requestId: ttsRequestId,
+              workspaceId,
+              errorCode: errorView.code,
               error: message,
+            });
+            reportFrontendDiagnosticCode("jarvis-tts-error", errorView.code, {
+              workspaceId,
+              requestId: ttsRequestId,
+              state: "ipc-failed",
             });
             get().setTtsStatus({
               requestId: ttsRequestId,
+              workspaceId,
+              sequence: get().ttsStatus.sequence,
               status: "failed",
-              error: { code: "tts_failed", message },
+              error: errorView,
             });
-            set({ voiceError: message });
           });
       }
       return true;
@@ -586,9 +605,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         voiceError: voiceRequest.error?.code === "voice_vad_timeout" ? null : voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError,
       };
     });
-    // Stop only once VAD has crossed into real speech. Arming the microphone
-    // during TTS is intentional; stopping at arm-time would cancel every reply
-    // before the user has actually spoken.
+    // If capture was explicitly started while TTS was active, stop only once
+    // VAD has crossed into real speech. Merely arming must not cancel a reply.
     if (shouldInterruptTts) {
       void ttsStop()
         .then((status) => get().setTtsStatus(status))
@@ -613,7 +631,30 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   applyActivityEvents: (activities) => set((state) => ({ activities: mergeActivityEvents(state.activities, activities) })),
   clearWorkspaceActivities: (workspaceId) => set((state) => ({ activities: state.activities.filter((event) => event.workspaceId !== workspaceId) })),
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),
-  setTtsStatus: (ttsStatus) => set((state) => state.ttsStatus.requestId && ttsStatus.requestId && state.ttsStatus.requestId !== ttsStatus.requestId && ttsStatus.status !== "synthesizing" ? state : { ttsStatus }),
+  setTtsStatus: (ttsStatus) => set((state) => {
+    const transition = applyTtsStatusTransition(state, ttsStatus);
+    if (!transition.accepted) {
+      voiceWarn("stale tts state event ignored", {
+        requestId: ttsStatus.requestId,
+        workspaceId: ttsStatus.workspaceId,
+        sequence: ttsStatus.sequence,
+        currentRequestId: state.ttsStatus.requestId,
+        currentSequence: state.ttsStatus.sequence,
+        pendingRequestId: state.pendingTtsRequestId,
+        status: ttsStatus.status,
+      });
+      return state;
+    }
+    return {
+      ttsStatus: transition.ttsStatus,
+      pendingTtsRequestId: transition.pendingTtsRequestId,
+      voiceError: ttsStatus.error
+        ? sanitizedVoiceError(ttsStatus.error)
+        : ["synthesizing", "playing", "idle"].includes(ttsStatus.status)
+          ? null
+          : state.voiceError,
+    };
+  }),
   stopTts: async () => { try { const status = await ttsStop(); get().setTtsStatus(status); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
   clearVoiceError: () => set({ voiceError: null }),
 }));

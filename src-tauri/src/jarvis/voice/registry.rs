@@ -22,6 +22,7 @@ struct ActiveVoiceRequest {
 struct VoiceRegistryInner {
     requests: HashMap<String, ActiveVoiceRequest>,
     tts: TtsStatusView,
+    tts_sequence: u64,
     tts_cancellation: Option<CancellationToken>,
     tts_active: bool,
     tts_cancel_requested: bool,
@@ -57,9 +58,12 @@ impl VoiceState {
                 requests: HashMap::new(),
                 tts: TtsStatusView {
                     request_id: None,
+                    workspace_id: None,
+                    sequence: 0,
                     status: TtsStatus::Idle,
                     error: None,
                 },
+                tts_sequence: 0,
                 tts_cancellation: None,
                 tts_active: false,
                 tts_cancel_requested: false,
@@ -374,14 +378,21 @@ impl VoiceState {
             .ok_or(VoiceErrorCode::NotFound)
     }
 
-    pub fn begin_tts(&self, request_id: String) -> (CancellationToken, TtsStatusView) {
+    pub fn begin_tts(
+        &self,
+        request_id: String,
+        workspace_id: Option<String>,
+    ) -> (CancellationToken, TtsStatusView) {
         let mut inner = self.inner.lock();
         if let Some(previous) = inner.tts_cancellation.take() {
             previous.cancel();
         }
         let token = CancellationToken::new();
+        inner.tts_sequence = inner.tts_sequence.saturating_add(1);
         inner.tts = TtsStatusView {
             request_id: Some(request_id),
+            workspace_id,
+            sequence: inner.tts_sequence,
             status: TtsStatus::Synthesizing,
             error: None,
         };
@@ -406,6 +417,8 @@ impl VoiceState {
         } else {
             status
         };
+        inner.tts_sequence = inner.tts_sequence.saturating_add(1);
+        inner.tts.sequence = inner.tts_sequence;
         inner.tts.status = final_status;
         inner.tts.error = error.map(|code| error_view(code, friendly_message(code)));
         if matches!(
@@ -428,6 +441,8 @@ impl VoiceState {
         let request_id = if let Some(token) = inner.tts_cancellation.clone() {
             token.cancel();
             inner.tts_cancel_requested = true;
+            inner.tts_sequence = inner.tts_sequence.saturating_add(1);
+            inner.tts.sequence = inner.tts_sequence;
             inner.tts.status = TtsStatus::Stopped;
             inner.tts.error = None;
             inner.tts.request_id.clone()
@@ -437,22 +452,50 @@ impl VoiceState {
         (inner.tts.clone(), request_id)
     }
 
-    pub async fn wait_tts_request_finished(&self, request_id: Option<String>) {
-        let Some(request_id) = request_id else { return };
+    pub fn finish_stopped_tts(&self, request_id: &str) -> Option<TtsStatusView> {
+        let mut inner = self.inner.lock();
+        if inner.tts.request_id.as_deref() != Some(request_id) || !inner.tts_active {
+            return None;
+        }
+        inner.tts_sequence = inner.tts_sequence.saturating_add(1);
+        inner.tts.sequence = inner.tts_sequence;
+        inner.tts.status = TtsStatus::Stopped;
+        inner.tts.error = None;
+        inner.tts_cancellation = None;
+        inner.tts_active = false;
+        inner.tts_finished.notify_waiters();
+        Some(inner.tts.clone())
+    }
+
+    pub async fn wait_tts_request_finished(&self, request_id: Option<String>) -> bool {
+        let Some(request_id) = request_id else {
+            return true;
+        };
         let notify = self.inner.lock().tts_finished.clone();
-        loop {
+        let finished = async {
+            loop {
+                let finished = {
+                    let inner = self.inner.lock();
+                    inner.tts.request_id.as_deref() != Some(request_id.as_str())
+                        || !inner.tts_active
+                };
+                if finished {
+                    return;
+                }
+                notify.notified().await;
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(5), finished)
+            .await
+            .is_ok()
+        {
+            true
+        } else {
             let finished = {
                 let inner = self.inner.lock();
                 inner.tts.request_id.as_deref() != Some(request_id.as_str()) || !inner.tts_active
             };
-            if finished {
-                return;
-            }
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified()).await;
-            if self.inner.lock().tts.request_id.as_deref() != Some(request_id.as_str()) {
-                return;
-            }
+            finished
         }
     }
 
@@ -496,7 +539,11 @@ impl VoiceState {
             let _ = capture.stop();
         }
         let _ = tts_token;
-        self.wait_tts_request_finished(tts_request_id).await;
+        if !self.wait_tts_request_finished(tts_request_id.clone()).await {
+            if let Some(request_id) = tts_request_id {
+                let _ = self.finish_stopped_tts(&request_id);
+            }
+        }
         cancelled_requests
     }
 }
@@ -549,8 +596,16 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
         VoiceErrorCode::InvalidTransition => "Transizione vocale non valida.",
         VoiceErrorCode::ShortcutUnavailable => "La scorciatoia globale non è disponibile.",
         VoiceErrorCode::ShortcutInvalid => "La scorciatoia globale non è valida.",
-        VoiceErrorCode::HelperFailed => "Edge TTS non è disponibile.",
-        VoiceErrorCode::PlaybackFailed => "Riproduzione audio non disponibile.",
+        VoiceErrorCode::TtsDisabled => "L'uscita vocale di Jarvis è disattivata nelle impostazioni.",
+        VoiceErrorCode::TtsProviderInvalid => "Il provider vocale deve essere Edge TTS.",
+        VoiceErrorCode::HelperFailed => "L'helper Edge TTS non è disponibile. In debug verifica Python ed edge-tts; in release verifica il sidecar.",
+        VoiceErrorCode::TtsNetwork => "Edge TTS non è raggiungibile. Verifica la connessione di rete e riprova.",
+        VoiceErrorCode::TtsSynthesisFailed => "Edge TTS non è riuscito a sintetizzare la risposta.",
+        VoiceErrorCode::TtsAudioFileInvalid => "Il file audio generato non è disponibile o non è valido.",
+        VoiceErrorCode::TtsAudioDecodeFailed => "Il file MP3 generato non può essere decodificato.",
+        VoiceErrorCode::PlaybackDeviceUnavailable => "Nessun dispositivo di uscita audio predefinito è disponibile.",
+        VoiceErrorCode::PlaybackFailed => "Il worker di riproduzione audio non è disponibile.",
+        VoiceErrorCode::TtsTimeout => "La sintesi o la riproduzione vocale ha superato il tempo massimo.",
     }
 }
 
@@ -634,11 +689,12 @@ mod tests {
             }),
             Arc::new(FakePlayback),
         );
-        let (_a_token, a_started) = state.begin_tts("tts-a".into());
+        let (_a_token, a_started) = state.begin_tts("tts-a".into(), Some("workspace-a".into()));
         assert_eq!(a_started.status, TtsStatus::Synthesizing);
         let (_stopped, _a_id) = state.request_stop_tts();
-        let (_b_token, b_started) = state.begin_tts("tts-b".into());
+        let (_b_token, b_started) = state.begin_tts("tts-b".into(), Some("workspace-b".into()));
         assert_eq!(b_started.request_id.as_deref(), Some("tts-b"));
+        assert_eq!(b_started.workspace_id.as_deref(), Some("workspace-b"));
         assert!(state.set_tts_for("tts-a", TtsStatus::Idle, None).is_none());
         assert_eq!(state.tts_status().request_id.as_deref(), Some("tts-b"));
         assert_eq!(state.tts_status().status, TtsStatus::Synthesizing);
@@ -656,12 +712,15 @@ mod tests {
             }),
             Arc::new(FakePlayback),
         );
-        let (_token, synthesizing) = state.begin_tts("tts".into());
+        let (_token, synthesizing) = state.begin_tts("tts".into(), Some("workspace".into()));
         assert_eq!(synthesizing.status, TtsStatus::Synthesizing);
+        assert!(synthesizing.sequence > 0);
         let playing = state.set_tts_for("tts", TtsStatus::Playing, None).unwrap();
         assert_eq!(playing.request_id.as_deref(), Some("tts"));
+        assert!(playing.sequence > synthesizing.sequence);
         let idle = state.set_tts_for("tts", TtsStatus::Idle, None).unwrap();
         assert_eq!(idle.status, TtsStatus::Idle);
+        assert!(idle.sequence > playing.sequence);
     }
 
     #[test]

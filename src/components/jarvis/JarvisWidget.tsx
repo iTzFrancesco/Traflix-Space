@@ -396,9 +396,11 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
   const active =
     activeRequests > 0 || speaking || jarvisActive || voiceArmed || voiceListening || voiceBusy;
-  const statusLabel = props.muted
-    ? "Microfono disattivato"
-    : collapsedJarvisStatus({
+  const statusLabel = props.voiceError
+    ? props.voiceError
+    : props.muted
+      ? "Microfono disattivato"
+      : collapsedJarvisStatus({
         workspaceId: props.workspaceId,
         workspaceName: props.workspaceName,
         voiceError: props.voiceError,
@@ -427,7 +429,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         title="Premi e trascina per spostare Jarvis"
         aria-label={`Jarvis · ${statusLabel}`}
         role="status"
-        aria-live="polite"
+        aria-live={props.voiceError ? "assertive" : "polite"}
       >
         <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
 

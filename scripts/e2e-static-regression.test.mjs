@@ -39,8 +39,21 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   assert.match(agentLauncher, /terminal\.exitCode !== null/);
   assert.match(agentLauncher, /window\.setTimeout\(\(\) =>/);
   assert.match(agentLauncher, /live\.agentLaunched/);
-  assert.match(agentLauncher, /liveStore\.markAgentLaunched\(terminalId\)/);
-  assert.match(agentLauncher, /agentLaunchQueue\.enqueue\(terminalId, agentId\)/);
+  assert.match(
+    agentLauncher,
+    /liveStore\.markAgentLaunched\(terminalId, live\.generation\)/,
+  );
+  assert.match(
+    agentLauncher,
+    /agentLaunchQueue\.enqueue\(terminalId, live\.generation, agentId\)/,
+  );
+  assert.match(agentLauncher, /agentLaunchKey\(\{[\s\S]*terminalId,[\s\S]*workspaceId:[\s\S]*generation,[\s\S]*processId:/);
+  assert.match(agentLauncher, /terminal\.agentLaunchOwner === "backend"/);
+  assert.match(agentLauncher, /terminal\.generation !== generation/);
+  assert.match(
+    agentLauncher,
+    /workspaceId,\s*generation,\s*processId,\s*operationId: `agent-launch:\$\{key\}`,\s*data:/,
+  );
 });
 
 test("manual agent catalog is complete while Jarvis advertises only readiness-verified providers", () => {
@@ -139,10 +152,10 @@ test("voice runtime avoids callback data loss, survives Windows Python aliases, 
 
 test("chat completion reserves TTS state before IPC so hands-free cannot rearm into Jarvis speech", () => {
   assert.match(jarvisStore, /const ttsRequestId = `tts-\$\{response\.message\.id\}`/);
-  assert.match(jarvisStore, /setTtsStatus\(\{ requestId: ttsRequestId, status: "synthesizing" \}\)/);
-  assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId/);
+  assert.match(jarvisStore, /beginLocalTtsRequest\(state, ttsRequestId, workspaceId\)/);
+  assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId, workspaceId/);
   assert.match(jarvisStore, /status: "failed"/);
-  assert.match(jarvisStore, /code: "tts_failed"/);
+  assert.match(jarvisStore, /sanitizedVoiceErrorView\(error, "tts_ipc_failed"\)/);
   assert.match(jarvisStore, /cancelChat\(invocation\.requestId\)/);
 });
 
@@ -182,6 +195,8 @@ test("every Windows MSI build regenerates the current persistent Edge TTS sideca
   assert.match(windowsPrebuild, /build-jarvis-edge-tts-sidecar\.ps1/);
   assert.match(windowsPrebuild, /Get-Command python/);
   assert.match(windowsPrebuild, /Get-Command py/);
+  assert.match(windowsPrebuild, /ReadAllBytes\(\$sidecar\)/);
+  assert.match(windowsPrebuild, /\$machine -ne 0x8664/);
   assert.match(windowsPrebuild, /npm run build/);
   assert.match(releaseWorkflow, /actions\/setup-python@v5/);
   assert.match(releaseWorkflow, /npm run tauri build/);

@@ -8,6 +8,7 @@ import { Terminal } from "xterm";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { useSkillStore } from "../../stores/skillStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { reportFrontendDiagnostic } from "../../lib/crashDiagnostics";
 
 // ────────────────────────────────────────────────────────────
 // Module-level: mappa container → terminalId per drag&drop
@@ -56,14 +57,32 @@ function formatPathsForTerminal(paths: string[]): string {
   return paths.map((path) => `"${path}"`).join(" ");
 }
 
+function currentRuntime(terminalId: string): {
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
+} | null {
+  const terminal = useTerminalStore.getState().terminals[terminalId];
+  if (!terminal || !terminal.spawned || terminal.exitCode !== null) return null;
+  if (terminal.generation === null) return null;
+  return {
+    workspaceId: terminal.workspaceId,
+    generation: terminal.generation,
+    processId: terminal.processId,
+  };
+}
+
 async function writePathsToTerminal(paths: string[], x: number, y: number) {
   const tid = findTerminalIdAtPoint(x, y);
   if (!tid) return;
+  const runtime = currentRuntime(tid);
+  if (!runtime) return;
   const text = formatPathsForTerminal(paths);
   useTerminalStore.getState().markAgentInput(tid);
   await invokeWithTimeout(
     () => invoke("terminal_write", {
       terminalId: tid,
+      ...runtime,
       data: Array.from(new TextEncoder().encode(text)),
     }),
     10000,
@@ -78,20 +97,26 @@ function ensureTauriDragListeners() {
   // è attivo (default), il DOM drop event NON viene mai sparato — wry
   // consuma l'evento a livello nativo. Quindi gestiamo tutto qui.
   getCurrentWebview().onDragDropEvent(async (event) => {
-    const p = event.payload;
-    if (p.type === "enter") {
-      tauriDragFilePaths = p.paths ?? null;
-    } else if (p.type === "drop") {
-      const filePaths = p.paths ?? null;
-      tauriDragFilePaths = filePaths;
-      if (filePaths && filePaths.length > 0) {
-        await writePathsToTerminal(filePaths, p.position.x, p.position.y);
+    try {
+      const p = event.payload;
+      if (p.type === "enter") {
+        tauriDragFilePaths = p.paths ?? null;
+      } else if (p.type === "drop") {
+        const filePaths = p.paths ?? null;
+        tauriDragFilePaths = filePaths;
+        if (filePaths && filePaths.length > 0) {
+          await writePathsToTerminal(filePaths, p.position.x, p.position.y);
+        }
+      } else if (p.type === "leave") {
+        tauriDragFilePaths = null;
       }
-    } else if (p.type === "leave") {
-      tauriDragFilePaths = null;
+    } catch (error) {
+      reportFrontendDiagnostic("terminal-input-error", error, { state: "native-file-drop" });
+      console.error("Native terminal file drop failed:", error);
     }
-  }).catch(() => {
-    // Ignora se l'evento non è disponibile
+  }).catch((error) => {
+    reportFrontendDiagnostic("terminal-listener-error", error, { state: "native-file-drop" });
+    console.error("Native terminal file-drop listener unavailable:", error);
   });
 }
 
@@ -176,7 +201,10 @@ export function useTerminalInput(
       if (isPaste) {
         e.preventDefault();
         e.stopPropagation();
-        handlePaste();
+        void handlePaste().catch((error) => {
+          reportFrontendDiagnostic("terminal-input-error", error, { state: "clipboard-paste" });
+          console.error("Terminal paste failed:", error);
+        });
         return;
       }
 
@@ -204,12 +232,20 @@ export function useTerminalInput(
     const handlePasteCapture = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      handlePaste();
+      void handlePaste().catch((error) => {
+        reportFrontendDiagnostic("terminal-input-error", error, { state: "clipboard-paste" });
+        console.error("Terminal paste failed:", error);
+      });
     };
 
     const handlePaste = async () => {
       const tid = terminalIdRef.current;
       if (!tid) return;
+      // Capture the PTY lifetime at the user gesture. Clipboard/image work can
+      // outlive a restart; the backend will reject this write instead of
+      // pasting old intent into the replacement agent.
+      const runtime = currentRuntime(tid);
+      if (!runtime) return;
 
       // 1. Tenta lettura testo via Tauri plugin
       let pastedText: string | null = null;
@@ -277,6 +313,7 @@ export function useTerminalInput(
         await invokeWithTimeout(
           () => invoke("terminal_write", {
             terminalId: tid,
+            ...runtime,
             data: Array.from(new TextEncoder().encode(bracketed)),
           }),
           10000,
@@ -285,6 +322,7 @@ export function useTerminalInput(
         await invokeWithTimeout(
           () => invoke("terminal_write", {
             terminalId: tid,
+            ...runtime,
             data: Array.from(
               new TextEncoder().encode(
                 "\r\n\x1b[33m[Appunti vuoti o formato non supportato]\x1b[0m\r\n",
@@ -306,6 +344,9 @@ export function useTerminalInput(
       e.preventDefault();
       e.stopPropagation();
       const tid = terminalIdRef.current;
+      const runtime = currentRuntime(tid);
+      if (!runtime) return;
+      try {
 
       // This listener lives on the xterm container and intentionally stops
       // propagation, so skill drops must be handled here before file drops.
@@ -319,7 +360,7 @@ export function useTerminalInput(
           };
           if (data.type === "skill" && data.name) {
             useTerminalStore.getState().markAgentInput(tid);
-            useSkillStore.getState().addPendingDrop(tid, data.name);
+            useSkillStore.getState().addPendingDrop(tid, runtime, data.name);
             return;
           }
         } catch {
@@ -339,6 +380,7 @@ export function useTerminalInput(
         useTerminalStore.getState().markAgentInput(tid);
         await invoke("terminal_write", {
           terminalId: tid,
+          ...runtime,
           data: Array.from(new TextEncoder().encode(text)),
         });
         return;
@@ -351,9 +393,18 @@ export function useTerminalInput(
         useTerminalStore.getState().markAgentInput(tid);
         await invoke("terminal_write", {
           terminalId: tid,
+          ...runtime,
           data: Array.from(new TextEncoder().encode(text)),
         });
         return;
+      }
+      } catch (error) {
+        reportFrontendDiagnostic("terminal-input-error", error, {
+          terminalId: tid,
+          ...runtime,
+          state: "dom-drop",
+        });
+        console.error("Terminal DOM drop failed:", error);
       }
     };
 

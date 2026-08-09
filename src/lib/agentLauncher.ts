@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { AGENTS, type AgentDefinition } from "./agents";
 import { useTerminalStore } from "../stores/terminalStore";
+import { useToastStore } from "../stores/toastStore";
+import { agentLaunchKey } from "./agentLaunchIdentity";
+import { reportFrontendDiagnostic } from "./crashDiagnostics";
 
 function shellFamily(shell: string): string {
   const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
@@ -15,6 +18,9 @@ function resolveAgentCommand(agent: AgentDefinition, shell: string): string {
 
 interface QueuedLaunch {
   terminalId: string;
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
   agentId: string;
   attempt: number;
 }
@@ -23,16 +29,23 @@ const MAX_LAUNCH_ATTEMPTS = 2;
 const INITIAL_LAUNCH_DELAY_MS = 1000;
 const RETRY_DELAY_MS = 1200;
 
-function rollbackLaunchState(terminalId: string) {
+function rollbackLaunchState(launch: QueuedLaunch) {
   useTerminalStore.setState((state) => {
-    const terminal = state.terminals[terminalId];
-    if (!terminal) return state;
+    const terminal = state.terminals[launch.terminalId];
+    if (
+      !terminal ||
+      terminal.workspaceId !== launch.workspaceId ||
+      terminal.generation !== launch.generation ||
+      terminal.processId !== launch.processId ||
+      terminal.agentLaunchOwner !== "frontend"
+    ) return state;
     return {
       terminals: {
         ...state.terminals,
-        [terminalId]: {
+        [launch.terminalId]: {
           ...terminal,
           agentLaunched: false,
+          agentLaunchOwner: null,
           agentStatus: "idle",
           agentAttentionRequired: false,
           lastAgentCompletion: null,
@@ -49,12 +62,30 @@ class AgentLaunchQueue {
   private readonly maxConcurrent = 2;
   private wakeTimer: number | null = null;
 
-  enqueue(terminalId: string, agentId: string) {
+  enqueue(terminalId: string, generation: number, agentId: string) {
     const terminal = useTerminalStore.getState().terminals[terminalId];
-    if (!terminal || this.queuedTerminals.has(terminalId)) return;
+    if (!terminal) return;
+    const key = agentLaunchKey({
+      terminalId,
+      workspaceId: terminal.workspaceId,
+      generation,
+      processId: terminal.processId,
+    });
+    if (
+      terminal.generation !== generation ||
+      terminal.agentLaunchOwner === "backend" ||
+      this.queuedTerminals.has(key)
+    ) return;
 
-    this.queuedTerminals.add(terminalId);
-    this.queue.push({ terminalId, agentId, attempt: 1 });
+    this.queuedTerminals.add(key);
+    this.queue.push({
+      terminalId,
+      workspaceId: terminal.workspaceId,
+      generation,
+      processId: terminal.processId,
+      agentId,
+      attempt: 1,
+    });
     this.schedule(INITIAL_LAUNCH_DELAY_MS);
   }
 
@@ -76,14 +107,23 @@ class AgentLaunchQueue {
   }
 
   private async run(launch: QueuedLaunch) {
-    const { terminalId, agentId } = launch;
+    const { terminalId, workspaceId, generation, processId, agentId } = launch;
+    const key = agentLaunchKey({ terminalId, workspaceId, generation, processId });
     let retry = false;
 
     try {
       const agent = AGENTS.find((candidate) => candidate.id === agentId);
       const terminal = useTerminalStore.getState().terminals[terminalId];
-      if (!agent || !terminal || terminal.exitCode !== null) {
-        rollbackLaunchState(terminalId);
+      if (
+        !agent ||
+        !terminal ||
+        terminal.workspaceId !== workspaceId ||
+        terminal.generation !== generation ||
+        terminal.processId !== processId ||
+        terminal.exitCode !== null ||
+        terminal.agentLaunchOwner === "backend"
+      ) {
+        rollbackLaunchState(launch);
         return;
       }
 
@@ -91,22 +131,48 @@ class AgentLaunchQueue {
       const encoder = new TextEncoder();
       await invoke("terminal_write", {
         terminalId,
+        workspaceId,
+        generation,
+        processId,
+        operationId: `agent-launch:${key}`,
         data: Array.from(encoder.encode(cmd)),
       });
     } catch (error) {
       if (
         launch.attempt < MAX_LAUNCH_ATTEMPTS &&
-        useTerminalStore.getState().terminals[terminalId]
+        useTerminalStore.getState().terminals[terminalId]?.workspaceId === workspaceId &&
+        useTerminalStore.getState().terminals[terminalId]?.generation === generation &&
+        useTerminalStore.getState().terminals[terminalId]?.processId === processId &&
+        useTerminalStore.getState().terminals[terminalId]?.agentLaunchOwner === "frontend"
       ) {
         retry = true;
         this.queue.push({ ...launch, attempt: launch.attempt + 1 });
       } else {
-        rollbackLaunchState(terminalId);
-        console.warn(`[agent-launch] failed for ${terminalId}`, error);
+        rollbackLaunchState(launch);
+        reportFrontendDiagnostic("agent-launch-error", error, {
+          terminalId,
+          workspaceId,
+          generation,
+          processId,
+          state: "write-failed",
+        });
+        const live = useTerminalStore.getState().terminals[terminalId];
+        if (
+          live?.workspaceId === workspaceId &&
+          live.generation === generation &&
+          live.processId === processId
+        ) {
+          useToastStore.getState().addToast({
+            type: "error",
+            message: `Impossibile avviare ${agentId} in ${live.title}. Riapri il terminale per riprovare.`,
+            duration: 8000,
+          });
+        }
+        console.warn(`[agent-launch] failed for ${terminalId}:${generation}`, error);
       }
     } finally {
       this.active -= 1;
-      if (!retry) this.queuedTerminals.delete(terminalId);
+      if (!retry) this.queuedTerminals.delete(key);
       if (this.queue.length > 0) {
         this.schedule(retry ? RETRY_DELAY_MS : 0);
       }
@@ -144,12 +210,15 @@ useTerminalStore.subscribe((state, previous) => {
         !live.spawned ||
         live.exitCode !== null ||
         live.agent !== agentId ||
-        live.agentLaunched
+        live.agentLaunched ||
+        live.agentLaunchOwner === "backend" ||
+        live.generation !== terminal.generation ||
+        live.generation === null
       ) {
         return;
       }
-      liveStore.markAgentLaunched(terminalId);
-      agentLaunchQueue.enqueue(terminalId, agentId);
+      liveStore.markAgentLaunched(terminalId, live.generation);
+      agentLaunchQueue.enqueue(terminalId, live.generation, agentId);
     }, 0);
   }
 });

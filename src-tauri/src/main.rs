@@ -3,6 +3,7 @@
 mod agent;
 mod agent_events;
 mod browser;
+mod diagnostics;
 mod jarvis;
 mod project;
 mod settings;
@@ -14,6 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::{panic, path::PathBuf};
 
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
@@ -21,20 +23,83 @@ use tauri::{
     Emitter, Manager, RunEvent,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-use tracing::info;
+use tracing::{error, info};
+use tracing_appender::{non_blocking::WorkerGuard, rolling};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
 
 use crate::terminal_engine::TerminalManager;
 
-fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("traflix_space=info,warn")),
-        )
-        .init();
+fn release_log_directory() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("com.traflix.space")
+        .join("logs")
+}
 
-    info!("Avvio Traflix Space");
+fn initialize_logging() -> Option<WorkerGuard> {
+    let filter = || {
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("traflix_space=info,warn"))
+    };
+    let directory = release_log_directory();
+    match rolling::RollingFileAppender::builder()
+        .rotation(rolling::Rotation::DAILY)
+        .filename_prefix("traflix-space")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&directory)
+    {
+        Ok(appender) => {
+            let (file_writer, guard) = tracing_appender::non_blocking(appender);
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .with_ansi(cfg!(debug_assertions))
+                .with_writer(file_writer.and(std::io::stderr))
+                .init();
+            Some(guard)
+        }
+        Err(log_error) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .with_writer(std::io::stderr)
+                .init();
+            error!(error = %log_error, "Persistent log initialization failed; using stderr only");
+            None
+        }
+    }
+}
+
+fn install_safe_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        let location = panic_info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let thread = std::thread::current();
+        error!(
+            panic_location = %location,
+            thread = thread.name().unwrap_or("unnamed"),
+            "Unhandled Rust panic (payload intentionally omitted)"
+        );
+        default_hook(panic_info);
+    }));
+}
+
+fn main() {
+    let _log_guard = initialize_logging();
+    install_safe_panic_hook();
+
+    info!(log_directory = %release_log_directory().display(), "Avvio Traflix Space");
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -69,7 +134,7 @@ fn main() {
         }));
     }
 
-    builder
+    let application = builder
         .setup(|app| {
             info!("Inizializzazione stato applicazione");
             settings::secrets::hydrate_process_environment(app.handle());
@@ -148,9 +213,10 @@ fn main() {
             // Registra on_window_event DOPO aver stabilito se la tray è attiva
             let win_tray_ok = tray_ok_close.clone();
             let app_handle = app.handle().clone();
-            let window = app
-                .get_webview_window("main")
-                .expect("main window should exist");
+            let Some(window) = app.get_webview_window("main") else {
+                error!("Main WebView window is missing during setup");
+                return Err("main window is missing".into());
+            };
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if win_tray_ok.load(Ordering::Acquire) {
@@ -253,6 +319,7 @@ fn main() {
             browser::browser_forward,
             browser::browser_get_url,
             browser::browser_close,
+            diagnostics::report_frontend_diagnostic,
             terminal_engine::commands::terminal_spawn,
             terminal_engine::commands::terminal_write,
             terminal_engine::commands::terminal_resize,
@@ -266,20 +333,26 @@ fn main() {
             terminal_engine::commands::terminal_get_context,
             terminal_engine::commands::terminal_sync_cwd,
         ])
-        .build(tauri::generate_context!())
-        .expect("Errore build Traflix Space")
-        .run(|app, event| {
-            // On real process exit (tray Quit, no-tray window close, OS kill),
-            // tear down every PTY/shell so no orphans accumulate.
-            if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-                let _ = app.global_shortcut().unregister_all();
-                let voice = app.state::<jarvis::voice::VoiceState>().clone();
-                let manager = app.state::<TerminalManager>();
-                tauri::async_runtime::block_on(async {
-                    let _ = voice.shutdown().await;
-                    jarvis::voice::tts::shutdown_runtime().await;
-                    manager.kill_all().await;
-                });
-            }
-        });
+        .build(tauri::generate_context!());
+    let application = match application {
+        Ok(application) => application,
+        Err(build_error) => {
+            error!(error = %build_error, "Tauri application build failed");
+            return;
+        }
+    };
+    application.run(|app, event| {
+        // On real process exit (tray Quit, no-tray window close, OS kill),
+        // tear down every PTY/shell so no orphans accumulate.
+        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+            let _ = app.global_shortcut().unregister_all();
+            let voice = app.state::<jarvis::voice::VoiceState>().clone();
+            let manager = app.state::<TerminalManager>();
+            tauri::async_runtime::block_on(async {
+                let _ = voice.shutdown().await;
+                jarvis::voice::tts::shutdown_runtime().await;
+                manager.kill_all().await;
+            });
+        }
+    });
 }

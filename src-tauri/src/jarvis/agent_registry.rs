@@ -38,6 +38,7 @@ pub struct TerminalAgentSnapshot {
     pub detection_confidence: f32,
     pub identity_warnings: Vec<String>,
     pub generation: u64,
+    pub process_id: Option<u32>,
     pub process_alive: bool,
 }
 
@@ -1374,6 +1375,7 @@ mod tests {
             detection_confidence: 0.65,
             identity_warnings: Vec::new(),
             generation,
+            process_id: Some(100),
             process_alive: alive,
         }
     }

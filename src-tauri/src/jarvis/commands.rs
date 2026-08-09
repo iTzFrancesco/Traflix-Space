@@ -1,7 +1,5 @@
 use crate::jarvis::agent_registry::{IdentityDecision, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
-use crate::jarvis::tools::{
-    apply_workspace_titles, list_terminals_for_workspace, JarvisState, JarvisToolService,
-};
+use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
     AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, AgentTail,
     ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth,
@@ -87,8 +85,7 @@ pub async fn jarvis_terminal_list(
     )
     .await?;
     let manager = app.state::<TerminalManager>();
-    let mut terminals = list_terminals_for_workspace(&manager, &workspace_id, &observed_at).await;
-    apply_workspace_titles(&mut terminals, &workspace);
+    let terminals = list_terminals_for_workspace(&manager, &workspace, &observed_at).await;
     JarvisToolService::new(&app.state::<JarvisState>().broker).terminal_list(
         &workspace_id,
         terminals,
@@ -696,7 +693,7 @@ async fn build_context(
     .await?;
     let manager = app.state::<TerminalManager>();
     let terminals =
-        list_terminals_for_workspace(&manager, &workspace_id, &invocation.created_at).await;
+        list_terminals_for_workspace(&manager, &workspace, &invocation.created_at).await;
     let all_agent_terminals = manager.list_agent_snapshots().await;
     app.state::<JarvisState>()
         .registry

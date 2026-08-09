@@ -7,6 +7,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use tracing::{debug, error, info, warn};
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
+use super::playback::PlaybackContext;
 use super::registry::{friendly_message, VoiceState};
 use super::stt::{GroqSpeechToTextProvider, SpeechToTextProvider};
 use super::tts::{
@@ -95,9 +96,8 @@ pub async fn jarvis_voice_start(
         vad_enabled = configured.jarvis.voice_input.vad_enabled,
         "Voice start configuration resolved"
     );
-    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured()).map_err(|error| {
+    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured()).inspect_err(|error| {
         warn!(request_id = %request.request_id, error_code = %error.code, "Voice start rejected by input policy");
-        error
     })?;
     let max_duration_seconds =
         normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
@@ -490,9 +490,11 @@ pub async fn jarvis_tts_speak(
     request: TtsSpeakRequest,
 ) -> Result<TtsStatusView, VoiceErrorView> {
     let request_id = request.request_id.clone();
+    let workspace_id = request.workspace_id.clone();
     let config = settings.get().await.jarvis.voice_output;
     info!(
         request_id = %request_id,
+        workspace_id = ?workspace_id,
         input_chars = request.text.chars().count(),
         configured_provider = %config.provider,
         configured_voice = %config.voice,
@@ -503,6 +505,7 @@ pub async fn jarvis_tts_speak(
     if let Err(error) = ensure_output_allowed(&config) {
         warn!(
             request_id = %request_id,
+            workspace_id = ?workspace_id,
             error_code = %error.code,
             "[JARVIS-TTS] speak rejected by output policy",
         );
@@ -513,6 +516,7 @@ pub async fn jarvis_tts_speak(
         None => {
             warn!(
                 request_id = %request_id,
+                workspace_id = ?workspace_id,
                 input_chars = request.text.chars().count(),
                 max_spoken_chars = config.max_spoken_chars,
                 "[JARVIS-TTS] speak rejected after text sanitization",
@@ -526,6 +530,7 @@ pub async fn jarvis_tts_speak(
     let pitch = request.pitch.unwrap_or(config.pitch);
     info!(
         request_id = %request_id,
+        workspace_id = ?workspace_id,
         text_chars = text.chars().count(),
         voice = %voice,
         rate = %rate,
@@ -534,12 +539,13 @@ pub async fn jarvis_tts_speak(
         runtime = if cfg!(debug_assertions) { "python" } else { "sidecar" },
         "[JARVIS-TTS] synthesis starting",
     );
-    let (cancellation, synthesizing) = state.begin_tts(request_id.clone());
+    let (cancellation, synthesizing) = state.begin_tts(request_id.clone(), workspace_id.clone());
     emit_tts_state(&app, &synthesizing);
     let provider = runtime_tts_provider(&app);
     let path = match provider
         .speak(
             request_id.clone(),
+            workspace_id.clone(),
             text,
             voice,
             rate,
@@ -560,6 +566,7 @@ pub async fn jarvis_tts_speak(
                 .unwrap_or(0);
             info!(
                 request_id = %request_id,
+                workspace_id = ?workspace_id,
                 file_name = %file_name,
                 file_bytes,
                 "[JARVIS-TTS] synthesis completed",
@@ -569,6 +576,7 @@ pub async fn jarvis_tts_speak(
         Err(code) => {
             warn!(
                 request_id = %request_id,
+                workspace_id = ?workspace_id,
                 error_code = %code.as_str(),
                 cancelled = code == VoiceErrorCode::Cancelled,
                 "[JARVIS-TTS] synthesis failed",
@@ -595,6 +603,7 @@ pub async fn jarvis_tts_speak(
         .unwrap_or("unknown");
     info!(
         request_id = %request_id,
+        workspace_id = ?workspace_id,
         file_name = %file_name,
         "[JARVIS-TTS] playback starting",
     );
@@ -603,18 +612,30 @@ pub async fn jarvis_tts_speak(
     } else {
         warn!(
             request_id = %request_id,
+            workspace_id = ?workspace_id,
             file_name = %file_name,
             "[JARVIS-TTS] playback skipped because request is no longer active",
         );
         cleanup_temp_file(&path);
         return Ok(state.tts_status());
     }
-    let playback = state.playback.play(path.clone(), cancellation).await;
+    let playback = state
+        .playback
+        .play(
+            PlaybackContext {
+                request_id: request_id.clone(),
+                workspace_id: workspace_id.clone(),
+            },
+            path.clone(),
+            cancellation,
+        )
+        .await;
     cleanup_temp_file(&path);
     match playback {
         Ok(()) => {
             info!(
                 request_id = %request_id,
+                workspace_id = ?workspace_id,
                 file_name = %file_name,
                 "[JARVIS-TTS] playback completed",
             );
@@ -628,6 +649,7 @@ pub async fn jarvis_tts_speak(
         Err(code) => {
             warn!(
                 request_id = %request_id,
+                workspace_id = ?workspace_id,
                 file_name = %file_name,
                 error_code = %code.as_str(),
                 cancelled = code == VoiceErrorCode::Cancelled,
@@ -668,7 +690,18 @@ pub async fn jarvis_tts_stop(
         "[JARVIS-TTS] stop requested",
     );
     emit_tts_state(&app, &status);
-    state.wait_tts_request_finished(request_id).await;
+    let finished = state.wait_tts_request_finished(request_id.clone()).await;
+    if !finished {
+        if let Some(request_id) = request_id.as_deref() {
+            warn!(
+                request_id,
+                "[JARVIS-TTS] stop acknowledgement timed out; finalizing cancelled request",
+            );
+            if let Some(status) = state.finish_stopped_tts(request_id) {
+                emit_tts_state(&app, &status);
+            }
+        }
+    }
     let status = state.tts_status();
     info!(
         request_id = ?status.request_id,
@@ -737,9 +770,13 @@ fn ensure_input_allowed(
 fn ensure_output_allowed(
     settings: &crate::settings::store::VoiceOutputSettings,
 ) -> Result<(), VoiceErrorView> {
-    if !settings.enabled
-        || settings.provider != "edge_tts"
-        || !settings.privacy_consent
+    if !settings.enabled {
+        return Err(to_error(VoiceErrorCode::TtsDisabled));
+    }
+    if settings.provider != "edge_tts" {
+        return Err(to_error(VoiceErrorCode::TtsProviderInvalid));
+    }
+    if !settings.privacy_consent
         || settings
             .privacy_consent_at
             .as_deref()

@@ -1,6 +1,9 @@
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles/globals.css";
+import { installFrontendCrashDiagnostics } from "./lib/crashDiagnostics";
+
+installFrontendCrashDiagnostics();
 
 // Disabilita il menu contestuale del webview (Aggiorna, Indietro, ecc.)
 // Inappropriato per un'app desktop Tauri con decorations: false

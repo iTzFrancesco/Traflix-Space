@@ -10,6 +10,11 @@ import { useSkillStore } from "../../stores/skillStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { computeLayout } from "../../lib/presets";
 import { swapItemsById } from "../../lib/terminalOrdering";
+import {
+  acceptsWorkspaceRevision,
+  terminalIdentityCollision,
+} from "../../lib/workspaceTerminalProtocol";
+import { reportFrontendDiagnostic } from "../../lib/crashDiagnostics";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewSpaceWizard } from "./NewSpaceWizard";
 import type { TerminalConfig } from "../../stores/terminalStore";
@@ -29,15 +34,74 @@ interface TerminalCloseRequest {
   token: number;
 }
 
+interface TerminalRuntimeIdentity {
+  workspaceId: string;
+  generation: number;
+  processId: number | null;
+  agentLaunchOwner: "backend" | null;
+  agentLaunchState: "starting" | "ready" | "failed" | null;
+}
+
 interface AgentOpenedEvent {
   workspaceId: string;
   terminal: TerminalConfig;
+  generation: number;
+  processId: number | null;
+  launchState: "starting" | "ready" | "failed";
 }
 
 interface AgentClosedEvent {
   workspaceId: string;
   terminalId: string;
   generation: number;
+  processId: number | null;
+}
+
+function ipcErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
+}
+
+async function persistTerminalMutation(
+  workspaceId: string,
+  initial: LoadedWorkspace,
+  mutate: (terminals: TerminalConfig[]) => TerminalConfig[],
+): Promise<LoadedWorkspace> {
+  let base = initial;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const terminals = mutate(base.terminals);
+    const config: LoadedWorkspace = {
+      ...base,
+      layout: computeLayout(terminals.length),
+      terminals,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      return await invokeWithTimeout(
+        () => invoke<LoadedWorkspace>("update_workspace", {
+          id: workspaceId,
+          config,
+          expectedUpdatedAt: base.updatedAt,
+        }),
+        10000,
+      );
+    } catch (error) {
+      if (
+        attempt === 0 &&
+        ipcErrorMessage(error).includes("workspace_revision_conflict")
+      ) {
+        base = await invokeWithTimeout(
+          () => invoke<LoadedWorkspace>("get_workspace", { id: workspaceId }),
+          15000,
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("workspace_revision_conflict");
 }
 
 export function WorkspaceView() {
@@ -74,12 +138,75 @@ export function WorkspaceView() {
   // registered in the frontend without a second spawn or hidden process.
   useEffect(() => {
     let disposed = false;
-    const listeners = Promise.all([
+    const refreshWorkspace = async (workspaceId: string) => {
+      const fullConfig = await invokeWithTimeout(
+        () => invoke<LoadedWorkspace>("get_workspace", { id: workspaceId }),
+        15000,
+      );
+      if (disposed) return;
+      const terminalStore = useTerminalStore.getState();
+      const collision = terminalIdentityCollision(
+        workspaceId,
+        fullConfig.terminals.map((terminal) => terminal.id),
+        terminalStore.terminals,
+      );
+      if (collision) {
+        throw new Error(`terminal_id_workspace_collision:${collision}`);
+      }
+      const current = loadedMapRef.current.get(workspaceId);
+      if (!acceptsWorkspaceRevision(current?.updatedAt, fullConfig.updatedAt)) {
+        console.info("[workspace-lifecycle] stale refresh ignored", {
+          workspaceId,
+          currentUpdatedAt: current?.updatedAt,
+          receivedUpdatedAt: fullConfig.updatedAt,
+        });
+        return;
+      }
+      for (const terminal of fullConfig.terminals) {
+        if (!terminalStore.terminals[terminal.id]) {
+          terminalStore.addTerminal({
+            id: terminal.id,
+            workspaceId,
+            shell: terminal.shell,
+            cwd: terminal.cwd,
+            title: terminal.title,
+            agent: terminal.agentId,
+          });
+        }
+      }
+      terminalStore.syncWorkspaceTerminalOrder(
+        workspaceId,
+        fullConfig.terminals.map((terminal) => terminal.id),
+      );
+      const nextMap = new Map(loadedMapRef.current);
+      nextMap.set(workspaceId, {
+        ...fullConfig,
+        layout: computeLayout(fullConfig.terminals.length),
+      });
+      loadedMapRef.current = nextMap;
+      if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+        workspaceTerminalsRef.current = {
+          workspaceId,
+          terminals: fullConfig.terminals,
+        };
+      }
+      setLoadedMap(nextMap);
+      useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+        terminalCount: fullConfig.terminals.length,
+        agentCount: fullConfig.terminals.filter((terminal) => terminal.agentId).length,
+      });
+    };
+    const enqueueRefresh = (workspaceId: string) => {
+      closeQueueRef.current = closeQueueRef.current
+        .then(() => refreshWorkspace(workspaceId))
+        .catch((error) => {
+          console.error("Workspace event reconciliation failed:", error);
+        });
+    };
+    const listeners = Promise.allSettled([
       listen<AgentOpenedEvent>("jarvis-agent-opened", (event) => {
         if (disposed) return;
-        const { workspaceId, terminal } = event.payload;
-        const loaded = loadedMapRef.current.get(workspaceId);
-        if (!loaded) return;
+        const { workspaceId, terminal, generation, processId, launchState } = event.payload;
 
         // The backend owns the Jarvis open/restart flow: it has already
         // spawned the visible PTY and launched the provider CLI before this
@@ -97,78 +224,67 @@ export function WorkspaceView() {
             agent: terminal.agentId,
           });
         }
-        terminalStore.markSpawned(terminal.id);
-        terminalStore.markAgentLaunched(terminal.id);
-
-        // React state may not have committed a previous Jarvis-open event yet.
-        // For the focused workspace, the synchronous terminal ref is the
-        // authoritative event-to-event list so two rapid opens never drop the
-        // first pane from the visible grid.
-        const currentTerminals =
-          workspaceTerminalsRef.current.workspaceId === workspaceId
-            ? workspaceTerminalsRef.current.terminals
-            : loaded.terminals;
-
-        // A restart reuses the existing configured pane. In that case only
-        // refresh its runtime flags above; never duplicate the workspace item.
-        if (currentTerminals.some((item) => item.id === terminal.id)) {
-          if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
-            terminalStore.setActiveTerminal(terminal.id);
-          }
-          return;
-        }
-
-        const nextTerminals = [...currentTerminals, terminal];
-        const nextLayout = computeLayout(nextTerminals.length);
-        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
-          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
-        }
-        setLoadedMap((previous) => {
-          const current = previous.get(workspaceId);
-          if (!current || current.terminals.some((item) => item.id === terminal.id)) return previous;
-          const next = new Map(previous);
-          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: nextLayout });
-          return next;
-        });
-        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
-          terminalCount: nextTerminals.length,
-          agentCount: nextTerminals.filter((item) => item.agentId).length,
-        });
-        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+        terminalStore.markBackendAgentLaunch(
+          terminal.id,
+          workspaceId,
+          generation,
+          processId,
+          launchState,
+        );
+        const accepted = useTerminalStore.getState().terminals[terminal.id];
+        if (
+          accepted?.workspaceId === workspaceId &&
+          accepted.generation === generation &&
+          accepted.processId === processId &&
+          useWorkspaceStore.getState().activeWorkspaceId === workspaceId
+        ) {
           terminalStore.setActiveTerminal(terminal.id);
         }
+        enqueueRefresh(workspaceId);
       }),
       listen<AgentClosedEvent>("jarvis-agent-closed", (event) => {
         if (disposed) return;
-        const { workspaceId, terminalId } = event.payload;
-        useSkillStore.getState().clearPendingDrop(terminalId);
-        useTerminalStore.getState().removeTerminal(terminalId);
-        const loaded = loadedMapRef.current.get(workspaceId);
-        if (!loaded) return;
-        const currentTerminals =
-          workspaceTerminalsRef.current.workspaceId === workspaceId
-            ? workspaceTerminalsRef.current.terminals
-            : loaded.terminals;
-        const nextTerminals = currentTerminals.filter((item) => item.id !== terminalId);
-        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
-          workspaceTerminalsRef.current = { workspaceId, terminals: nextTerminals };
+        const { workspaceId, terminalId, generation, processId } = event.payload;
+        const current = useTerminalStore.getState().terminals[terminalId];
+        if (
+          current &&
+          (current.workspaceId !== workspaceId ||
+            current.generation !== generation ||
+            current.processId !== processId)
+        ) {
+          console.warn("[terminal-lifecycle] stale Jarvis close ignored", {
+            terminalId,
+            workspaceId,
+            generation,
+            processId,
+            currentGeneration: current.generation,
+            currentProcessId: current.processId,
+          });
+          return;
         }
-        setLoadedMap((previous) => {
-          const current = previous.get(workspaceId);
-          if (!current) return previous;
-          const next = new Map(previous);
-          next.set(workspaceId, { ...current, terminals: nextTerminals, layout: computeLayout(nextTerminals.length) });
-          return next;
-        });
-        useWorkspaceStore.getState().updateWorkspace(workspaceId, {
-          terminalCount: nextTerminals.length,
-          agentCount: nextTerminals.filter((item) => item.agentId).length,
-        });
+        useSkillStore.getState().clearPendingDrop(terminalId);
+        useTerminalStore.getState().removeTerminal(terminalId, generation);
+        enqueueRefresh(workspaceId);
       }),
-    ]);
+    ]).then((results) => {
+      const active: Array<() => void> = [];
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          active.push(result.value);
+        } else {
+          reportFrontendDiagnostic("terminal-listener-error", result.reason, {
+            state: "workspace-lifecycle",
+          });
+          console.error("Workspace lifecycle listener setup failed:", result.reason);
+        }
+      }
+      return active;
+    });
     return () => {
       disposed = true;
-      void listeners.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => undefined);
+      void listeners
+        .then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()))
+        .catch((error) => console.error("Workspace listener cleanup failed:", error));
     };
   }, []);
 
@@ -191,18 +307,36 @@ export function WorkspaceView() {
 
     invokeWithTimeout(
       () =>
-        invoke<{
-          id: string;
-          name: string;
-          rootPath: string;
-          layout: { rows: number; cols: number };
-          terminals: TerminalConfig[];
-        }>("get_workspace", { id }),
+        invoke<LoadedWorkspace>("get_workspace", { id }),
       15000,
     )
       .then((fullConfig) => {
         // Registra i terminali nel terminalStore
         const terminalStore = useTerminalStore.getState();
+        const workspaceStillKnown = useWorkspaceStore
+          .getState()
+          .workspaces.some((candidate) => candidate.id === id);
+        if (!workspaceStillKnown) {
+          console.info("[workspace-lifecycle] load for removed workspace ignored", { id });
+          return;
+        }
+        const collision = terminalIdentityCollision(
+          id,
+          (fullConfig.terminals || []).map((terminal) => terminal.id),
+          terminalStore.terminals,
+        );
+        if (collision) {
+          throw new Error(`terminal_id_workspace_collision:${collision}`);
+        }
+        const newerCached = loadedMapRef.current.get(id);
+        if (!acceptsWorkspaceRevision(newerCached?.updatedAt, fullConfig.updatedAt)) {
+          console.info("[workspace-lifecycle] stale async load ignored", {
+            id,
+            cachedUpdatedAt: newerCached?.updatedAt,
+            receivedUpdatedAt: fullConfig.updatedAt,
+          });
+          return;
+        }
         let firstId: string | null = null;
         for (const tc of fullConfig.terminals || []) {
           if (!terminalStore.terminals[tc.id]) {
@@ -217,6 +351,10 @@ export function WorkspaceView() {
           }
           if (!firstId) firstId = tc.id;
         }
+        terminalStore.syncWorkspaceTerminalOrder(
+          id,
+          (fullConfig.terminals || []).map((terminal) => terminal.id),
+        );
 
         // A late load may populate the cache, but it must never steal the
         // active terminal from a workspace the user switched to meanwhile.
@@ -238,28 +376,26 @@ export function WorkspaceView() {
           .concat(id);
         openOrderRef.current = newOrder;
 
-        setLoadedMap((prev) => {
-          const next = new Map(prev);
-          next.set(id, {
-            id: fullConfig.id,
-            name: fullConfig.name,
-            rootPath: fullConfig.rootPath,
-            layout: fullConfig.layout,
-            terminals: fullConfig.terminals || [],
-            createdAt: (fullConfig as any).createdAt ?? new Date().toISOString(),
-            updatedAt: (fullConfig as any).updatedAt ?? new Date().toISOString(),
-          });
-
-          if (next.size > MAX_OPEN_WORKSPACES) {
-            const activeAtCommit = useWorkspaceStore.getState().activeWorkspaceId;
-            const toEvict = newOrder.find(
-              (key) => key !== activeAtCommit && key !== id && next.has(key),
-            );
-            if (toEvict) next.delete(toEvict);
-          }
-
-          return next;
+        const next = new Map(loadedMapRef.current);
+        next.set(id, {
+          id: fullConfig.id,
+          name: fullConfig.name,
+          rootPath: fullConfig.rootPath,
+          layout: fullConfig.layout,
+          terminals: fullConfig.terminals || [],
+          createdAt: fullConfig.createdAt,
+          updatedAt: fullConfig.updatedAt,
         });
+
+        if (next.size > MAX_OPEN_WORKSPACES) {
+          const activeAtCommit = useWorkspaceStore.getState().activeWorkspaceId;
+          const toEvict = newOrder.find(
+            (key) => key !== activeAtCommit && key !== id && next.has(key),
+          );
+          if (toEvict) next.delete(toEvict);
+        }
+        loadedMapRef.current = next;
+        setLoadedMap(next);
       })
       .catch((err) => {
         console.error("Errore caricamento workspace:", err);
@@ -286,63 +422,66 @@ export function WorkspaceView() {
         // Guard: se il workspace non è più attivo, ignora
         if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return;
 
-        // 1. Kill backend session
-        await invokeWithTimeout(
-          () => invoke("terminal_kill", { terminalId }),
-          5000,
-        ).catch(() => {});
+        // 1. Kill exactly the generation the user confirmed.
+        const terminalRuntime = useTerminalStore.getState().terminals[terminalId];
+        if (terminalRuntime && terminalRuntime.generation !== null) {
+          try {
+            await invokeWithTimeout(
+              () => invoke("terminal_kill", {
+                terminalId,
+                workspaceId: terminalRuntime.workspaceId,
+                generation: terminalRuntime.generation,
+                processId: terminalRuntime.processId,
+              }),
+              5000,
+            );
+          } catch (error) {
+            console.warn("Terminal kill rejected:", error);
+            return;
+          }
+        }
 
         // 2. Rimuovi dal terminal store (+ clear focus se necessario)
         useSkillStore.getState().clearPendingDrop(terminalId);
-        useTerminalStore.getState().removeTerminal(terminalId);
+        useTerminalStore.getState().removeTerminal(
+          terminalId,
+          terminalRuntime?.generation ?? undefined,
+        );
 
         const currentWs = loadedMapRef.current.get(workspaceId);
         if (!currentWs) return;
 
         // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione), usando
         // la configurazione corrente come fallback dopo un cambio workspace.
-        const currentTerminals =
-          workspaceTerminalsRef.current.workspaceId === workspaceId
-            ? workspaceTerminalsRef.current.terminals
-            : currentWs.terminals;
-        const newTerminals = currentTerminals.filter((t) => t.id !== terminalId);
-        const newLayout = computeLayout(newTerminals.length);
-
-        // Aggiorna il ref sincrono IMMEDIATAMENTE (prima di await)
-        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
-
-        // 4. Aggiorna backend
-        const updatedConfig = {
-          id: workspaceId,
-          name: currentWs.name,
-          rootPath: currentWs.rootPath,
-          layout: newLayout,
-          terminals: newTerminals,
-          createdAt: currentWs.createdAt,
-          updatedAt: new Date().toISOString(),
-        };
+        // 3/4. Persist with optimistic revision validation. On a concurrent
+        // Jarvis open/reorder, reload once and reapply only this removal.
+        let updatedConfig: LoadedWorkspace;
         try {
-          await invokeWithTimeout(
-            () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
-            10000,
+          updatedConfig = await persistTerminalMutation(
+            workspaceId,
+            currentWs,
+            (terminals) => terminals.filter((terminal) => terminal.id !== terminalId),
           );
         } catch (err) {
           console.error("Errore aggiornamento workspace:", err);
+          addToastRef.current({
+            type: "error",
+            message: "Il terminale è stato chiuso, ma la workspace non è stata aggiornata.",
+          });
+          return;
         }
+        const newTerminals = updatedConfig.terminals;
+        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
         // 5. Aggiorna loadedMap
-        setLoadedMap((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(workspaceId);
-          if (existing) {
-            next.set(workspaceId, {
-              ...existing,
-              terminals: newTerminals,
-              layout: newLayout,
-            });
-          }
-          return new Map(next);
-        });
+        const nextMap = new Map(loadedMapRef.current);
+        nextMap.set(workspaceId, updatedConfig);
+        loadedMapRef.current = nextMap;
+        setLoadedMap(nextMap);
+        useTerminalStore.getState().syncWorkspaceTerminalOrder(
+          workspaceId,
+          newTerminals.map((terminal) => terminal.id),
+        );
 
         // 6. Aggiorna workspace store (per la sidebar)
         const agentCount = newTerminals.filter((t) => t.agentId).length;
@@ -375,45 +514,29 @@ export function WorkspaceView() {
           const currentWs = loadedMapRef.current.get(workspaceId);
           if (!currentWs) return;
 
-          const currentTerminals =
-            workspaceTerminalsRef.current.workspaceId === workspaceId
-              ? workspaceTerminalsRef.current.terminals
-              : currentWs.terminals;
-          const newTerminals = swapItemsById(currentTerminals, draggedId, targetId);
-          if (newTerminals === currentTerminals) return;
-
-          workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
-
-          const updatedConfig = {
-            id: workspaceId,
-            name: currentWs.name,
-            rootPath: currentWs.rootPath,
-            layout: currentWs.layout,
-            terminals: newTerminals,
-            createdAt: currentWs.createdAt,
-            updatedAt: new Date().toISOString(),
-          };
-
+          let updatedConfig: LoadedWorkspace;
           try {
-            await invokeWithTimeout(
-              () => invoke("update_workspace", { id: workspaceId, config: updatedConfig }),
-              10000,
+            updatedConfig = await persistTerminalMutation(
+              workspaceId,
+              currentWs,
+              (terminals) => swapItemsById(terminals, draggedId, targetId),
             );
           } catch (err) {
             console.error("Errore aggiornamento workspace dopo riordino:", err);
+            return;
           }
-
-          setLoadedMap((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(workspaceId);
-            if (existing) {
-              next.set(workspaceId, {
-                ...existing,
-                terminals: newTerminals,
-              });
-            }
-            return new Map(next);
-          });
+          workspaceTerminalsRef.current = {
+            workspaceId,
+            terminals: updatedConfig.terminals,
+          };
+          const nextMap = new Map(loadedMapRef.current);
+          nextMap.set(workspaceId, updatedConfig);
+          loadedMapRef.current = nextMap;
+          setLoadedMap(nextMap);
+          useTerminalStore.getState().syncWorkspaceTerminalOrder(
+            workspaceId,
+            updatedConfig.terminals.map((terminal) => terminal.id),
+          );
         })
         .catch((err) => {
           console.error("Reorder queue error:", err);
@@ -479,10 +602,11 @@ export function WorkspaceView() {
         };
 
         // 1. Spawn backend
+        let runtime: TerminalRuntimeIdentity;
         try {
-          await invokeWithTimeout(
+          runtime = await invokeWithTimeout(
             () =>
-              invoke("terminal_spawn", {
+              invoke<TerminalRuntimeIdentity>("terminal_spawn", {
                 terminalId: newId,
                 shell: newTerminal.shell,
                 cwd: newTerminal.cwd,
@@ -493,6 +617,11 @@ export function WorkspaceView() {
               }),
             10000,
           );
+          if (runtime.workspaceId !== workspaceId) {
+            throw new Error(
+              `stale-terminal-workspace: expected ${workspaceId}, current ${runtime.workspaceId || "missing"}`,
+            );
+          }
         } catch (err) {
           console.error("Errore spawn terminale:", err);
           return;
@@ -510,48 +639,59 @@ export function WorkspaceView() {
         // The PTY was spawned before React mounted TerminalPane. Mark it as
         // live so the first pane mount rehydrates the prompt/state instead of
         // assuming it is a brand-new stream whose initial output was missed.
-        useTerminalStore.getState().markSpawned(newId);
+        useTerminalStore.getState().markSpawned(
+          newId,
+          runtime.workspaceId,
+          runtime.generation,
+          runtime.processId,
+        );
 
         // 3. Aggiungi alla lista e ricalcola layout (ref sincrono)
-        const newTerminals = [...currentTerminals, newTerminal];
-        const newLayout = computeLayout(newTerminals.length);
-        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
-
-        // 4. Aggiorna backend
+        // 3/4. Append with revision validation so a concurrent Jarvis open is
+        // retained. If the fresh config is full, roll back this exact PTY.
+        let updatedConfig: LoadedWorkspace;
         try {
-          await invokeWithTimeout(
-            () =>
-              invoke("update_workspace", {
-                id: workspaceId,
-                config: {
-                  id: workspaceId,
-                  name: currentWs.name,
-                  rootPath: currentWs.rootPath,
-                  layout: newLayout,
-                  terminals: newTerminals,
-                  createdAt: currentWs.createdAt,
-                  updatedAt: new Date().toISOString(),
-                },
-              }),
-            10000,
+          updatedConfig = await persistTerminalMutation(
+            workspaceId,
+            currentWs,
+            (terminals) => {
+              if (terminals.some((terminal) => terminal.id === newId)) return terminals;
+              if (terminals.length >= MAX_TERMINALS_PER_WORKSPACE) {
+                throw new Error("workspace_terminal_limit");
+              }
+              return [...terminals, newTerminal];
+            },
           );
         } catch (err) {
           console.error("Errore aggiornamento workspace:", err);
+          try {
+            await invokeWithTimeout(
+              () => invoke("terminal_kill", {
+                terminalId: newId,
+                workspaceId: runtime.workspaceId,
+                generation: runtime.generation,
+                processId: runtime.processId,
+              }),
+              5000,
+            );
+          } catch (rollbackError) {
+            console.warn("New terminal rollback failed:", rollbackError);
+          }
+          useTerminalStore.getState().removeTerminal(newId, runtime.generation);
+          return;
         }
+        const newTerminals = updatedConfig.terminals;
+        workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
         // 5. Aggiorna loadedMap
-        setLoadedMap((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(workspaceId);
-          if (existing) {
-            next.set(workspaceId, {
-              ...existing,
-              terminals: newTerminals,
-              layout: newLayout,
-            });
-          }
-          return new Map(next);
-        });
+        const nextMap = new Map(loadedMapRef.current);
+        nextMap.set(workspaceId, updatedConfig);
+        loadedMapRef.current = nextMap;
+        setLoadedMap(nextMap);
+        useTerminalStore.getState().syncWorkspaceTerminalOrder(
+          workspaceId,
+          newTerminals.map((terminal) => terminal.id),
+        );
 
         // 6. Aggiorna workspace store + attiva il nuovo terminale
         useWorkspaceStore.getState().updateWorkspace(workspaceId, {

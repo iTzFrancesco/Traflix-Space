@@ -87,7 +87,8 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
   assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
-  assert.match(widgetSource, /aria-live="polite"/);
+  assert.match(widgetSource, /aria-live=\{props\.voiceError \? "assertive" : "polite"\}/);
+  assert.match(widgetSource, /const statusLabel = props\.voiceError/);
   assert.doesNotMatch(widgetSource, /statusText|helperText|jarvis-pill__helper|jarvis-pill__label/);
   assert.doesNotMatch(widgetSource, /Premi il microfono per riattivarlo|Pronto ad ascoltare|Sempre pronto|In ascolto · il silenzio invia automaticamente/);
   assert.match(widgetSource, /voiceRequest\?\.status === "armed"/);
@@ -197,8 +198,9 @@ test("workspace config LRU is PTY-safe, active-safe and self-healing", () => {
 test("frontend agent launch is deduplicated and rolls back after bounded write failures", () => {
   assert.match(agentLauncherSource, /MAX_LAUNCH_ATTEMPTS = 2/);
   assert.match(agentLauncherSource, /queuedTerminals = new Set<string>/);
-  assert.match(agentLauncherSource, /this\.queuedTerminals\.has\(terminalId\)/);
-  assert.match(agentLauncherSource, /rollbackLaunchState\(terminalId\)/);
+  assert.match(agentLauncherSource, /this\.queuedTerminals\.has\(key\)/);
+  assert.match(agentLauncherSource, /rollbackLaunchState\(launch\)/);
+  assert.match(agentLauncherSource, /terminal\.agentLaunchOwner === "backend"/);
   assert.match(agentLauncherSource, /agentLaunched: false/);
   assert.match(agentLauncherSource, /await invoke\("terminal_write"/);
 });

@@ -36,6 +36,8 @@ pub struct AgentTurnCompletedEvent {
     #[serde(default)]
     pub generation: Option<u64>,
     #[serde(default)]
+    pub process_id: Option<u32>,
+    #[serde(default)]
     pub event_id: Option<String>,
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -112,7 +114,7 @@ impl AgentTurnCompletedEvent {
 }
 
 fn matches_terminal_generation(event_generation: Option<u64>, current_generation: u64) -> bool {
-    event_generation.is_none() || event_generation == Some(current_generation)
+    event_generation == Some(current_generation)
 }
 
 pub fn start_listener(app: AppHandle) {
@@ -197,7 +199,7 @@ fn pipe_busy(error: &std::io::Error) -> bool {
 }
 
 async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
-    let event = match serde_json::from_str::<AgentTurnCompletedEvent>(payload) {
+    let mut event = match serde_json::from_str::<AgentTurnCompletedEvent>(payload) {
         Ok(event) => event,
         Err(error) => {
             warn!(%error, "Agent event payload rejected: invalid JSON");
@@ -224,6 +226,76 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
         return;
     }
 
+    let manager = app.state::<TerminalManager>();
+    let terminal_known = manager.has_session(&event.terminal_id);
+    if !terminal_known {
+        // A completion without a current PTY identity cannot be distinguished
+        // from a late event emitted after close/reopen. Forwarding it would
+        // produce a chime/toast that can no longer open the originating pane.
+        warn!(terminal_id = %event.terminal_id, "Agent completion ignored for unknown or closed terminal");
+        return;
+    }
+
+    let local_snapshot = if terminal_known {
+        match manager.get_agent_snapshot(&event.terminal_id).await {
+            Ok(Some(snapshot)) => {
+                if !matches_terminal_generation(event.generation, snapshot.generation) {
+                    warn!(
+                        terminal_id = %event.terminal_id,
+                        event_generation = ?event.generation,
+                        current_generation = snapshot.generation,
+                        "Agent completion ignored: missing or stale terminal generation"
+                    );
+                    return;
+                }
+                if let Some(event_process_id) = event.process_id {
+                    if snapshot.process_id != Some(event_process_id) {
+                        warn!(
+                            terminal_id = %event.terminal_id,
+                            event_process_id,
+                            current_process_id = ?snapshot.process_id,
+                            "Agent completion ignored for stale terminal process"
+                        );
+                        return;
+                    }
+                }
+                if let Some(event_workspace_id) = event
+                    .workspace_id
+                    .as_deref()
+                    .filter(|workspace_id| !workspace_id.is_empty())
+                {
+                    if event_workspace_id != snapshot.workspace_id {
+                        warn!(
+                            terminal_id = %event.terminal_id,
+                            event_workspace_id,
+                            current_workspace_id = %snapshot.workspace_id,
+                            "Agent completion ignored for mismatched workspace"
+                        );
+                        return;
+                    }
+                }
+                // The terminal manager is authoritative for locally-owned events.
+                // Adapters know the generation from the PTY environment; process and
+                // workspace are normalized here before the frontend sees the event.
+                event.generation = Some(snapshot.generation);
+                event.process_id = snapshot.process_id;
+                event.workspace_id = Some(snapshot.workspace_id.clone());
+                Some(snapshot)
+            }
+            _ => {
+                warn!(
+                    terminal_id = %event.terminal_id,
+                    "Agent completion could not be correlated with a terminal agent session"
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
+    // Deduplicate only after local identity validation. An invalid stale event
+    // must not reserve the event key and suppress the legitimate current event.
     if let Some(key) = event.dedupe_key() {
         if !registry.accept_once(key) {
             info!(
@@ -236,71 +308,68 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
         }
     }
 
-    let manager = app.state::<TerminalManager>();
-    let terminal_known = manager.has_session(&event.terminal_id);
-    if !terminal_known {
-        // The bridge deliberately fans out to DEV and release. The other
-        // instance does not own this PTY, but it still needs the event so its
-        // Traflix overlay can notify the user above the desktop.
-        warn!(terminal_id = %event.terminal_id, "Agent event received for a terminal owned by another Traflix instance");
-    }
-
-    if terminal_known {
-        if let Ok(Some(snapshot)) = manager.get_agent_snapshot(&event.terminal_id).await {
-            if !matches_terminal_generation(event.generation, snapshot.generation) {
-                if let Some(event_generation) = event.generation {
-                    warn!(
-                        terminal_id = %event.terminal_id,
-                        event_generation,
-                        current_generation = snapshot.generation,
-                        "Agent completion ignored for stale terminal generation"
-                    );
-                }
-                return;
-            }
-            let _ = manager
-                .observe_agent_provider(
-                    &event.terminal_id,
-                    &event.provider,
-                    "completion-event",
-                    1.0,
+    if let Some(snapshot) = local_snapshot {
+        if manager
+            .observe_agent_provider_for_runtime(
+                &event.terminal_id,
+                &snapshot.workspace_id,
+                snapshot.generation,
+                snapshot.process_id,
+                &event.provider,
+                "completion-event",
+                1.0,
+            )
+            .await
+            .is_err()
+        {
+            warn!(terminal_id = %event.terminal_id, "Agent completion ignored because its PTY lifetime was replaced");
+            return;
+        }
+        let observed_at = event
+            .occurred_at
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let fallback = manager
+            .get_recent_normalized_terminal_text_for_runtime(
+                &event.terminal_id,
+                &snapshot.workspace_id,
+                snapshot.generation,
+                snapshot.process_id,
+                MAX_TERMINAL_FALLBACK_BYTES,
+            )
+            .await
+            .ok()
+            .and_then(|text| {
+                fallback_result_from_terminal_with_truncation(
+                    &text.content,
+                    text.truncated,
+                    &observed_at,
                 )
-                .await;
-            let observed_at = event
-                .occurred_at
-                .clone()
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-            let fallback = manager
-                .get_recent_normalized_terminal_text(
-                    &event.terminal_id,
-                    MAX_TERMINAL_FALLBACK_BYTES,
-                )
-                .await
-                .ok()
-                .and_then(|text| {
-                    fallback_result_from_terminal_with_truncation(
-                        &text.content,
-                        text.truncated,
-                        &observed_at,
-                    )
-                });
-            let observation = CompletionObservation {
-                provider: event.provider.clone(),
-                event_id: event.event_id.clone(),
-                provider_session_id: event.provider_session_id.clone(),
-                provider_turn_id: event.provider_turn_id.clone(),
-                occurred_at: event.occurred_at.clone(),
-            };
-            if let Some(jarvis) = app.try_state::<JarvisState>() {
-                jarvis
-                    .registry
-                    .observe_completion(&snapshot, observation, fallback, &observed_at);
-            }
-        } else {
-            warn!(
-                terminal_id = %event.terminal_id,
-                "Agent completion could not be correlated with a terminal agent session"
-            );
+            });
+        if manager
+            .validate_runtime_identity(
+                &event.terminal_id,
+                &snapshot.workspace_id,
+                snapshot.generation,
+                snapshot.process_id,
+            )
+            .await
+            .is_err()
+        {
+            warn!(terminal_id = %event.terminal_id, "Agent completion ignored after runtime changed during tail capture");
+            return;
+        }
+        let observation = CompletionObservation {
+            provider: event.provider.clone(),
+            event_id: event.event_id.clone(),
+            provider_session_id: event.provider_session_id.clone(),
+            provider_turn_id: event.provider_turn_id.clone(),
+            occurred_at: event.occurred_at.clone(),
+        };
+        if let Some(jarvis) = app.try_state::<JarvisState>() {
+            jarvis
+                .registry
+                .observe_completion(&snapshot, observation, fallback, &observed_at);
         }
     }
 
@@ -310,6 +379,25 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
         event_id = event.event_id.as_deref().unwrap_or("-"),
         "Agent notification accepted"
     );
+    let Some(workspace_id) = event.workspace_id.as_deref() else {
+        return;
+    };
+    let Some(generation) = event.generation else {
+        return;
+    };
+    if manager
+        .validate_runtime_identity(
+            &event.terminal_id,
+            workspace_id,
+            generation,
+            event.process_id,
+        )
+        .await
+        .is_err()
+    {
+        warn!(terminal_id = %event.terminal_id, "Agent completion ignored before emit because runtime changed");
+        return;
+    }
     match app.emit("agent-turn-completed", event) {
         Ok(()) => info!("Agent notification forwarded to frontend"),
         Err(error) => warn!(%error, "Agent notification could not reach frontend"),
@@ -327,6 +415,7 @@ mod tests {
             kind: "turn_completed".to_string(),
             terminal_id: "terminal-1".to_string(),
             generation: Some(1),
+            process_id: Some(100),
             event_id: Some("event-1".to_string()),
             workspace_id: None,
             provider_session_id: Some("session-1".to_string()),
@@ -370,6 +459,6 @@ mod tests {
     fn completion_generation_must_match_the_current_terminal_generation() {
         assert!(matches_terminal_generation(Some(7), 7));
         assert!(!matches_terminal_generation(Some(6), 7));
-        assert!(matches_terminal_generation(None, 7));
+        assert!(!matches_terminal_generation(None, 7));
     }
 }

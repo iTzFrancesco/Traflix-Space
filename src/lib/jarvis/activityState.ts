@@ -224,7 +224,10 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
     pendingActions,
     activities,
   } = input;
-  if (voiceError) return "Errore voce";
+  // Backend voice/TTS failures are already sanitized and localized. Surface
+  // that actionable message in the compact widget (and its full title/ARIA
+  // label) instead of reducing every failure to the opaque "Errore voce".
+  if (voiceError) return voiceError;
   if (!workspaceName || !workspaceId) return "Seleziona uno spazio di lavoro";
   if (voiceRequest?.status === "recording") return "In ascolto…";
   if (voiceRequest?.status === "armed") return "Ascolto attivo…";

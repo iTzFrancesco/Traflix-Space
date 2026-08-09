@@ -393,7 +393,7 @@ impl<'a> JarvisToolService<'a> {
 
 pub async fn list_terminals_for_workspace(
     manager: &TerminalManager,
-    workspace_id: &str,
+    workspace: &WorkspaceConfig,
     observed_at: &str,
 ) -> Vec<TerminalSummary> {
     let sessions = manager
@@ -404,7 +404,7 @@ pub async fn list_terminals_for_workspace(
     let mut terminals = Vec::new();
     for session in sessions {
         let session = session.read().await;
-        if session.workspace_id.as_deref() != Some(workspace_id) {
+        if session.workspace_id.as_deref() != Some(workspace.id.as_str()) {
             continue;
         }
         let cwd = session
@@ -414,7 +414,7 @@ pub async fn list_terminals_for_workspace(
             .unwrap_or_default();
         terminals.push(TerminalSummary {
             terminal_id: session.id.clone(),
-            workspace_id: workspace_id.to_string(),
+            workspace_id: workspace.id.clone(),
             title: session.title.clone(),
             shell: session.shell.clone(),
             cwd,
@@ -435,22 +435,31 @@ pub async fn list_terminals_for_workspace(
             provenance: Provenance::trusted("terminal-manager", observed_at),
         });
     }
-    terminals.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
-    terminals
+    canonicalize_terminal_order(terminals, workspace)
 }
 
-/// Overlay the persisted user title onto live PTY metadata. Jarvis reads the
-/// title as a semantic hint only; it never writes or normalizes it.
-pub fn apply_workspace_titles(terminals: &mut [TerminalSummary], workspace: &WorkspaceConfig) {
-    for terminal in terminals {
-        if let Some(config) = workspace
-            .terminals
-            .iter()
-            .find(|config| config.id == terminal.terminal_id)
-        {
+/// The persisted workspace order is the UI/Jarvis source of truth. Live PTYs
+/// missing from an older config are retained as deterministic extras so the
+/// unordered DashMap iteration can never become a semantic terminal index.
+pub fn canonicalize_terminal_order(
+    terminals: Vec<TerminalSummary>,
+    workspace: &WorkspaceConfig,
+) -> Vec<TerminalSummary> {
+    let mut runtime = terminals
+        .into_iter()
+        .map(|terminal| (terminal.terminal_id.clone(), terminal))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut ordered = Vec::with_capacity(runtime.len());
+    for config in &workspace.terminals {
+        if let Some(mut terminal) = runtime.remove(&config.id) {
             terminal.title = config.title.clone();
+            ordered.push(terminal);
         }
     }
+    let mut extras = runtime.into_values().collect::<Vec<_>>();
+    extras.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
+    ordered.extend(extras);
+    ordered
 }
 
 fn source_error(
@@ -476,4 +485,88 @@ fn error(
     observed_at: &str,
 ) -> JarvisErrorEnvelope {
     JarvisErrorEnvelope::new(code, message, request_id, workspace_id, observed_at)
+}
+
+#[cfg(test)]
+mod terminal_order_tests {
+    use super::canonicalize_terminal_order;
+    use crate::jarvis::types::{Provenance, TerminalSummary};
+    use crate::workspace::registry::{GridLayout, TerminalConfig, WorkspaceConfig};
+
+    fn terminal(id: &str, title: &str) -> TerminalSummary {
+        TerminalSummary {
+            terminal_id: id.into(),
+            workspace_id: "workspace".into(),
+            title: title.into(),
+            shell: "powershell.exe".into(),
+            cwd: "C:\\repo".into(),
+            active: false,
+            process_alive: true,
+            agent_id: None,
+            configured_agent_id: None,
+            observed_provider: None,
+            resolved_provider: "terminal-agent".into(),
+            detection_source: "test".into(),
+            detection_confidence: 1.0,
+            identity_warnings: vec![],
+            generation: 1,
+            provenance: Provenance::trusted("test", "now"),
+        }
+    }
+
+    fn config(id: &str, title: &str) -> TerminalConfig {
+        TerminalConfig {
+            id: id.into(),
+            shell: "powershell.exe".into(),
+            agent_id: None,
+            command: None,
+            cwd: "C:\\repo".into(),
+            title: title.into(),
+            workspace_id: Some("workspace".into()),
+        }
+    }
+
+    #[test]
+    fn persisted_order_and_titles_win_while_runtime_extras_are_sorted() {
+        let workspace = WorkspaceConfig {
+            id: "workspace".into(),
+            name: "Workspace".into(),
+            root_path: "C:\\repo".into(),
+            layout: GridLayout { rows: 2, cols: 2 },
+            terminals: vec![config("right", "Right"), config("left", "Left")],
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        let ordered = canonicalize_terminal_order(
+            vec![
+                terminal("z-extra", "Z"),
+                terminal("left", "runtime-left"),
+                terminal("ä-extra", "Unicode"),
+                terminal("\u{e000}-extra", "Private use"),
+                terminal("\u{10000}-extra", "Supplementary"),
+                terminal("A-extra", "Uppercase"),
+                terminal("a-extra", "A"),
+                terminal("right", "runtime-right"),
+            ],
+            &workspace,
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|terminal| terminal.terminal_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "right",
+                "left",
+                "A-extra",
+                "a-extra",
+                "z-extra",
+                "ä-extra",
+                "\u{e000}-extra",
+                "\u{10000}-extra",
+            ]
+        );
+        assert_eq!(ordered[0].title, "Right");
+        assert_eq!(ordered[1].title, "Left");
+    }
 }
