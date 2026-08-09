@@ -103,6 +103,8 @@ interface TerminalPaneProps {
   agentId?: string | null;
   /** Number of panes in this workspace; drives the title-bar density. */
   terminalCount: number;
+  /** Explicit layout epoch for sidebar, close, reorder and fullscreen changes. */
+  layoutRevision: string;
   isActive: boolean;
   /** This pane is the focus-mode target. */
   isFocused?: boolean;
@@ -298,6 +300,11 @@ const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
   width: "100%",
   minWidth: 0,
 };
+
+// Layout changes can span more than one browser frame (grid track calculation,
+// xterm canvas measurement, then WebView2's ConPTY resize). Retry only this
+// bounded number of animation frames when a measurement is still transient.
+const MAX_LAYOUT_FIT_RETRY_FRAMES = 5;
 
 const TITLE_BAR_BRANCH: React.CSSProperties = {
   display: "flex",
@@ -633,12 +640,12 @@ function fitAndResizePty(
   resizeStateRef: React.MutableRefObject<PtyResizeState>,
   fitInProgressRef: React.MutableRefObject<boolean>,
   windowFocusedRef: React.MutableRefObject<boolean>,
-) {
+): boolean {
   if (
     runtime === null ||
     !windowFocusedRef.current ||
     document.visibilityState === "hidden"
-  ) return;
+  ) return false;
 
   const layoutElement = term.element?.parentElement ?? term.element;
   const rect = layoutElement?.getBoundingClientRect();
@@ -655,7 +662,7 @@ function fitAndResizePty(
       rows: proposed.rows,
     })
   ) {
-    return;
+    return false;
   }
 
   // The refs are the authoritative viewport intent. xterm can temporarily
@@ -681,7 +688,7 @@ function fitAndResizePty(
     fitAddon.fit();
   } catch {
     // Fit can throw if container has zero size (hidden pane).
-    return;
+    return false;
   } finally {
     fitInProgressRef.current = false;
   }
@@ -695,7 +702,7 @@ function fitAndResizePty(
       rows: term.rows,
     })
   ) {
-    return;
+    return false;
   }
   if (positionBeforeFit.followsOutput) {
     // Following the live stream is the one case where an explicit bottom
@@ -765,6 +772,7 @@ function fitAndResizePty(
       });
     });
   }
+  return true;
 }
 
 interface PtyResizeState {
@@ -843,6 +851,7 @@ export const TerminalPane = memo(function TerminalPane({
   title,
   agentId,
   terminalCount,
+  layoutRevision,
   isActive,
   isFocused = false,
   focusModeActive = false,
@@ -902,9 +911,11 @@ export const TerminalPane = memo(function TerminalPane({
   const fitScheduleRef = useRef<{
     raf: number | null;
     remainingFrames: number;
+    retryFrames: number;
   }>({
     raf: null,
     remainingFrames: 0,
+    retryFrames: 0,
   });
   const resizeDebounceRef = useRef<number | null>(null);
   const scrollDisposableRef = useRef<{ dispose: () => void } | null>(null);
@@ -1041,6 +1052,10 @@ export const TerminalPane = memo(function TerminalPane({
   const scheduleFitAndResize = useCallback((waitFrames = 0) => {
     const schedule = fitScheduleRef.current;
     schedule.remainingFrames = Math.max(schedule.remainingFrames, waitFrames);
+    schedule.retryFrames = Math.max(
+      schedule.retryFrames,
+      waitFrames > 0 ? MAX_LAYOUT_FIT_RETRY_FRAMES : 2,
+    );
     if (schedule.raf !== null) return;
 
     const run = () => {
@@ -1053,19 +1068,31 @@ export const TerminalPane = memo(function TerminalPane({
       schedule.raf = null;
       const term = xtermRef.current;
       const fitAddon = fitAddonRef.current;
-      if (!term || !fitAddon) return;
+      if (!term || !fitAddon) {
+        schedule.retryFrames = 0;
+        return;
+      }
       // Snapshot reset/history/state replay owns xterm's dimensions until its
       // atomic cutover. A fit here would reflow a half-restored buffer.
-      if (rehydratingRef.current) return;
+      if (rehydratingRef.current) {
+        schedule.retryFrames = 0;
+        return;
+      }
       if (
         paneVisibilityRef.current.focusModeActive &&
         !paneVisibilityRef.current.isFocused
-      ) return;
+      ) {
+        schedule.retryFrames = 0;
+        return;
+      }
       if (
         !windowFocusedRef.current ||
         document.visibilityState === "hidden"
-      ) return;
-      fitAndResizePty(
+      ) {
+        schedule.retryFrames = 0;
+        return;
+      }
+      const fitted = fitAndResizePty(
         term,
         fitAddon,
         terminalId,
@@ -1083,6 +1110,13 @@ export const TerminalPane = memo(function TerminalPane({
         fitInProgressRef,
         windowFocusedRef,
       );
+      if (!fitted && schedule.retryFrames > 0) {
+        schedule.retryFrames -= 1;
+        schedule.remainingFrames = 1;
+        schedule.raf = requestAnimationFrame(run);
+        return;
+      }
+      schedule.retryFrames = 0;
       if (scrollPositionRef.current.followsOutput) {
         scheduleFollowBottomRepair();
       }
@@ -1444,6 +1478,7 @@ export const TerminalPane = memo(function TerminalPane({
         cancelAnimationFrame(fitScheduleRef.current.raf);
         fitScheduleRef.current.raf = null;
         fitScheduleRef.current.remainingFrames = 0;
+        fitScheduleRef.current.retryFrames = 0;
       }
       if (resizeDebounceRef.current !== null) {
         window.clearTimeout(resizeDebounceRef.current);
@@ -2233,7 +2268,7 @@ export const TerminalPane = memo(function TerminalPane({
       }
       observer.disconnect();
     };
-  }, [terminalId, terminalCount, focusModeActive, isFocused, scheduleFitAndResize]);
+  }, [terminalId, terminalCount, layoutRevision, focusModeActive, isFocused, scheduleFitAndResize]);
 
   useTerminalInput(terminalId, containerRef, xtermRef);
 

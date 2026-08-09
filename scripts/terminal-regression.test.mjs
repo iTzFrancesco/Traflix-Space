@@ -312,13 +312,16 @@ test("closing sibling panes re-arms the mounted pane fit and observes the outer 
   assert.match(resizeFlow, /level < 5/);
   assert.match(
     resizeFlow,
-    /\[terminalId, terminalCount, focusModeActive, isFocused, scheduleFitAndResize\]/,
+    /\[terminalId, terminalCount, layoutRevision, focusModeActive, isFocused, scheduleFitAndResize\]/,
     "a mounted pane must fit again when sibling closure changes the grid count",
   );
   assert.match(resizeFlow, /scheduleFitAndResize\(2\)/);
   assert.match(terminalPane, /const CONTAINER_STYLE[\s\S]*minWidth: 0[\s\S]*width: "100%"/);
   const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
   assert.match(workspaceGrid, /computeLayout\(terminals\.length\)/);
+  assert.match(workspaceGrid, /layoutRevision/);
+  assert.match(workspaceGrid, /sidebarWidth/);
+  assert.match(workspaceGrid, /sidebarCollapsed/);
   assert.match(workspaceGrid, /height: "100%"/);
   assert.match(workspaceGrid, /padding: isFocusMode[\s\S]*\? 0/);
   assert.match(workspaceGrid, /: \{ display: "none" \}/);
@@ -352,6 +355,25 @@ test("fullscreen and close transitions cannot retain stale grid tracks or an emp
     /bounded two-frame barrier[\s\S]*scheduleFitAndResize\(2\)/,
     "layout transitions must wait for the settled grid before fitting xterm",
   );
+  assert.match(
+    terminalPane,
+    /layoutRevision[\s\S]*scheduleFitAndResize\(2\)/,
+    "the pane must receive an explicit layout epoch in addition to ResizeObserver",
+  );
+  assert.match(terminalPane, /MAX_LAYOUT_FIT_RETRY_FRAMES = 5/);
+  assert.match(
+    terminalPane,
+    /const fitted = fitAndResizePty[\s\S]*if \(!fitted && schedule\.retryFrames > 0\)[\s\S]*schedule\.retryFrames -= 1/,
+    "a transient grid measurement must get bounded frame retries instead of waiting for a later click",
+  );
+});
+
+test("four-pane geometry collapses deterministically after each close", async () => {
+  const { computeLayout } = await import("../src/lib/presets.ts");
+  assert.deepEqual(computeLayout(4), { rows: 2, cols: 2 });
+  assert.deepEqual(computeLayout(3), { rows: 1, cols: 3 });
+  assert.deepEqual(computeLayout(2), { rows: 1, cols: 2 });
+  assert.deepEqual(computeLayout(1), { rows: 1, cols: 1 });
 });
 
 test("drag target overlay never blocks terminal scrollbar input", () => {
@@ -509,7 +531,7 @@ test("programmatic scroll guards expire deterministically and TUI input does not
     "follow repair must be bounded by frames, not an extendable time window",
   );
   assert.match(terminalPane, /remainingFrames/);
-  assert.match(terminalPane, /if \(rehydratingRef\.current\) return;/);
+  assert.match(terminalPane, /if \(rehydratingRef\.current\) \{[\s\S]*retryFrames = 0/);
 });
 
 test("canonical terminal order keeps persisted UI order and sorts runtime-only extras", async () => {

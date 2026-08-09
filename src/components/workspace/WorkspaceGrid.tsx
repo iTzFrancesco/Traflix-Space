@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { X } from "lucide-react";
 import { TerminalPane } from "./TerminalPane";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useUIStore } from "../../stores/uiStore";
 import { computeLayout } from "../../lib/presets";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
@@ -30,6 +31,10 @@ export function WorkspaceGrid({
   );
   const runtimeTerminals = useTerminalStore((state) => state.terminals);
   const toggleFocusTerminal = useTerminalStore((state) => state.toggleFocusTerminal);
+  // Sidebar drag/collapse changes the grid geometry before React necessarily
+  // delivers a ResizeObserver notification to every xterm pane.
+  const sidebarWidth = useUIStore((state) => state.sidebarWidth);
+  const sidebarCollapsed = useUIStore((state) => state.isCollapsed);
   const localFocusId = focusedTerminalId !== null && terminals.some((terminal) => terminal.id === focusedTerminalId)
     ? focusedTerminalId
     : null;
@@ -39,6 +44,14 @@ export function WorkspaceGrid({
   // tracks from the exact list rendered in this commit; otherwise a close or
   // reorder racing a cached config can leave empty tracks behind.
   const { rows, cols } = computeLayout(terminals.length);
+  const terminalIdsKey = terminals.map((terminal) => terminal.id).join(",");
+  const layoutRevision = [
+    workspaceId,
+    terminalIdsKey,
+    isFocusMode ? localFocusId : "grid",
+    sidebarCollapsed ? "collapsed" : String(sidebarWidth),
+    `${rows}x${cols}`,
+  ].join("|");
 
   const stableOnActivate = useCallback((id: string) => onActivate(id), [onActivate]);
   const stableOnToggleFocus = useCallback((id: string) => toggleFocusTerminal(id), [toggleFocusTerminal]);
@@ -54,7 +67,6 @@ export function WorkspaceGrid({
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, [localFocusId]);
 
-  const terminalIdsKey = terminals.map((terminal) => terminal.id).join(",");
   useEffect(() => {
     useTerminalStore.getState().restoreWorkspaceSelection(
       workspaceId,
@@ -116,6 +128,7 @@ export function WorkspaceGrid({
               title={terminal.title}
               agentId={terminal.agentId}
               terminalCount={terminals.length}
+              layoutRevision={layoutRevision}
               closeRequestToken={closeRequest?.terminalId === terminal.id ? closeRequest.token : undefined}
               isActive={terminal.id === activeTerminalId}
               isFocused={isFocused}
