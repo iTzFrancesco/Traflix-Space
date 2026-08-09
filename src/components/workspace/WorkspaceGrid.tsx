@@ -5,6 +5,7 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface WorkspaceGridProps {
+  workspaceId: string;
   rows: number;
   cols: number;
   terminals: TerminalConfig[];
@@ -15,6 +16,7 @@ interface WorkspaceGridProps {
 }
 
 export function WorkspaceGrid({
+  workspaceId,
   rows,
   cols,
   terminals,
@@ -23,8 +25,12 @@ export function WorkspaceGrid({
   onCloseTerminal,
   onReorderTerminals,
 }: WorkspaceGridProps) {
-  const activeTerminalId = useTerminalStore((state) => state.activeTerminalId);
-  const focusedTerminalId = useTerminalStore((state) => state.focusedTerminalId);
+  const activeTerminalId = useTerminalStore(
+    (state) => state.activeTerminalByWorkspace[workspaceId] ?? null,
+  );
+  const focusedTerminalId = useTerminalStore(
+    (state) => state.focusedTerminalByWorkspace[workspaceId] ?? null,
+  );
   const runtimeTerminals = useTerminalStore((state) => state.terminals);
   const toggleFocusTerminal = useTerminalStore((state) => state.toggleFocusTerminal);
   const localFocusId = focusedTerminalId !== null && terminals.some((terminal) => terminal.id === focusedTerminalId)
@@ -41,7 +47,7 @@ export function WorkspaceGrid({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      useTerminalStore.getState().setFocusedTerminal(null);
+      useTerminalStore.getState().toggleFocusTerminal(localFocusId);
     };
     document.addEventListener("keydown", onKey, { capture: true });
     return () => document.removeEventListener("keydown", onKey, { capture: true });
@@ -49,9 +55,11 @@ export function WorkspaceGrid({
 
   const terminalIdsKey = terminals.map((terminal) => terminal.id).join(",");
   useEffect(() => {
-    const focused = useTerminalStore.getState().focusedTerminalId;
-    if (focused && !useTerminalStore.getState().terminals[focused]) useTerminalStore.getState().setFocusedTerminal(null);
-  }, [terminalIdsKey, terminals]);
+    useTerminalStore.getState().restoreWorkspaceSelection(
+      workspaceId,
+      terminals.map((terminal) => terminal.id),
+    );
+  }, [terminalIdsKey, workspaceId]);
 
   if (terminals.length === 0) {
     return (
@@ -118,9 +126,8 @@ export function WorkspaceGrid({
               isFocused={isFocused}
               focusModeActive={isFocusMode}
               onActivate={stableOnActivate}
-              // TerminalPane historically schedules an automatic close after a
-              // natural process exit. Once exited, keep that callback absent so
-              // its recovery overlay remains usable instead of disappearing.
+              // An exited lifetime remains visible and restartable. Removal is
+              // an explicit action bound to the exact generation below.
               onClose={hasExited ? undefined : onCloseTerminal}
               onToggleFocus={stableOnToggleFocus}
               onReorder={onReorderTerminals}

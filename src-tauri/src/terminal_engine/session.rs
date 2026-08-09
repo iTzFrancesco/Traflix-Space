@@ -846,39 +846,84 @@ impl TerminalSession {
         Ok(())
     }
 
-    pub fn kill(&mut self) {
+    pub fn kill(&mut self) -> Result<(), String> {
+        // Do not tear down the session until the OS accepted termination. A
+        // failed ChildKiller call must leave all handles and liveness state in
+        // place so the manager can reinsert the exact session and let the user
+        // retry, instead of reporting a false successful close.
+        if self.process_alive.load(Ordering::Acquire) {
+            let kill_result = self
+                .pty
+                .as_ref()
+                .ok_or_else(|| "PTY child killer unavailable".to_string())
+                .and_then(|pty| {
+                    let mut killer = pty
+                        .lock()
+                        .map_err(|_| "PTY child killer lock poisoned".to_string())?;
+                    killer
+                        .kill()
+                        .map_err(|error| format!("PTY child kill failed: {error}"))
+                });
+
+            if let Err(kill_error) = kill_result {
+                // A process can exit naturally just before kill reaches the
+                // OS. Treat that case as success, but never hide a live child
+                // or a failed liveness check.
+                let observed_exit = match self.child.as_ref() {
+                    Some(child) => {
+                        let mut child = child
+                            .lock()
+                            .map_err(|_| format!("{kill_error}; child lock poisoned"))?;
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                self.process_exit_code
+                                    .store(status.exit_code() as i32, Ordering::Release);
+                                true
+                            }
+                            Ok(None) => false,
+                            Err(error) => {
+                                return Err(format!(
+                                    "{kill_error}; child liveness check failed: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    None => false,
+                };
+                if !observed_exit {
+                    return Err(kill_error);
+                }
+            }
+        }
+
         // 1. Signal reader + watch threads (Acquire/Release pairing with loads).
         self.reader_stop.store(true, Ordering::Release);
         self.process_alive.store(false, Ordering::Release);
 
-        // 2. Suppress exit events for forced kills.
+        // 2. Suppress exit events for a manager-owned close. If the watcher
+        // won a genuine exit race before this point, its event remains valid.
         self.exit_emitted.store(true, Ordering::Release);
 
         // 3. Drop writer so the child sees EOF on stdin.
         self.writer = None;
 
-        // 4. Kill the child process tree via portable-pty ChildKiller.
-        if let Some(ref pty) = self.pty {
-            if let Ok(mut killer) = pty.lock() {
-                let _ = killer.kill();
-            }
-        }
-
-        // 5. Best-effort wait so the OS reaps the process promptly.
+        // 4. Best-effort reap after a successful kill/natural exit. Failure at
+        // this point is diagnostic only: termination was already confirmed or
+        // accepted by the OS and retaining a dead session cannot improve it.
         if let Some(ref child) = self.child {
             if let Ok(mut c) = child.lock() {
                 let _ = c.try_wait();
             }
         }
 
-        // 6. Drop master PTY — closes the pair and unblocks a blocking
+        // 5. Drop master PTY — closes the pair and unblocks a blocking
         //    reader.read() so the spawn_blocking reader task can finish.
         self.master = None;
         self.pty = None;
         self.reader = None;
         self.child = None;
 
-        // 7. Free scrollback/screen buffers held by a lingering Arc session.
+        // 6. Free scrollback/screen buffers held by a lingering Arc session.
         let cols = self.grid.cols.max(1);
         let rows = self.grid.rows.max(1);
         self.grid = GridBuffer::new(cols, rows);
@@ -887,6 +932,7 @@ impl TerminalSession {
         }
 
         info!(terminal_id = %self.id, "Terminal session cleaned up");
+        Ok(())
     }
 }
 
@@ -932,6 +978,29 @@ fn resolve_agent_bridge_path(app: &AppHandle) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::TerminalSession;
+    use portable_pty::ChildKiller;
+    use std::io;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Copy, Debug)]
+    struct TestChildKiller {
+        succeeds: bool,
+    }
+
+    impl ChildKiller for TestChildKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            if self.succeeds {
+                Ok(())
+            } else {
+                Err(io::Error::other("injected kill failure"))
+            }
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(*self)
+        }
+    }
 
     fn make_session() -> TerminalSession {
         TerminalSession::new(
@@ -942,6 +1011,11 @@ mod tests {
             80,
             24,
         )
+    }
+
+    fn set_test_killer(session: &mut TerminalSession, succeeds: bool) {
+        let killer: Box<dyn ChildKiller + Send> = Box::new(TestChildKiller { succeeds });
+        session.pty = Some(Arc::new(Mutex::new(killer)));
     }
 
     #[test]
@@ -1014,5 +1088,31 @@ mod tests {
         assert!(session.resize(2, 24).is_err());
         assert!(session.resize(80, 1).is_err());
         assert!(session.resize(8, 2).is_ok());
+    }
+
+    #[test]
+    fn failed_child_kill_preserves_a_retryable_live_session() {
+        let mut session = make_session();
+        session.process_alive.store(true, Ordering::Release);
+        set_test_killer(&mut session, false);
+
+        assert!(session.kill().is_err());
+        assert!(session.process_alive.load(Ordering::Acquire));
+        assert!(!session.reader_stop.load(Ordering::Acquire));
+        assert!(!session.exit_emitted.load(Ordering::Acquire));
+        assert!(session.pty.is_some());
+    }
+
+    #[test]
+    fn successful_child_kill_commits_cleanup() {
+        let mut session = make_session();
+        session.process_alive.store(true, Ordering::Release);
+        set_test_killer(&mut session, true);
+
+        session.kill().unwrap();
+        assert!(!session.process_alive.load(Ordering::Acquire));
+        assert!(session.reader_stop.load(Ordering::Acquire));
+        assert!(session.exit_emitted.load(Ordering::Acquire));
+        assert!(session.pty.is_none());
     }
 }

@@ -49,6 +49,9 @@ export interface TerminalOutput {
   processId: number | null;
   data: number[];
   sequence: number;
+  /** Frontend batching overflowed; discard local bytes and take a new snapshot. */
+  resyncRequired?: boolean;
+  resyncReason?: "frontend-queue-overflow";
   /** Internal batch metadata retained so rehydrate can filter exact chunks. */
   chunks?: Array<{
     workspaceId: string;

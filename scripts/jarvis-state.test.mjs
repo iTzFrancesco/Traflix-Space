@@ -287,6 +287,9 @@ test("completion chime failures require a visual notification fallback", () => {
   assert.equal(chimeNeedsVisualFallback({ status: "resume_failed" }), true);
   assert.equal(chimeNeedsVisualFallback({ status: "unsupported" }), true);
   const chimeSource = source("../src/lib/agentNotificationSound.ts");
+  const completionListenerSource = source(
+    "../src/components/agent/AgentCompletionListener.tsx",
+  );
   assert.ok(
     chimeSource.indexOf("scheduleChime(context)") <
       chimeSource.indexOf("lastPlayedAt = performance.now()"),
@@ -298,6 +301,11 @@ test("completion chime failures require a visual notification fallback", () => {
     "the first completion must not be throttled before any chime was scheduled",
   );
   assert.match(chimeSource, /remainingNotes === 0\) master\.disconnect\(\)/);
+  assert.match(chimeSource, /export async function primeAgentCompletionChime/);
+  assert.match(chimeSource, /audioContext\.resume\(\)/);
+  assert.match(completionListenerSource, /primeChimeFromGesture/);
+  assert.match(completionListenerSource, /window\.addEventListener\("pointerdown"/);
+  assert.match(completionListenerSource, /window\.addEventListener\("keydown"/);
 });
 
 test("idle and active status hierarchy stays compact", () => {
@@ -485,6 +493,23 @@ test("agent.open creates the same visible Traflix PTY and waits for readiness", 
   assert.match(controlSource, /set_backend_agent_launch_state/);
   assert.match(controlSource, /launch_state: "starting"/);
   assert.match(controlSource, /launch_state: "ready"/);
+  assert.match(controlSource, /Duration::from_secs\(30\)/);
+  assert.match(controlSource, /ReadinessEvidence::ProcessTree/);
+  assert.match(controlSource, /ReadinessEvidence::TerminalHint/);
+  assert.match(controlSource, /validate_readiness_runtime/);
+  assert.match(controlSource, /startup_failure_code/);
+});
+
+test("agent.open rollback removes config only after the exact PTY lifetime is removed", () => {
+  const rollbackStart = controlSource.indexOf("async fn rollback_open_agent");
+  const rollbackEnd = controlSource.indexOf("async fn wait_until_ready", rollbackStart);
+  const rollback = controlSource.slice(rollbackStart, rollbackEnd);
+  assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart);
+  assert.ok(
+    rollback.indexOf("kill_generation") < rollback.indexOf("commit_terminal_close"),
+  );
+  assert.match(rollback, /rollback-runtime-mismatch/);
+  assert.match(rollback, /rollback-close-commit-failed/);
 });
 
 test("no hidden provider session or completion-triggered future chain exists", () => {

@@ -155,6 +155,7 @@ pub struct TerminalSummary {
     pub shell: String,
     pub cwd: String,
     pub active: bool,
+    pub process_id: Option<u32>,
     pub process_alive: bool,
     pub agent_id: Option<String>,
     pub configured_agent_id: Option<String>,

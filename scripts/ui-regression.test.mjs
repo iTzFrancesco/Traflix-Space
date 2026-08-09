@@ -171,9 +171,17 @@ test("Git drafts and destructive confirmations cannot leak across workspaces", (
 test("late workspace loads cannot steal active terminal ownership", () => {
   assert.match(
     workspaceViewSource,
-    /firstId\s*&&\s*useWorkspaceStore\.getState\(\)\.activeWorkspaceId === id[\s\S]*terminalStore\.setActiveTerminal\(firstId\)/,
+    /useWorkspaceStore\.getState\(\)\.activeWorkspaceId === id[\s\S]*terminalStore\.restoreWorkspaceSelection\(id, terminalIds\)/,
   );
   assert.doesNotMatch(workspaceViewSource, /let cancelled = false/);
+});
+
+test("transient workspace load failures expose a deterministic retry instead of a blank view", () => {
+  assert.match(workspaceViewSource, /failedWorkspaceLoads/);
+  assert.match(workspaceViewSource, /workspace-load-error/);
+  assert.match(workspaceViewSource, /Impossibile caricare lo spazio di lavoro/);
+  assert.match(workspaceViewSource, /onClick=\{\(\) => loadWorkspace\(activeWorkspaceId\)\}/);
+  assert.doesNotMatch(workspaceViewSource, /if \(!activeLoaded\) return null/);
 });
 
 test("workspace config LRU is PTY-safe, active-safe and self-healing", () => {

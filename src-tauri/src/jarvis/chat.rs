@@ -991,8 +991,11 @@ async fn execute_read_tool(
             };
             match app
                 .state::<TerminalManager>()
-                .get_recent_normalized_terminal_text(
+                .get_recent_normalized_terminal_text_for_runtime(
                     terminal_id,
+                    &terminal.workspace_id,
+                    terminal.generation,
+                    terminal.process_id,
                     crate::jarvis::control::MAX_TAIL_BYTES,
                 )
                 .await

@@ -196,6 +196,7 @@ export interface TerminalSummary {
   shell: string;
   cwd: string;
   active: boolean;
+  processId: number | null;
   processAlive: boolean;
   agentId?: string;
   configuredAgentId?: string;

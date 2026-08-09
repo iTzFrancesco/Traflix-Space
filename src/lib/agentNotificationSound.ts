@@ -22,6 +22,34 @@ export interface AgentCompletionChimeResult {
 let audioContext: AudioContext | null = null;
 let lastPlayedAt = 0;
 
+function audioContextConstructor(): typeof AudioContext | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+}
+
+/** Prime Web Audio from a real user gesture before an asynchronous completion. */
+export async function primeAgentCompletionChime(): Promise<void> {
+  try {
+    const AudioContextConstructor = audioContextConstructor();
+    if (!AudioContextConstructor) return;
+    if (!audioContext || audioContext.state === "closed") {
+      audioContext = new AudioContextConstructor();
+    }
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    console.info("[agent-notification] audio context primed", {
+      audioContextState: audioContext.state,
+    });
+  } catch (error) {
+    console.warn("[agent-notification] audio context prime failed", {
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
+  }
+}
+
 function diagnosticContext(context: AgentCompletionChimeContext) {
   return {
     eventId: context.eventId ?? "-",
@@ -106,10 +134,7 @@ export async function playAgentCompletionChime(
     return { status: "throttled" };
   }
   try {
-    const AudioContextConstructor =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
+    const AudioContextConstructor = audioContextConstructor();
     if (!AudioContextConstructor) {
       console.warn("[agent-notification] Web Audio API unavailable", details);
       reportChimeFailure("unsupported", event);

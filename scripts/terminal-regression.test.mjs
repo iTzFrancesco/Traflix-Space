@@ -39,6 +39,70 @@ test("terminal output is subscribed and ready before PTY spawn", () => {
   assert.match(terminalPane, /outputProtocolRef\.current\.installSnapshot/);
 });
 
+test("hidden-window PTY batching is bounded and requests an identity-scoped resync", async () => {
+  const {
+    affectedTerminalOutputRuntimes,
+    isTerminalOutputQueueOverflow,
+    MAX_PENDING_OUTPUT_BYTES,
+    MAX_PENDING_OUTPUT_CHUNKS,
+  } = await import("../src/lib/terminalOutputQueue.ts");
+  assert.equal(isTerminalOutputQueueOverflow(MAX_PENDING_OUTPUT_CHUNKS, 1), false);
+  assert.equal(isTerminalOutputQueueOverflow(MAX_PENDING_OUTPUT_CHUNKS + 1, 1), true);
+  assert.equal(isTerminalOutputQueueOverflow(1, MAX_PENDING_OUTPUT_BYTES), false);
+  assert.equal(isTerminalOutputQueueOverflow(1, MAX_PENDING_OUTPUT_BYTES + 1), true);
+  assert.deepEqual(
+    affectedTerminalOutputRuntimes([
+      outputChunk(8, "old", 7, 42),
+      outputChunk(9, "old-later", 7, 42),
+      outputChunk(1, "new", 8, 84),
+    ]),
+    [
+      { workspaceId: "workspace-a", generation: 7, processId: 42, sequence: 9 },
+      { workspaceId: "workspace-a", generation: 8, processId: 84, sequence: 1 },
+    ],
+  );
+  assert.match(terminalEvents, /isTerminalOutputQueueOverflow\(list\.length, queuedBytes\)/);
+  assert.match(terminalEvents, /HIDDEN_WINDOW_FLUSH_FALLBACK_MS/);
+  assert.match(terminalEvents, /window\.setTimeout\([\s\S]*flushOutput/);
+  assert.match(terminalEvents, /resyncReason: "frontend-queue-overflow"/);
+  assert.match(
+    terminalPane,
+    /payload\.resyncRequired[\s\S]*sameRuntimeKey\(currentRuntimeKey\(terminalId\), signaledRuntime\)[\s\S]*startRehydrate\(signaledRuntime\)/,
+  );
+
+  const {
+    cancelTerminalWrites,
+    createTerminalWriteBackpressure,
+    MAX_PENDING_XTERM_BYTES,
+    releaseTerminalWrite,
+    reserveTerminalWrite,
+    waitForTerminalWrites,
+  } = await import("../src/lib/terminalWriteBackpressure.ts");
+  const writes = createTerminalWriteBackpressure();
+  assert.equal(reserveTerminalWrite(writes, MAX_PENDING_XTERM_BYTES), true);
+  assert.equal(reserveTerminalWrite(writes, 1), false);
+  let drained = false;
+  const drain = waitForTerminalWrites(writes).then(() => {
+    drained = true;
+  });
+  await Promise.resolve();
+  assert.equal(drained, false);
+  releaseTerminalWrite(writes, MAX_PENDING_XTERM_BYTES);
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(reserveTerminalWrite(writes, 1), true);
+  const cancelledDrain = waitForTerminalWrites(writes);
+  cancelTerminalWrites(writes);
+  await cancelledDrain;
+  assert.equal(reserveTerminalWrite(writes, 1), false);
+  assert.match(
+    terminalPane,
+    /await waitForTerminalWrites\(xtermWriteBackpressureRef\.current\)[\s\S]*termNow\.reset\(\)/,
+    "snapshot reset must drain accepted live xterm writes first",
+  );
+  assert.match(terminalPane, /xterm-write-backpressure/);
+});
+
 test("window blur cannot send transient two-column PTY resizes", async () => {
   const { isStableTerminalLayout } = await import("../src/lib/terminalPolicies.ts");
 
@@ -132,7 +196,11 @@ test("PTY generations protect reopen events and manual reopen rehydrates before 
   assert.match(terminalPane, /expectedGeneration/);
   assert.match(terminalPane, /setRestartToken/);
   assert.match(terminalPane, /terminal_get_screen_text/);
-  assert.match(terminalPane, /reopeningRef\.current/);
+  assert.match(
+    terminalPane,
+    /const handleRestart = useCallback\(async \(\) => \{[\s\S]*if \(reopeningRef\.current\) return;[\s\S]*reopeningRef\.current = true;/,
+    "concurrent restart clicks must share one exact PTY lifetime",
+  );
 });
 
 test("backend exit and active-state paths preserve real lifecycle semantics", () => {
@@ -143,6 +211,8 @@ test("backend exit and active-state paths preserve real lifecycle semantics", ()
   assert.match(session, /status\.exit_code\(\)/);
   assert.doesNotMatch(session, /TerminalExited \{[\s\S]*exit_code: 0,[\s\S]*\}/);
   assert.match(manager, /Validate and recover the target before changing either active marker/);
+  assert.match(manager, /ensure_spawn_workspace_matches/);
+  assert.match(manager, /terminal-workspace-mismatch/);
   assert.match(
     commands,
     /pub async fn terminal_reopen[\s\S]*Result<crate::terminal_engine::TerminalRuntimeIdentity, String>/,
@@ -150,12 +220,86 @@ test("backend exit and active-state paths preserve real lifecycle semantics", ()
   assert.match(commands, /kill_generation[\s\S]*expected_generation[\s\S]*\.await\?/);
   assert.match(commands, /validate_runtime_identity/);
   assert.match(commands, /workspace_id: String[\s\S]*generation: u64[\s\S]*process_id: Option<u32>/);
+  const activeEffect = terminalPane.slice(
+    terminalPane.indexOf("// 3. Active focus"),
+    terminalPane.indexOf("// 3b. Enter/exit focus mode"),
+  );
+  assert.match(activeEffect, /runtimeGeneration !== null/);
+  assert.match(
+    activeEffect,
+    /runtimeGeneration,[\s\S]*runtimeProcessId,[\s\S]*terminalWorkspaceId/,
+    "backend focus must be reasserted when the initial or reopened PTY identity arrives",
+  );
+  assert.doesNotMatch(
+    terminalPane,
+    /Auto-close pane shortly after natural shell exit/,
+    "a natural exit must remain restartable until an explicit remove/reopen action",
+  );
+  assert.match(terminalPane, /getCurrentWebviewWindow\(\)\.isFocused\(\)/);
+  assert.match(
+    terminalPane,
+    /document\.hasFocus\(\) can be false while[\s\S]*xterm owns the focused element/,
+  );
 });
 
-test("cached workspace re-entry restores an active terminal", () => {
+test("terminal close commits frontend removal only after durable config persistence", () => {
+  const manager = source("../src-tauri/src/terminal_engine/mod.rs");
+  const commands = source("../src-tauri/src/terminal_engine/commands.rs");
+  const closeStart = workspaceView.indexOf("const handleCloseTerminal");
+  const closeEnd = workspaceView.indexOf("const handleActivateTerminal", closeStart);
+  const closeFlow = workspaceView.slice(closeStart, closeEnd);
+  const kill = closeFlow.indexOf('invoke("terminal_kill"');
+  const tombstone = closeFlow.indexOf("markExited(", kill);
+  const persist = closeFlow.indexOf('invoke<LoadedWorkspace>("terminal_commit_close"', tombstone);
+  const remove = closeFlow.indexOf("removeTerminal(", persist);
+  assert.ok(kill >= 0 && tombstone > kill && persist > tombstone && remove > persist);
+  assert.match(closeFlow, /exactExitedRuntimeAlreadyAbsent/);
+  assert.match(closeFlow, /close retry found an already removed runtime/);
+  assert.match(
+    closeFlow,
+    /terminalRuntime\.generation === null[\s\S]*close-before-runtime-ready[\s\S]*return/,
+    "a close must not remove config until it can kill one exact PTY lifetime",
+  );
+  assert.match(
+    terminalPane,
+    /if \(!isCurrent\(\)\)[\s\S]*disposed-spawn-cleanup/,
+    "a spawn completing after real terminal removal must clean up its exact runtime",
+  );
+  assert.match(
+    manager,
+    /commit_terminal_close[\s\S]*workspace_lifecycle\.lock\(\)\.await[\s\S]*self\.sessions\.get\(terminal_id\)[\s\S]*remove_terminal_and_save/,
+    "config removal must share the spawn barrier and reject a replacement lifetime",
+  );
+  assert.match(commands, /pub async fn terminal_commit_close/);
+});
+
+test("cached workspace re-entry restores its remembered active and focused terminal", () => {
   assert.match(
     workspaceView,
-    /activeLoaded[\s\S]*setActiveTerminal\(firstActiveTerminalId\)/,
+    /activeLoaded[\s\S]*restoreWorkspaceSelection\([\s\S]*activeLoaded\.terminals\.map/,
+  );
+  const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+  assert.match(workspaceGrid, /activeTerminalByWorkspace\[workspaceId\]/);
+  assert.match(workspaceGrid, /focusedTerminalByWorkspace\[workspaceId\]/);
+  assert.match(
+    workspaceView,
+    /activeLoaded\.terminals\.length === 0[\s\S]*terminal_set_active[\s\S]*terminalId: ""/,
+  );
+});
+
+test("an async terminal add cannot steal selection after a workspace switch", () => {
+  const addStart = workspaceView.indexOf("const handleAddTerminal");
+  const addEnd = workspaceView.indexOf("// Esponi handleAddTerminal", addStart);
+  const addFlow = workspaceView.slice(addStart, addEnd);
+  assert.match(
+    addFlow,
+    /activeWorkspaceId === workspaceId[\s\S]*setActiveTerminal\(newId\)/,
+  );
+  assert.match(addFlow, /New terminal rollback failed/);
+  assert.match(
+    addFlow,
+    /retainedConfig[\s\S]*syncWorkspaceTerminalOrder[\s\S]*Il terminale è rimasto aperto/,
+    "a failed rollback must keep the live PTY visible and retryable",
   );
 });
 
@@ -184,6 +328,7 @@ test("workspace teardown saves the last stable scroll intent", () => {
 test("scroll state preserves bottom, middle, and top while rejecting transient top samples", async () => {
   const {
     positionAfterHiddenOutput,
+    positionAfterUnmountedOutput,
     positionFromViewport,
     viewportForPosition,
     reconcileScrollSample,
@@ -193,20 +338,46 @@ test("scroll state preserves bottom, middle, and top while rejecting transient t
   const middle = positionFromViewport(1000, 430);
   const top = positionFromViewport(1000, 0);
   assert.deepEqual(bottom, { followsOutput: true, offsetFromBottom: 0 });
-  assert.deepEqual(middle, { followsOutput: false, offsetFromBottom: 570 });
-  assert.deepEqual(top, { followsOutput: false, offsetFromBottom: 1000 });
+  assert.deepEqual(middle, {
+    followsOutput: false,
+    offsetFromBottom: 570,
+    baseYAtCapture: 1000,
+  });
+  assert.deepEqual(top, {
+    followsOutput: false,
+    offsetFromBottom: 1000,
+    baseYAtCapture: 1000,
+  });
   assert.equal(viewportForPosition(1000, bottom), 1000);
   assert.equal(viewportForPosition(1000, middle), 430);
   assert.equal(viewportForPosition(1000, top), 0);
   assert.deepEqual(
     positionAfterHiddenOutput(middle, 1000, 1040),
-    { followsOutput: false, offsetFromBottom: 610 },
+    { followsOutput: false, offsetFromBottom: 610, baseYAtCapture: 1040 },
   );
   assert.equal(positionAfterHiddenOutput(bottom, 1000, 1040), bottom);
+  const afterUnmountedOutput = positionAfterUnmountedOutput(middle, 1040);
+  assert.deepEqual(afterUnmountedOutput, {
+    followsOutput: false,
+    offsetFromBottom: 610,
+    baseYAtCapture: 1040,
+  });
+  assert.equal(viewportForPosition(1040, afterUnmountedOutput), 430);
+  const queuedHiddenWrite = positionAfterHiddenOutput(
+    positionAfterHiddenOutput(middle, 1000, 1010),
+    1010,
+    1020,
+  );
+  assert.deepEqual(queuedHiddenWrite, {
+    followsOutput: false,
+    offsetFromBottom: 590,
+    baseYAtCapture: 1020,
+  });
 
   for (const transient of [
-    { layoutStable: false, fitInProgress: false },
-    { layoutStable: true, fitInProgress: true },
+    { layoutStable: false, fitInProgress: false, rehydrating: false },
+    { layoutStable: true, fitInProgress: true, rehydrating: false },
+    { layoutStable: true, fitInProgress: false, rehydrating: true },
   ]) {
     assert.deepEqual(
       reconcileScrollSample(middle, {
@@ -226,6 +397,7 @@ test("scroll state preserves bottom, middle, and top while rejecting transient t
       viewportY: 0,
       layoutStable: true,
       fitInProgress: false,
+      rehydrating: false,
       userInitiated: false,
       programmatic: false,
     }),
@@ -237,11 +409,56 @@ test("scroll state preserves bottom, middle, and top while rejecting transient t
       viewportY: 0,
       layoutStable: true,
       fitInProgress: false,
+      rehydrating: false,
       userInitiated: true,
       programmatic: false,
     }),
     { position: top, captured: true, repairFollow: false },
   );
+});
+
+test("programmatic scroll guards expire deterministically and TUI input does not change viewport intent", async () => {
+  const {
+    cancelProgrammaticScroll,
+    isTerminalViewportNavigationKey,
+    runProgrammaticScroll,
+    shouldTrackTerminalWheel,
+  } = await import("../src/lib/terminalScrollState.ts");
+
+  const guard = { epoch: 0, target: null };
+  const deferred = [];
+  runProgrammaticScroll(
+    guard,
+    () => {},
+    () => 41,
+    (clear) => deferred.push(clear),
+  );
+  assert.equal(guard.target, 41);
+  deferred.shift()();
+  assert.equal(guard.target, null);
+
+  runProgrammaticScroll(
+    guard,
+    () => cancelProgrammaticScroll(guard),
+    () => 99,
+    (clear) => deferred.push(clear),
+  );
+  assert.equal(guard.target, null, "user input inside a restore must invalidate it");
+
+  assert.equal(shouldTrackTerminalWheel("alternate"), false);
+  assert.equal(shouldTrackTerminalWheel("normal"), true);
+  assert.equal(isTerminalViewportNavigationKey("alternate", "PageUp", true), false);
+  assert.equal(isTerminalViewportNavigationKey("normal", "ArrowUp", false), false);
+  assert.equal(isTerminalViewportNavigationKey("normal", "PageUp", false), false);
+  assert.equal(isTerminalViewportNavigationKey("normal", "PageUp", true), true);
+
+  assert.doesNotMatch(
+    terminalPane,
+    /performance\.now\(\)[\s\S]*followBottomRepair/,
+    "follow repair must be bounded by frames, not an extendable time window",
+  );
+  assert.match(terminalPane, /remainingFrames/);
+  assert.match(terminalPane, /if \(rehydratingRef\.current\) return;/);
 });
 
 test("canonical terminal order keeps persisted UI order and sorts runtime-only extras", async () => {
@@ -261,6 +478,72 @@ test("canonical terminal order keeps persisted UI order and sorts runtime-only e
     ),
     ["A-extra", "Z-extra", "a-extra", "ä-extra", "\uE000-extra", "\u{10000}-extra"],
     "runtime extras must use the same locale-independent lexical order as Rust",
+  );
+});
+
+test("workspace switching preserves pane selection and focus for agents and plain PowerShell", async () => {
+  const { useTerminalStore } = await import("../src/stores/terminalStore.ts");
+  useTerminalStore.setState({
+    terminals: {},
+    terminalOrderByWorkspace: {},
+    activeTerminalByWorkspace: {},
+    focusedTerminalByWorkspace: {},
+    activeTerminalId: null,
+    focusedTerminalId: null,
+    terminalTitles: {},
+    draggedTerminalId: null,
+    dragHoveredTerminalId: null,
+  });
+  const store = useTerminalStore.getState();
+  for (const terminal of [
+    { id: "plain-a", workspaceId: "workspace-a", agent: null },
+    { id: "agent-a", workspaceId: "workspace-a", agent: "codex" },
+    { id: "plain-b", workspaceId: "workspace-b", agent: null },
+  ]) {
+    store.addTerminal({
+      ...terminal,
+      shell: "powershell.exe",
+      cwd: `C:\\${terminal.workspaceId}`,
+      title: terminal.id,
+    });
+  }
+  store.syncWorkspaceTerminalOrder("workspace-a", ["plain-a", "agent-a"]);
+  store.syncWorkspaceTerminalOrder("workspace-b", ["plain-b"]);
+  store.setActiveTerminal("agent-a");
+  store.setFocusedTerminal("agent-a");
+
+  store.restoreWorkspaceSelection("workspace-b", ["plain-b"]);
+  assert.equal(useTerminalStore.getState().activeTerminalId, "plain-b");
+  assert.equal(useTerminalStore.getState().focusedTerminalId, null);
+  assert.equal(
+    useTerminalStore.getState().activeTerminalByWorkspace["workspace-a"],
+    "agent-a",
+  );
+  assert.equal(
+    useTerminalStore.getState().focusedTerminalByWorkspace["workspace-a"],
+    "agent-a",
+  );
+
+  // Reorder and 20+ returns cannot replace a valid remembered identity with
+  // the first persisted pane.
+  for (let index = 0; index < 24; index += 1) {
+    store.syncWorkspaceTerminalOrder(
+      "workspace-a",
+      index % 2 === 0 ? ["agent-a", "plain-a"] : ["plain-a", "agent-a"],
+    );
+    store.restoreWorkspaceSelection("workspace-a", ["plain-a", "agent-a"]);
+    assert.equal(useTerminalStore.getState().activeTerminalId, "agent-a");
+    assert.equal(useTerminalStore.getState().focusedTerminalId, "agent-a");
+    store.restoreWorkspaceSelection("workspace-b", ["plain-b"]);
+  }
+
+  store.restoreWorkspaceSelection("workspace-a", ["plain-a", "agent-a"]);
+  store.removeTerminal("agent-a");
+  assert.equal(useTerminalStore.getState().activeTerminalId, "plain-a");
+  assert.equal(useTerminalStore.getState().focusedTerminalId, null);
+  assert.equal(
+    useTerminalStore.getState().activeTerminalByWorkspace["workspace-a"],
+    "plain-a",
   );
 });
 
@@ -385,6 +668,8 @@ test("terminal lifecycle rejects stale open, exit, completion, and cross-workspa
   useTerminalStore.setState({
     terminals: {},
     terminalOrderByWorkspace: {},
+    activeTerminalByWorkspace: {},
+    focusedTerminalByWorkspace: {},
     activeTerminalId: null,
     focusedTerminalId: null,
     terminalTitles: {},
@@ -485,6 +770,19 @@ test("terminal lifecycle rejects stale open, exit, completion, and cross-workspa
   );
 });
 
+test("terminal title stays aligned with the durable Jarvis-facing configuration", () => {
+  const renameStart = terminalPane.indexOf("const handleRenameSubmit");
+  const renameEnd = terminalPane.indexOf("const handleRenameKeyDown", renameStart);
+  const renameFlow = terminalPane.slice(renameStart, renameEnd);
+  assert.ok(renameStart >= 0 && renameEnd > renameStart);
+  assert.ok(
+    renameFlow.indexOf('invoke("update_terminal_title"') <
+      renameFlow.indexOf("renameTerminal(terminalId, trimmed)"),
+  );
+  assert.match(renameFlow, /terminal-title-error/);
+  assert.doesNotMatch(renameFlow, /catch\(\(\) => undefined\)/);
+});
+
 test("workspace load ordering and launch dedupe use the full runtime identity", async () => {
   const {
     acceptsWorkspaceRevision,
@@ -561,7 +859,7 @@ test("workspace load ordering and launch dedupe use the full runtime identity", 
   assert.match(frame, /agent_launch_state: Option<String>/);
   assert.ok(
     control.indexOf('set_backend_agent_launch_state(&terminal_id, &runtime, "starting")') <
-      control.indexOf(".append_terminal(&workspace.id"),
+      control.indexOf(".append_terminal_and_save(&workspace.id"),
     "backend launch ownership must be durable before the workspace can mount the pane",
   );
   assert.match(
@@ -594,6 +892,8 @@ test("32 reopen and workspace-switch cycles never admit stale output or lifecycl
   useTerminalStore.setState({
     terminals: {},
     terminalOrderByWorkspace: {},
+    activeTerminalByWorkspace: {},
+    focusedTerminalByWorkspace: {},
     activeTerminalId: null,
     focusedTerminalId: null,
     terminalTitles: {},

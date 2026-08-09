@@ -5,6 +5,7 @@ import test from "node:test";
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const terminalStore = source("../src/stores/terminalStore.ts");
+const workspaceStore = source("../src/stores/workspaceStore.ts");
 const agents = source("../src/lib/agents.ts");
 const agentRegistry = source("../src-tauri/src/agent/registry.rs");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
@@ -12,6 +13,9 @@ const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const workspaceWizard = source("../src/components/workspace/NewSpaceWizard.tsx");
 const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
+const workspaceRegistry = source("../src-tauri/src/workspace/registry.rs");
+const terminalManager = source("../src-tauri/src/terminal_engine/mod.rs");
+const sidebar = source("../src/components/layout/Sidebar.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
@@ -105,6 +109,38 @@ test("new workspaces validate real directories and the human folder picker has n
     /invokeWithTimeout\([\s\S]{0,160}select_folder/,
   );
   assert.doesNotMatch(workspaceWizard, /30000/);
+});
+
+test("workspace deletion shuts down PTYs before persistence and never relies on fire-and-forget cleanup", () => {
+  const shutdown = workspaceCommands.indexOf("shutdown_workspace(&app, &id)");
+  const remove = workspaceCommands.indexOf("remove_workspace_and_save(&id)", shutdown);
+  assert.ok(shutdown >= 0 && remove > shutdown);
+  assert.match(terminalManager, /workspace_lifecycle: tokio::sync::Mutex/);
+  assert.match(terminalManager, /closing_workspaces: DashSet/);
+  assert.match(terminalManager, /workspace-closing/);
+  assert.match(terminalStore, /forgetWorkspaceTerminals/);
+  assert.doesNotMatch(terminalStore, /fire-and-forget|invoke\("terminal_kill"/);
+  assert.match(sidebar, /catch \(error\)[\s\S]*addToast\([\s\S]*return;[\s\S]*forgetWorkspaceTerminals/);
+  assert.doesNotMatch(
+    workspaceStore,
+    /if \(backendWorkspaces\.length === 0\) return/,
+    "an empty authoritative registry must not leave ghost local workspaces",
+  );
+});
+
+test("workspace registry saves through a flushed same-directory atomic replacement", () => {
+  assert.match(workspaceRegistry, /NamedTempFile::new_in\(parent\)/);
+  assert.match(workspaceRegistry, /write_all\(data\)/);
+  assert.match(workspaceRegistry, /sync_all\(\)/);
+  assert.match(workspaceRegistry, /\.persist\(path\)/);
+  assert.doesNotMatch(workspaceRegistry, /std::fs::write\(&self\.registry_path/);
+  assert.match(workspaceRegistry, /mutation_lock: Mutex/);
+  assert.match(
+    workspaceRegistry,
+    /let previous = map\.clone\(\);[\s\S]*if let Err\(error\) = self\.save_map\(&map\)[\s\S]*\*map = previous/,
+  );
+  assert.match(workspaceRegistry, /append_terminal_and_save/);
+  assert.match(workspaceRegistry, /remove_terminal_and_save/);
 });
 
 test("dotenv credentials are refreshed without exposing secret values to the frontend", () => {

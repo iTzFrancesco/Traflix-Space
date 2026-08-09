@@ -5,6 +5,7 @@ import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import {
   chimeNeedsVisualFallback,
   playAgentCompletionChime,
+  primeAgentCompletionChime,
 } from "../../lib/agentNotificationSound";
 import {
   AGENT_NOTIFICATION_OPEN_EVENT,
@@ -110,8 +111,12 @@ async function handleCompletion(event: AgentTurnCompleted) {
     // Native Tauri focus is reliable while xterm owns the focused element;
     // document.hasFocus() can be false in that situation in WebView2.
     appHasFocus = await getCurrentWebviewWindow().isFocused();
-  } catch {
+  } catch (error) {
     // Browser preview and older runtimes fall back to the DOM signal.
+    console.debug("[agent-notification] native focus unavailable; using DOM focus", {
+      terminalId: event.terminalId,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
   }
   console.info("[agent-notification] focus resolved", {
     terminalId: event.terminalId,
@@ -198,6 +203,23 @@ async function handleCompletion(event: AgentTurnCompleted) {
 
 export function AgentCompletionListener() {
   useEffect(() => {
+    let chimePrimeRequested = false;
+    const primeChimeFromGesture = () => {
+      if (chimePrimeRequested) return;
+      chimePrimeRequested = true;
+      window.removeEventListener("pointerdown", primeChimeFromGesture, true);
+      window.removeEventListener("keydown", primeChimeFromGesture, true);
+      void primeAgentCompletionChime();
+    };
+    window.addEventListener("pointerdown", primeChimeFromGesture, {
+      capture: true,
+      once: true,
+    });
+    window.addEventListener("keydown", primeChimeFromGesture, {
+      capture: true,
+      once: true,
+    });
+
     const unsubscribe = subscribeAgentTurnCompleted(handleCompletion);
     let unlisten: UnlistenFn | undefined;
     const setup = listen<{
@@ -256,8 +278,10 @@ export function AgentCompletionListener() {
     });
 
     return () => {
+      window.removeEventListener("pointerdown", primeChimeFromGesture, true);
+      window.removeEventListener("keydown", primeChimeFromGesture, true);
       unsubscribe();
-      void setup.then(() => unlisten?.()).catch(() => undefined);
+      void setup.then(() => unlisten?.());
     };
   }, []);
   return null;

@@ -18,6 +18,7 @@ tauri-plugin-pty = "0.3.0"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 chrono = { version = "0.4", features = ["serde"] }

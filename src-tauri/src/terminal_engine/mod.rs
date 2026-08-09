@@ -11,13 +11,13 @@ pub use frame::{FrameSnapshot, TerminalRehydrateState, TerminalRuntimeIdentity};
 pub use session::{TerminalSession, MIN_TERMINAL_COLS, MIN_TERMINAL_ROWS};
 
 use dashmap::mapref::entry::Entry;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(windows)]
 use crate::jarvis::runtime_detector::detect_from_process_tree_async;
@@ -31,6 +31,11 @@ pub struct TerminalManager {
     scheduler: tokio::sync::Mutex<FrameScheduler>,
     /// Currently focused terminal id (avoids write-locking every session on set_active).
     active_id: tokio::sync::Mutex<Option<String>>,
+    /// Serializes the brief check/insert seam with workspace shutdown. Without
+    /// this gate, a stale TerminalPane spawn could land between a deletion
+    /// sweep and the frontend unmount, leaving a PTY without a workspace.
+    workspace_lifecycle: tokio::sync::Mutex<()>,
+    closing_workspaces: DashSet<String>,
     next_generation: AtomicU64,
     detector_started: std::sync::atomic::AtomicBool,
 }
@@ -89,6 +94,8 @@ impl TerminalManager {
             sessions: DashMap::new(),
             scheduler: tokio::sync::Mutex::new(FrameScheduler::new()),
             active_id: tokio::sync::Mutex::new(None),
+            workspace_lifecycle: tokio::sync::Mutex::new(()),
+            closing_workspaces: DashSet::new(),
             next_generation: AtomicU64::new(generation_seed),
             detector_started: std::sync::atomic::AtomicBool::new(false),
         }
@@ -104,6 +111,9 @@ impl TerminalManager {
         let id = config.id.clone();
         let initial_cols = cols.max(MIN_TERMINAL_COLS);
         let initial_rows = rows.max(MIN_TERMINAL_ROWS);
+        let workspace_id = config.workspace_id.clone().unwrap_or_default();
+        let lifecycle = self.workspace_lifecycle.lock().await;
+        self.ensure_workspace_accepts_spawns(&workspace_id)?;
 
         // Reuse a live PTY. If it exited while the frontend was unmounted,
         // report that state instead of silently replacing an agent session
@@ -115,6 +125,10 @@ impl TerminalManager {
                 let session_state = session.read().await;
                 let process_alive = session_state.process_alive.load(Ordering::Acquire);
                 let spawn_in_progress = session_state.pty.is_none();
+                ensure_spawn_workspace_matches(
+                    session_state.workspace_id.as_deref(),
+                    &workspace_id,
+                )?;
                 drop(session_state);
 
                 if process_alive || spawn_in_progress {
@@ -188,13 +202,15 @@ impl TerminalManager {
                 }
             }
         }
-
         // Spawn the shell immediately so the PTY reader starts sending output.
-        // If spawn fails, remove the empty session to avoid zombies in the map.
+        // Keep the lifecycle barrier through this cutover: otherwise an exact
+        // close can remove the map entry while spawn_shell still owns its Arc,
+        // allowing an untracked child process to be created after removal.
         if let Err(e) = self.spawn_shell(&app, &id).await {
             let _ = self.sessions.remove(&id);
             return Err(e);
         }
+        drop(lifecycle);
 
         if let Some(snapshot) = self.get_agent_snapshot(&id).await.ok().flatten() {
             if snapshot.is_agent_terminal {
@@ -206,11 +222,20 @@ impl TerminalManager {
     }
 
     pub async fn spawn_shell(&self, app: &AppHandle, id: &str) -> Result<(), String> {
-        let session = self
+        let session_arc = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
-        let mut session = session.write().await;
+        let mut session = session_arc.write().await;
+        let current = self
+            .sessions
+            .get(id)
+            .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+            .unwrap_or(false);
+        if !current {
+            return Err("stale-terminal-generation: session was removed before spawn".to_string());
+        }
         if session.pty.is_some() {
             if session.process_alive.load(Ordering::Acquire) {
                 return Ok(());
@@ -229,6 +254,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let generation = session.read().await.generation;
         Ok(generation)
@@ -238,6 +264,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         Ok(TerminalRuntimeIdentity {
@@ -622,6 +649,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         session.resize(cols, rows)?;
@@ -659,6 +687,7 @@ impl TerminalManager {
     }
 
     pub async fn kill(&self, app: &AppHandle, id: &str) -> Result<(), String> {
+        let _lifecycle = self.workspace_lifecycle.lock().await;
         let session = self
             .sessions
             .remove(id)
@@ -672,6 +701,7 @@ impl TerminalManager {
         id: &str,
         expected_generation: u64,
     ) -> Result<(), String> {
+        let _lifecycle = self.workspace_lifecycle.lock().await;
         let expected_session = self
             .sessions
             .get(id)
@@ -691,16 +721,135 @@ impl TerminalManager {
         self.finish_removed_session(app, id, removed.1).await
     }
 
+    /// Close the runtime half of a workspace before its persisted definition is
+    /// deleted. The closing marker and session selection share the same short
+    /// lifecycle gate as `spawn`, making the cutover deterministic: a spawn is
+    /// either selected by this sweep or rejected as `workspace-closing`.
+    pub async fn shutdown_workspace(
+        &self,
+        app: &AppHandle,
+        workspace_id: &str,
+    ) -> Result<usize, String> {
+        let lifecycle = self.workspace_lifecycle.lock().await;
+        self.closing_workspaces.insert(workspace_id.to_string());
+
+        let candidates = self
+            .sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        let mut removed = Vec::new();
+        for (terminal_id, session) in candidates {
+            let owns_workspace = session
+                .read()
+                .await
+                .workspace_id
+                .as_deref()
+                .is_some_and(|candidate| candidate == workspace_id);
+            if !owns_workspace {
+                continue;
+            }
+            if let Some((_, session)) = self
+                .sessions
+                .remove_if(&terminal_id, |_, current| Arc::ptr_eq(current, &session))
+            {
+                removed.push((terminal_id, session));
+            }
+        }
+        drop(lifecycle);
+
+        let removed_count = removed.len();
+        let mut first_error = None;
+        for (terminal_id, session) in removed {
+            if let Err(error) = self
+                .finish_removed_session(app, &terminal_id, session)
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(removed_count),
+        }
+    }
+
+    /// Commit the persistent half of an exact terminal close while `spawn`
+    /// shares this lifecycle gate. A replacement generation that appeared
+    /// after `kill_generation` aborts the commit, so an old close can never
+    /// remove the configuration that now owns a new PTY lifetime.
+    pub async fn commit_terminal_close(
+        &self,
+        registry: &crate::workspace::registry::WorkspaceRegistry,
+        terminal_id: &str,
+        workspace_id: &str,
+        expected_generation: u64,
+        expected_process_id: Option<u32>,
+    ) -> Result<crate::workspace::registry::WorkspaceConfig, String> {
+        let _lifecycle = self.workspace_lifecycle.lock().await;
+        self.ensure_workspace_accepts_spawns(workspace_id)?;
+
+        if let Some(entry) = self.sessions.get(terminal_id) {
+            let session = entry.value().clone();
+            drop(entry);
+            let session = session.read().await;
+            return Err(format!(
+                "terminal-close-race: expected generation {expected_generation} process {:?}, current generation {} process {:?}",
+                expected_process_id, session.generation, session.process_id,
+            ));
+        }
+
+        registry
+            .remove_terminal_and_save(workspace_id, terminal_id)
+            .await?
+            .ok_or_else(|| "workspace non disponibile".to_string())
+    }
+
+    /// Re-open the spawn gate only when a failed deletion was rolled back or a
+    /// workspace with the same explicit id was successfully created again.
+    pub fn allow_workspace_spawns(&self, workspace_id: &str) {
+        self.closing_workspaces.remove(workspace_id);
+    }
+
+    fn ensure_workspace_accepts_spawns(&self, workspace_id: &str) -> Result<(), String> {
+        if !workspace_id.is_empty() && self.closing_workspaces.contains(workspace_id) {
+            return Err(format!("workspace-closing: {workspace_id}"));
+        }
+        Ok(())
+    }
+
     async fn finish_removed_session(
         &self,
         app: &AppHandle,
         id: &str,
-        session: Arc<RwLock<TerminalSession>>,
+        session_arc: Arc<RwLock<TerminalSession>>,
     ) -> Result<(), String> {
-        let mut session = session.write().await;
+        let mut session = session_arc.write().await;
         let mut agent_snapshot = snapshot_from_session(&session);
+        if let Err(error) = session.kill() {
+            drop(session);
+            let restored = match self.sessions.entry(id.to_string()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(Arc::clone(&session_arc));
+                    true
+                }
+                Entry::Occupied(entry) => Arc::ptr_eq(entry.get(), &session_arc),
+            };
+            warn!(
+                terminal_id = %id,
+                error_code = "terminal-kill-failed",
+                restored,
+                error = %error,
+                "Terminal kill failed; runtime session retained for retry"
+            );
+            return if restored {
+                Err(format!("terminal-kill-failed: {error}"))
+            } else {
+                Err(format!("terminal-kill-rollback-collision: {error}"))
+            };
+        }
         agent_snapshot.process_alive = false;
-        session.kill();
+        drop(session);
         self.scheduler.lock().await.stop(id);
 
         let mut active = self.active_id.lock().await;
@@ -727,9 +876,18 @@ impl TerminalManager {
             "Killing all terminal sessions on shutdown"
         );
         for id in ids {
-            if let Some((_, session)) = self.sessions.remove(&id) {
-                let mut session = session.write().await;
-                session.kill();
+            if let Some((_, session_arc)) = self.sessions.remove(&id) {
+                let mut session = session_arc.write().await;
+                if let Err(error) = session.kill() {
+                    drop(session);
+                    self.sessions.insert(id.clone(), session_arc);
+                    warn!(
+                        terminal_id = %id,
+                        error_code = "terminal-kill-failed",
+                        error = %error,
+                        "Terminal remained registered after shutdown kill failure"
+                    );
+                }
             }
             self.scheduler.lock().await.stop(&id);
         }
@@ -738,6 +896,7 @@ impl TerminalManager {
     }
 
     pub async fn set_active(&self, app: &AppHandle, id: Option<&str>) -> Result<(), String> {
+        let _lifecycle = self.workspace_lifecycle.lock().await;
         // Validate and recover the target before changing either active marker.
         // A failed spawn must leave the previous terminal active.
         if let Some(new_id) = id {
@@ -757,14 +916,18 @@ impl TerminalManager {
 
         if let Some(prev_id) = prev {
             if Some(prev_id.as_str()) != id {
-                if let Some(entry) = self.sessions.get(&prev_id) {
-                    entry.write().await.active = false;
+                if let Some(session) = self
+                    .sessions
+                    .get(&prev_id)
+                    .map(|entry| entry.value().clone())
+                {
+                    session.write().await.active = false;
                 }
             }
         }
         if let Some(new_id) = id {
-            if let Some(entry) = self.sessions.get(new_id) {
-                entry.write().await.active = true;
+            if let Some(session) = self.sessions.get(new_id).map(|entry| entry.value().clone()) {
+                session.write().await.active = true;
             }
         }
 
@@ -782,6 +945,7 @@ impl TerminalManager {
         generation: u64,
         process_id: Option<u32>,
     ) -> Result<(), String> {
+        let _lifecycle = self.workspace_lifecycle.lock().await;
         let target = self
             .session_for_runtime(id, workspace_id, generation, process_id)
             .await?;
@@ -814,8 +978,12 @@ impl TerminalManager {
         let previous = active.replace(id.to_string());
         drop(active);
         if let Some(previous_id) = previous.filter(|previous_id| previous_id != id) {
-            if let Some(entry) = self.sessions.get(&previous_id) {
-                entry.write().await.active = false;
+            if let Some(session) = self
+                .sessions
+                .get(&previous_id)
+                .map(|entry| entry.value().clone())
+            {
+                session.write().await.active = false;
             }
         }
         info!(terminal_id = %id, generation, process_id = ?process_id, "Active terminal lifetime set");
@@ -889,6 +1057,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         Ok(Some(snapshot_from_session(&session)))
@@ -904,6 +1073,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let mut session = session.write().await;
         apply_observed_provider(&mut session, provider, source, confidence);
@@ -996,6 +1166,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         let mut parser = session
@@ -1092,6 +1263,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         Ok(session.grid.get_scrollback(offset, limit))
@@ -1157,6 +1329,7 @@ impl TerminalManager {
             let session = self
                 .sessions
                 .get(id)
+                .map(|entry| entry.value().clone())
                 .ok_or_else(|| format!("Terminal {} not found", id))?;
             let session = session.read().await;
             let mut current = session
@@ -1236,6 +1409,7 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         let session = session.read().await;
         session
@@ -1389,13 +1563,23 @@ impl TerminalManager {
             let Some(detection) = detections.get(&pid) else {
                 continue;
             };
-            let Some(entry) = self.sessions.get(&terminal_id) else {
+            let Some(session_arc) = self
+                .sessions
+                .get(&terminal_id)
+                .map(|entry| entry.value().clone())
+            else {
                 continue;
             };
-            let mut session = entry.write().await;
+            let mut session = session_arc.write().await;
+            let current = self
+                .sessions
+                .get(&terminal_id)
+                .map(|entry| Arc::ptr_eq(entry.value(), &session_arc))
+                .unwrap_or(false);
             if session.generation == generation
                 && session.process_id == Some(pid)
                 && session.process_alive.load(Ordering::Acquire)
+                && current
             {
                 apply_runtime_identity(&mut session, detection);
                 let snapshot = snapshot_from_session(&session);
@@ -1410,11 +1594,12 @@ impl TerminalManager {
         let session = self
             .sessions
             .get(id)
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Terminal {} not found", id))?;
         self.scheduler
             .lock()
             .await
-            .start(app, session.value().clone(), id.to_string())
+            .start(app, session, id.to_string())
             .await;
         Ok(())
     }
@@ -1527,6 +1712,56 @@ fn identity_source_priority(source: &str) -> u8 {
 fn push_identity_warning(warnings: &mut Vec<String>, warning: &str) {
     if !warnings.iter().any(|existing| existing == warning) {
         warnings.push(warning.to_string());
+    }
+}
+
+fn ensure_spawn_workspace_matches(
+    current_workspace_id: Option<&str>,
+    requested_workspace_id: &str,
+) -> Result<(), String> {
+    if current_workspace_id.unwrap_or_default() != requested_workspace_id {
+        return Err(
+            "terminal-workspace-mismatch: existing PTY belongs to another workspace".into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::{ensure_spawn_workspace_matches, TerminalManager};
+
+    #[test]
+    fn workspace_shutdown_gate_rejects_stale_spawns_until_explicitly_reopened() {
+        let manager = TerminalManager::new();
+        assert!(manager
+            .ensure_workspace_accepts_spawns("workspace-a")
+            .is_ok());
+
+        manager.closing_workspaces.insert("workspace-a".into());
+        assert_eq!(
+            manager
+                .ensure_workspace_accepts_spawns("workspace-a")
+                .unwrap_err(),
+            "workspace-closing: workspace-a",
+        );
+        assert!(manager
+            .ensure_workspace_accepts_spawns("workspace-b")
+            .is_ok());
+
+        manager.allow_workspace_spawns("workspace-a");
+        assert!(manager
+            .ensure_workspace_accepts_spawns("workspace-a")
+            .is_ok());
+    }
+
+    #[test]
+    fn spawn_never_reuses_a_terminal_id_from_another_workspace() {
+        assert!(ensure_spawn_workspace_matches(Some("workspace-a"), "workspace-a").is_ok());
+        assert_eq!(
+            ensure_spawn_workspace_matches(Some("workspace-b"), "workspace-a").unwrap_err(),
+            "terminal-workspace-mismatch: existing PTY belongs to another workspace",
+        );
     }
 }
 

@@ -449,6 +449,7 @@ mod compact_tests {
             shell: "powershell.exe".to_string(),
             cwd: "C:\\repo".to_string(),
             active: false,
+            process_id: Some(42),
             process_alive: true,
             agent_id: Some("codex".to_string()),
             configured_agent_id: Some("codex".to_string()),

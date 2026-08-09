@@ -304,7 +304,13 @@ pub async fn jarvis_agent_tail(
     }
     let raw = app
         .state::<TerminalManager>()
-        .get_recent_normalized_terminal_text(&terminal_id, crate::jarvis::control::MAX_TAIL_BYTES)
+        .get_recent_normalized_terminal_text_for_runtime(
+            &terminal_id,
+            &snapshot.workspace_id,
+            snapshot.generation,
+            snapshot.process_id,
+            crate::jarvis::control::MAX_TAIL_BYTES,
+        )
         .await
         .map_err(|_| {
             JarvisErrorEnvelope::new(

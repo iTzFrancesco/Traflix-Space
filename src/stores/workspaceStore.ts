@@ -92,10 +92,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
           const { workspaces: localWorkspaces } = get();
 
-          // Se il backend è vuoto, non cancelliamo i workspace locali
-          // per evitare perdita dati su riavvio o reset app data
-          if (backendWorkspaces.length === 0) return;
-
           const backendIds = new Set(backendWorkspaces.map((w) => w.id));
           const localIds = new Set(localWorkspaces.map((w) => w.id));
 

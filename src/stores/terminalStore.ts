@@ -1,12 +1,10 @@
 import { create } from "zustand";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { shallow } from "zustand/shallow";
-import { invoke } from "@tauri-apps/api/core";
 import { useSkillStore } from "./skillStore";
 import type { AgentTurnCompleted } from "../components/terminal/types";
 import { canonicalTerminalIds } from "../lib/terminalOrdering";
 import type { TerminalScrollPosition } from "../lib/terminalScrollState";
-import { reportFrontendDiagnostic } from "../lib/crashDiagnostics";
 
 export type { TerminalScrollPosition } from "../lib/terminalScrollState";
 
@@ -46,12 +44,15 @@ export interface TerminalConfig {
 interface TerminalStore {
   terminals: Record<string, TerminalState>;
   terminalOrderByWorkspace: Record<string, string[]>;
+  /** Remembered selection for each workspace, independent of the visible grid. */
+  activeTerminalByWorkspace: Record<string, string>;
+  focusedTerminalByWorkspace: Record<string, string>;
   activeTerminalId: string | null;
   /** When set, that terminal fills the workspace; others stay mounted but hidden. */
   focusedTerminalId: string | null;
-  /** User-renamed titles (only in memory, not persisted).
-   *  Key = terminal id, value = custom title.
-   *  UI should check this first, then fall back to derived title. */
+  /** User-renamed titles used as an immediate UI override.
+   *  The durable value is persisted by WorkspaceView before this map changes.
+   *  Key = terminal id, value = custom title. */
   terminalTitles: Record<string, string>;
   draggedTerminalId: string | null;
   dragHoveredTerminalId: string | null;
@@ -65,12 +66,13 @@ interface TerminalStore {
     agent: string | null;
   }) => void;
   removeTerminal: (id: string, expectedGeneration?: number) => void;
-  /** Removes FE state and fires backend terminal_kill for each PTY (fire-and-forget). */
-  killWorkspaceTerminals: (workspaceId: string) => void;
+  /** Forget FE state after the backend has atomically shut down the workspace PTYs. */
+  forgetWorkspaceTerminals: (workspaceId: string) => void;
   setActiveTerminal: (id: string) => void;
   setFocusedTerminal: (id: string | null) => void;
   toggleFocusTerminal: (id: string) => void;
-  /** Rename a terminal — stores the custom title in terminalTitles (memory only). */
+  restoreWorkspaceSelection: (workspaceId: string, terminalIds: string[]) => void;
+  /** Rename a terminal — stores the custom title as an immediate UI override. */
   renameTerminal: (id: string, title: string) => void;
   updateTitle: (id: string, title: string) => void;
   markSpawned: (
@@ -112,31 +114,11 @@ interface TerminalStore {
   setDragHoveredTerminalId: (id: string | null) => void;
 }
 
-/** Best-effort backend PTY kill — never throws into the store. */
-function killBackendSession(terminal: TerminalState) {
-  if (terminal.generation === null) return;
-  invoke("terminal_kill", {
-    terminalId: terminal.id,
-    workspaceId: terminal.workspaceId,
-    generation: terminal.generation,
-    processId: terminal.processId,
-  }).catch((error) => {
-    // Session may already be gone (natural exit / double-kill), but retaining
-    // the identity in the persistent diagnostic log makes a genuine orphaned
-    // child process distinguishable from that harmless race.
-    reportFrontendDiagnostic("terminal-kill-error", error, {
-      terminalId: terminal.id,
-      workspaceId: terminal.workspaceId,
-      generation: terminal.generation ?? undefined,
-      processId: terminal.processId,
-      state: "workspace-cleanup",
-    });
-  });
-}
-
 export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   terminals: {},
   terminalOrderByWorkspace: {},
+  activeTerminalByWorkspace: {},
+  focusedTerminalByWorkspace: {},
   activeTerminalId: null,
   focusedTerminalId: null,
   terminalTitles: {},
@@ -149,6 +131,12 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
   addTerminal: (config) =>
     set((state) => {
       if (state.terminals[config.id]) return state;
+      const activeTerminalByWorkspace = state.activeTerminalByWorkspace[config.workspaceId]
+        ? state.activeTerminalByWorkspace
+        : {
+            ...state.activeTerminalByWorkspace,
+            [config.workspaceId]: config.id,
+          };
       return {
         terminals: {
           ...state.terminals,
@@ -185,6 +173,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
             ],
           ),
         },
+        activeTerminalByWorkspace,
       };
     }),
 
@@ -198,23 +187,41 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         return state;
       }
       const { [id]: removed, ...rest } = state.terminals;
+      const workspaceId = removed.workspaceId;
+      const runtimeIds = Object.values(rest)
+        .filter((terminal) => terminal.workspaceId === workspaceId)
+        .map((terminal) => terminal.id);
+      const remainingIds = canonicalTerminalIds(
+        state.terminalOrderByWorkspace[workspaceId] ?? [],
+        runtimeIds,
+      );
+      const rememberedActive = state.activeTerminalByWorkspace[workspaceId];
+      const nextRememberedActive =
+        rememberedActive !== id && remainingIds.includes(rememberedActive)
+          ? rememberedActive
+          : remainingIds[0] ?? null;
+      const activeTerminalByWorkspace = {
+        ...state.activeTerminalByWorkspace,
+      };
+      if (nextRememberedActive) {
+        activeTerminalByWorkspace[workspaceId] = nextRememberedActive;
+      } else {
+        delete activeTerminalByWorkspace[workspaceId];
+      }
+      const focusedTerminalByWorkspace = {
+        ...state.focusedTerminalByWorkspace,
+      };
+      if (focusedTerminalByWorkspace[workspaceId] === id) {
+        delete focusedTerminalByWorkspace[workspaceId];
+      }
       let newActive = state.activeTerminalId;
       if (newActive === id) {
-        const workspaceId = removed?.workspaceId;
-        if (workspaceId) {
-          const runtimeIds = Object.values(rest)
-            .filter((terminal) => terminal.workspaceId === workspaceId)
-            .map((terminal) => terminal.id);
-          newActive = canonicalTerminalIds(
-            state.terminalOrderByWorkspace[workspaceId] ?? [],
-            runtimeIds,
-          )[0] ?? null;
-        } else {
-          newActive = null;
-        }
+        newActive = nextRememberedActive;
       }
       return {
         terminals: rest,
+        activeTerminalByWorkspace,
+        focusedTerminalByWorkspace,
         activeTerminalId: newActive,
         focusedTerminalId:
           state.focusedTerminalId === id ? null : state.focusedTerminalId,
@@ -225,23 +232,22 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
                 .filter((terminalId) => terminalId !== id),
             }
           : state.terminalOrderByWorkspace,
+        terminalTitles: Object.fromEntries(
+          Object.entries(state.terminalTitles).filter(([terminalId]) => terminalId !== id),
+        ),
       };
     }),
 
-  killWorkspaceTerminals: (workspaceId) => {
-    const idsToKill: string[] = [];
+  forgetWorkspaceTerminals: (workspaceId) => {
+    const idsToForget: string[] = [];
     const state = get();
     for (const [id, t] of Object.entries(state.terminals)) {
       if (t.workspaceId === workspaceId) {
-        idsToKill.push(id);
+        idsToForget.push(id);
       }
     }
     const skillStore = useSkillStore.getState();
-    for (const id of idsToKill) {
-      const terminal = state.terminals[id];
-      if (terminal && terminal.generation !== null) {
-        killBackendSession(terminal);
-      }
+    for (const id of idsToForget) {
       skillStore.clearPendingDrop(id);
     }
 
@@ -259,40 +265,145 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       }
       return {
         terminals: next,
+        activeTerminalByWorkspace: Object.fromEntries(
+          Object.entries(s.activeTerminalByWorkspace).filter(([id]) => id !== workspaceId),
+        ),
+        focusedTerminalByWorkspace: Object.fromEntries(
+          Object.entries(s.focusedTerminalByWorkspace).filter(([id]) => id !== workspaceId),
+        ),
         activeTerminalId: activeCleared ? null : s.activeTerminalId,
         focusedTerminalId: focusCleared ? null : s.focusedTerminalId,
         terminalOrderByWorkspace: Object.fromEntries(
           Object.entries(s.terminalOrderByWorkspace).filter(([id]) => id !== workspaceId),
         ),
+        terminalTitles: Object.fromEntries(
+          Object.entries(s.terminalTitles).filter(
+            ([id]) => !idsToForget.includes(id),
+          ),
+        ),
       };
     });
   },
 
-  // Only touch activeTerminalId — isActive on each entry is unused by selectors
-  // (WorkspaceGrid compares against activeTerminalId). Avoids rewriting the Record.
+  // Keep the visible pointer and its workspace-local memory in one mutation.
   setActiveTerminal: (id) =>
     set((state) => {
-      if (state.activeTerminalId === id) return state;
-      if (!state.terminals[id]) return state;
-      return { activeTerminalId: id };
+      const terminal = state.terminals[id];
+      if (!terminal) return state;
+      if (
+        state.activeTerminalId === id &&
+        state.activeTerminalByWorkspace[terminal.workspaceId] === id
+      ) return state;
+      return {
+        activeTerminalId: id,
+        activeTerminalByWorkspace: {
+          ...state.activeTerminalByWorkspace,
+          [terminal.workspaceId]: id,
+        },
+      };
     }),
 
   setFocusedTerminal: (id) =>
     set((state) => {
-      if (state.focusedTerminalId === id) return state;
-      if (id !== null && !state.terminals[id]) return state;
-      return { focusedTerminalId: id };
+      if (id !== null) {
+        const terminal = state.terminals[id];
+        if (!terminal) return state;
+        if (
+          state.focusedTerminalId === id &&
+          state.focusedTerminalByWorkspace[terminal.workspaceId] === id
+        ) return state;
+        return {
+          focusedTerminalId: id,
+          focusedTerminalByWorkspace: {
+            ...state.focusedTerminalByWorkspace,
+            [terminal.workspaceId]: id,
+          },
+        };
+      }
+      const previous = state.focusedTerminalId
+        ? state.terminals[state.focusedTerminalId]
+        : null;
+      if (!previous && state.focusedTerminalId === null) return state;
+      const focusedTerminalByWorkspace = {
+        ...state.focusedTerminalByWorkspace,
+      };
+      if (previous) delete focusedTerminalByWorkspace[previous.workspaceId];
+      return { focusedTerminalId: null, focusedTerminalByWorkspace };
     }),
 
   toggleFocusTerminal: (id) =>
     set((state) => {
-      const next = state.focusedTerminalId === id ? null : id;
-      if (next && !state.terminals[id]) return state;
+      const terminal = state.terminals[id];
+      if (!terminal) return state;
+      const current = state.focusedTerminalByWorkspace[terminal.workspaceId] ?? null;
+      const next = current === id ? null : id;
+      const focusedTerminalByWorkspace = {
+        ...state.focusedTerminalByWorkspace,
+      };
+      if (next) {
+        focusedTerminalByWorkspace[terminal.workspaceId] = next;
+      } else {
+        delete focusedTerminalByWorkspace[terminal.workspaceId];
+      }
       // Entering focus also activates the terminal.
       if (next) {
-        return { focusedTerminalId: next, activeTerminalId: id };
+        return {
+          focusedTerminalId: next,
+          focusedTerminalByWorkspace,
+          activeTerminalId: id,
+          activeTerminalByWorkspace: {
+            ...state.activeTerminalByWorkspace,
+            [terminal.workspaceId]: id,
+          },
+        };
       }
-      return { focusedTerminalId: null };
+      return { focusedTerminalId: null, focusedTerminalByWorkspace };
+    }),
+
+  restoreWorkspaceSelection: (workspaceId, terminalIds) =>
+    set((state) => {
+      const runtimeIds = terminalIds.filter(
+        (terminalId) => state.terminals[terminalId]?.workspaceId === workspaceId,
+      );
+      const orderedIds = canonicalTerminalIds(terminalIds, runtimeIds);
+      const rememberedActive = state.activeTerminalByWorkspace[workspaceId];
+      const activeTerminalId = rememberedActive && orderedIds.includes(rememberedActive)
+        ? rememberedActive
+        : orderedIds[0] ?? null;
+      const rememberedFocus = state.focusedTerminalByWorkspace[workspaceId];
+      const focusedTerminalId = rememberedFocus && orderedIds.includes(rememberedFocus)
+        ? rememberedFocus
+        : null;
+      if (
+        state.activeTerminalId === activeTerminalId &&
+        state.focusedTerminalId === focusedTerminalId &&
+        (state.activeTerminalByWorkspace[workspaceId] ?? null) === activeTerminalId &&
+        (state.focusedTerminalByWorkspace[workspaceId] ?? null) === focusedTerminalId
+      ) {
+        return state;
+      }
+      const activeTerminalByWorkspace = {
+        ...state.activeTerminalByWorkspace,
+      };
+      const focusedTerminalByWorkspace = {
+        ...state.focusedTerminalByWorkspace,
+      };
+      if (activeTerminalId) {
+        activeTerminalByWorkspace[workspaceId] = activeTerminalId;
+      } else {
+        delete activeTerminalByWorkspace[workspaceId];
+      }
+      if (focusedTerminalId) {
+        focusedTerminalByWorkspace[workspaceId] = focusedTerminalId;
+      } else {
+        delete focusedTerminalByWorkspace[workspaceId];
+      }
+      return {
+        activeTerminalId,
+        focusedTerminalId,
+        activeTerminalByWorkspace,
+        focusedTerminalByWorkspace,
+      };
     }),
 
   renameTerminal: (id, title) =>
@@ -383,6 +494,14 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
         },
         focusedTerminalId:
           state.focusedTerminalId === id ? null : state.focusedTerminalId,
+        focusedTerminalByWorkspace:
+          state.focusedTerminalByWorkspace[workspaceId] === id
+            ? Object.fromEntries(
+                Object.entries(state.focusedTerminalByWorkspace).filter(
+                  ([candidateWorkspaceId]) => candidateWorkspaceId !== workspaceId,
+                ),
+              )
+            : state.focusedTerminalByWorkspace,
       };
     }),
 
@@ -522,7 +641,8 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       const previous = t.scrollPosition;
       if (
         previous.followsOutput === position.followsOutput &&
-        previous.offsetFromBottom === position.offsetFromBottom
+        previous.offsetFromBottom === position.offsetFromBottom &&
+        previous.baseYAtCapture === position.baseYAtCapture
       ) return state;
       return {
         terminals: {

@@ -12,6 +12,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useToastStore } from "../../stores/toastStore";
 import { useUIStore } from "../../stores/uiStore";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { NewSpaceWizard } from "../workspace/NewSpaceWizard";
@@ -27,6 +28,7 @@ export function Sidebar() {
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const updateWorkspace = useWorkspaceStore((state) => state.updateWorkspace);
   const removeWorkspace = useWorkspaceStore((state) => state.removeWorkspace);
+  const addToast = useToastStore((state) => state.addToast);
   const terminals = useTerminalStore((state) => state.terminals);
   const isCollapsed = useUIStore((state) => state.isCollapsed);
   const toggleSidebar = useUIStore((state) => state.toggleSidebar);
@@ -98,8 +100,13 @@ export function Sidebar() {
       await invokeWithTimeout(() => invoke("delete_workspace", { id }), 10000);
     } catch (error) {
       console.error("Errore eliminazione workspace backend:", error);
+      addToast({
+        type: "error",
+        message: "Eliminazione non riuscita: la workspace è rimasta registrata; i terminali potrebbero dover essere riaperti.",
+      });
+      return;
     }
-    useTerminalStore.getState().killWorkspaceTerminals(id);
+    useTerminalStore.getState().forgetWorkspaceTerminals(id);
     removeWorkspace(id);
     setConfirmDeleteId(null);
   };

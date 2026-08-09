@@ -6,6 +6,7 @@ use tracing::info;
 use crate::terminal_engine::cell::Cell;
 use crate::terminal_engine::frame::FrameSnapshot;
 use crate::terminal_engine::{TerminalContext, TerminalManager};
+use crate::workspace::registry::{WorkspaceConfig, WorkspaceRegistry};
 
 #[tauri::command]
 pub async fn terminal_spawn(
@@ -91,6 +92,29 @@ pub async fn terminal_kill(
         .await?;
     manager
         .kill_generation(&app, &terminal_id, generation)
+        .await
+}
+
+/// Persist removal only after the exact runtime was killed. The manager holds
+/// the same lifecycle barrier used by spawn while checking for a replacement.
+#[tauri::command]
+pub async fn terminal_commit_close(
+    app: AppHandle,
+    terminal_id: String,
+    workspace_id: String,
+    generation: u64,
+    process_id: Option<u32>,
+) -> Result<WorkspaceConfig, String> {
+    let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
+    app.state::<TerminalManager>()
+        .commit_terminal_close(
+            &registry,
+            &terminal_id,
+            &workspace_id,
+            generation,
+            process_id,
+        )
         .await
 }
 

@@ -324,6 +324,7 @@ fn main() {
             terminal_engine::commands::terminal_write,
             terminal_engine::commands::terminal_resize,
             terminal_engine::commands::terminal_kill,
+            terminal_engine::commands::terminal_commit_close,
             terminal_engine::commands::terminal_reopen,
             terminal_engine::commands::terminal_set_active,
             terminal_engine::commands::terminal_get_snapshot,

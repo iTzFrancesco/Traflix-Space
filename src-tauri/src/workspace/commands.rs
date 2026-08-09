@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use super::registry::{WorkspaceConfig, WorkspaceRegistry};
+use crate::terminal_engine::TerminalManager;
 
 /// Normalizza un path Windows rimuovendo il prefisso `\\?\` (e `\\.\`)
 /// che `std::fs::canonicalize` aggiunge automaticamente.
@@ -100,8 +101,9 @@ pub async fn create_workspace(
 
     // Workspace metadata belongs exclusively to the app-data registry, never
     // to the user's project directory.
-    registry.insert(config.clone()).await?;
-    registry.save().await?;
+    registry.insert_and_save(config.clone()).await?;
+    app.state::<TerminalManager>()
+        .allow_workspace_spawns(&config.id);
 
     info!(name = %config.name, "Workspace creato con successo");
     Ok(config)
@@ -153,9 +155,8 @@ pub async fn update_workspace(
 
     // Keep the project directory untouched; update only the app-data registry.
     let updated = registry
-        .replace_if_updated_at(&id, &expected_updated_at, config.clone())
+        .replace_and_save_if_updated_at(&id, &expected_updated_at, config.clone())
         .await?;
-    registry.save().await?;
 
     info!(%id, "Workspace aggiornato");
     Ok(updated)
@@ -177,9 +178,8 @@ pub async fn update_terminal_title(
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
     let workspace = registry
-        .update_terminal_title(&workspace_id, &terminal_id, title)
+        .update_terminal_title_and_save(&workspace_id, &terminal_id, title)
         .await?;
-    registry.save().await?;
     Ok(workspace)
 }
 
@@ -188,8 +188,23 @@ pub async fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> 
     info!(%id, "Eliminazione workspace");
     let registry = app.state::<WorkspaceRegistry>();
     registry.load().await?;
-    registry.remove(&id).await;
-    registry.save().await?;
+    registry
+        .get(&id)
+        .await
+        .ok_or_else(|| "Workspace non trovato".to_string())?;
+    let manager = app.state::<TerminalManager>();
+    // The runtime gate rejects every new spawn before sessions are selected.
+    // Keeping the definition visible until the atomic registry transaction
+    // commits makes a persistence failure recoverable without reconstructing
+    // a potentially concurrently changed workspace.
+    if let Err(error) = manager.shutdown_workspace(&app, &id).await {
+        manager.allow_workspace_spawns(&id);
+        return Err(error);
+    }
+    if let Err(error) = registry.remove_workspace_and_save(&id).await {
+        manager.allow_workspace_spawns(&id);
+        return Err(error);
+    }
     info!(%id, "Workspace eliminato");
     Ok(())
 }

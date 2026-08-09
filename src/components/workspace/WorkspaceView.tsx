@@ -119,6 +119,9 @@ export function WorkspaceView() {
   const [loadedMap, setLoadedMap] = useState<Map<string, LoadedWorkspace>>(
     () => new Map(),
   );
+  const [failedWorkspaceLoads, setFailedWorkspaceLoads] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [closeRequest, setCloseRequest] = useState<TerminalCloseRequest | null>(null);
   const loadedMapRef = useRef(loadedMap);
   loadedMapRef.current = loadedMap;
@@ -304,6 +307,12 @@ export function WorkspaceView() {
   const loadWorkspace = useCallback((id: string) => {
     if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
     loadingRef.current.add(id);
+    setFailedWorkspaceLoads((previous) => {
+      if (!previous.has(id)) return previous;
+      const next = new Set(previous);
+      next.delete(id);
+      return next;
+    });
 
     invokeWithTimeout(
       () =>
@@ -337,7 +346,6 @@ export function WorkspaceView() {
           });
           return;
         }
-        let firstId: string | null = null;
         for (const tc of fullConfig.terminals || []) {
           if (!terminalStore.terminals[tc.id]) {
             terminalStore.addTerminal({
@@ -349,20 +357,21 @@ export function WorkspaceView() {
               agent: tc.agentId || null,
             });
           }
-          if (!firstId) firstId = tc.id;
         }
+        const terminalIds = (fullConfig.terminals || []).map(
+          (terminal) => terminal.id,
+        );
         terminalStore.syncWorkspaceTerminalOrder(
           id,
-          (fullConfig.terminals || []).map((terminal) => terminal.id),
+          terminalIds,
         );
 
         // A late load may populate the cache, but it must never steal the
         // active terminal from a workspace the user switched to meanwhile.
         if (
-          firstId &&
           useWorkspaceStore.getState().activeWorkspaceId === id
         ) {
-          terminalStore.setActiveTerminal(firstId);
+          terminalStore.restoreWorkspaceSelection(id, terminalIds);
         }
 
         // This is only an LRU cache for workspace configuration. Evicting a
@@ -399,6 +408,14 @@ export function WorkspaceView() {
       })
       .catch((err) => {
         console.error("Errore caricamento workspace:", err);
+        reportFrontendDiagnostic("workspace-load-error", err, {
+          workspaceId: id,
+          state: "load-workspace",
+        });
+        setFailedWorkspaceLoads((previous) => {
+          if (previous.has(id)) return previous;
+          return new Set(previous).add(id);
+        });
         addToastRef.current({
           type: "error",
           message: "Errore caricamento workspace",
@@ -424,7 +441,27 @@ export function WorkspaceView() {
 
         // 1. Kill exactly the generation the user confirmed.
         const terminalRuntime = useTerminalStore.getState().terminals[terminalId];
-        if (terminalRuntime && terminalRuntime.generation !== null) {
+        if (
+          !terminalRuntime ||
+          terminalRuntime.workspaceId !== workspaceId ||
+          terminalRuntime.generation === null
+        ) {
+          reportFrontendDiagnostic(
+            "terminal-lifecycle-error",
+            "terminal runtime identity unavailable during close",
+            {
+              terminalId,
+              workspaceId,
+              state: "close-before-runtime-ready",
+            },
+          );
+          addToastRef.current({
+            type: "info",
+            message: "Il terminale è ancora in avvio: riprova la chiusura appena compare il prompt.",
+          });
+          return;
+        }
+        {
           try {
             await invokeWithTimeout(
               () => invoke("terminal_kill", {
@@ -435,35 +472,72 @@ export function WorkspaceView() {
               }),
               5000,
             );
+            // Keep a retryable, generation-bound tombstone until persistence
+            // succeeds. If the close commit fails, the pane remains visible as
+            // exited instead of losing its store identity while config still
+            // contains it.
+            useTerminalStore.getState().markExited(
+              terminalId,
+              terminalRuntime.workspaceId,
+              terminalRuntime.generation,
+              terminalRuntime.processId,
+              terminalRuntime.exitCode ?? 0,
+            );
           } catch (error) {
-            console.warn("Terminal kill rejected:", error);
-            return;
+            const current = useTerminalStore.getState().terminals[terminalId];
+            const exactExitedRuntimeAlreadyAbsent =
+              current?.workspaceId === terminalRuntime.workspaceId &&
+              current.generation === terminalRuntime.generation &&
+              current.processId === terminalRuntime.processId &&
+              current.exitCode !== null &&
+              ipcErrorMessage(error).includes(`Terminal ${terminalId} not found`);
+            if (exactExitedRuntimeAlreadyAbsent) {
+              console.info("[terminal-lifecycle] close retry found an already removed runtime", {
+                terminalId,
+                workspaceId: terminalRuntime.workspaceId,
+                generation: terminalRuntime.generation,
+                processId: terminalRuntime.processId,
+              });
+            } else {
+              console.warn("Terminal kill rejected:", error);
+              reportFrontendDiagnostic("terminal-kill-error", error, {
+                terminalId,
+                workspaceId: terminalRuntime.workspaceId,
+                generation: terminalRuntime.generation,
+                processId: terminalRuntime.processId,
+                state: "close-request-rejected",
+              });
+              addToastRef.current({
+                type: "error",
+                message: "Chiusura non riuscita: il terminale è rimasto aperto e può essere riprovato.",
+              });
+              return;
+            }
           }
         }
 
-        // 2. Rimuovi dal terminal store (+ clear focus se necessario)
-        useSkillStore.getState().clearPendingDrop(terminalId);
-        useTerminalStore.getState().removeTerminal(
-          terminalId,
-          terminalRuntime?.generation ?? undefined,
-        );
-
-        const currentWs = loadedMapRef.current.get(workspaceId);
-        if (!currentWs) return;
-
-        // 3. Leggi dal ref sincrono (aggiornato dopo ogni operazione), usando
-        // la configurazione corrente come fallback dopo un cambio workspace.
-        // 3/4. Persist with optimistic revision validation. On a concurrent
-        // Jarvis open/reorder, reload once and reapply only this removal.
+        // 2. Commit config removal in the backend under the same lifecycle
+        // barrier used by spawn. A replacement generation aborts this step.
         let updatedConfig: LoadedWorkspace;
         try {
-          updatedConfig = await persistTerminalMutation(
-            workspaceId,
-            currentWs,
-            (terminals) => terminals.filter((terminal) => terminal.id !== terminalId),
+          updatedConfig = await invokeWithTimeout(
+            () => invoke<LoadedWorkspace>("terminal_commit_close", {
+              terminalId,
+              workspaceId: terminalRuntime.workspaceId,
+              generation: terminalRuntime.generation,
+              processId: terminalRuntime.processId,
+            }),
+            10000,
           );
         } catch (err) {
           console.error("Errore aggiornamento workspace:", err);
+          reportFrontendDiagnostic("terminal-lifecycle-error", err, {
+            terminalId,
+            workspaceId: terminalRuntime.workspaceId,
+            generation: terminalRuntime.generation,
+            processId: terminalRuntime.processId,
+            state: "close-config-commit",
+          });
           addToastRef.current({
             type: "error",
             message: "Il terminale è stato chiuso, ma la workspace non è stata aggiornata.",
@@ -471,6 +545,14 @@ export function WorkspaceView() {
           return;
         }
         const newTerminals = updatedConfig.terminals;
+
+        // Persistence is the commit point for the visible pane. Only now can
+        // frontend identity/drop state be forgotten safely.
+        useSkillStore.getState().clearPendingDrop(terminalId);
+        useTerminalStore.getState().removeTerminal(
+          terminalId,
+          terminalRuntime.generation,
+        );
         workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
 
         // 5. Aggiorna loadedMap
@@ -549,7 +631,11 @@ export function WorkspaceView() {
   // direttamente il terminale saltando il flusso visuale del TerminalPane.
   const closeRequestTokenRef = useRef(0);
   const requestCloseTerminalRef = useRef(() => {
-    const activeId = useTerminalStore.getState().activeTerminalId;
+    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    const terminalStore = useTerminalStore.getState();
+    const activeId = workspaceId
+      ? terminalStore.activeTerminalByWorkspace[workspaceId] ?? null
+      : null;
     if (!activeId) return;
     setCloseRequest({
       terminalId: activeId,
@@ -674,11 +760,56 @@ export function WorkspaceView() {
               }),
               5000,
             );
+            useTerminalStore.getState().removeTerminal(newId, runtime.generation);
+            return;
           } catch (rollbackError) {
+            // A failed kill is deliberately retryable: the backend keeps the
+            // exact live session in its registry. Do not remove the pane from
+            // the frontend or leave an invisible PTY behind. Reconcile the
+            // latest persisted config when possible; otherwise retain this
+            // terminal in the in-memory workspace until the user retries the
+            // close operation.
             console.warn("New terminal rollback failed:", rollbackError);
+            let reconciled = loadedMapRef.current.get(workspaceId) ?? currentWs;
+            try {
+              reconciled = await invokeWithTimeout(
+                () => invoke<LoadedWorkspace>("get_workspace", { id: workspaceId }),
+                10000,
+              );
+            } catch (reconcileError) {
+              console.warn("Workspace reconciliation after add rollback failed:", reconcileError);
+            }
+            const retainedConfig = reconciled.terminals.some(
+              (terminal) => terminal.id === newId,
+            )
+              ? reconciled
+              : {
+                  ...reconciled,
+                  layout: computeLayout(reconciled.terminals.length + 1),
+                  terminals: [...reconciled.terminals, newTerminal],
+                };
+            const nextMap = new Map(loadedMapRef.current);
+            nextMap.set(workspaceId, retainedConfig);
+            loadedMapRef.current = nextMap;
+            workspaceTerminalsRef.current = {
+              workspaceId,
+              terminals: retainedConfig.terminals,
+            };
+            setLoadedMap(nextMap);
+            useTerminalStore.getState().syncWorkspaceTerminalOrder(
+              workspaceId,
+              retainedConfig.terminals.map((terminal) => terminal.id),
+            );
+            useWorkspaceStore.getState().updateWorkspace(workspaceId, {
+              terminalCount: retainedConfig.terminals.length,
+              agentCount: retainedConfig.terminals.filter((terminal) => terminal.agentId).length,
+            });
+            addToastRef.current({
+              type: "error",
+              message: "Il terminale è rimasto aperto: riprova la chiusura quando il backend risponde.",
+            });
+            return;
           }
-          useTerminalStore.getState().removeTerminal(newId, runtime.generation);
-          return;
         }
         const newTerminals = updatedConfig.terminals;
         workspaceTerminalsRef.current = { workspaceId, terminals: newTerminals };
@@ -697,7 +828,9 @@ export function WorkspaceView() {
         useWorkspaceStore.getState().updateWorkspace(workspaceId, {
           terminalCount: newTerminals.length,
         });
-        useTerminalStore.getState().setActiveTerminal(newId);
+        if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+          useTerminalStore.getState().setActiveTerminal(newId);
+        }
       })
       .catch((err) => {
         console.error("Add queue error:", err);
@@ -732,19 +865,27 @@ export function WorkspaceView() {
     }
   }, [activeWorkspaceId, loadedMap, loadWorkspace]);
 
-  // A cached workspace does not pass through loadWorkspace again. Reassert
-  // the active terminal when returning to it so focus/resize state cannot
-  // remain attached to a terminal from the previous workspace.
+  // A cached workspace does not pass through loadWorkspace again. Restore its
+  // own active/focus identity instead of defaulting to the first pane or
+  // retaining a pointer from the previously visible workspace.
   useEffect(() => {
     if (!activeWorkspaceId || !activeLoaded) return;
-    const firstActiveTerminalId = activeLoaded.terminals[0]?.id;
-    if (!firstActiveTerminalId) return;
-
-    const activeTerminalId = useTerminalStore.getState().activeTerminalId;
-    if (
-      !activeLoaded.terminals.some((terminal) => terminal.id === activeTerminalId)
-    ) {
-      useTerminalStore.getState().setActiveTerminal(firstActiveTerminalId);
+    useTerminalStore.getState().restoreWorkspaceSelection(
+      activeWorkspaceId,
+      activeLoaded.terminals.map((terminal) => terminal.id),
+    );
+    if (activeLoaded.terminals.length === 0) {
+      invoke("terminal_set_active", {
+        terminalId: "",
+        workspaceId: null,
+        generation: null,
+        processId: null,
+      }).catch((error) => {
+        reportFrontendDiagnostic("terminal-lifecycle-error", error, {
+          workspaceId: activeWorkspaceId,
+          state: "clear-empty-workspace-active-terminal",
+        });
+      });
     }
   }, [activeWorkspaceId, activeLoaded]);
 
@@ -758,8 +899,15 @@ export function WorkspaceView() {
 
     const terminalStore = useTerminalStore.getState();
     for (const key of toRemove) {
-      terminalStore.killWorkspaceTerminals(key);
+      terminalStore.forgetWorkspaceTerminals(key);
     }
+
+    setFailedWorkspaceLoads((previous) => {
+      const next = new Set(previous);
+      let changed = false;
+      for (const key of toRemove) changed = next.delete(key) || changed;
+      return changed ? next : previous;
+    });
 
     setLoadedMap((prev) => {
       const next = new Map(prev);
@@ -806,8 +954,43 @@ export function WorkspaceView() {
     );
   }
 
-  // Loading iniziale — workspace selezionato ma non ancora caricato
-  if (!activeLoaded) return null;
+  // Loading/recovery state — a failed IPC must never leave an inert blank view.
+  if (!activeLoaded) {
+    const loadFailed = activeWorkspaceId
+      ? failedWorkspaceLoads.has(activeWorkspaceId)
+      : false;
+    return (
+      <>
+        <div className="flex h-full items-center justify-center bg-neutral-darkest px-8">
+          <div className="surface-card w-full max-w-sm px-6 py-5 text-center">
+            <TerminalSquare
+              size={22}
+              strokeWidth={1.4}
+              className="mx-auto text-neutral-text-muted"
+            />
+            <p
+              className="mt-3 text-sm font-semibold text-neutral-text"
+              role={loadFailed ? "alert" : "status"}
+            >
+              {loadFailed
+                ? "Impossibile caricare lo spazio di lavoro"
+                : "Caricamento spazio di lavoro…"}
+            </p>
+            {loadFailed && activeWorkspaceId ? (
+              <button
+                type="button"
+                className="primary-button mt-4"
+                onClick={() => loadWorkspace(activeWorkspaceId)}
+              >
+                Riprova
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      </>
+    );
+  }
 
   return (
     <>
@@ -845,6 +1028,7 @@ export function WorkspaceView() {
             }}
           >
             <WorkspaceGrid
+              workspaceId={activeLoaded.id}
               rows={activeLayout?.rows ?? 1}
               cols={activeLayout?.cols ?? 1}
               terminals={activeLoaded.terminals}

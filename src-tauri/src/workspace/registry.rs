@@ -1,12 +1,15 @@
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::Manager;
+use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,7 @@ pub struct WorkspaceRegistry {
     workspaces: Arc<Mutex<HashMap<String, WorkspaceConfig>>>,
     loaded: AtomicBool,
     load_lock: Mutex<()>,
+    mutation_lock: Mutex<()>,
     registry_path: PathBuf,
     _app: AppHandle,
 }
@@ -66,6 +70,7 @@ impl WorkspaceRegistry {
             workspaces,
             loaded: AtomicBool::new(false),
             load_lock: Mutex::new(()),
+            mutation_lock: Mutex::new(()),
             registry_path,
             _app: app,
         }
@@ -100,12 +105,7 @@ impl WorkspaceRegistry {
         Ok(())
     }
 
-    pub async fn save(&self) -> Result<(), String> {
-        if let Some(parent) = self.registry_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Errore creazione directory: {}", e))?;
-        }
-        let map = self.workspaces.lock().await;
+    fn save_map(&self, map: &HashMap<String, WorkspaceConfig>) -> Result<(), String> {
         let mut list: Vec<&WorkspaceConfig> = map.values().collect();
         list.sort_by(|left, right| {
             left.created_at
@@ -114,38 +114,79 @@ impl WorkspaceRegistry {
         });
         let data = serde_json::to_string_pretty(&list)
             .map_err(|e| format!("Errore serializzazione: {}", e))?;
-        std::fs::write(&self.registry_path, data)
-            .map_err(|e| format!("Errore scrittura registry: {}", e))?;
-        Ok(())
+        atomic_replace(&self.registry_path, data.as_bytes())
     }
 
-    pub async fn insert(&self, config: WorkspaceConfig) -> Result<WorkspaceConfig, String> {
+    async fn mutate_and_save<T, F>(&self, mutate: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut HashMap<String, WorkspaceConfig>) -> Result<T, String>,
+    {
+        let _mutation = self.mutation_lock.lock().await;
         let mut map = self.workspaces.lock().await;
-        if map.contains_key(&config.id) {
-            return Err("ID workspace già esistente".to_string());
+        let previous = map.clone();
+        let value = match mutate(&mut map) {
+            Ok(value) => value,
+            Err(error) => {
+                *map = previous;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.save_map(&map) {
+            *map = previous;
+            return Err(error);
         }
-        validate_terminal_identity(&map, &config)?;
-        map.insert(config.id.clone(), config.clone());
-        Ok(config)
+        Ok(value)
     }
 
-    pub async fn replace_if_updated_at(
+    pub async fn insert_and_save(
+        &self,
+        config: WorkspaceConfig,
+    ) -> Result<WorkspaceConfig, String> {
+        self.mutate_and_save(move |map| {
+            if map.contains_key(&config.id) {
+                return Err("ID workspace già esistente".to_string());
+            }
+            validate_terminal_identity(map, &config)?;
+            map.insert(config.id.clone(), config.clone());
+            Ok(config)
+        })
+        .await
+    }
+
+    pub async fn replace_and_save_if_updated_at(
         &self,
         workspace_id: &str,
         expected_updated_at: &str,
         mut config: WorkspaceConfig,
     ) -> Result<WorkspaceConfig, String> {
-        let mut map = self.workspaces.lock().await;
-        let current = map
-            .get(workspace_id)
-            .ok_or_else(|| "Workspace non trovato".to_string())?;
-        if current.updated_at != expected_updated_at {
-            return Err("workspace_revision_conflict".to_string());
-        }
-        validate_terminal_identity(&map, &config)?;
-        config.updated_at = next_updated_at(&current.updated_at);
-        map.insert(workspace_id.to_string(), config.clone());
-        Ok(config)
+        let workspace_id = workspace_id.to_string();
+        let expected_updated_at = expected_updated_at.to_string();
+        self.mutate_and_save(move |map| {
+            let current = map
+                .get(&workspace_id)
+                .ok_or_else(|| "Workspace non trovato".to_string())?;
+            if current.updated_at != expected_updated_at {
+                return Err("workspace_revision_conflict".to_string());
+            }
+            let previous_updated_at = current.updated_at.clone();
+            validate_terminal_identity(map, &config)?;
+            config.updated_at = next_updated_at(&previous_updated_at);
+            map.insert(workspace_id, config.clone());
+            Ok(config)
+        })
+        .await
+    }
+
+    pub async fn remove_workspace_and_save(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceConfig, String> {
+        let workspace_id = workspace_id.to_string();
+        self.mutate_and_save(move |map| {
+            map.remove(&workspace_id)
+                .ok_or_else(|| "Workspace non trovato".to_string())
+        })
+        .await
     }
 
     pub async fn get_all(&self) -> Vec<WorkspaceConfig> {
@@ -164,80 +205,132 @@ impl WorkspaceRegistry {
         map.get(id).cloned()
     }
 
-    pub async fn remove(&self, id: &str) {
-        let mut map = self.workspaces.lock().await;
-        map.remove(id);
-    }
-
-    pub async fn append_terminal(
+    pub async fn append_terminal_and_save(
         &self,
         workspace_id: &str,
         terminal: TerminalConfig,
         max_terminals: usize,
     ) -> Result<WorkspaceConfig, String> {
-        let mut map = self.workspaces.lock().await;
-        if map.iter().any(|(other_workspace_id, workspace)| {
-            other_workspace_id != workspace_id
-                && workspace
-                    .terminals
-                    .iter()
-                    .any(|item| item.id == terminal.id)
-        }) {
-            return Err("terminal_id_workspace_collision".to_string());
-        }
-        let workspace = map
-            .get_mut(workspace_id)
-            .ok_or_else(|| "workspace non disponibile".to_string())?;
-        if workspace
-            .terminals
-            .iter()
-            .any(|item| item.id == terminal.id)
-        {
-            return Ok(workspace.clone());
-        }
-        if workspace.terminals.len() >= max_terminals {
-            return Err(format!(
-                "limite di {max_terminals} terminali raggiunto in questa workspace"
-            ));
-        }
-        workspace.terminals.push(terminal);
-        workspace.updated_at = next_updated_at(&workspace.updated_at);
-        Ok(workspace.clone())
+        let workspace_id = workspace_id.to_string();
+        self.mutate_and_save(move |map| {
+            if map.iter().any(|(other_workspace_id, workspace)| {
+                other_workspace_id != &workspace_id
+                    && workspace
+                        .terminals
+                        .iter()
+                        .any(|item| item.id == terminal.id)
+            }) {
+                return Err("terminal_id_workspace_collision".to_string());
+            }
+            let workspace = map
+                .get_mut(&workspace_id)
+                .ok_or_else(|| "workspace non disponibile".to_string())?;
+            if workspace
+                .terminals
+                .iter()
+                .any(|item| item.id == terminal.id)
+            {
+                return Ok(workspace.clone());
+            }
+            if workspace.terminals.len() >= max_terminals {
+                return Err(format!(
+                    "limite di {max_terminals} terminali raggiunto in questa workspace"
+                ));
+            }
+            workspace.terminals.push(terminal);
+            workspace.updated_at = next_updated_at(&workspace.updated_at);
+            Ok(workspace.clone())
+        })
+        .await
     }
 
-    pub async fn remove_terminal(
+    pub async fn remove_terminal_and_save(
         &self,
         workspace_id: &str,
         terminal_id: &str,
-    ) -> Option<WorkspaceConfig> {
-        let mut map = self.workspaces.lock().await;
-        let workspace = map.get_mut(workspace_id)?;
-        workspace
-            .terminals
-            .retain(|terminal| terminal.id != terminal_id);
-        workspace.updated_at = next_updated_at(&workspace.updated_at);
-        Some(workspace.clone())
+    ) -> Result<Option<WorkspaceConfig>, String> {
+        let workspace_id = workspace_id.to_string();
+        let terminal_id = terminal_id.to_string();
+        self.mutate_and_save(move |map| {
+            let Some(workspace) = map.get_mut(&workspace_id) else {
+                return Ok(None);
+            };
+            workspace
+                .terminals
+                .retain(|terminal| terminal.id != terminal_id);
+            workspace.updated_at = next_updated_at(&workspace.updated_at);
+            Ok(Some(workspace.clone()))
+        })
+        .await
     }
 
-    pub async fn update_terminal_title(
+    pub async fn update_terminal_title_and_save(
         &self,
         workspace_id: &str,
         terminal_id: &str,
         title: &str,
     ) -> Result<WorkspaceConfig, String> {
-        let mut map = self.workspaces.lock().await;
-        let workspace = map
-            .get_mut(workspace_id)
-            .ok_or_else(|| "Workspace non trovata".to_string())?;
-        let terminal = workspace
-            .terminals
-            .iter_mut()
-            .find(|terminal| terminal.id == terminal_id)
-            .ok_or_else(|| "Terminale non trovato".to_string())?;
-        terminal.title = title.to_string();
-        workspace.updated_at = next_updated_at(&workspace.updated_at);
-        Ok(workspace.clone())
+        let workspace_id = workspace_id.to_string();
+        let terminal_id = terminal_id.to_string();
+        let title = title.to_string();
+        self.mutate_and_save(move |map| {
+            let workspace = map
+                .get_mut(&workspace_id)
+                .ok_or_else(|| "Workspace non trovata".to_string())?;
+            let terminal = workspace
+                .terminals
+                .iter_mut()
+                .find(|terminal| terminal.id == terminal_id)
+                .ok_or_else(|| "Terminale non trovato".to_string())?;
+            terminal.title = title;
+            workspace.updated_at = next_updated_at(&workspace.updated_at);
+            Ok(workspace.clone())
+        })
+        .await
     }
+}
+
+/// Stage the complete registry beside the destination, flush it, then replace
+/// the old document in one filesystem operation. `NamedTempFile::persist`
+/// uses `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` on Windows, so a process
+/// crash cannot leave a partially truncated `workspaces.json` behind.
+fn atomic_replace(path: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Errore creazione directory registry: {error}"))?;
+
+    let mut staged = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Errore creazione file temporaneo registry: {error}"))?;
+    staged
+        .write_all(data)
+        .map_err(|error| format!("Errore scrittura file temporaneo registry: {error}"))?;
+    staged
+        .as_file_mut()
+        .sync_all()
+        .map_err(|error| format!("Errore flush file temporaneo registry: {error}"))?;
+    staged
+        .persist(path)
+        .map_err(|error| format!("Errore sostituzione atomica registry: {}", error.error))?;
+
+    // Persisting the file makes its contents durable; syncing the containing
+    // directory also makes the rename durable on Unix. Windows uses the native
+    // atomic replacement implementation supplied by `tempfile`.
+    #[cfg(unix)]
+    if let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+        // The atomic rename has already committed and cannot honestly be
+        // rolled back by the caller. Keep memory aligned with the visible file
+        // and record the reduced power-loss durability instead of returning an
+        // error that would restore only the in-memory map.
+        warn!(
+            error = %error,
+            "Registry directory metadata flush failed after atomic replacement"
+        );
+    }
+
+    Ok(())
 }
 
 fn validate_terminal_identity(
@@ -285,7 +378,8 @@ fn next_updated_at(current: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_updated_at, validate_terminal_identity, GridLayout, TerminalConfig, WorkspaceConfig,
+        atomic_replace, next_updated_at, validate_terminal_identity, GridLayout, TerminalConfig,
+        WorkspaceConfig,
     };
     use std::collections::HashMap;
 
@@ -352,6 +446,29 @@ mod tests {
             )
             .unwrap_err(),
             "workspace_terminal_limit",
+        );
+    }
+
+    #[test]
+    fn registry_replacement_never_exposes_a_partially_written_document() {
+        let directory = tempfile::tempdir().expect("temporary registry directory");
+        let path = directory.path().join("workspaces.json");
+        std::fs::write(&path, br#"[{"id":"old"}]"#).expect("old registry fixture");
+
+        let replacement = br#"[{"id":"new","terminals":["left","right"]}]"#;
+        atomic_replace(&path, replacement).expect("atomic registry replacement");
+
+        let persisted = std::fs::read(&path).expect("persisted registry");
+        assert_eq!(persisted, replacement);
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("complete JSON document");
+        assert_eq!(parsed[0]["id"], "new");
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("registry directory")
+                .count(),
+            1,
+            "the staged file must not remain beside workspaces.json",
         );
     }
 }

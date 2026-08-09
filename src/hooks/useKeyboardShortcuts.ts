@@ -80,7 +80,9 @@ export function useKeyboardShortcuts(extraShortcuts?: ShortcutDef[], onCloseTerm
           alt: true,
           handler: () => {
             const store = useTerminalStore.getState();
-            const activeId = store.activeTerminalId;
+            const activeId = activeWorkspaceId
+              ? store.activeTerminalByWorkspace[activeWorkspaceId] ?? null
+              : null;
             if (activeId && onCloseTerminalRef.current) {
               onCloseTerminalRef.current();
             }

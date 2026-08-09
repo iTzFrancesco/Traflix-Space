@@ -13,6 +13,10 @@ import type {
   TerminalOutput,
 } from "../components/terminal/types";
 import { reportFrontendDiagnostic } from "./crashDiagnostics";
+import {
+  affectedTerminalOutputRuntimes,
+  isTerminalOutputQueueOverflow,
+} from "./terminalOutputQueue";
 
 type OutputHandler = (payload: TerminalOutput) => void;
 type ExitHandler = (payload: TerminalExited) => void;
@@ -32,8 +36,14 @@ interface PendingOutputChunk {
 }
 
 const pendingChunks = new Map<string, PendingOutputChunk[]>();
-const flushScheduled = new Map<string, boolean>();
+const pendingBytes = new Map<string, number>();
+interface FlushSchedule {
+  raf: number | null;
+  timer: number | null;
+}
+const flushSchedules = new Map<string, FlushSchedule>();
 const MAX_OUTPUT_BYTES_PER_FRAME = 32 * 1024;
+const HIDDEN_WINDOW_FLUSH_FALLBACK_MS = 50;
 
 let outputUnlisten: UnlistenFn | null = null;
 let exitUnlisten: UnlistenFn | null = null;
@@ -57,7 +67,14 @@ function mergeChunks(chunks: PendingOutputChunk[]): number[] {
 }
 
 function flushOutput(terminalId: string) {
-  flushScheduled.set(terminalId, false);
+  const schedule = flushSchedules.get(terminalId);
+  if (schedule?.raf !== null && schedule?.raf !== undefined) {
+    cancelAnimationFrame(schedule.raf);
+  }
+  if (schedule?.timer !== null && schedule?.timer !== undefined) {
+    window.clearTimeout(schedule.timer);
+  }
+  flushSchedules.delete(terminalId);
   const chunks = pendingChunks.get(terminalId);
   if (!chunks || chunks.length === 0) return;
 
@@ -84,6 +101,15 @@ function flushOutput(terminalId: string) {
     batchEnd++;
   }
   const batch = chunks.splice(0, batchEnd);
+  const remainingBytes = Math.max(
+    0,
+    (pendingBytes.get(terminalId) ?? 0) - batchBytes,
+  );
+  if (remainingBytes === 0) {
+    pendingBytes.delete(terminalId);
+  } else {
+    pendingBytes.set(terminalId, remainingBytes);
+  }
 
   const handlers = outputHandlers.get(terminalId);
   if (handlers && handlers.size > 0) {
@@ -110,9 +136,72 @@ function flushOutput(terminalId: string) {
     }
   }
 
-  if (chunks.length > 0 && !flushScheduled.get(terminalId)) {
-    flushScheduled.set(terminalId, true);
-    requestAnimationFrame(() => flushOutput(terminalId));
+  if (chunks.length > 0) scheduleOutputFlush(terminalId);
+}
+
+function scheduleOutputFlush(terminalId: string) {
+  if (flushSchedules.has(terminalId)) return;
+  const schedule: FlushSchedule = { raf: null, timer: null };
+  flushSchedules.set(terminalId, schedule);
+  if (document.visibilityState !== "hidden") {
+    schedule.raf = requestAnimationFrame(() => flushOutput(terminalId));
+  }
+  // requestAnimationFrame can pause completely while Tauri is blurred/hidden.
+  // A bounded timer fallback prevents PTY output from accumulating forever.
+  schedule.timer = window.setTimeout(
+    () => flushOutput(terminalId),
+    HIDDEN_WINDOW_FLUSH_FALLBACK_MS,
+  );
+}
+
+function signalOutputQueueOverflow(
+  terminalId: string,
+  lostChunks: PendingOutputChunk[],
+) {
+  const affectedRuntimes = affectedTerminalOutputRuntimes(lostChunks);
+  const latest = lostChunks[lostChunks.length - 1];
+  pendingChunks.delete(terminalId);
+  pendingBytes.delete(terminalId);
+  const schedule = flushSchedules.get(terminalId);
+  if (schedule?.raf !== null && schedule?.raf !== undefined) {
+    cancelAnimationFrame(schedule.raf);
+  }
+  if (schedule?.timer !== null && schedule?.timer !== undefined) {
+    window.clearTimeout(schedule.timer);
+  }
+  flushSchedules.delete(terminalId);
+
+  console.warn("[terminal-output] frontend queue overflow; snapshot required", {
+    terminalId,
+    workspaceId: latest.workspaceId,
+    generation: latest.generation,
+    processId: latest.processId,
+    sequence: latest.sequence,
+  });
+  const handlers = outputHandlers.get(terminalId);
+  if (!handlers) return;
+  // A single terminal id can temporarily contain chunks from an old and a new
+  // generation. Signal every affected identity: TerminalPane will accept only
+  // its current lifetime, so stale overflow cannot hide loss from the live one.
+  for (const runtime of affectedRuntimes) {
+    const payload: TerminalOutput = {
+      terminalId,
+      workspaceId: runtime.workspaceId,
+      generation: runtime.generation,
+      processId: runtime.processId,
+      sequence: runtime.sequence,
+      data: [],
+      chunks: [],
+      resyncRequired: true,
+      resyncReason: "frontend-queue-overflow",
+    };
+    for (const handler of handlers) {
+      try {
+        handler(payload);
+      } catch (error) {
+        console.error("terminal-output overflow handler error:", error);
+      }
+    }
   }
 }
 
@@ -136,15 +225,19 @@ function enqueueOutput(
     pendingChunks.set(terminalId, list);
   }
   list.push({ workspaceId, generation, processId, sequence, data: bytes });
+  const queuedBytes = (pendingBytes.get(terminalId) ?? 0) + bytes.byteLength;
+  pendingBytes.set(terminalId, queuedBytes);
+
+  if (isTerminalOutputQueueOverflow(list.length, queuedBytes)) {
+    signalOutputQueueOverflow(terminalId, list);
+    return;
+  }
 
   // PTY output is an unframed ANSI byte stream. Never drop an old chunk here:
   // it can contain half of an escape sequence or an incremental TUI repaint.
   // Losing it leaves diff-based TUIs such as Cline permanently corrupted.
 
-  if (!flushScheduled.get(terminalId)) {
-    flushScheduled.set(terminalId, true);
-    requestAnimationFrame(() => flushOutput(terminalId));
-  }
+  scheduleOutputFlush(terminalId);
 }
 
 async function ensureOutputListener() {
@@ -262,7 +355,15 @@ export function subscribeTerminalOutput(
     if (current.size === 0) {
       outputHandlers.delete(terminalId);
       pendingChunks.delete(terminalId);
-      flushScheduled.delete(terminalId);
+      pendingBytes.delete(terminalId);
+      const schedule = flushSchedules.get(terminalId);
+      if (schedule?.raf !== null && schedule?.raf !== undefined) {
+        cancelAnimationFrame(schedule.raf);
+      }
+      if (schedule?.timer !== null && schedule?.timer !== undefined) {
+        window.clearTimeout(schedule.timer);
+      }
+      flushSchedules.delete(terminalId);
       // Keep the global Tauri listen alive for the app lifetime — teardown
       // races under rapid remount are more expensive than one idle listener.
     }
