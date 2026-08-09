@@ -1024,6 +1024,7 @@ export function WorkspaceView() {
               inset: 0,
               display: "flex",
               flexDirection: "column",
+              minWidth: 0,
               minHeight: 0,
             }}
           >

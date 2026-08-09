@@ -82,6 +82,8 @@ export function WorkspaceGrid({
           : isDense
             ? "12px"
             : "12px 16px 16px",
+        minWidth: 0,
+        width: "100%",
         gridTemplateColumns: isFocusMode ? "1fr" : `repeat(${cols}, 1fr)`,
         gridTemplateRows: isFocusMode ? "1fr" : `repeat(${rows}, 1fr)`,
         minHeight: 0,

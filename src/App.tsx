@@ -54,7 +54,7 @@ function App() {
           <Sidebar />
           
           {/* Main workspace content on the right */}
-          <main className="flex-1 min-h-0 overflow-hidden relative">
+          <main className="min-w-0 flex-1 min-h-0 overflow-hidden relative">
             <ErrorBoundary>
               <WorkspaceView />
             </ErrorBoundary>

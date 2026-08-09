@@ -179,7 +179,9 @@ const EXITED_STYLE: React.CSSProperties = {
 
 const CONTAINER_STYLE: React.CSSProperties = {
   flex: 1,
+  minWidth: 0,
   minHeight: 0,
+  width: "100%",
   background: "var(--color-neutral-bg)",
   overflow: "hidden",
 };
@@ -2182,7 +2184,13 @@ export const TerminalPane = memo(function TerminalPane({
     };
   }, [terminalId, terminalWorkspaceId]);
 
-  // 5. ResizeObserver — skip when this pane is hidden under focus mode
+  // 5. ResizeObserver — skip when this pane is hidden under focus mode.
+  // A sibling close changes the grid track while this pane stays mounted. In
+  // that transition WebView2 may not deliver a notification for the flex
+  // child alone, even though the pane's outer box has already changed. Watch
+  // both boxes and re-arm the initial two-frame fit whenever the workspace
+  // terminal count changes; this is the same deterministic barrier used by
+  // focus-mode transitions and never sends an unstable PTY size.
   useEffect(() => {
     const handleResize = () => {
       if (focusModeActive && !isFocused) return;
@@ -2208,6 +2216,8 @@ export const TerminalPane = memo(function TerminalPane({
       handleResize();
     });
     observer.observe(container);
+    const pane = container.parentElement;
+    if (pane && pane !== container) observer.observe(pane);
 
     return () => {
       cancelAnimationFrame(raf);
@@ -2217,7 +2227,7 @@ export const TerminalPane = memo(function TerminalPane({
       }
       observer.disconnect();
     };
-  }, [terminalId, focusModeActive, isFocused, scheduleFitAndResize]);
+  }, [terminalId, terminalCount, focusModeActive, isFocused, scheduleFitAndResize]);
 
   useTerminalInput(terminalId, containerRef, xtermRef);
 

@@ -303,6 +303,25 @@ test("an async terminal add cannot steal selection after a workspace switch", ()
   );
 });
 
+test("closing sibling panes re-arms the mounted pane fit and observes the outer track", () => {
+  const resizeStart = terminalPane.indexOf("// 5. ResizeObserver");
+  const resizeEnd = terminalPane.indexOf("useTerminalInput", resizeStart);
+  const resizeFlow = terminalPane.slice(resizeStart, resizeEnd);
+  assert.match(resizeFlow, /observer\.observe\(container\)/);
+  assert.match(resizeFlow, /const pane = container\.parentElement/);
+  assert.match(resizeFlow, /observer\.observe\(pane\)/);
+  assert.match(
+    resizeFlow,
+    /\[terminalId, terminalCount, focusModeActive, isFocused, scheduleFitAndResize\]/,
+    "a mounted pane must fit again when sibling closure changes the grid count",
+  );
+  assert.match(resizeFlow, /scheduleFitAndResize\(\)/);
+  assert.match(terminalPane, /const CONTAINER_STYLE[\s\S]*minWidth: 0[\s\S]*width: "100%"/);
+  const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+  assert.match(workspaceGrid, /minWidth: 0[\s\S]*width: "100%"/);
+  assert.match(source("../src/App.tsx"), /<main className="min-w-0 flex-1/);
+});
+
 test("drag target overlay never blocks terminal scrollbar input", () => {
   assert.match(
     terminalPane,
