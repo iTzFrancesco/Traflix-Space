@@ -298,12 +298,6 @@ export function WorkspaceView() {
   const activeLoaded = activeWorkspaceId
     ? loadedMap.get(activeWorkspaceId)
     : undefined;
-  // Derive the visible grid from the actual pane count. This also migrates
-  // workspaces saved with an older layout (notably the previous 2x2 for 3).
-  const activeLayout = activeLoaded
-    ? computeLayout(activeLoaded.terminals.length)
-    : null;
-
   const loadWorkspace = useCallback((id: string) => {
     if (loadedMapRef.current.has(id) || loadingRef.current.has(id)) return;
     loadingRef.current.add(id);
@@ -1030,8 +1024,6 @@ export function WorkspaceView() {
           >
             <WorkspaceGrid
               workspaceId={activeLoaded.id}
-              rows={activeLayout?.rows ?? 1}
-              cols={activeLayout?.cols ?? 1}
               terminals={activeLoaded.terminals}
               closeRequest={closeRequest}
               onActivate={handleActivateTerminal}

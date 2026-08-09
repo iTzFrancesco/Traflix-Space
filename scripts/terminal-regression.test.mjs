@@ -307,19 +307,51 @@ test("closing sibling panes re-arms the mounted pane fit and observes the outer 
   const resizeStart = terminalPane.indexOf("// 5. ResizeObserver");
   const resizeEnd = terminalPane.indexOf("useTerminalInput", resizeStart);
   const resizeFlow = terminalPane.slice(resizeStart, resizeEnd);
-  assert.match(resizeFlow, /observer\.observe\(container\)/);
-  assert.match(resizeFlow, /const pane = container\.parentElement/);
-  assert.match(resizeFlow, /observer\.observe\(pane\)/);
+  assert.match(resizeFlow, /observer\.observe\(observed\)/);
+  assert.match(resizeFlow, /observed = observed\.parentElement/);
+  assert.match(resizeFlow, /level < 5/);
   assert.match(
     resizeFlow,
     /\[terminalId, terminalCount, focusModeActive, isFocused, scheduleFitAndResize\]/,
     "a mounted pane must fit again when sibling closure changes the grid count",
   );
-  assert.match(resizeFlow, /scheduleFitAndResize\(\)/);
+  assert.match(resizeFlow, /scheduleFitAndResize\(2\)/);
   assert.match(terminalPane, /const CONTAINER_STYLE[\s\S]*minWidth: 0[\s\S]*width: "100%"/);
   const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
-  assert.match(workspaceGrid, /minWidth: 0[\s\S]*width: "100%"/);
+  assert.match(workspaceGrid, /computeLayout\(terminals\.length\)/);
+  assert.match(workspaceGrid, /height: "100%"/);
+  assert.match(workspaceGrid, /padding: isFocusMode[\s\S]*\? 0/);
+  assert.match(workspaceGrid, /: \{ display: "none" \}/);
+  assert.doesNotMatch(workspaceGrid, /width: 1,[\s\S]*height: 1/);
   assert.match(source("../src/App.tsx"), /<main className="min-w-0 flex-1/);
+});
+
+test("fullscreen and close transitions cannot retain stale grid tracks or an empty hidden cell", () => {
+  const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
+  assert.match(
+    workspaceGrid,
+    /The persisted layout is a creation hint[\s\S]*computeLayout\(terminals\.length\)/,
+    "grid dimensions must follow the rendered terminal list, not cached rows/cols",
+  );
+  assert.match(
+    workspaceGrid,
+    /isFocusMode[\s\S]*\? 0[\s\S]*gridTemplateColumns: isFocusMode \? "1fr"/,
+    "fullscreen must use the whole workspace content box",
+  );
+  assert.match(
+    workspaceGrid,
+    /isFocused[\s\S]*display: "none"/,
+    "non-focused panes must not reserve a one-pixel grid track",
+  );
+  const terminalPaneSource = terminalPane.slice(
+    terminalPane.indexOf("// 5. ResizeObserver"),
+    terminalPane.indexOf("useTerminalInput(", terminalPane.indexOf("// 5. ResizeObserver")),
+  );
+  assert.match(
+    terminalPaneSource,
+    /bounded two-frame barrier[\s\S]*scheduleFitAndResize\(2\)/,
+    "layout transitions must wait for the settled grid before fitting xterm",
+  );
 });
 
 test("drag target overlay never blocks terminal scrollbar input", () => {

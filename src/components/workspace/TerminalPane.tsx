@@ -2199,28 +2199,34 @@ export const TerminalPane = memo(function TerminalPane({
       }
       resizeDebounceRef.current = window.setTimeout(() => {
         resizeDebounceRef.current = null;
-        scheduleFitAndResize();
+        scheduleFitAndResize(2);
       }, 150);
     };
 
     const container = containerRef.current;
     if (!container) return;
 
-    const raf = requestAnimationFrame(() => {
-      if (focusModeActive && !isFocused) return;
-      scheduleFitAndResize();
-    });
+    // Grid track changes (close, sidebar resize, focus/fullscreen) can settle
+    // after the first paint. A bounded two-frame barrier avoids fitting the
+    // transient width while still guaranteeing a later correction.
+    if (!(focusModeActive && !isFocused)) {
+      scheduleFitAndResize(2);
+    }
 
     const observer = new ResizeObserver(() => {
       if (focusModeActive && !isFocused) return;
       handleResize();
     });
-    observer.observe(container);
-    const pane = container.parentElement;
-    if (pane && pane !== container) observer.observe(pane);
+    // Observe the xterm box, its pane, the grid cell and the grid itself. The
+    // cell is the element whose track changes on close/fullscreen; watching
+    // only the xterm child misses that transition in WebView2.
+    let observed: HTMLElement | null = container;
+    for (let level = 0; observed && level < 5; level += 1) {
+      observer.observe(observed);
+      observed = observed.parentElement;
+    }
 
     return () => {
-      cancelAnimationFrame(raf);
       if (resizeDebounceRef.current !== null) {
         window.clearTimeout(resizeDebounceRef.current);
         resizeDebounceRef.current = null;

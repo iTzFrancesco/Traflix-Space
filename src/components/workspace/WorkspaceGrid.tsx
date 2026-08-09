@@ -2,12 +2,11 @@ import { useCallback, useEffect } from "react";
 import { X } from "lucide-react";
 import { TerminalPane } from "./TerminalPane";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { computeLayout } from "../../lib/presets";
 import type { TerminalConfig } from "../../stores/terminalStore";
 
 interface WorkspaceGridProps {
   workspaceId: string;
-  rows: number;
-  cols: number;
   terminals: TerminalConfig[];
   closeRequest?: { terminalId: string; token: number } | null;
   onActivate: (id: string) => void;
@@ -17,8 +16,6 @@ interface WorkspaceGridProps {
 
 export function WorkspaceGrid({
   workspaceId,
-  rows,
-  cols,
   terminals,
   closeRequest,
   onActivate,
@@ -38,6 +35,10 @@ export function WorkspaceGrid({
     : null;
   const isFocusMode = localFocusId !== null;
   const isDense = terminals.length > 4;
+  // The persisted layout is a creation hint. The visible grid must derive its
+  // tracks from the exact list rendered in this commit; otherwise a close or
+  // reorder racing a cached config can leave empty tracks behind.
+  const { rows, cols } = computeLayout(terminals.length);
 
   const stableOnActivate = useCallback((id: string) => onActivate(id), [onActivate]);
   const stableOnToggleFocus = useCallback((id: string) => toggleFocusTerminal(id), [toggleFocusTerminal]);
@@ -76,9 +77,10 @@ export function WorkspaceGrid({
       style={{
         display: "grid",
         flex: 1,
+        height: "100%",
         gap: isFocusMode ? 0 : isDense ? "12px" : "16px",
         padding: isFocusMode
-          ? "8px 12px 12px"
+          ? 0
           : isDense
             ? "12px"
             : "12px 16px 16px",
@@ -102,16 +104,7 @@ export function WorkspaceGrid({
               isFocusMode
                 ? isFocused
                   ? { gridColumn: "1 / -1", gridRow: "1 / -1", minWidth: 0, minHeight: 0, display: "flex", zIndex: 2, position: "relative" }
-                  : {
-                      position: "absolute",
-                      width: 1,
-                      height: 1,
-                      overflow: "hidden",
-                      opacity: 0,
-                      pointerEvents: "none",
-                      zIndex: 0,
-                      clipPath: "inset(50%)",
-                    }
+                  : { display: "none" }
                 : { minWidth: 0, minHeight: 0, display: "flex", position: "relative" }
             }
             aria-hidden={isHidden || undefined}
