@@ -46,6 +46,8 @@ pub enum RuntimeError {
     NotRunning { state: CodexRuntimeState },
     #[error("codex app-server RPC failed: {0}")]
     Rpc(String),
+    #[error("codex environment error: {0}")]
+    Environment(String),
 }
 
 fn display_version(version: (u32, u32, u32)) -> String {
@@ -61,6 +63,7 @@ impl RuntimeError {
             Self::Spawn(_) | Self::Handshake(_) => "codex_runtime_start_failed",
             Self::NotRunning { .. } => "codex_runtime_crashed",
             Self::Rpc(_) => "codex_rpc_failed",
+            Self::Environment(_) => "codex_environment_error",
         }
     }
 }
@@ -183,8 +186,19 @@ impl CodexRuntimeManager {
             inner.last_error = None;
         }
 
+        // Spec §5: the App Server must use a dedicated CODEX_HOME so the
+        // normal personal Codex profile can never interfere with Jarvis.
+        let codex_home_str = super::threads::codex_home_dir(&self.app)?.to_string_lossy().to_string();
+        {
+            let mut inner = self.inner.lock().await;
+            inner.codex_home = Some(codex_home_str.clone());
+        }
+
         let mut child = Command::new(&executable)
             .arg("app-server")
+            // Spec §5: dedicated CODEX_HOME so the personal ~/.codex profile
+            // can never leak into Jarvis.
+            .env("CODEX_HOME", codex_home_str)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -290,7 +304,17 @@ impl CodexRuntimeManager {
                         .app
                         .try_state::<super::models::CodexModelService>()
                         .map(|state| state.inner().clone());
-                    super::account::spawn_account_bridge(self.clone(), self.app.clone(), models, rx);
+                    let threads = self
+                        .app
+                        .try_state::<super::threads::ThreadRegistry>()
+                        .map(|state| state.inner().clone());
+                    super::account::spawn_account_bridge(
+                        self.clone(),
+                        self.app.clone(),
+                        models,
+                        threads,
+                        rx,
+                    );
                 }
                 self.spawn_monitor(child);
                 Ok(())
@@ -789,6 +813,77 @@ mod tests {
         let _ = client
             .request("account/login/cancel", json!({ "loginId": login_id }))
             .await;
+
+        // C4: ephemeral thread lifecycle (isolated cwd, read-only sandbox,
+        // never approval) + turn/start + turn/interrupt + thread/delete.
+        let thread_start = client
+            .request(
+                "thread/start",
+                json!({
+                    "ephemeral": true,
+                    "cwd": init.codex_home,
+                    "sandbox": "read-only",
+                    "approvalPolicy": "never",
+                    "model": "gpt-5.6-luna",
+                    "runtimeWorkspaceRoots": [],
+                }),
+            )
+            .await
+            .expect("thread/start response");
+        let thread_id = thread_start["thread"]["id"]
+            .as_str()
+            .expect("thread.id present");
+        assert_eq!(
+            thread_start["thread"]["ephemeral"],
+            serde_json::Value::Bool(true),
+            "thread is ephemeral"
+        );
+        // The sandbox field may be normalized by the server; assert only
+        // when it is echoed back as the simple enum.
+        if let Some(sandbox) = thread_start["sandbox"].as_str() {
+            assert_eq!(sandbox, "read-only");
+        }
+
+        let turn = client
+            .request(
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{ "type": "text", "text": "Ciao, sei in linea? Rispondi solo con OK." }],
+                    "effort": "low",
+                }),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("turn/start failed: {err}"));
+        let turn_id = turn["turn"]["id"]
+            .as_str()
+            .expect("turn.id present");
+
+        // Interrupt is best-effort: the trivial prompt may complete before
+        // the interrupt lands (error on an already-finished turn is fine).
+        let _ = client
+            .request(
+                "turn/interrupt",
+                json!({ "threadId": thread_id, "turnId": turn_id }),
+            )
+            .await;
+
+        // Ephemeral threads are not persisted, so the server refuses
+        // thread/delete ("thread is not persisted") — expected contract:
+        // no server-side cleanup is needed for ephemeral threads.
+        let delete_result = client
+            .request("thread/delete", json!({ "threadId": thread_id }))
+            .await;
+        match delete_result {
+            Ok(_) => {}
+            Err(err) => {
+                let message = err.to_string();
+                assert!(
+                    message.contains("not persisted"),
+                    "ephemeral delete error mentions persistence: {message}"
+                );
+            }
+        }
 
         child.kill().await.expect("child killed");
         child.wait().await.expect("child reaped");

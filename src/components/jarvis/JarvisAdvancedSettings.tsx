@@ -6,6 +6,7 @@ import type {
   CodexModelSettings,
   CodexRuntimeStatus,
   CodexUsageView,
+  JarvisCodexThread,
   JarvisProviderStatus,
   ModelContextViewV1,
 } from "../../lib/jarvis/types";
@@ -31,7 +32,9 @@ export interface CodexSettingsSectionProps {
   modelsLoading: boolean;
   usage: CodexUsageView | null;
   modelSettings: CodexModelSettings;
+  threads: Record<string, JarvisCodexThread>;
   onModelSettingsChange: (settings: CodexModelSettings) => void;
+  onDeleteThread: (workspaceId: string) => void;
   onLoadAccount: () => void;
   onLogin: () => void;
   onLogout: () => void;
@@ -85,7 +88,9 @@ export function CodexSettingsSection({
   modelsLoading,
   usage,
   modelSettings,
+  threads,
   onModelSettingsChange,
+  onDeleteThread,
   onLoadAccount,
   onLogin,
   onLogout,
@@ -254,6 +259,46 @@ export function CodexSettingsSection({
           </p>
         </div>
       )}
+
+      {/* C4: ephemeral threads per workspace (one thread per workspace,
+          destroyed by Clear Conversation / clean shutdown). */}
+      <div className="mt-3 border-t border-neutral-border pt-3">
+        <p className="text-[10px] text-neutral-text-muted">Thread Codex</p>
+        {Object.keys(threads).length === 0 ? (
+          <p className="mt-1 text-[10px] italic text-neutral-text-muted">
+            Nessun thread attivo — viene creato al primo turno del workspace.
+          </p>
+        ) : (
+          <ul className="mt-1 space-y-1">
+            {Object.values(threads).map((thread) => (
+              <li
+                key={thread.threadId}
+                className="flex items-center justify-between gap-2 text-[10px]"
+              >
+                <span className="truncate text-neutral-text">
+                  {thread.workspaceId.slice(0, 8)} · {thread.model}
+                  <span
+                    className={
+                      thread.status === "in_progress"
+                        ? "ml-1.5 text-primary"
+                        : "ml-1.5 text-neutral-text-muted"
+                    }
+                  >
+                    {thread.status === "in_progress" ? "• in corso" : "idle"}
+                  </span>
+                </span>
+                <button
+                  onClick={() => onDeleteThread(thread.workspaceId)}
+                  className="text-danger hover:underline"
+                  title="Elimina thread"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 

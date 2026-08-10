@@ -158,6 +158,12 @@ fn main() {
                 codex_runtime.clone(),
             ));
 
+            // C4: one ephemeral thread per workspace, isolated env.
+            app.manage(jarvis::codex::threads::ThreadRegistry::new(
+                codex_runtime.clone(),
+                app.handle().clone(),
+            ));
+
             // Edge TTS is process-based. Warm it outside the user's first
             // spoken turn so Python/PyInstaller startup + import are not paid
             // after Jarvis has already produced a reply.
@@ -313,6 +319,11 @@ fn main() {
             jarvis::codex::models::jarvis_codex_model_list,
             jarvis::codex::models::jarvis_codex_rate_limits,
             jarvis::codex::models::jarvis_codex_usage,
+            jarvis::codex::threads::jarvis_codex_threads,
+            jarvis::codex::threads::jarvis_codex_thread_ensure,
+            jarvis::codex::threads::jarvis_codex_thread_delete,
+            jarvis::codex::threads::jarvis_codex_turn_start,
+            jarvis::codex::threads::jarvis_codex_turn_interrupt,
             jarvis::voice::commands::jarvis_voice_list_input_devices,
             jarvis::voice::commands::jarvis_voice_sync_shortcut,
             jarvis::voice::commands::jarvis_voice_start,
@@ -373,6 +384,11 @@ fn main() {
                 let _ = voice.shutdown().await;
                 jarvis::voice::tts::shutdown_runtime().await;
                 let codex = app.state::<jarvis::codex::CodexRuntimeManager>();
+                // C4: clean shutdown deletes the ephemeral Jarvis threads.
+                let registry = app.state::<jarvis::codex::threads::ThreadRegistry>();
+                for thread in registry.list().await.threads {
+                    registry.delete_thread(&thread.workspace_id).await;
+                }
                 codex.shutdown().await;
                 manager.kill_all().await;
             });

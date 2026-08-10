@@ -113,6 +113,20 @@ export interface CodexRateLimitsView {
   snapshot: unknown;
 }
 
+export interface JarvisCodexThread {
+  threadId: string;
+  workspaceId: string;
+  model: string;
+  reasoningEffort: string;
+  createdAt: number;
+  status: "idle" | "in_progress" | string;
+  activeTurnId: string | null;
+}
+
+export interface CodexThreadSnapshot {
+  threads: JarvisCodexThread[];
+}
+
 export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";
 export type ShortcutBehavior = "toggle" | "hold";
 

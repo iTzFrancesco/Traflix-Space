@@ -68,6 +68,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const codexModels = useJarvisStore((state) => state.codexModels);
   const codexModelsLoading = useJarvisStore((state) => state.codexModelsLoading);
   const codexUsage = useJarvisStore((state) => state.codexUsage);
+  const codexThreads = useJarvisStore((state) => state.codexThreads);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const saveSettings = useJarvisStore((state) => state.saveSettings);
 
@@ -108,6 +109,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     void useJarvisStore.getState().loadCodexAccount();
     void useJarvisStore.getState().loadCodexModels();
     void useJarvisStore.getState().loadCodexUsage();
+    void useJarvisStore.getState().loadCodexThreads();
   }, [open, settings]);
 
   const updateJarvis = (
@@ -314,8 +316,12 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
                 modelsLoading={codexModelsLoading}
                 usage={codexUsage}
                 modelSettings={jarvis.codex}
+                threads={codexThreads}
                 onModelSettingsChange={(codex) =>
                   updateJarvis((current) => ({ ...current, codex }))
+                }
+                onDeleteThread={(workspaceId) =>
+                  void useJarvisStore.getState().deleteCodexThread(workspaceId)
                 }
                 onLoadAccount={() => void useJarvisStore.getState().loadCodexAccount()}
                 onLogin={() => void useJarvisStore.getState().startCodexLogin()}

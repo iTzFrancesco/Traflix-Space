@@ -13,6 +13,11 @@ import {
   codexRateLimits,
   codexRuntimeRestart,
   codexRuntimeStatus,
+  codexThreadDelete,
+  codexThreadEnsure,
+  codexThreads,
+  codexTurnInterrupt,
+  codexTurnStart,
   codexUsage,
   confirmAction,
   conversationHistory,
@@ -47,6 +52,7 @@ import type {
   AppSettings,
   InvocationBinding,
   JarvisConversationMessage,
+  JarvisCodexThread,
   JarvisProviderStatus,
   JarvisRequestState,
   CodexAccountEvent,
@@ -54,6 +60,7 @@ import type {
   CodexModelCatalog,
   CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexThreadSnapshot,
   CodexUsageView,
   JarvisUiIntent,
   ModelContextViewV1,
@@ -100,6 +107,12 @@ interface JarvisStore {
   codexModelsLoading: boolean;
   codexUsage: CodexUsageView | null;
   codexRateLimits: CodexRateLimitsView | null;
+  codexThreads: Record<string, JarvisCodexThread>;
+  loadCodexThreads: () => Promise<void>;
+  ensureCodexThread: (workspaceId: string) => Promise<void>;
+  deleteCodexThread: (workspaceId: string) => Promise<void>;
+  startCodexTurn: (workspaceId: string, input: string) => Promise<string | null>;
+  interruptCodexTurn: (workspaceId: string) => Promise<void>;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
   activities: ActivityCheckpoint[];
@@ -231,7 +244,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, codexRuntime: null, codexAccount: null,
   codexAccountLoading: false, codexLoginBusy: false, codexError: null, codexModels: null,
-  codexModelsLoading: false, codexUsage: null, codexRateLimits: null, uiIntents: [], followUps: {},
+  codexModelsLoading: false, codexUsage: null, codexRateLimits: null, codexThreads: {},
+  uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
   activeVoiceRequestId: null,
@@ -422,6 +436,42 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   loadCodexRateLimits: async () => {
     try { set({ codexRateLimits: await codexRateLimits() }); } catch { /* keep last snapshot */ }
   },
+  loadCodexThreads: async () => {
+    try {
+      const snapshot = await codexThreads();
+      set({
+        codexThreads: Object.fromEntries(
+          snapshot.threads.map((thread) => [thread.workspaceId, thread]),
+        ),
+      });
+    } catch { /* keep last threads */ }
+  },
+  ensureCodexThread: async (workspaceId) => {
+    try {
+      await codexThreadEnsure(workspaceId);
+      await get().loadCodexThreads();
+    } catch { /* surfaced by the caller through codexError */ }
+  },
+  deleteCodexThread: async (workspaceId) => {
+    try {
+      await codexThreadDelete(workspaceId);
+      set((state) => {
+        const next = { ...state.codexThreads };
+        delete next[workspaceId];
+        return { codexThreads: next };
+      });
+    } catch { /* keep local record; runtime will clear on next start */ }
+  },
+  startCodexTurn: async (workspaceId, input) => {
+    try {
+      return await codexTurnStart(workspaceId, input);
+    } catch {
+      return null;
+    }
+  },
+  interruptCodexTurn: async (workspaceId) => {
+    try { await codexTurnInterrupt(workspaceId); } catch { /* turn may already be done */ }
+  },
   restartCodex: async () => {
     set({ codexLoginBusy: true, codexError: null });
     try {
@@ -458,7 +508,21 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       set({ codexLoginBusy: false });
     }
   },
-  clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
+  clearConversation: async (workspaceId) => {
+    await clearConversation(workspaceId);
+    set((state) => ({
+      conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId),
+      uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId),
+      followUps: { ...state.followUps, [workspaceId]: [] },
+      // C4: the backend destroys the ephemeral Codex thread too; mirror
+      // the local record immediately (event snapshot may not arrive).
+      codexThreads: (() => {
+        const next = { ...state.codexThreads };
+        delete next[workspaceId];
+        return next;
+      })(),
+    }));
+  },
   startVoice: async (options = {}) => {
     const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
     const current = get();
@@ -852,6 +916,15 @@ export function bindCodexEvents(): () => void {
   void listen<unknown>("jarvis://codex-rate-limits", (event) => {
     useJarvisStore.setState({
       codexRateLimits: { snapshot: event.payload },
+    });
+  }).then((unlisten) => unlisteners.push(unlisten));
+  // C4: thread snapshots (started/completed/deleted transitions) are
+  // emitted by the backend registry after every lifecycle change.
+  void listen<CodexThreadSnapshot>("jarvis://codex-thread", (event) => {
+    useJarvisStore.setState({
+      codexThreads: Object.fromEntries(
+        event.payload.threads.map((thread) => [thread.workspaceId, thread]),
+      ),
     });
   }).then((unlisten) => unlisteners.push(unlisten));
   return () => {

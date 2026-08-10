@@ -918,6 +918,12 @@ pub async fn jarvis_clear_conversation(
     workspace_id: String,
 ) -> Result<(), JarvisErrorEnvelope> {
     app.state::<JarvisState>().memory.clear(&workspace_id);
+    // C4: Clear Conversation also destroys the ephemeral Codex thread for
+    // that workspace (spec §9). Best-effort: when the runtime is down the
+    // server thread is left orphaned (documented V1 limit).
+    if let Some(registry) = app.try_state::<crate::jarvis::codex::threads::ThreadRegistry>() {
+        registry.delete_thread(&workspace_id).await;
+    }
     Ok(())
 }
 

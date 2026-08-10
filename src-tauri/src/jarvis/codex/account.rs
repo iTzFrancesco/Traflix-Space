@@ -16,6 +16,7 @@ use tracing::{debug, warn};
 
 use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
+use super::threads::ThreadRegistry;
 use super::runtime::{CodexRuntimeManager, RuntimeError};
 
 impl From<RpcError> for RuntimeError {
@@ -93,6 +94,7 @@ pub fn spawn_account_bridge(
     _runtime: CodexRuntimeManager,
     app: AppHandle,
     models: Option<CodexModelService>,
+    threads: Option<ThreadRegistry>,
     mut rx: mpsc::UnboundedReceiver<ServerMessage>,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -107,6 +109,14 @@ pub fn spawn_account_bridge(
                 if let (Some(params), Some(models)) = (&params, &models) {
                     let update = params.get("rateLimits").cloned().unwrap_or_default();
                     models.apply_incremental_update(&app, &update);
+                }
+                continue;
+            }
+            // C4: thread/turn lifecycle notifications keep the registry in
+            // sync (turn started/completed clears the active turn).
+            if method.starts_with("thread/") || method.starts_with("turn/") {
+                if let Some(threads) = &threads {
+                    threads.apply_notification(&method, &params).await;
                 }
                 continue;
             }

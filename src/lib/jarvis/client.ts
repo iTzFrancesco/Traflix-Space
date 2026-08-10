@@ -16,6 +16,7 @@ import type {
   CodexModelCatalog,
   CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexThreadSnapshot,
   CodexUsageView,
   ContextPackageV1,
   InvocationBinding,
@@ -539,6 +540,41 @@ export function codexRateLimits(): Promise<CodexRateLimitsView> {
 export function codexUsage(): Promise<CodexUsageView> {
   return invokeWithTimeout(
     () => invoke<CodexUsageView>("jarvis_codex_usage"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexThreads(): Promise<CodexThreadSnapshot> {
+  return invokeWithTimeout(
+    () => invoke<CodexThreadSnapshot>("jarvis_codex_threads"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexThreadEnsure(workspaceId: string): Promise<unknown> {
+  return invokeWithTimeout(
+    () => invoke<unknown>("jarvis_codex_thread_ensure", { workspaceId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexThreadDelete(workspaceId: string): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_codex_thread_delete", { workspaceId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexTurnStart(workspaceId: string, input: string): Promise<string> {
+  return invokeWithTimeout(
+    () => invoke<string>("jarvis_codex_turn_start", { workspaceId, input }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexTurnInterrupt(workspaceId: string): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_codex_turn_interrupt", { workspaceId }),
     READ_TIMEOUT_MS,
   );
 }
