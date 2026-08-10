@@ -1,11 +1,24 @@
 # Traflix Space — Jarvis Codex App Server Integration
 
-**Stato:** proposta architetturale per implementazione  
-**Target:** Traflix Space / Jarvis interno  
-**Obiettivo:** sostituire OpenCode Zen + DeepSeek come LLM di Jarvis con Codex App Server autenticato tramite ChatGPT  
-**Default proposto:** GPT-5.6 Luna · Low  
-**Voice V1:** invariata — Groq Whisper + Edge TTS  
+**Stato:** proposta architetturale per implementazione — fasi C1–C5 IMPLEMENTATE (vedi §30)
+**Target:** Traflix Space / Jarvis interno
+**Obiettivo:** sostituire OpenCode Zen + DeepSeek come LLM di Jarvis con Codex App Server autenticato tramite ChatGPT
+**Default proposto:** GPT-5.6 Luna · Low
+**Voice V1:** invariata — Groq Whisper + Edge TTS
 **Control plane:** invariato — Traflix Space Rust + PTY visibili
+
+> **Stato avanzamento (aggiornato dagli agenti)**
+>
+> | Fase | Stato | Commit | Verifica reale |
+> |---|---|---|---|
+> | C1 Runtime | ✅ | `9938183` | handshake + account/read + model/list su app-server 0.147.0 |
+> | C2 Authentication | ✅ | `f955441` | login/start reale (authUrl https + loginId) + cancel; account chatgpt planType letto |
+> | C3 Model settings | ✅ | `080bca7` | model/list (gpt-5.6-luna, effort server-order), rateLimits/read + usage/read reali; merge incrementale mai-null |
+> | C4 Thread lifecycle | ✅ | `19f6137` | thread ephemeral reale + turn/start + interrupt; thread/delete rifiutato ("not persisted") |
+> | C5 Dynamic tools | ✅ | `4315c2f` | turno reale: il modello chiama `agent.list` end-to-end (request namespaced + risposta) |
+> | C6–C10 | ⏳ | — | pianificate |
+>
+> Dettagli, scoperte di protocollo e limiti: vedi §5, §9, §11 e §30.
 
 ---
 
@@ -629,6 +642,12 @@ App Server persiste normalmente i thread e dispone di `thread/delete`; questo si
 
 Non salvare il thread ID in `settings.json`.
 
+> **Verifica implementazione (C4, app-server 0.147.0)**
+>
+> - I thread creati con `ephemeral: true` **non vengono persistiti**: il server rifiuta `thread/delete` con `-32600 "thread is not persisted and cannot be deleted"`. Di conseguenza il limite V1 sopra **non si applica** ai thread ephemeral: un crash non lascia alcun artefatto e il cleanup server-side è inutile (il client elimina solo il record locale).
+> - `turn/start` richiede `input` come **array di UserInput** (`[{ "type": "text", "text": "..." }]`); una stringa semplice viene rifiutata con `-32600 invalid type`.
+> - `turn/interrupt` su un turno già completato restituisce errore: va trattato come best-effort.
+
 ---
 
 # 10. Istruzioni permanenti di Jarvis
@@ -680,7 +699,7 @@ I tool di Jarvis esistono già e vanno mantenuti semanticamente quasi identici.
 
 ```text
 workspace.overview
-terminal.list
+terminal.list        → implementato come namespace `terminals` (vedi sotto)
 
 agent.list
 agent.status
@@ -693,6 +712,14 @@ ui.open_terminal
 
 conversational.plan
 ```
+
+> **Verifica implementazione (C5, app-server 0.147.0) — vincoli reali del protocollo:**
+>
+> 1. Il namespace `terminal` è **riservato dalla Responses API**: `thread/start` lo rifiuta con `-32600 "dynamic tool namespace collides with a reserved Responses API namespace: terminal"`. L'implementazione usa il namespace `terminals` (stesso tool `list`).
+> 2. I tool dentro un namespace richiedono `"type": "function"` esplicito oltre a `name`/`description`/`inputSchema`; senza, il server rifiuta con `-32600 "dynamic tools must use either canonical or legacy format consistently"`.
+> 3. La server request `item/tool/call` ha params `{ callId, namespace, tool, arguments, threadId, turnId }` — il server invia **namespace e tool separati** (non un nome puntato); `arguments` è l'input del tool. Il client risponde con `{ "content": [{ "type": "inputText", "text": "..." }] }`.
+> 4. Tool call osservata end-to-end: il modello chiama `agent.list`, il server invia la request namespaced, il client risponde e il turno prosegue.
+> 5. Host limit applicato: max `MAX_DYNAMIC_TOOL_CALLS_PER_TURN = 12` per turno (budget resettato su `turn/started`).
 
 ## Read-only tools
 
@@ -1624,7 +1651,10 @@ agent_send(target = "OpenCode")
 
 # 30. Fasi di implementazione
 
-## Phase C1 — Runtime
+> **Stato: C1–C5 completate** (commit `9938183`, `f955441`, `080bca7`, `19f6137`, `4315c2f`).
+> Verifiche: `cargo test` (200 test unit) + test d'integrazione reali `#[ignore]` contro `codex app-server` 0.147.0 + `tsc`/`npm run build` per le fasi con UI.
+
+## Phase C1 — Runtime ✅
 
 Implementare:
 
@@ -1643,9 +1673,11 @@ Nessun traffico Jarvis ancora.
 
 Space apre e mantiene App Server senza crash.
 
+> Verificato: handshake reale (`initialize` → `initialized`), `CODEX_HOME` dedicato `<app-data>/codex-home` (vedi §5), crash monitor con budget restart, comandi `jarvis_codex_runtime_status/_restart`.
+
 ---
 
-## Phase C2 — Authentication
+## Phase C2 — Authentication ✅
 
 Implementare:
 
@@ -1672,9 +1704,11 @@ Sign in with ChatGPT
 
 senza API key.
 
+> Verificato: `account/read` reale (account chatgpt con planType), login/start reale (authUrl https + loginId) con cancel immediato, bridge notifiche `account/*` su `jarvis://codex-account`; Traflix Space non legge mai token.
+
 ---
 
-## Phase C3 — Model settings
+## Phase C3 — Model settings ✅
 
 Implementare:
 
@@ -1691,9 +1725,11 @@ Default:
 Luna / Low
 ```
 
+> Verificato: catalogo `model/list` reale (ordine server preservato, `supportedReasoningEfforts` da `model/list`), `account/rateLimits/read` + `account/usage/read` reali; `account/rateLimits/updated` è **incrementale** e viene fuso nel snapshot con merge mai-null (correzione utente #5); settings `codex {model, reasoningEffort}` persistiti in `settings.json`.
+
 ---
 
-## Phase C4 — Thread lifecycle
+## Phase C4 — Thread lifecycle ✅
 
 Implementare:
 
@@ -1707,15 +1743,17 @@ turn/interrupt
 
 con runtime cwd isolata.
 
+> Verificato: un thread ephemeral per workspace (`ephemeral: true`, sandbox read-only, approvalPolicy never, cwd isolata `codex-home`, repo utente mai leggibile), thread/delete su Clear Conversation e shutdown pulito; scoperte protocollo in §9.
+
 ---
 
-## Phase C5 — Read-only dynamic tools
+## Phase C5 — Read-only dynamic tools ✅
 
 Aggiungere:
 
 ```text
 workspace.overview
-terminal.list
+terminal.list → namespace `terminals` (namespace `terminal` riservato, vedi §11)
 agent.list
 agent.status
 agent.last_result
@@ -1744,6 +1782,8 @@ commentary
 → eventuale agent.last_result
 → final
 ```
+
+> Verificato end-to-end con prova reale: turno su thread ephemeral con `dynamicTools` registrati, il modello ha chiamato `agent.list` (request `item/tool/call` namespaced osservata e risposta inviata, turno completato). Vincoli reali del protocollo in §11.
 
 ---
 
