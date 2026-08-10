@@ -3,6 +3,47 @@ export type RequestedDepth = "summary" | "last_result" | "full_messages";
 export type VoiceEngine = "standard" | "gemini_live";
 export type ModelProvider = "open_code_zen";
 
+export type CodexRuntimeState =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "crashed"
+  | "failed";
+
+export interface CodexRuntimeStatus {
+  state: CodexRuntimeState;
+  version: string | null;
+  pid: number | null;
+  codexHome: string | null;
+  platform: string | null;
+  startedAt: string | null;
+  handshakeCompleted: boolean;
+  lastError: string | null;
+  restartCount: number;
+}
+
+export type CodexAccount =
+  | { kind: "signedOut" }
+  | { kind: "chatgpt"; email: string | null; planType: string }
+  | { kind: "apiKey" }
+  | { kind: "other"; accountType: string };
+
+export interface CodexAccountView {
+  account: CodexAccount;
+  requiresOpenaiAuth: boolean;
+}
+
+export interface CodexLoginStartView {
+  authUrl: string;
+  loginId: string;
+}
+
+export interface CodexAccountEvent {
+  method: string;
+  params: unknown;
+}
+
+
 export interface WidgetPosition {
   x: number;
   y: number;

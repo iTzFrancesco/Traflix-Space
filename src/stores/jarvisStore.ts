@@ -1,8 +1,16 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   agentGetLastResult,
   cancelChat,
   clearConversation,
+  codexAccountRead,
+  codexLoginCancel,
+  codexLoginStart,
+  codexLogout,
+  codexRuntimeRestart,
+  codexRuntimeStatus,
   confirmAction,
   conversationHistory,
   getSettings,
@@ -38,6 +46,9 @@ import type {
   JarvisConversationMessage,
   JarvisProviderStatus,
   JarvisRequestState,
+  CodexAccountEvent,
+  CodexAccountView,
+  CodexRuntimeStatus,
   JarvisUiIntent,
   ModelContextViewV1,
   PendingAction,
@@ -74,6 +85,11 @@ interface JarvisStore {
   requests: Record<string, JarvisRequestState>;
   chatErrors: Record<string, string | undefined>;
   providerStatus: JarvisProviderStatus | null;
+  codexRuntime: CodexRuntimeStatus | null;
+  codexAccount: CodexAccountView | null;
+  codexAccountLoading: boolean;
+  codexLoginBusy: boolean;
+  codexError: string | null;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
   activities: ActivityCheckpoint[];
@@ -118,6 +134,12 @@ interface JarvisStore {
   rejectPendingAction: (action: PendingAction) => Promise<void>;
   updatePendingAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   loadProviderStatus: () => Promise<void>;
+  loadCodexRuntime: () => Promise<void>;
+  loadCodexAccount: () => Promise<void>;
+  restartCodex: () => Promise<void>;
+  startCodexLogin: () => Promise<void>;
+  cancelCodexLogin: (loginId: string) => Promise<void>;
+  logoutCodex: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
   startVoice: (options?: { interruptTts?: boolean }) => Promise<void>;
   stopVoice: () => Promise<void>;
@@ -194,7 +216,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   context: null, contextStatus: "idle", contextError: null, registrySessions: [], isRefreshing: false,
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
-  requests: {}, chatErrors: {}, providerStatus: null, uiIntents: [], followUps: {},
+  requests: {}, chatErrors: {}, providerStatus: null, codexRuntime: null, codexAccount: null,
+  codexAccountLoading: false, codexLoginBusy: false, codexError: null, uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
   activeVoiceRequestId: null,
@@ -357,6 +380,56 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   rejectPendingAction: async (action) => { try { const result = await rejectAction(action.id, action.invocation); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); } },
   updatePendingAction: async (action, text) => { try { const result = await updatePendingAction(action.id, action.invocation, text); set((state) => ({ pendingActions: state.pendingActions.map((item) => item.id === result.id ? result : item) })); return result; } catch (error) { set((state) => ({ chatErrors: { ...state.chatErrors, [action.invocation.targetWorkspaceId]: errorMessage(error) } })); throw error; } },
   loadProviderStatus: async () => { try { set({ providerStatus: await providerStatus() }); } catch { /* advanced settings keeps last status */ } },
+  loadCodexRuntime: async () => {
+    try {
+      const runtime = await codexRuntimeStatus();
+      set({ codexRuntime: runtime, codexError: runtime.lastError ? (codexErrorMessage(runtime.lastError)) : get().codexError });
+    } catch { /* runtime may be warming up; keep last status */ }
+  },
+  loadCodexAccount: async () => {
+    set({ codexAccountLoading: true });
+    try {
+      set({ codexAccount: await codexAccountRead(), codexAccountLoading: false });
+    } catch (error) {
+      set({ codexAccountLoading: false, codexError: errorMessage(error) });
+    }
+  },
+  restartCodex: async () => {
+    set({ codexLoginBusy: true, codexError: null });
+    try {
+      set({ codexRuntime: await codexRuntimeRestart() });
+    } catch (error) {
+      set({ codexError: errorMessage(error) });
+    } finally {
+      set({ codexLoginBusy: false });
+    }
+  },
+  startCodexLogin: async () => {
+    set({ codexLoginBusy: true, codexError: null });
+    try {
+      const { authUrl } = await codexLoginStart();
+      set({ codexLoginBusy: false });
+      await openCodexAuthUrl(authUrl);
+      // The flow completes via jarvis://codex-account notifications;
+      // the global listener refreshes the account view on completion.
+    } catch (error) {
+      set({ codexLoginBusy: false, codexError: errorMessage(error) });
+    }
+  },
+  cancelCodexLogin: async (loginId) => {
+    try { await codexLoginCancel(loginId); } catch (error) { set({ codexError: errorMessage(error) }); }
+  },
+  logoutCodex: async () => {
+    set({ codexLoginBusy: true, codexError: null });
+    try {
+      await codexLogout();
+      set({ codexAccount: { account: { kind: "signedOut" }, requiresOpenaiAuth: true } });
+    } catch (error) {
+      set({ codexError: errorMessage(error) });
+    } finally {
+      set({ codexLoginBusy: false });
+    }
+  },
   clearConversation: async (workspaceId) => { await clearConversation(workspaceId); set((state) => ({ conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId), uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId), followUps: { ...state.followUps, [workspaceId]: [] } })); },
   startVoice: async (options = {}) => {
     const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
@@ -697,4 +770,56 @@ function mergeActions(current: PendingAction[], incoming: PendingAction[]): Pend
   const byId = new Map(current.map((action) => [action.id, action]));
   for (const action of incoming) byId.set(action.id, action);
   return [...byId.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function codexErrorMessage(message: string): string {
+  const code = message.split(": ")[0];
+  switch (code) {
+    case "codex_not_installed":
+      return "Codex CLI non installato: installa il pacchetto npm `@openai/codex` e riavvia.";
+    case "codex_version_mismatch":
+      return "Versione Codex troppo vecchia: serve >= 0.147.0.";
+    case "codex_runtime_start_failed":
+      return "Impossibile avviare il runtime Codex (handshake fallito).";
+    case "codex_runtime_crashed":
+      return "Il runtime Codex non è in esecuzione (riavvialo dalla sezione Codex).";
+    default:
+      return message;
+  }
+}
+
+/** Opens the ChatGPT OAuth URL in the internal incognito browser. */
+async function openCodexAuthUrl(authUrl: string): Promise<void> {
+  await invoke("browser_create");
+  await invoke("browser_navigate", { url: authUrl });
+}
+
+/**
+ * Binds the global Codex runtime + account event listeners. Idempotent:
+ * each call returns an unlisten function (call from a root effect).
+ */
+export function bindCodexEvents(): () => void {
+  const unlisteners: Array<() => void> = [];
+  void listen<CodexRuntimeStatus>("jarvis://codex-runtime", (event) => {
+    useJarvisStore.setState((state) => ({
+      codexRuntime: event.payload,
+      codexError: event.payload.lastError
+        ? codexErrorMessage(event.payload.lastError)
+        : state.codexError,
+    }));
+  }).then((unlisten) => unlisteners.push(unlisten));
+  void listen<CodexAccountEvent>("jarvis://codex-account", (event) => {
+    const method = event.payload.method;
+    if (
+      method === "account/login/completed" ||
+      method === "account/updated"
+    ) {
+      // Refresh the account view; the completion notification carries no
+      // token data (login/error only), so a fresh read is always safe.
+      void useJarvisStore.getState().loadCodexAccount();
+    }
+  }).then((unlisten) => unlisteners.push(unlisten));
+  return () => {
+    for (const unlisten of unlisteners) unlisten();
+  };
 }

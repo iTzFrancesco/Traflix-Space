@@ -1,6 +1,8 @@
-import { RefreshCw } from "lucide-react";
+import { LogIn, LogOut, RefreshCw } from "lucide-react";
 import type {
   AgentSessionContext,
+  CodexAccountView,
+  CodexRuntimeStatus,
   JarvisProviderStatus,
   ModelContextViewV1,
 } from "../../lib/jarvis/types";
@@ -14,6 +16,159 @@ export interface JarvisAdvancedSettingsProps {
   isRefreshing: boolean;
   onRefresh: () => void;
   onRefreshContext: () => void;
+}
+
+export interface CodexSettingsSectionProps {
+  runtime: CodexRuntimeStatus | null;
+  account: CodexAccountView | null;
+  accountLoading: boolean;
+  loginBusy: boolean;
+  error: string | null;
+  onLoadAccount: () => void;
+  onLogin: () => void;
+  onLogout: () => void;
+  onRestart: () => void;
+}
+
+function runtimeLabel(state: CodexRuntimeStatus["state"] | undefined): string {
+  switch (state) {
+    case "running":
+      return "running";
+    case "starting":
+      return "starting…";
+    case "crashed":
+      return "crashed";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    default:
+      return "unknown";
+  }
+}
+
+function accountSummary(account: CodexAccountView | null): {
+  label: string;
+  connected: boolean;
+} {
+  if (!account) return { label: "—", connected: false };
+  switch (account.account.kind) {
+    case "chatgpt":
+      return {
+        label: `ChatGPT · ${account.account.planType}${account.account.email ? ` · ${account.account.email}` : ""}`,
+        connected: true,
+      };
+    case "apiKey":
+      return { label: "API key", connected: true };
+    case "other":
+      return { label: account.account.accountType, connected: true };
+    case "signedOut":
+      return { label: "Non connesso", connected: false };
+  }
+}
+
+export function CodexSettingsSection({
+  runtime,
+  account,
+  accountLoading,
+  loginBusy,
+  error,
+  onLoadAccount,
+  onLogin,
+  onLogout,
+  onRestart,
+}: CodexSettingsSectionProps) {
+  const summary = accountSummary(account);
+  const running = runtime?.state === "running";
+
+  return (
+    <section className="border-t border-neutral-border pt-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-xs font-semibold text-neutral-text">Codex App Server</h3>
+          <p className="mt-0.5 text-[10px] text-neutral-text-muted">
+            Runtime e autenticazione ChatGPT.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onLoadAccount}
+          className="ui-icon-button h-8 w-8"
+          title="Refresh account"
+          aria-label="Refresh account"
+          disabled={accountLoading}
+        >
+          <RefreshCw
+            size={13}
+            className={accountLoading ? "status-icon--spin" : ""}
+          />
+        </button>
+      </div>
+
+      <dl className="mt-3 grid grid-cols-3 divide-x divide-neutral-border border-y border-neutral-border py-2">
+        <Metric
+          label="Runtime"
+          value={runtimeLabel(runtime?.state)}
+          tone={running ? "ok" : runtime?.state === "failed" || runtime?.state === "crashed" ? "bad" : "dim"}
+        />
+        <Metric label="Version" value={runtime?.version ?? "—"} />
+        <Metric label="Restarts" value={String(runtime?.restartCount ?? 0)} />
+      </dl>
+
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-[10px] text-neutral-text-muted">
+            Account:{" "}
+            <span className={summary.connected ? "font-semibold text-signal" : "font-medium text-neutral-text-dim"}>
+              {summary.label}
+            </span>
+          </p>
+          {runtime?.lastError && (
+            <p className="mt-1 truncate text-[10px] text-danger">{runtime.lastError}</p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {summary.connected ? (
+            <button
+              type="button"
+              onClick={onLogout}
+              disabled={loginBusy || !running}
+              className="ui-button h-7 gap-1.5 text-[10px]"
+            >
+              <LogOut size={12} />
+              Sign out
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onLogin}
+              disabled={loginBusy || !running}
+              className="ui-button h-7 gap-1.5 text-[10px]"
+            >
+              <LogIn size={12} />
+              {loginBusy ? "Opening…" : "Sign in with ChatGPT"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRestart}
+            disabled={loginBusy}
+            className="ui-icon-button h-7 w-7"
+            title="Restart Codex runtime"
+            aria-label="Restart Codex runtime"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <p className="mt-3 border-l-2 border-danger px-2 py-1 text-[10px] text-danger">
+          {error}
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function JarvisAdvancedSettings({
@@ -122,11 +277,29 @@ export function JarvisAdvancedSettings({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "ok" | "bad" | "dim";
+}) {
   return (
     <div className="px-2 text-center">
       <dt className="text-[9px] text-neutral-text-muted">{label}</dt>
-      <dd className="mt-0.5 font-mono text-[10px] font-semibold text-neutral-text">
+      <dd
+        className={`mt-0.5 font-mono text-[10px] font-semibold ${
+          tone === "ok"
+            ? "text-signal"
+            : tone === "bad"
+              ? "text-danger"
+              : tone === "dim"
+                ? "text-neutral-text-dim"
+                : "text-neutral-text"
+        }`}
+      >
         {value}
       </dd>
     </div>

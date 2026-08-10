@@ -44,6 +44,8 @@ pub enum RuntimeError {
     Handshake(String),
     #[error("codex app-server is not running (state={state:?})")]
     NotRunning { state: CodexRuntimeState },
+    #[error("codex app-server RPC failed: {0}")]
+    Rpc(String),
 }
 
 fn display_version(version: (u32, u32, u32)) -> String {
@@ -58,6 +60,7 @@ impl RuntimeError {
             Self::VersionTooOld { .. } => "codex_version_mismatch",
             Self::Spawn(_) | Self::Handshake(_) => "codex_runtime_start_failed",
             Self::NotRunning { .. } => "codex_runtime_crashed",
+            Self::Rpc(_) => "codex_rpc_failed",
         }
     }
 }
@@ -278,6 +281,11 @@ impl CodexRuntimeManager {
                     let _ = self.app.emit(RUNTIME_STATUS_EVENT, status);
                 }
                 info!(user_agent = %init.user_agent, "codex app-server runtime ready");
+                // Hand the server-notification channel to the account bridge
+                // (C2); later chunks attach their own consumers to it.
+                if let Some(rx) = self.take_server_rx().await {
+                    super::account::spawn_account_bridge(self.clone(), self.app.clone(), rx);
+                }
                 self.spawn_monitor(child);
                 Ok(())
             }
@@ -438,6 +446,13 @@ impl CodexRuntimeManager {
             (Some(client), CodexRuntimeState::Running) => Ok(client.clone()),
             (_, state) => Err(RuntimeError::NotRunning { state }),
         }
+    }
+
+    /// Takes ownership of the server-notification channel. Called exactly
+    /// once per process lifetime (after each successful start); the channel
+    /// dies with the process and is recreated on restart.
+    pub async fn take_server_rx(&self) -> Option<mpsc::UnboundedReceiver<ServerMessage>> {
+        self.inner.lock().await.server_rx.take()
     }
 }
 
@@ -697,6 +712,16 @@ mod tests {
             account.get("account").is_some() || account.get("requiresOpenaiAuth").is_some(),
             "account/read result: {account}"
         );
+        // Parse the real payload with the production view builder.
+        let view = super::super::account::parse_account(account.get("account"));
+        match view {
+            super::super::account::CodexAccount::Chatgpt { plan_type, .. } => {
+                assert!(!plan_type.is_empty(), "real chatgpt planType");
+            }
+            super::super::account::CodexAccount::SignedOut
+            | super::super::account::CodexAccount::ApiKey
+            | super::super::account::CodexAccount::Other { .. } => {}
+        }
 
         // model/list must expose the Jarvis default family.
         let models = client
@@ -713,6 +738,32 @@ mod tests {
             ids.iter().any(|id| *id == "gpt-5.6-luna"),
             "gpt-5.6-luna present in {ids:?}"
         );
+
+        // account/login/start (chatgpt) must return authUrl+loginId; we
+        // immediately cancel the flow so no OAuth session is left pending.
+        let login = client
+            .request(
+                "account/login/start",
+                json!({
+                    "type": "chatgpt",
+                    "useHostedLoginSuccessPage": true,
+                    "appBrand": "chatgpt",
+                }),
+            )
+            .await
+            .expect("account/login/start response");
+        let auth_url = login
+            .get("authUrl")
+            .and_then(serde_json::Value::as_str)
+            .expect("authUrl present");
+        let login_id = login
+            .get("loginId")
+            .and_then(serde_json::Value::as_str)
+            .expect("loginId present");
+        assert!(auth_url.starts_with("https://"), "authUrl is https: {auth_url}");
+        let _ = client
+            .request("account/login/cancel", json!({ "loginId": login_id }))
+            .await;
 
         child.kill().await.expect("child killed");
         child.wait().await.expect("child reaped");

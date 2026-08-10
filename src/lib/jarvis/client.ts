@@ -11,6 +11,9 @@ import type {
   AgentTail,
   AgentSessionContext,
   AgentSessionRef,
+  CodexAccountView,
+  CodexLoginStartView,
+  CodexRuntimeStatus,
   ContextPackageV1,
   InvocationBinding,
   JarvisErrorEnvelope,
@@ -471,3 +474,48 @@ export function ttsStatus(): Promise<TtsStatusView> {
 export function ttsListVoices(): Promise<TtsVoice[]> {
   return invokeWithTimeout(() => invoke<TtsVoice[]>("jarvis_tts_list_voices"), READ_TIMEOUT_MS);
 }
+
+// --- Codex App Server (C1/C2) ---
+
+export function codexRuntimeStatus(): Promise<CodexRuntimeStatus> {
+  return invokeWithTimeout(
+    () => invoke<CodexRuntimeStatus>("jarvis_codex_runtime_status"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexRuntimeRestart(): Promise<CodexRuntimeStatus> {
+  return invokeWithTimeout(
+    () => invoke<CodexRuntimeStatus>("jarvis_codex_runtime_restart"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexAccountRead(): Promise<CodexAccountView> {
+  return invokeWithTimeout(
+    () => invoke<CodexAccountView>("jarvis_codex_account_read"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexLoginStart(): Promise<CodexLoginStartView> {
+  return invokeWithTimeout(
+    () => invoke<CodexLoginStartView>("jarvis_codex_login_start"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexLoginCancel(loginId: string): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_codex_login_cancel", { loginId }),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexLogout(): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_codex_logout"),
+    READ_TIMEOUT_MS,
+  );
+}
+

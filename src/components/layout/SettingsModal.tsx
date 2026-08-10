@@ -34,7 +34,7 @@ import type {
   TtsVoice,
   VoiceInputDevice,
 } from "../../lib/jarvis/types";
-import { JarvisAdvancedSettings } from "../jarvis/JarvisAdvancedSettings";
+import { JarvisAdvancedSettings, CodexSettingsSection } from "../jarvis/JarvisAdvancedSettings";
 import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
 
 interface SettingsModalProps {
@@ -60,6 +60,11 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
   const settingsError = useJarvisStore((state) => state.settingsError);
   const providerStatus = useJarvisStore((state) => state.providerStatus);
+  const codexRuntime = useJarvisStore((state) => state.codexRuntime);
+  const codexAccount = useJarvisStore((state) => state.codexAccount);
+  const codexAccountLoading = useJarvisStore((state) => state.codexAccountLoading);
+  const codexLoginBusy = useJarvisStore((state) => state.codexLoginBusy);
+  const codexError = useJarvisStore((state) => state.codexError);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const saveSettings = useJarvisStore((state) => state.saveSettings);
 
@@ -96,6 +101,8 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
+    void useJarvisStore.getState().loadCodexRuntime();
+    void useJarvisStore.getState().loadCodexAccount();
   }, [open, settings]);
 
   const updateJarvis = (
@@ -292,6 +299,17 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
           </div>
           {jarvis.advancedViewEnabled && advanced && (
             <div className="mt-4">
+              <CodexSettingsSection
+                runtime={codexRuntime}
+                account={codexAccount}
+                accountLoading={codexAccountLoading}
+                loginBusy={codexLoginBusy}
+                error={codexError}
+                onLoadAccount={() => void useJarvisStore.getState().loadCodexAccount()}
+                onLogin={() => void useJarvisStore.getState().startCodexLogin()}
+                onLogout={() => void useJarvisStore.getState().logoutCodex()}
+                onRestart={() => void useJarvisStore.getState().restartCodex()}
+              />
               <JarvisAdvancedSettings
                 {...advanced}
                 providerStatus={providerStatus}

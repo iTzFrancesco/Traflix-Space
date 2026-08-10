@@ -9,7 +9,7 @@ import type {
 } from "../../lib/jarvis/types";
 import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import { SettingsModal } from "../layout/SettingsModal";
-import { useJarvisStore } from "../../stores/jarvisStore";
+import { useJarvisStore, bindCodexEvents } from "../../stores/jarvisStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   beginVoicePress,
@@ -149,6 +149,14 @@ export function JarvisGlobalOverlay() {
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
+
+  // Codex runtime + account events (C1/C2): refresh diagnostics state
+  // whenever the App Server emits a status or account notification.
+  useEffect(() => {
+    const unlisten = bindCodexEvents();
+    void useJarvisStore.getState().loadCodexRuntime();
+    return unlisten;
+  }, []);
 
   // A failed transcript submission must not create an automatic retry loop.
   // Closing Settings is an explicit recovery boundary: if the user just fixed
