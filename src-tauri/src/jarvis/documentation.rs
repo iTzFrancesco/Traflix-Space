@@ -25,6 +25,12 @@ const EXCLUDED_DIRECTORIES: &[&str] = &[
     "bower_components",
 ];
 
+/// Automatic Jarvis project knowledge deliberately stays small and useful:
+/// Markdown files directly in the workspace root plus Markdown below `docs/`.
+/// Tooling folders such as `.agents/`, `.wayfinder/`, generated caches, etc.
+/// are not project knowledge and must never inflate the model context.
+const AUTOMATIC_DOCUMENTATION_DIRECTORIES: &[&str] = &["docs"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentationError {
     RootResolution,
@@ -56,11 +62,13 @@ pub struct DocumentationLimits {
 impl Default for DocumentationLimits {
     fn default() -> Self {
         Self {
-            max_documents: 256,
+            // Root README/context files + a normal docs tree. The old 256
+            // limit allowed local tooling documentation to dominate Jarvis.
+            max_documents: 64,
             max_bytes_per_document: 64 * 1024,
-            max_total_bytes: 2 * 1024 * 1024,
-            max_depth: 16,
-            timeout: Duration::from_secs(5),
+            max_total_bytes: 1024 * 1024,
+            max_depth: 8,
+            timeout: Duration::from_secs(3),
         }
     }
 }
@@ -289,6 +297,12 @@ impl DocumentationCollector {
                     });
                     continue;
                 }
+                // Automatic project knowledge is intentionally restricted to
+                // root Markdown + docs/**. At workspace root, ignore every
+                // other directory completely (including hidden tooling dirs).
+                if depth == 0 && !is_automatic_documentation_directory(&file_name) {
+                    continue;
+                }
                 if depth >= self.limits.max_depth {
                     result.omitted_documents.push(OmittedDocument {
                         relative_path: relative,
@@ -412,6 +426,12 @@ pub fn is_excluded_directory(name: &str) -> bool {
     EXCLUDED_DIRECTORIES
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(name))
+}
+
+fn is_automatic_documentation_directory(name: &str) -> bool {
+    AUTOMATIC_DOCUMENTATION_DIRECTORIES
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(name))
 }
 
 pub fn is_sensitive_file(name: &str) -> bool {
