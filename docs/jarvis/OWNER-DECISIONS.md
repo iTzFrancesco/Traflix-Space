@@ -4,7 +4,7 @@ Queste decisioni vincolano il vertical slice `feat/jarvis-context-broker`.
 
 - Jarvis è globale come superficie, ma ogni invocazione cattura un target immutabile per workspace, terminale e Agent session.
 - Un’operazione già iniziata resta legata alla workspace originale; le richieste successive usano il nuovo target attivo e non trasferiscono dati implicitamente.
-- Il contesto automatico stabile legge soltanto Markdown (`**/*.md`) consentito dalla policy. Non analizza automaticamente codice sorgente, manifest o configurazioni non Markdown.
+- Il contesto automatico stabile legge soltanto Markdown di progetto consentito dalla policy: tutti i `*.md` direttamente nella root della workspace (inclusi `README.md`, `AGENTS.md`/`AGENT.md`, `CONTEXT.md`) più `docs/**/*.md`. Le directory di tooling come `.agents/` e `.wayfinder/` non fanno parte del contesto automatico. Non analizza automaticamente codice sorgente, manifest o configurazioni non Markdown.
 - La cache è incrementale, in memoria e separata per `workspaceId`. Non usa SQLite, Tauri Store o persistenza permanente.
 - `ContextPackageV1` è il contesto raw locale; una `ModelContextViewV1` separata espone al modello soltanto summary, indice, estratti richiesti esplicitamente e risultati agenti coerenti con la profondità richiesta.
 - `context.refresh` rifà discovery e controllo metadata mantenendo la cache; l’invalidazione completa è riservata al force rebuild interno per debug o cache incoerente.
@@ -28,6 +28,8 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 
 ## Decisioni consolidate per Fase 4
 
+> Storico: questa sezione descriveva il provider precedente ed è superseduta dalla sezione “Codex App Server” in fondo al documento.
+
 - Il provider testuale runtime è OpenCode Zen; `deepseek-v4-flash-free` è il primary
   configurabile e `longcat-2.0-free` il fallback configurabile.
 - La sola credenziale backend è `OPENCODE_ZEN_API_KEY`; il consenso privacy è
@@ -35,6 +37,7 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - La PTY resta l'adapter universale e ogni mutazione passa da Pending Action,
   modifica esplicita opzionale e conferma backend con ricontrollo di generation.
 - La voce resta fuori scope fino alla conclusione della validazione Windows.
+
 ## Fase 5 — voce cloud
 
 - STT unico: Groq `whisper-large-v3-turbo`, senza fallback e con consenso
@@ -113,3 +116,16 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 - Il completamento di un agente non attiva alcuna azione Jarvis. Una nuova
   catena richiede una nuova richiesta dell'utente.
 - La validazione Windows della Fase 8 è **PENDING**.
+
+## Decisioni consolidate — Codex App Server (2026-08)
+
+Queste decisioni supersedono il provider testuale storico della Fase 4 senza cambiare il principio PTY-first degli agenti visibili.
+
+- **Identità:** l’assistente è sempre **Traflix Jarvis / Jarvis**. Codex App Server e GPT-5.6 Luna sono il trasporto e il motore di reasoning, non l’identità dell’agente.
+- **Brain:** Jarvis usa Codex App Server autenticato con la sottoscrizione ChatGPT; default `gpt-5.6-luna` con reasoning `low`, configurabili dalle impostazioni Jarvis.
+- **Nessun coding worker nascosto:** il thread App Server pianifica e conversa, ma non modifica direttamente la repository. Le modifiche reali restano affidate agli agenti visibili nei terminali tramite la PTY di Traflix Space.
+- **Contesto documentale:** `workspace.overview` espone summary + indice dei Markdown consentiti; Jarvis usa `markdown.read` per leggere selettivamente i documenti pertinenti. Priorità tipica: `README.md`, `AGENTS.md`/`AGENT.md`, `CONTEXT.md`, poi `docs/**/*.md` rilevanti.
+- **Scope automatico Markdown:** root `*.md` + `docs/**/*.md`. `.agents/`, `.wayfinder/` e altre directory di tooling non fanno parte del contesto automatico.
+- **Sicurezza:** Markdown, terminal output, task e risultati agent sono sempre untrusted context e non autorizzano azioni.
+- **Tool:** il modello osserva il progetto e gli agenti solo attraverso i dynamic tool bounded; ogni side effect passa da `conversational.plan`, con massimo un piano mutativo per turno e validazione Rust.
+- **Voce:** Groq Whisper resta lo STT e Edge TTS resta la voce di Jarvis. Commentary e risposta finale possono essere pronunciati progressivamente; barge-in interrompe la voce senza impedire ai turni successivi di parlare.
