@@ -83,6 +83,8 @@ export interface JarvisSettings {
 export interface CodexModelSettings {
   model: string;
   reasoningEffort: string;
+  /** C8: speak completed commentary/final items progressively. */
+  speakCommentary: boolean;
 }
 
 export interface CodexReasoningEffort {
@@ -144,9 +146,9 @@ export type CodexChatStreamKind =
 export interface CodexChatStreamEvent {
   kind: CodexChatStreamKind;
   requestId: string | null;
-  workspaceId: string;
-  threadId: string;
-  turnId: string;
+  workspaceId: string | null;
+  threadId: string | null;
+  turnId: string | null;
   itemId: string | null;
   text: string | null;
   toolName: string | null;
@@ -171,10 +173,19 @@ export interface CodexStreamingTurn {
   turnId: string;
   threadId: string;
   requestId: string | null;
+  workspaceId: string;
   status: "active" | "completed" | "failed" | "interrupted";
   items: CodexStreamItem[];
   startedAt: string;
   endedAt: string | null;
+}
+
+/** C8: one completed commentary/final item waiting for Edge TTS. */
+export interface CodexSpeechItem {
+  itemId: string;
+  turnId: string;
+  workspaceId: string;
+  text: string;
 }
 
 export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";

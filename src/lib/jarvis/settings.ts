@@ -101,6 +101,7 @@ export function defaultJarvisSettings(): JarvisSettings {
     codex: {
       model: "gpt-5.6-luna",
       reasoningEffort: "low",
+      speakCommentary: true,
     },
     advancedViewEnabled: false,
     voiceInput: {

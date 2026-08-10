@@ -17,6 +17,7 @@ import {
   codexThreadEnsure,
   codexThreads,
   codexTurnInterrupt,
+  codexTurnSteer,
   codexTurnStart,
   codexUsage,
   confirmAction,
@@ -41,6 +42,7 @@ import {
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
 import { applyCodexChatStream, isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
+import { clearSpeechQueue, dequeueSpeech, enqueueSpeech, rememberSpoken, shouldSpeakCommentary } from "../lib/jarvis/ttsState";
 import { mergeActivityEvents, type ActivityCheckpoint } from "../lib/jarvis/activityState";
 import { applyTtsStatusTransition, beginLocalTtsRequest } from "../lib/jarvis/ttsState";
 import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
@@ -59,6 +61,7 @@ import type {
   CodexAccountView,
   CodexChatStreamEvent,
   CodexModelCatalog,
+  CodexSpeechItem,
   CodexRateLimitsView,
   CodexRuntimeStatus,
   CodexStreamingTurn,
@@ -112,11 +115,17 @@ interface JarvisStore {
   codexThreads: Record<string, JarvisCodexThread>;
   // C7: per-workspace streaming turns (commentary/tool/final lifecycle).
   codexStreamingTurns: Record<string, CodexStreamingTurn[]>;
+  // C8: progressive commentary speech queue (FIFO, dedupe itemId).
+  codexSpeechQueue: CodexSpeechItem[];
+  codexSpokenItemIds: string[];
+  dequeueCodexSpeech: (itemId: string) => void;
+  clearCodexSpeech: () => void;
   loadCodexThreads: () => Promise<void>;
   ensureCodexThread: (workspaceId: string) => Promise<void>;
   deleteCodexThread: (workspaceId: string) => Promise<void>;
   startCodexTurn: (workspaceId: string, input: string) => Promise<string | null>;
   interruptCodexTurn: (workspaceId: string) => Promise<void>;
+  steerCodexTurn: (workspaceId: string, steerText: string) => Promise<void>;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
   activities: ActivityCheckpoint[];
@@ -250,6 +259,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   codexAccountLoading: false, codexLoginBusy: false, codexError: null, codexModels: null,
   codexModelsLoading: false, codexUsage: null, codexRateLimits: null, codexThreads: {},
   codexStreamingTurns: {},
+  codexSpeechQueue: [],
+  codexSpokenItemIds: [],
   uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
@@ -441,6 +452,21 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   loadCodexRateLimits: async () => {
     try { set({ codexRateLimits: await codexRateLimits() }); } catch { /* keep last snapshot */ }
   },
+  dequeueCodexSpeech: (itemId) => {
+    set((state) => ({
+      codexSpeechQueue: dequeueSpeech(state.codexSpeechQueue, itemId),
+      codexSpokenItemIds: rememberSpoken(
+        state.codexSpokenItemIds,
+        itemId,
+      ),
+    }));
+  },
+  clearCodexSpeech: () => {
+    // Barge-in / mute: drop everything still pending (spec §17).
+    set((state) => ({
+      codexSpeechQueue: clearSpeechQueue(state.codexSpeechQueue),
+    }));
+  },
   loadCodexThreads: async () => {
     try {
       const snapshot = await codexThreads();
@@ -476,6 +502,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   },
   interruptCodexTurn: async (workspaceId) => {
     try { await codexTurnInterrupt(workspaceId); } catch { /* turn may already be done */ }
+  },
+  steerCodexTurn: async (workspaceId, steerText) => {
+    try { await codexTurnSteer(workspaceId, steerText); } catch { /* surfaced by caller */ }
   },
   restartCodex: async () => {
     set({ codexLoginBusy: true, codexError: null });
@@ -941,6 +970,32 @@ export function bindCodexEvents(): () => void {
         event.payload,
       ),
     }));
+    // C8: progressive TTS — enqueue completed commentary/final items.
+    const store = useJarvisStore.getState();
+    const payload = event.payload;
+    if (
+      payload.kind === "message_completed" &&
+      payload.text &&
+      !store.codexSpokenItemIds.includes(payload.itemId ?? "") &&
+      store.settings.jarvis.codex.speakCommentary &&
+      store.settings.jarvis.voiceOutput.enabled &&
+      store.settings.jarvis.voiceOutput.autoSpeak &&
+      Boolean(
+        store.settings.jarvis.voiceOutput.privacyConsent &&
+          store.settings.jarvis.voiceOutput.privacyConsentAt,
+      ) &&
+      !store.settings.jarvis.muted &&
+      shouldSpeakCommentary(payload.text)
+    ) {
+      useJarvisStore.setState((state) => ({
+        codexSpeechQueue: enqueueSpeech(state.codexSpeechQueue, {
+          itemId: payload.itemId ?? `msg-${payload.turnId ?? "unknown"}`,
+          turnId: payload.turnId ?? "unknown",
+          workspaceId: payload.workspaceId ?? "unknown",
+          text: payload.text ?? "",
+        }),
+      }));
+    }
   }).then((unlisten) => unlisteners.push(unlisten));
   return () => {
     for (const unlisten of unlisteners) unlisten();

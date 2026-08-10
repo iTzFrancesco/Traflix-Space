@@ -24,7 +24,11 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use super::runtime::{CodexRuntimeManager, RuntimeError};
+use super::tools::CodexToolService;
 use crate::settings::store::CodexModelSettings;
+
+/// C9: bounded steer instruction (spec §15 — short redirects only).
+pub const MAX_STEER_TEXT_CHARS: usize = 240;
 
 /// Global Tauri event carrying thread snapshots + thread/turn notifications.
 pub const THREAD_EVENT: &str = "jarvis://codex-thread";
@@ -236,22 +240,57 @@ impl ThreadRegistry {
     }
 
     /// `turn/interrupt` for the active turn of the workspace thread.
-    pub async fn interrupt_turn(&self, workspace_id: &str) -> Result<(), RuntimeError> {
-        let thread = self
-            .threads
-            .lock()
-            .await
-            .get(workspace_id)
-            .cloned()
-            .ok_or_else(|| RuntimeError::Rpc("no thread for workspace".into()))?;
-        let Some(turn_id) = thread.active_turn_id else {
-            return Ok(()); // nothing running
+    /// C9: the running `conversational.plan` of that thread (if any) is
+    /// cancelled FIRST so its steps stop at the next checkpoint; then the
+    /// interrupt is sent to the server (idempotent — an already-finished
+    /// turn is a no-op at the server).
+    pub async fn interrupt_turn(
+        &self,
+        workspace_id: &str,
+        tools: &CodexToolService,
+    ) -> Result<(), RuntimeError> {
+        let (thread_id, turn_id) = {
+            let thread = self
+                .threads
+                .lock()
+                .await
+                .get(workspace_id)
+                .cloned()
+                .ok_or_else(|| RuntimeError::Rpc("no thread for workspace".into()))?;
+            let Some(turn_id) = thread.active_turn_id else {
+                return Ok(()); // nothing running
+            };
+            (thread.thread_id, turn_id)
         };
+        tools.cancel_plan(&thread_id).await;
         let client = self.runtime.client().await?;
         client
             .request(
                 "turn/interrupt",
-                json!({ "threadId": thread.thread_id, "turnId": turn_id }),
+                json!({ "threadId": thread_id, "turnId": turn_id }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// C9: `turn/steer` — re-directs the ACTIVE turn with a short textual
+    /// instruction. Gated: without an active turn this is a hard error, the
+    /// caller must never steer a finished/idle thread.
+    pub async fn steer_turn(
+        &self,
+        workspace_id: &str,
+        steer_text: &str,
+    ) -> Result<(), RuntimeError> {
+        let steer_text = Self::validate_steer_text(steer_text)?;
+        let (thread_id, turn_id) = {
+            let threads = self.threads.lock().await;
+            Self::resolve_steer_target(&threads, workspace_id)?
+        };
+        let client = self.runtime.client().await?;
+        client
+            .request(
+                "turn/steer",
+                json!({ "threadId": thread_id, "turnId": turn_id, "steerText": steer_text }),
             )
             .await?;
         Ok(())
@@ -266,6 +305,37 @@ impl ThreadRegistry {
             .values()
             .find(|record| record.thread_id == thread_id)
             .map(|record| record.workspace_id.clone())
+    }
+
+    /// C9 pure gate: `turn/steer` only resolves when the thread exists AND a
+    /// turn is active on it (spec §15 — steer redirects the running turn, it
+    /// is never a new prompt). Errors otherwise.
+    fn resolve_steer_target(
+        threads: &HashMap<String, JarvisCodexThread>,
+        workspace_id: &str,
+    ) -> Result<(String, String), RuntimeError> {
+        let thread = threads
+            .get(workspace_id)
+            .ok_or_else(|| RuntimeError::Rpc("no thread for workspace".into()))?;
+        let Some(turn_id) = thread.active_turn_id.clone() else {
+            return Err(RuntimeError::Rpc("no active turn to steer".into()));
+        };
+        Ok((thread.thread_id.clone(), turn_id))
+    }
+
+    /// C9 pure gate: steer text must be non-empty after trimming and bounded
+    /// to [`MAX_STEER_TEXT_CHARS`] (a steer is a short redirect).
+    fn validate_steer_text(steer_text: &str) -> Result<&str, RuntimeError> {
+        let steer_text = steer_text.trim();
+        if steer_text.is_empty() {
+            return Err(RuntimeError::Rpc("steer text is empty".into()));
+        }
+        if steer_text.chars().count() > MAX_STEER_TEXT_CHARS {
+            return Err(RuntimeError::Rpc(format!(
+                "steer text too long (max {MAX_STEER_TEXT_CHARS} chars)"
+            )));
+        }
+        Ok(steer_text)
     }
 
     /// Snapshot for the UI.
@@ -429,10 +499,26 @@ pub async fn jarvis_codex_turn_start(
 #[tauri::command]
 pub async fn jarvis_codex_turn_interrupt(
     registry: tauri::State<'_, ThreadRegistry>,
+    tools: tauri::State<'_, CodexToolService>,
     workspace_id: String,
 ) -> Result<(), String> {
     registry
-        .interrupt_turn(&workspace_id)
+        .interrupt_turn(&workspace_id, tools.inner())
+        .await
+        .map_err(|err| format!("{}: {}", err.code(), err))
+}
+
+/// C9: `turn/steer` — re-directs the active turn (gated: errors when no
+/// turn is running). The instruction is bounded to keep the model on track
+/// without turning the steer box into a second prompt.
+#[tauri::command]
+pub async fn jarvis_codex_turn_steer(
+    registry: tauri::State<'_, ThreadRegistry>,
+    workspace_id: String,
+    steer_text: String,
+) -> Result<(), String> {
+    registry
+        .steer_turn(&workspace_id, &steer_text)
         .await
         .map_err(|err| format!("{}: {}", err.code(), err))
 }
@@ -479,5 +565,51 @@ mod tests {
             &None
         ));
         assert_eq!(record.status, "idle");
+    }
+
+    #[test]
+    fn steer_gate_requires_active_turn() {
+        let mut threads = HashMap::new();
+        threads.insert(
+            "w1".into(),
+            JarvisCodexThread {
+                thread_id: "t1".into(),
+                workspace_id: "w1".into(),
+                model: "gpt-5.6-luna".into(),
+                reasoning_effort: "low".into(),
+                created_at: 0,
+                status: "idle".into(),
+                active_turn_id: None,
+            },
+        );
+        // No thread at all → hard error.
+        assert!(matches!(
+            ThreadRegistry::resolve_steer_target(&threads, "missing"),
+            Err(RuntimeError::Rpc(_))
+        ));
+        // Thread exists but idle → gated (C9: steer only while running).
+        assert!(matches!(
+            ThreadRegistry::resolve_steer_target(&threads, "w1"),
+            Err(RuntimeError::Rpc(_))
+        ));
+        // Active turn → resolved thread/turn pair.
+        threads.get_mut("w1").unwrap().active_turn_id = Some("turn-9".into());
+        let (thread_id, turn_id) =
+            ThreadRegistry::resolve_steer_target(&threads, "w1").unwrap();
+        assert_eq!(thread_id, "t1");
+        assert_eq!(turn_id, "turn-9");
+    }
+
+    #[test]
+    fn steer_text_is_trimmed_and_bounded() {
+        assert!(ThreadRegistry::validate_steer_text("   ").is_err());
+        assert!(ThreadRegistry::validate_steer_text("").is_err());
+        let ok =
+            ThreadRegistry::validate_steer_text("  continua senza tool  ").unwrap();
+        assert_eq!(ok, "continua senza tool");
+        let long = "x".repeat(MAX_STEER_TEXT_CHARS + 1);
+        assert!(ThreadRegistry::validate_steer_text(&long).is_err());
+        let at_limit = "x".repeat(MAX_STEER_TEXT_CHARS);
+        assert!(ThreadRegistry::validate_steer_text(&at_limit).is_ok());
     }
 }

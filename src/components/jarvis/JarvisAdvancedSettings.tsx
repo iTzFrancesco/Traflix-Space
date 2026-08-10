@@ -1,4 +1,6 @@
 import { LogIn, LogOut, RefreshCw } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
   AgentSessionContext,
   CodexAccountView,
@@ -242,6 +244,23 @@ export function CodexSettingsSection({
             ))}
           </select>
         </label>
+        <label className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-neutral-text-muted">
+            Parla commentary (TTS progressivo)
+          </span>
+          <input
+            type="checkbox"
+            checked={modelSettings.speakCommentary}
+            onChange={(event) =>
+              onModelSettingsChange({
+                ...modelSettings,
+                speakCommentary: event.target.checked,
+              })
+            }
+            disabled={!running}
+            className="size-3.5 accent-[var(--color-primary)]"
+          />
+        </label>
       </div>
 
       {/* C3: usage summary from account/usage/read. */}
@@ -335,18 +354,41 @@ export function CodexSettingsSection({
 
 /** C7: one streaming turn rendered in event order (commentary → tool → …). */
 function StreamingTurnView({ turn }: { turn: CodexStreamingTurn }) {
+  const interruptCodexTurn = useJarvisStore((state) => state.interruptCodexTurn);
+  const steerCodexTurn = useJarvisStore((state) => state.steerCodexTurn);
+  const [steerText, setSteerText] = useState("");
+  const active = turn.status === "active";
+  const submitSteer = (event: FormEvent) => {
+    event.preventDefault();
+    const text = steerText.trim();
+    if (!text || !active) return;
+    void steerCodexTurn(turn.workspaceId ?? "", text);
+    setSteerText("");
+  };
   return (
     <li className="rounded border border-neutral-border bg-surface-raised/40 p-2">
       <div className="flex items-center justify-between gap-2">
         <span className="truncate font-mono text-[9px] text-neutral-text-muted">
           turn {turn.turnId.slice(0, 8)}
         </span>
-        <span
-          className={`shrink-0 text-[9px] font-semibold ${
-            turn.status === "active" ? "text-primary" : "text-neutral-text-muted"
-          }`}
-        >
-          {turn.status}
+        <span className="flex items-center gap-1.5">
+          <span
+            className={`shrink-0 text-[9px] font-semibold ${
+              active ? "text-primary" : "text-neutral-text-muted"
+            }`}
+          >
+            {turn.status}
+          </span>
+          {active && (
+            <button
+              type="button"
+              title="Interrompi turno (cancella il plan in esecuzione)"
+              onClick={() => void interruptCodexTurn(turn.workspaceId ?? "")}
+              className="rounded border border-neutral-border px-1.5 py-0.5 text-[9px] text-neutral-text-muted transition-colors hover:border-warning hover:text-warning"
+            >
+              ⏹ Interrompi
+            </button>
+          )}
         </span>
       </div>
       <ol className="mt-1.5 space-y-1.5">
@@ -393,6 +435,24 @@ function StreamingTurnView({ turn }: { turn: CodexStreamingTurn }) {
           );
         })}
       </ol>
+      {active && (
+        <form onSubmit={submitSteer} className="mt-1.5 flex gap-1.5">
+          <input
+            value={steerText}
+            onChange={(event) => setSteerText(event.target.value)}
+            placeholder="Steer (max 240 char)…"
+            maxLength={240}
+            className="min-w-0 flex-1 rounded border border-neutral-border bg-surface-raised px-1.5 py-1 text-[10px] text-neutral-text outline-none placeholder:text-neutral-text-muted focus:border-primary"
+          />
+          <button
+            type="submit"
+            disabled={!steerText.trim()}
+            className="rounded border border-neutral-border px-1.5 py-1 text-[10px] text-neutral-text-muted transition-colors hover:border-primary hover:text-primary disabled:opacity-40"
+          >
+            Invia
+          </button>
+        </form>
+      )}
     </li>
   );
 }

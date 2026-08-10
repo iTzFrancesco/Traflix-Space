@@ -72,6 +72,11 @@ pub struct CodexToolService {
     /// `conversational.plan` of the current turn already been executed?
     /// Keyed by thread id, reset on `turn/started`.
     plan_executed: Arc<Mutex<HashMap<String, bool>>>,
+    /// C9: cancellation token of the `conversational.plan` currently running
+    /// for a thread (if any). `turn/interrupt` cancels it so the plan steps
+    /// stop at the next checkpoint instead of mutating after the user asked
+    /// to stop. Removed when the turn ends (any outcome).
+    plan_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl CodexToolService {
@@ -81,6 +86,7 @@ impl CodexToolService {
             runtime,
             call_budget: Arc::new(Mutex::new(HashMap::new())),
             plan_executed: Arc::new(Mutex::new(HashMap::new())),
+            plan_cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -276,6 +282,25 @@ impl CodexToolService {
         self.plan_executed.lock().await.remove(thread_id);
     }
 
+    /// C9: remembers the cancellation token of the plan running for a thread.
+    pub async fn register_plan_cancel(&self, thread_id: &str, token: CancellationToken) {
+        self.plan_cancellations.lock().await.insert(thread_id.to_string(), token);
+    }
+
+    /// C9: cancels the running plan of a thread (called by `turn/interrupt`
+    /// BEFORE the interrupt is sent, so steps stop at the next checkpoint).
+    pub async fn cancel_plan(&self, thread_id: &str) {
+        let token = self.plan_cancellations.lock().await.remove(thread_id);
+        if let Some(token) = token {
+            token.cancel();
+        }
+    }
+
+    /// C9: drops the plan cancellation entry when the turn ends (any outcome).
+    pub async fn clear_plan_cancel(&self, thread_id: &str) {
+        self.plan_cancellations.lock().await.remove(thread_id);
+    }
+
     /// C6: executes `conversational.plan` through the existing Rust
     /// [`execute_plan`] and answers the server request with the execution
     /// receipt in the same turn (spec §12: the model keeps talking after the
@@ -376,12 +401,21 @@ impl CodexToolService {
             }
         };
 
-        // C6: no caller-side cancellation exists yet (C9 wires turn/interrupt
-        // to a real token); a fresh token keeps the plan runnable while the
-        // per-step cancellation checks in execute_plan stay meaningful.
+        // C6/C9: a fresh cancellation token, registered so that a later
+        // `turn/interrupt` cancels the running plan at its next checkpoint
+        // (execute_plan checks the token before every side-effecting step).
         let cancellation = CancellationToken::new();
-        let execution =
-            execute_plan(&self.app, &workspace, &invocation, &cancellation, plan, &context).await;
+        self.register_plan_cancel(thread_id, cancellation.clone()).await;
+        let execution = execute_plan(
+            &self.app,
+            &workspace,
+            &invocation,
+            &cancellation,
+            plan,
+            &context,
+        )
+        .await;
+        self.clear_plan_cancel(thread_id).await;
         // The ExecutionReceipt goes back to the model in this same turn:
         // "Fatto, ho inviato a ..." on success, or the step failure text.
         // The model must not claim success without this receipt (spec §10).

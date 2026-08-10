@@ -185,6 +185,18 @@ pub fn spawn_account_bridge(
                         }
                     }
                 }
+                if matches!(
+                    method.as_str(),
+                    "turn/completed" | "turn/failed" | "turn/interrupted"
+                ) {
+                    // C9: the plan cancellation slot dies with the turn
+                    // (any outcome); a stale token would cancel a future plan.
+                    if let (Some(params), Some(tools)) = (&params, &tools) {
+                        if let Some(thread_id) = params.get("threadId").and_then(|v| v.as_str()) {
+                            tools.clear_plan_cancel(thread_id).await;
+                        }
+                    }
+                }
                 if let Some(threads) = &threads {
                     threads.apply_notification(&method, &params).await;
                     // C7: turn lifecycle is also part of the chat stream

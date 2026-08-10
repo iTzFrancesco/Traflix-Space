@@ -54,23 +54,30 @@ export function applyCodexChatStream(
   turns: Record<string, CodexStreamingTurn[]>,
   event: CodexChatStreamEvent,
 ): Record<string, CodexStreamingTurn[]> {
-  const workspaceTurns = turns[event.workspaceId] ?? [];
+  // The backend never emits events without thread/turn ids, but the wire type
+  // is nullable — normalize defensively (spec §25: unknown payloads are dropped).
+  const workspaceId = event.workspaceId ?? "unknown";
+  const workspaceTurns = turns[workspaceId] ?? [];
   const next = applyToTurnList(workspaceTurns, event);
   if (next.length === 0 && workspaceTurns.length === 0) return turns;
-  return { ...turns, [event.workspaceId]: next };
+  return { ...turns, [workspaceId]: next };
 }
 
 function applyToTurnList(
   turns: CodexStreamingTurn[],
   event: CodexChatStreamEvent,
 ): CodexStreamingTurn[] {
-  const index = turns.findIndex((turn) => turn.turnId === event.turnId);
+  const turnId = event.turnId ?? "unknown";
+  const threadId = event.threadId ?? "unknown";
+  const workspaceId = event.workspaceId ?? "unknown";
+  const index = turns.findIndex((turn) => turn.turnId === turnId);
   const turn: CodexStreamingTurn = index >= 0
     ? turns[index]
     : {
-        turnId: event.turnId,
-        threadId: event.threadId,
+        turnId,
+        threadId,
         requestId: event.requestId,
+        workspaceId,
         status: "active",
         items: [],
         startedAt: event.timestamp,

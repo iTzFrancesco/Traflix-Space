@@ -579,3 +579,10 @@ export function codexTurnInterrupt(workspaceId: string): Promise<void> {
   );
 }
 
+export function codexTurnSteer(workspaceId: string, steerText: string): Promise<void> {
+  return invokeWithTimeout(
+    () => invoke<void>("jarvis_codex_turn_steer", { workspaceId, steerText }),
+    READ_TIMEOUT_MS,
+  );
+}
+

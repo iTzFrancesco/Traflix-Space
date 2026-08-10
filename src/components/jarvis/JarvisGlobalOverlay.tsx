@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
-import { agentSnapshot, buildModelContext } from "../../lib/jarvis/client";
+import { agentSnapshot, buildModelContext, ttsSpeak } from "../../lib/jarvis/client";
 import type {
   TtsStatusView,
   VoiceLevelEvent,
@@ -21,7 +21,11 @@ import {
   reportFrontendDiagnostic,
   reportFrontendDiagnosticCode,
 } from "../../lib/crashDiagnostics";
-import { isVoiceConfigurationError, sanitizedVoiceError } from "../../lib/jarvis/voiceSettings";
+import {
+  isVoiceConfigurationError,
+  sanitizedVoiceError,
+  sanitizedVoiceErrorView,
+} from "../../lib/jarvis/voiceSettings";
 import { JarvisWidget } from "./JarvisWidget";
 
 const AUTO_ARM_DELAY_MS = 180;
@@ -52,6 +56,10 @@ export function JarvisGlobalOverlay() {
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
   const voiceError = useJarvisStore((state) => state.voiceError);
+  const codexSpeechQueue = useJarvisStore((state) => state.codexSpeechQueue);
+  const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
+  const clearCodexSpeech = useJarvisStore((state) => state.clearCodexSpeech);
+  const speechWorkerBusyRef = useRef(false);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const setContext = useJarvisStore((state) => state.setContext);
   const setContextStatus = useJarvisStore((state) => state.setContextStatus);
@@ -130,6 +138,64 @@ export function JarvisGlobalOverlay() {
       }
     }
   }, [setContext, setContextStatus]);
+
+  // C8: progressive commentary speech worker. Speaks the completed
+  // commentary/final items in FIFO order while Codex keeps working; never
+  // speaks over the final Zen reply (waits until TTS is idle) and stops
+  // instantly on barge-in (user speech) or mute.
+  useEffect(() => {
+    if (speechWorkerBusyRef.current) return;
+    const item = codexSpeechQueue[0];
+    if (!item) return;
+    const busy =
+      ttsStatus.status === "synthesizing" ||
+      ttsStatus.status === "playing" ||
+      ttsStatus.status === "stopped";
+    if (busy) return;
+    const store = useJarvisStore.getState();
+    if (
+      !store.settings.jarvis.voiceOutput.enabled ||
+      !store.settings.jarvis.voiceOutput.autoSpeak ||
+      store.settings.jarvis.muted
+    ) {
+      store.clearCodexSpeech();
+      return;
+    }
+    speechWorkerBusyRef.current = true;
+    const settings = store.settings.jarvis.voiceOutput;
+    const requestId = `tts-codex-${item.itemId}`;
+    void ttsSpeak({
+      requestId,
+      workspaceId: item.workspaceId,
+      text: item.text,
+      voice: settings.voice,
+      rate: settings.rate,
+      volume: settings.volume,
+      pitch: settings.pitch,
+    })
+      .then((status) => {
+        useJarvisStore.getState().setTtsStatus(status);
+      })
+      .catch((error) => {
+        const errorView = sanitizedVoiceErrorView(error, "tts_ipc_failed");
+        console.warn("[Jarvis speech] commentary synthesis failed", {
+          itemId: item.itemId,
+          errorCode: errorView.code,
+        });
+      })
+      .finally(() => {
+        speechWorkerBusyRef.current = false;
+        useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
+      });
+  }, [codexSpeechQueue, dequeueCodexSpeech, ttsStatus.status]);
+
+  // C8 barge-in: the moment the user starts speaking, drop pending
+  // commentary speech (the existing voice pipeline stops the active TTS).
+  useEffect(() => {
+    if (voiceRequest?.status === "recording") {
+      clearCodexSpeech();
+    }
+  }, [clearCodexSpeech, voiceRequest?.status]);
 
   const toggleMicrophoneMuted = useCallback(async () => {
     const store = useJarvisStore.getState();

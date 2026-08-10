@@ -187,6 +187,9 @@ pub struct CodexModelSettings {
     pub model: String,
     #[serde(default = "default_codex_reasoning")]
     pub reasoning_effort: String,
+    /// C8: speak completed commentary items progressively (Edge TTS queue).
+    #[serde(default = "default_true")]
+    pub speak_commentary: bool,
 }
 
 impl Default for CodexModelSettings {
@@ -194,6 +197,7 @@ impl Default for CodexModelSettings {
         Self {
             model: default_codex_model(),
             reasoning_effort: default_codex_reasoning(),
+            speak_commentary: default_true(),
         }
     }
 }
