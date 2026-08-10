@@ -35,7 +35,15 @@ import type {
   TtsVoice,
   VoiceInputDevice,
 } from "../../lib/jarvis/types";
-import { JarvisAdvancedSettings, CodexAccountSettings, CodexDiagnosticsSection, CodexModelSettingsSection } from "../jarvis/JarvisAdvancedSettings";
+import {
+  JarvisAdvancedSettings,
+  CodexDiagnosticsSection,
+} from "../jarvis/JarvisAdvancedSettings";
+import {
+  CodexConnectionRow,
+  CodexIntelligenceSettings,
+  CodexStatusSettings,
+} from "../jarvis/CodexSettingsBlocks";
 import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
 
 interface SettingsModalProps {
@@ -61,12 +69,10 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settingsError = useJarvisStore((state) => state.settingsError);
   const codexRuntime = useJarvisStore((state) => state.codexRuntime);
   const codexAccount = useJarvisStore((state) => state.codexAccount);
-  const codexAccountLoading = useJarvisStore((state) => state.codexAccountLoading);
   const codexLoginBusy = useJarvisStore((state) => state.codexLoginBusy);
   const codexError = useJarvisStore((state) => state.codexError);
   const codexModels = useJarvisStore((state) => state.codexModels);
   const codexModelsLoading = useJarvisStore((state) => state.codexModelsLoading);
-  const codexUsage = useJarvisStore((state) => state.codexUsage);
   const codexRateLimits = useJarvisStore((state) => state.codexRateLimits);
   const codexThreads = useJarvisStore((state) => state.codexThreads);
   const codexStreamingTurns = useJarvisStore((state) => state.codexStreamingTurns);
@@ -109,9 +115,14 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     void useJarvisStore.getState().loadCodexRuntime();
     void useJarvisStore.getState().loadCodexAccount();
     void useJarvisStore.getState().loadCodexModels();
-    void useJarvisStore.getState().loadCodexUsage();
+    void useJarvisStore.getState().loadCodexRateLimits();
     void useJarvisStore.getState().loadCodexThreads();
   }, [open, settings]);
+
+  useEffect(() => {
+    if (!open || codexAccount?.account.kind !== "chatgpt") return;
+    void useJarvisStore.getState().loadCodexRateLimits();
+  }, [open, codexAccount?.account.kind]);
 
   const updateJarvis = (
     updater: (jarvis: AppSettings["jarvis"]) => AppSettings["jarvis"],
@@ -223,13 +234,11 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             />
           </div>
           <div className="mt-3">
-            <CodexAccountSettings
+            <CodexConnectionRow
               account={codexAccount}
-              accountLoading={codexAccountLoading}
               loginBusy={codexLoginBusy}
               error={codexError}
               running={codexRuntime?.state === "running"}
-              onLoadAccount={() => void useJarvisStore.getState().loadCodexAccount()}
               onLogin={() => void useJarvisStore.getState().startCodexLogin()}
               onLogout={() => void useJarvisStore.getState().logoutCodex()}
             />
@@ -237,14 +246,30 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         </SettingsSection>
 
         <SettingsSection
+          title="Codex"
+          description="Configurazione account e stato dei limiti della tua sottoscrizione ChatGPT."
+        >
+          <CodexStatusSettings
+            account={codexAccount}
+            runtime={codexRuntime}
+            rateLimits={codexRateLimits}
+            onRefresh={async () => {
+              await Promise.all([
+                useJarvisStore.getState().loadCodexRuntime(),
+                useJarvisStore.getState().loadCodexAccount(),
+                useJarvisStore.getState().loadCodexRateLimits(),
+              ]);
+            }}
+          />
+        </SettingsSection>
+
+        <SettingsSection
           title="Intelligenza"
           description="Modello e reasoning del turno Codex — unica fonte di verità per Jarvis."
         >
-          <CodexModelSettingsSection
+          <CodexIntelligenceSettings
             models={codexModels}
             modelsLoading={codexModelsLoading}
-            usage={codexUsage}
-            rateLimits={codexRateLimits}
             modelSettings={jarvis.codex}
             running={codexRuntime?.state === "running"}
             onModelSettingsChange={(codex) =>
