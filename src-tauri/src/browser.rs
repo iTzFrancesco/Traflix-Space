@@ -1,6 +1,8 @@
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
+use tauri_plugin_shell::ShellExt;
+use tracing::info;
 
 const BROWSER_LABEL: &str = "browser";
 
@@ -12,6 +14,36 @@ struct BrowserUrlChanged {
 
 fn is_allowed_url(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "http" | "https") || url.as_str() == "about:blank"
+}
+
+/// Codex App Server returns a ChatGPT OAuth URL whose redirect_uri points to
+/// the short-lived localhost callback server hosted by Codex. This flow must
+/// run in the user's system browser: the embedded Traflix browser is created
+/// at 1x1 until BrowserPanel is mounted, so opening OAuth there makes the
+/// login page effectively invisible.
+fn is_codex_chatgpt_oauth_url(url: &tauri::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let official_auth_host = host == "chatgpt.com"
+        || host.ends_with(".chatgpt.com")
+        || host == "auth.openai.com"
+        || host.ends_with(".auth.openai.com");
+    if !official_auth_host {
+        return false;
+    }
+
+    url.query_pairs().any(|(key, value)| {
+        if key != "redirect_uri" {
+            return false;
+        }
+        let redirect = value.as_ref();
+        redirect.starts_with("http://localhost:")
+            || redirect.starts_with("http://127.0.0.1:")
+            || redirect.starts_with("http://[::1]:")
+    })
 }
 
 fn browser_webview<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<tauri::Webview<R>, String> {
@@ -65,6 +97,21 @@ pub fn browser_navigate(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     if !is_allowed_url(&parsed) || parsed.as_str() == "about:blank" {
         return Err("Il Browser accetta solo URL http:// o https://".to_string());
+    }
+
+    // ChatGPT-managed Codex login is a native desktop OAuth flow. Opening it
+    // externally also lets the browser return to Codex's localhost callback,
+    // while keeping OAuth cookies/credentials out of Traflix's incognito
+    // child WebView. Never log the full URL because it contains OAuth state.
+    if is_codex_chatgpt_oauth_url(&parsed) {
+        info!(
+            auth_host = parsed.host_str().unwrap_or("unknown"),
+            "Opening Codex ChatGPT OAuth in system browser"
+        );
+        return app
+            .shell()
+            .open(parsed.as_str(), None)
+            .map_err(|error| format!("Impossibile aprire il browser di sistema: {error}"));
     }
 
     browser_webview(&app)?
