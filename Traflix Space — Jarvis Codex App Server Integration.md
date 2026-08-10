@@ -16,7 +16,8 @@
 > | C3 Model settings | ✅ | `080bca7` | model/list (gpt-5.6-luna, effort server-order), rateLimits/read + usage/read reali; merge incrementale mai-null |
 > | C4 Thread lifecycle | ✅ | `19f6137` | thread ephemeral reale + turn/start + interrupt; thread/delete rifiutato ("not persisted") |
 > | C5 Dynamic tools | ✅ | `4315c2f` | turno reale: il modello chiama `agent.list` end-to-end (request namespaced + risposta) |
-> | C6–C10 | ⏳ | — | pianificate |
+> | C6 Conversational control | ✅ | `e52465f` | tool `conversational.plan` registrato e osservato in turno reale (args tipizzati + receipt risposto); guard 1 plan/turno unit-tested |
+> | C7–C10 | ⏳ | — | pianificate |
 >
 > Dettagli, scoperte di protocollo e limiti: vedi §5, §9, §11 e §30.
 
