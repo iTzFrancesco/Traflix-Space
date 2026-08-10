@@ -48,3 +48,28 @@ con il codice, fix dei gap. **Esito:** 200/200 test, 35 warning (baseline), `tsc
 - Suite: `cargo test` 200/200 · `cargo check` 35 warning (baseline pre-C10) · `tsc` + `npm run build` verdi
 - Niente push automatici senza approvazione; questo file committato e pushato su
   richiesta esplicita dell'utente.
+
+## Post-review esterna (12 issue) — esito
+
+Review statica di `agent/jarvis-terminal-stability` (23 commit avanti a main;
+reviewer senza test rieseguiti, ~85–90% pronta per acceptance). Tutte le issue
+risolte tranne #11 (repo hygiene):
+
+| # | Issue | Fix | Commit |
+|---|-------|-----|--------|
+| 1 | final = `item/completed` agentMessage, tutti i blocchi text | ✅ | `77640ca` |
+| 2 | phantom thread dopo crash/restart (generation + waiter fail-fast) | ✅ | `77640ca` |
+| 3 | timeout → `turn/interrupt` best-effort | ✅ | `77640ca` |
+| 4 | solo `type: chatgpt` (cost guard backend + UI) | ✅ | `77640ca` + `3971cb5` |
+| 5 | ricrea thread su cambio modello/reasoning (backend + normalizza UI) | ✅ | `77640ca` + `3971cb5` |
+| 6 | un solo owner TTS del final (skip legacy via `codexStreamFinal`) | ✅ | `3971cb5` |
+| 7 | rimozione Instradamento modelli + `TextModelSettings` legacy | ✅ | `8227f05` + `3971cb5` |
+| 8 | shape rate limits ufficiale `usedPercent`/`resetsAt` | ✅ | `3971cb5` |
+| 9 | account/modello/usage in settings normali; diagnostica avanzata | ✅ | `3971cb5` |
+| 10 | version pin fail-closed 0.147.x (anche output non parseabile) | ✅ | `77640ca` |
+| 11 | untrack `D:/rust/target` artefatti + .gitignore | ⏳ coda | — |
+| 12 | `request_id` propagato a `start_turn` | ✅ | `77640ca` |
+
+Verifica post-fix: `cargo test` **201/201** (+1 ignored) · `cargo check` 35
+warning = baseline · `tsc --noEmit` + `npm run build` verdi. Pending: #11,
+poi test end-to-end reale su Windows (i 4 blocker erano il prerequisito).
