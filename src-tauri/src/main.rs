@@ -147,6 +147,12 @@ fn main() {
             app.manage(project::watcher::ProjectWatcherRegistry::default());
             app.manage(agent_events::AgentEventRegistry::default());
 
+            // Codex App Server runtime: one global process for the whole
+            // session (spec §3). Warmed in background; never blocks setup.
+            let codex_runtime = jarvis::codex::CodexRuntimeManager::new(app.handle().clone());
+            app.manage(codex_runtime.clone());
+            codex_runtime.start_in_background();
+
             // Edge TTS is process-based. Warm it outside the user's first
             // spoken turn so Python/PyInstaller startup + import are not paid
             // after Jarvis has already produced a reply.
@@ -293,6 +299,8 @@ fn main() {
             jarvis::chat::jarvis_update_pending_action,
             jarvis::chat::jarvis_reject_action,
             jarvis::chat::jarvis_clear_conversation,
+            jarvis::codex::runtime::jarvis_codex_runtime_status,
+            jarvis::codex::runtime::jarvis_codex_runtime_restart,
             jarvis::voice::commands::jarvis_voice_list_input_devices,
             jarvis::voice::commands::jarvis_voice_sync_shortcut,
             jarvis::voice::commands::jarvis_voice_start,
@@ -352,6 +360,8 @@ fn main() {
             tauri::async_runtime::block_on(async {
                 let _ = voice.shutdown().await;
                 jarvis::voice::tts::shutdown_runtime().await;
+                let codex = app.state::<jarvis::codex::CodexRuntimeManager>();
+                codex.shutdown().await;
                 manager.kill_all().await;
             });
         }

@@ -4,6 +4,7 @@ pub mod agent_registry;
 pub mod cache;
 pub mod chat;
 pub mod checkpoints;
+pub mod codex;
 pub mod commands;
 pub mod context_broker;
 pub mod control;
