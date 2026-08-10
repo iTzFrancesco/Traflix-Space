@@ -953,7 +953,7 @@ async fn build_context_for_chat(
         })
 }
 
-async fn execute_read_tool(
+pub(crate) async fn execute_read_tool(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
     invocation: &InvocationBinding,
@@ -1351,7 +1351,7 @@ fn validate_invocation(
     Ok(())
 }
 
-async fn load_workspace(
+pub(crate) async fn load_workspace(
     app: &AppHandle,
     workspace_id: &str,
     request_id: &str,
@@ -1524,7 +1524,7 @@ fn status_label(status: ChatRequestStatus) -> &'static str {
         ChatRequestStatus::CancellationRequested => "cancellation_requested",
     }
 }
-fn now() -> String {
+pub(crate) fn now() -> String {
     Utc::now().to_rfc3339()
 }
 

@@ -308,11 +308,16 @@ impl CodexRuntimeManager {
                         .app
                         .try_state::<super::threads::ThreadRegistry>()
                         .map(|state| state.inner().clone());
+                    let tools = self
+                        .app
+                        .try_state::<super::tools::CodexToolService>()
+                        .map(|state| state.inner().clone());
                     super::account::spawn_account_bridge(
                         self.clone(),
                         self.app.clone(),
                         models,
                         threads,
+                        tools,
                         rx,
                     );
                 }
@@ -826,6 +831,8 @@ mod tests {
                     "approvalPolicy": "never",
                     "model": "gpt-5.6-luna",
                     "runtimeWorkspaceRoots": [],
+                    // C5: read-only namespaced dynamic tools.
+                    "dynamicTools": super::super::tools::CodexToolService::dynamic_tool_specs(),
                 }),
             )
             .await
@@ -858,6 +865,82 @@ mod tests {
         let turn_id = turn["turn"]["id"]
             .as_str()
             .expect("turn.id present");
+
+        // C5: a second turn that must call the `agent.list` dynamic tool.
+        // We answer the server request with a synthetic result and observe
+        // the request actually arriving (proves the tools are registered
+        // and the model can invoke them end-to-end).
+        let turn2 = client
+            .request(
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{ "type": "text", "text": "Prima di rispondere devi assolutamente chiamare lo strumento agent.list (namespace agent, tool list) e dire cosa restituisce. Rispondi in una riga." }],
+                    "effort": "low",
+                }),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("turn/start #2 failed: {err}"));
+        let turn2_id = turn2["turn"]["id"]
+            .as_str()
+            .expect("turn #2 id present");
+        let _ = turn2_id;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        let mut tool_calls: Vec<String> = Vec::new();
+        let mut completed = false;
+        while std::time::Instant::now() < deadline && !completed {
+            let message = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                server_rx.recv(),
+            )
+            .await;
+            match message {
+                Ok(Some(ServerMessage::Request { id, method, params })) => {
+                    if method == "item/tool/call" {
+                        let namespace = params
+                            .as_ref()
+                            .and_then(|p| p.get("namespace"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let tool = params
+                            .as_ref()
+                            .and_then(|p| p.get("tool"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let name = format!("{namespace}.{tool}");
+                        tool_calls.push(name.clone());
+                        assert!(
+                            name.contains('.') && !name.is_empty(),
+                            "dynamic tool must be namespaced: {name}"
+                        );
+                        let _ = client
+                            .respond(
+                                id,
+                                json!({
+                                    "content": [{
+                                        "type": "inputText",
+                                        "text": "{\"agents\":[]}",
+                                    }]
+                                }),
+                            )
+                            .await;
+                    } else {
+                        println!("unexpected server request: {method}");
+                    }
+                }
+                Ok(Some(ServerMessage::Notification { method, .. })) => {
+                    if method == "turn/completed" {
+                        completed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            tool_calls.iter().any(|name| name == "agent.list"),
+            "agent.list observed among tool calls: {tool_calls:?}"
+        );
 
         // Interrupt is best-effort: the trivial prompt may complete before
         // the interrupt lands (error on an already-finished turn is fine).

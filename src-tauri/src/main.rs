@@ -164,6 +164,12 @@ fn main() {
                 app.handle().clone(),
             ));
 
+            // C5: read-only dynamic tools answered from the notification hub.
+            app.manage(jarvis::codex::tools::CodexToolService::new(
+                codex_runtime.clone(),
+                app.handle().clone(),
+            ));
+
             // Edge TTS is process-based. Warm it outside the user's first
             // spoken turn so Python/PyInstaller startup + import are not paid
             // after Jarvis has already produced a reply.

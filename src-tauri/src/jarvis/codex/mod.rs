@@ -13,6 +13,7 @@ pub mod models;
 pub mod runtime;
 pub mod rpc;
 pub mod threads;
+pub mod tools;
 pub mod types;
 
 pub use runtime::CodexRuntimeManager;

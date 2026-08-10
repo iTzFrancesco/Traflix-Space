@@ -732,7 +732,7 @@ async fn build_context(
     }
 }
 
-async fn reconcile_live_registry(app: &AppHandle, observed_at: &str) {
+pub(crate) async fn reconcile_live_registry(app: &AppHandle, observed_at: &str) {
     let manager = app.state::<TerminalManager>();
     let terminals = manager.list_agent_snapshots().await;
     app.state::<JarvisState>()

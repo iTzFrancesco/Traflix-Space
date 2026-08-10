@@ -119,6 +119,8 @@ impl ThreadRegistry {
             "approvalPolicy": "never",
             "model": settings.model,
             "runtimeWorkspaceRoots": [],
+            // C5: read-only namespaced dynamic tools (spec §11).
+            "dynamicTools": super::tools::CodexToolService::dynamic_tool_specs(),
         });
         let client = self.runtime.client().await?;
         let result = client.request("thread/start", params).await?;
@@ -230,6 +232,17 @@ impl ThreadRegistry {
             )
             .await?;
         Ok(())
+    }
+
+    /// Reverse lookup: which workspace owns this thread? Used by the
+    /// dynamic tool dispatcher to resolve `item/tool/call` requests.
+    pub async fn workspace_for_thread(&self, thread_id: &str) -> Option<String> {
+        self.threads
+            .lock()
+            .await
+            .values()
+            .find(|record| record.thread_id == thread_id)
+            .map(|record| record.workspace_id.clone())
     }
 
     /// Snapshot for the UI.

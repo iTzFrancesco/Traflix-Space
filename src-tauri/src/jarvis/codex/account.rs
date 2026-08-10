@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
 use super::threads::ThreadRegistry;
+use super::tools::CodexToolService;
 use super::runtime::{CodexRuntimeManager, RuntimeError};
 
 impl From<RpcError> for RuntimeError {
@@ -95,13 +96,30 @@ pub fn spawn_account_bridge(
     app: AppHandle,
     models: Option<CodexModelService>,
     threads: Option<ThreadRegistry>,
+    tools: Option<CodexToolService>,
     mut rx: mpsc::UnboundedReceiver<ServerMessage>,
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
             let (method, params) = match &message {
                 ServerMessage::Notification { method, params } => (method.clone(), params.clone()),
-                _ => continue,
+                // C5: the server asks the client to execute a dynamic tool.
+                // The call is answered here (result or error response).
+                ServerMessage::Request { id, method, params } => {
+                    if let Some(tools) = &tools {
+                        if tools.handle_server_request(*id, method, params.clone()).await {
+                            continue;
+                        }
+                    }
+                    // Unknown server requests: answer with a method-not-found
+                    // error so the server never waits forever on us.
+                    if let Ok(client) = _runtime.client().await {
+                        let _ = client
+                            .respond_error(*id, -32601, &format!("unknown server request: {method}"))
+                            .await;
+                    }
+                    continue;
+                }
             };
             // C3: incremental rate-limit updates are merged into the last
             // full snapshot (never overwriting with null) and forwarded.
@@ -115,6 +133,13 @@ pub fn spawn_account_bridge(
             // C4: thread/turn lifecycle notifications keep the registry in
             // sync (turn started/completed clears the active turn).
             if method.starts_with("thread/") || method.starts_with("turn/") {
+                if method == "turn/started" {
+                    if let (Some(params), Some(tools)) = (&params, &tools) {
+                        if let Some(thread_id) = params.get("threadId").and_then(|v| v.as_str()) {
+                            tools.reset_budget(thread_id).await;
+                        }
+                    }
+                }
                 if let Some(threads) = &threads {
                     threads.apply_notification(&method, &params).await;
                 }

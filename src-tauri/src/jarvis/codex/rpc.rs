@@ -235,6 +235,49 @@ impl JsonRpcClient {
             .map_err(|err| RpcError::Transport(err.to_string()))
     }
 
+    /// Sends a JSON-RPC response to a server request (e.g. the result of a
+    /// dynamic tool call). `id` must match the request id.
+    pub async fn respond(&self, id: u64, result: Value) -> Result<(), RpcError> {
+        let payload = json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": id,
+            "result": result,
+        });
+        let mut line = serde_json::to_string(&payload)
+            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|err| RpcError::Transport(err.to_string()))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|err| RpcError::Transport(err.to_string()))
+    }
+
+    /// Sends a JSON-RPC error response to a server request.
+    pub async fn respond_error(&self, id: u64, code: i64, message: &str) -> Result<(), RpcError> {
+        let payload = json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": id,
+            "error": { "code": code, "message": message },
+        });
+        let mut line = serde_json::to_string(&payload)
+            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|err| RpcError::Transport(err.to_string()))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|err| RpcError::Transport(err.to_string()))
+    }
+
     /// Count of malformed JSON lines observed (diagnostics; C7 surfaces it).
     #[allow(dead_code)]
     pub fn malformed_line_count(&self) -> u64 {
