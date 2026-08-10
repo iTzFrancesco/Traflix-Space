@@ -35,7 +35,7 @@ import type {
   TtsVoice,
   VoiceInputDevice,
 } from "../../lib/jarvis/types";
-import { JarvisAdvancedSettings, CodexSettingsSection } from "../jarvis/JarvisAdvancedSettings";
+import { JarvisAdvancedSettings, CodexAccountSettings, CodexDiagnosticsSection, CodexModelSettingsSection } from "../jarvis/JarvisAdvancedSettings";
 import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettings";
 
 interface SettingsModalProps {
@@ -207,7 +207,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
 
         <SettingsSection
           title="Connessioni"
-          description="Le chiavi sono salvate fuori da settings.json e non vengono più mostrate dopo il salvataggio."
+          description="Groq per il riconoscimento vocale; ChatGPT/Codex per l'intelligenza di Jarvis."
         >
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
             <CredentialField
@@ -223,6 +223,35 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
               onClear={() => void handleSecretClear("groq")}
             />
           </div>
+          <div className="mt-3">
+            <CodexAccountSettings
+              account={codexAccount}
+              accountLoading={codexAccountLoading}
+              loginBusy={codexLoginBusy}
+              error={codexError}
+              running={codexRuntime?.state === "running"}
+              onLoadAccount={() => void useJarvisStore.getState().loadCodexAccount()}
+              onLogin={() => void useJarvisStore.getState().startCodexLogin()}
+              onLogout={() => void useJarvisStore.getState().logoutCodex()}
+            />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Intelligenza"
+          description="Modello e reasoning del turno Codex — unica fonte di verità per Jarvis."
+        >
+          <CodexModelSettingsSection
+            models={codexModels}
+            modelsLoading={codexModelsLoading}
+            usage={codexUsage}
+            rateLimits={codexRateLimits}
+            modelSettings={jarvis.codex}
+            running={codexRuntime?.state === "running"}
+            onModelSettingsChange={(codex) =>
+              updateJarvis((current) => ({ ...current, codex }))
+            }
+          />
         </SettingsSection>
 
         <VoiceOptions
@@ -235,46 +264,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             updateJarvis((current) => ({ ...current, voiceOutput }))
           }
         />
-
-        <details className="details-panel">
-          <summary>Instradamento modelli</summary>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <TextField
-              label="Modello principale"
-              value={jarvis.textModel.primaryModel}
-              placeholder="gpt-5.6-luna"
-              onChange={(primaryModel) =>
-                updateJarvis((current) => ({
-                  ...current,
-                  textModel: { ...current.textModel, primaryModel },
-                }))
-              }
-            />
-            <TextField
-              label="Modello di fallback"
-              value={jarvis.textModel.fallbackModel}
-              placeholder="longcat-2.0-free"
-              onChange={(fallbackModel) =>
-                updateJarvis((current) => ({
-                  ...current,
-                  textModel: { ...current.textModel, fallbackModel },
-                }))
-              }
-            />
-          </div>
-          <div className="mt-3">
-            <ToggleRow
-              label="Consenti fallback del modello"
-              checked={jarvis.textModel.fallbackEnabled}
-              onChange={(fallbackEnabled) =>
-                updateJarvis((current) => ({
-                  ...current,
-                  textModel: { ...current.textModel, fallbackEnabled },
-                }))
-              }
-            />
-          </div>
-        </details>
 
         <details className="details-panel">
           <summary>Diagnostica avanzata</summary>
@@ -291,36 +280,22 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
               }
             />
           </div>
+          <CodexDiagnosticsSection
+            runtime={codexRuntime}
+            threads={codexThreads}
+            streamingTurns={
+              activeWorkspaceId
+                ? codexStreamingTurns[activeWorkspaceId] ?? []
+                : []
+            }
+            loginBusy={codexLoginBusy}
+            onDeleteThread={(workspaceId) =>
+              void useJarvisStore.getState().deleteCodexThread(workspaceId)
+            }
+            onRestart={() => void useJarvisStore.getState().restartCodex()}
+          />
           {jarvis.advancedViewEnabled && advanced && (
             <div className="mt-4">
-              <CodexSettingsSection
-                runtime={codexRuntime}
-                account={codexAccount}
-                accountLoading={codexAccountLoading}
-                loginBusy={codexLoginBusy}
-                error={codexError}
-                models={codexModels}
-                modelsLoading={codexModelsLoading}
-                usage={codexUsage}
-                rateLimits={codexRateLimits}
-                modelSettings={jarvis.codex}
-                threads={codexThreads}
-                streamingTurns={
-                  activeWorkspaceId
-                    ? codexStreamingTurns[activeWorkspaceId] ?? []
-                    : []
-                }
-                onModelSettingsChange={(codex) =>
-                  updateJarvis((current) => ({ ...current, codex }))
-                }
-                onDeleteThread={(workspaceId) =>
-                  void useJarvisStore.getState().deleteCodexThread(workspaceId)
-                }
-                onLoadAccount={() => void useJarvisStore.getState().loadCodexAccount()}
-                onLogin={() => void useJarvisStore.getState().startCodexLogin()}
-                onLogout={() => void useJarvisStore.getState().logoutCodex()}
-                onRestart={() => void useJarvisStore.getState().restartCodex()}
-              />
               <JarvisAdvancedSettings
                 {...advanced}
                 providerStatus={providerStatus}

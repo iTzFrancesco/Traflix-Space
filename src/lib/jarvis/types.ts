@@ -229,10 +229,6 @@ export interface VoiceOutputSettings {
 }
 
 export interface TextModelSettings {
-  provider: ModelProvider;
-  primaryModel: string;
-  fallbackModel: string;
-  fallbackEnabled: boolean;
   privacyConsent: boolean;
   privacyConsentAt?: string;
 }

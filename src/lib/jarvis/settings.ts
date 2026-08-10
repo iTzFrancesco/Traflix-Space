@@ -90,11 +90,6 @@ export function defaultJarvisSettings(): JarvisSettings {
       allowInterruption: true,
     },
     textModel: {
-      provider: "codex",
-      primaryModel: "gpt-5.6-luna",
-      // No fallback model: all text traffic uses the single preferred model.
-      fallbackModel: "",
-      fallbackEnabled: false,
       privacyConsent: true,
       privacyConsentAt: OWNER_MODE_MARKER,
     },

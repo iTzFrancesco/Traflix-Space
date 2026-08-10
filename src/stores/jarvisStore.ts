@@ -118,6 +118,10 @@ interface JarvisStore {
   // C8: progressive commentary speech queue (FIFO, dedupe itemId).
   codexSpeechQueue: CodexSpeechItem[];
   codexSpokenItemIds: string[];
+  /** Review #6: last streamed completed-message text per workspace — lets
+   *  the chat response path know the final was already handled by the
+   *  progressive TTS worker (single owner for the final speech). */
+  codexStreamFinal: Record<string, string | undefined>;
   dequeueCodexSpeech: (itemId: string) => void;
   clearCodexSpeech: () => void;
   loadCodexThreads: () => Promise<void>;
@@ -261,6 +265,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   codexStreamingTurns: {},
   codexSpeechQueue: [],
   codexSpokenItemIds: [],
+  codexStreamFinal: {},
   uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
@@ -350,7 +355,22 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         autoSpeak: voiceSettings.enabled && voiceSettings.autoSpeak && Boolean(voiceSettings.privacyConsent && voiceSettings.privacyConsentAt),
       });
       if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt) {
-        const ttsRequestId = `tts-${response.message.id}`;
+        // Review #6: one owner for the final TTS. The progressive worker
+        // already speaks the streamed final (C8, when speakCommentary is
+        // on and the text passes the commentary filter). The final item
+        // event is emitted before the invoke resolves, but the event
+        // dispatch may be queued behind the promise microtask — wait a
+        // beat for the streaming listener, then skip the legacy speak
+        // when the final text matches what was streamed.
+        const finalText = response.message.content.trim();
+        const finalHandledByStream = await waitForStreamedFinal(workspaceId, finalText);
+        if (finalHandledByStream) {
+          voiceLog("final TTS handled by progressive stream; skipping legacy speak", {
+            requestId: invocation.requestId,
+            workspaceId,
+          });
+        } else {
+          const ttsRequestId = `tts-${response.message.id}`;
         voiceLog("tts request started", {
           requestId: ttsRequestId,
           workspaceId,
@@ -400,6 +420,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
               error: errorView,
             });
           });
+        }
       }
       return true;
     } catch (error) {
@@ -915,6 +936,32 @@ function codexErrorMessage(message: string): string {
 }
 
 /** Opens the ChatGPT OAuth URL in the internal incognito browser. */
+/** Review #6: waits (bounded) for the streaming listener to process the
+ *  final `message_completed` of the turn and reports whether its text
+ *  matches the chat response — i.e. the progressive TTS worker already
+ *  owns (or will own) the final speech.
+ *
+ *  The final item event is emitted by the backend before the invoke
+ *  resolves, but the WebView may dispatch the event after the promise
+ *  microtask, so we poll the store for a short window instead of relying
+ *  on ordering. Text equality is reliable because both the streamed
+ *  payload and the chat response come from the same `item/completed`.
+ */
+async function waitForStreamedFinal(
+  workspaceId: string,
+  finalText: string,
+): Promise<boolean> {
+  const deadline = Date.now() + 300;
+  while (Date.now() < deadline) {
+    const streamed = useJarvisStore.getState().codexStreamFinal[workspaceId];
+    if (streamed !== undefined) {
+      return streamed.trim() === finalText;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  return false;
+}
+
 async function openCodexAuthUrl(authUrl: string): Promise<void> {
   await invoke("browser_create");
   await invoke("browser_navigate", { url: authUrl });
@@ -973,6 +1020,27 @@ export function bindCodexEvents(): () => void {
     // C8: progressive TTS — enqueue completed commentary/final items.
     const store = useJarvisStore.getState();
     const payload = event.payload;
+    if (payload.kind === "message_completed" && payload.text) {
+      // Review #6: remember the LAST streamed message text per workspace
+      // (the final answer) so the chat response path can skip the legacy
+      // TTS speak — one owner for the final speech. Updated on every
+      // completed message; cleared when a new turn starts below.
+      const finalText = payload.text;
+      useJarvisStore.setState((state) => ({
+        codexStreamFinal: {
+          ...state.codexStreamFinal,
+          [payload.workspaceId ?? "unknown"]: finalText,
+        },
+      }));
+    }
+    if (payload.kind === "turn_started") {
+      // New turn: the previous final is no longer authoritative.
+      const cleared: Record<string, string | undefined> = {
+        ...useJarvisStore.getState().codexStreamFinal,
+        [payload.workspaceId ?? "unknown"]: undefined,
+      };
+      useJarvisStore.setState({ codexStreamFinal: cleared });
+    }
     if (
       payload.kind === "message_completed" &&
       payload.text &&

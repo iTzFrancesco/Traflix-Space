@@ -48,35 +48,46 @@ export interface CodexSettingsSectionProps {
   onRestart: () => void;
 }
 
+/** Review #9: shared props for the settings blocks split out of the old
+ *  all-in-one CodexSettingsSection (account / model+usage / diagnostics). */
+export type CodexCommonProps = CodexSettingsSectionProps;
+
 function rateLimitSummary(snapshot: unknown): string | null {
-  // Defensive: the rate-limit schema is nested and evolving (spec §22); show
-  // known numeric fields when present, never a hardcoded estimate.
-  const read = (value: unknown): string | null => {
+  // Review #8: the official rate-limit shape is
+  // { primary: { usedPercent, windowDurationMins, resetsAt }, secondary: {...} };
+  // legacy payloads (rateLimitsByLimitId / used+limit pairs) stay supported.
+  if (typeof snapshot !== "object" || snapshot === null) return null;
+  const root = snapshot as Record<string, unknown>;
+  const readBucket = (value: unknown): string | null => {
     if (typeof value !== "object" || value === null) return null;
     const entry = value as Record<string, unknown>;
+    const percent = entry.usedPercent ?? entry.percent;
+    if (typeof percent === "number") {
+      const window = entry.windowDurationMins;
+      const windowLabel = typeof window === "number" ? ` / ${window}m` : "";
+      const reset = entry.resetsAt ?? entry.resetAt;
+      const when = typeof reset === "string" ? ` · reset ${reset}` : "";
+      return `${Math.round(percent)}%${windowLabel}${when}`;
+    }
     const used = entry.used ?? entry.usage ?? entry.consumed;
     const limit = entry.limit ?? entry.limitValue ?? entry.total;
     if (typeof used === "number" && typeof limit === "number" && limit > 0) {
-      const percent = Math.round((used / limit) * 100);
-      const reset = entry.resetAt ?? entry.resetsAt;
-      const when = typeof reset === "string" ? ` · reset ${reset}` : "";
-      return `${percent}% (${used}/${limit})${when}`;
+      return `${Math.round((used / limit) * 100)}% (${used}/${limit})`;
     }
     return null;
   };
-  if (typeof snapshot !== "object" || snapshot === null) return null;
-  const root = snapshot as Record<string, unknown>;
   const byId = root.rateLimitsByLimitId as Record<string, unknown> | undefined;
   const buckets: string[] = [];
   if (byId && typeof byId === "object") {
     for (const [id, value] of Object.entries(byId)) {
-      const summary = read(value);
+      const summary = readBucket(value);
       if (summary) buckets.push(`${id} ${summary}`);
     }
-  }
-  if (buckets.length === 0) {
-    const summary = read(root.primary ?? root.codex);
-    if (summary) buckets.push(`primary ${summary}`);
+  } else {
+    for (const key of ["primary", "secondary"]) {
+      const summary = readBucket(root[key]);
+      if (summary) buckets.push(`${key} ${summary}`);
+    }
   }
   return buckets.length > 0 ? buckets.join(" · ") : null;
 }
@@ -110,84 +121,63 @@ function accountSummary(account: CodexAccountView | null): {
         connected: true,
       };
     case "apiKey":
-      return { label: "API key", connected: true };
+      // Review #4: API-key auth is NOT a valid Jarvis backend (cost guard).
+      return { label: "API key · non supportato per Jarvis", connected: false };
     case "other":
-      return { label: account.account.accountType, connected: true };
+      return {
+        label: `${account.account.accountType} · non supportato`,
+        connected: false,
+      };
     case "signedOut":
       return { label: "Non connesso", connected: false };
   }
 }
 
-export function CodexSettingsSection({
-  runtime,
+/** Review #9: ChatGPT/Codex account block — lives in the normal
+ *  "Connessioni" settings (login, plan, email). Sign in/out only. */
+export function CodexAccountSettings({
   account,
   accountLoading,
   loginBusy,
   error,
-  models,
-  modelsLoading,
-  usage,
-  rateLimits,
-  modelSettings,
-  threads,
-  streamingTurns,
-  onModelSettingsChange,
-  onDeleteThread,
+  running,
   onLoadAccount,
   onLogin,
   onLogout,
-  onRestart,
-}: CodexSettingsSectionProps) {
+}: {
+  account: CodexAccountView | null;
+  accountLoading: boolean;
+  loginBusy: boolean;
+  error: string | null;
+  running: boolean;
+  onLoadAccount: () => void;
+  onLogin: () => void;
+  onLogout: () => void;
+}) {
   const summary = accountSummary(account);
-  const running = runtime?.state === "running";
-
   return (
-    <section className="border-t border-neutral-border pt-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-xs font-semibold text-neutral-text">Codex App Server</h3>
-          <p className="mt-0.5 text-[10px] text-neutral-text-muted">
-            Runtime e autenticazione ChatGPT.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onLoadAccount}
-          className="ui-icon-button h-8 w-8"
-          title="Refresh account"
-          aria-label="Refresh account"
-          disabled={accountLoading}
-        >
-          <RefreshCw
-            size={13}
-            className={accountLoading ? "status-icon--spin" : ""}
+    <div className="divide-y divide-neutral-border border-y border-neutral-border">
+      <div className="grid gap-3 py-3 sm:grid-cols-[170px_1fr] sm:items-center">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={
+              summary.connected ? "status-dot status-dot--ok" : "status-dot"
+            }
+            aria-hidden="true"
           />
-        </button>
-      </div>
-
-      <dl className="mt-3 grid grid-cols-3 divide-x divide-neutral-border border-y border-neutral-border py-2">
-        <Metric
-          label="Runtime"
-          value={runtimeLabel(runtime?.state)}
-          tone={running ? "ok" : runtime?.state === "failed" || runtime?.state === "crashed" ? "bad" : "dim"}
-        />
-        <Metric label="Version" value={runtime?.version ?? "—"} />
-        <Metric label="Restarts" value={String(runtime?.restartCount ?? 0)} />
-      </dl>
-
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-[10px] text-neutral-text-muted">
-            Account:{" "}
-            <span className={summary.connected ? "font-semibold text-signal" : "font-medium text-neutral-text-dim"}>
-              {summary.label}
-            </span>
-          </p>
-          {runtime?.lastError && (
-            <p className="mt-1 truncate text-[10px] text-danger">{runtime.lastError}</p>
-          )}
+          <div className="min-w-0">
+            <p className="truncate text-xs font-medium text-neutral-text">
+              ChatGPT / Codex
+            </p>
+            <p className="truncate text-[10px] text-neutral-text-muted">
+              {summary.connected ? "ChatGPT subscription" : "Non connesso"}
+            </p>
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 items-center justify-end gap-2">
+          <p className="min-w-0 flex-1 truncate text-right text-[10px] text-neutral-text-muted">
+            {summary.label}
+          </p>
           {summary.connected ? (
             <button
               type="button"
@@ -211,126 +201,224 @@ export function CodexSettingsSection({
           )}
           <button
             type="button"
-            onClick={onRestart}
-            disabled={loginBusy}
+            onClick={onLoadAccount}
             className="ui-icon-button h-7 w-7"
-            title="Restart Codex runtime"
-            aria-label="Restart Codex runtime"
+            title="Refresh account"
+            aria-label="Refresh account"
+            disabled={accountLoading}
           >
-            <RefreshCw size={12} />
+            <RefreshCw
+              size={12}
+              className={accountLoading ? "status-icon--spin" : ""}
+            />
           </button>
         </div>
       </div>
-
       {error && (
-        <p className="mt-3 border-l-2 border-danger px-2 py-1 text-[10px] text-danger">
+        <p className="border-l-2 border-danger px-3 py-2 text-[10px] text-danger">
           {error}
         </p>
       )}
+    </div>
+  );
+}
 
-      {/* C3: model + reasoning selectors populated from the App Server
-          catalog (never hardcoded; effort order from model/list). */}
-      <div className="mt-3 grid gap-3 border-t border-neutral-border pt-3 sm:grid-cols-2">
-        <label className="block">
-          <span className="text-[10px] text-neutral-text-muted">Modello</span>
-          <select
-            value={modelSettings.model}
-            onChange={(event) =>
-              onModelSettingsChange({
-                ...modelSettings,
-                model: event.target.value,
-              })
-            }
-            disabled={!running || modelsLoading}
-            className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
-          >
-            {modelsLoading && <option>Caricamento catalogo…</option>}
-            {!modelsLoading &&
-              (models?.data.length
-                ? models.data.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.displayName ?? model.id}
-                      {model.isDefault ? " (default)" : ""}
-                    </option>
-                  ))
-                : [
-                    <option key={modelSettings.model} value={modelSettings.model}>
-                      {modelSettings.model}
-                    </option>,
-                  ])}
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-[10px] text-neutral-text-muted">Reasoning</span>
-          <select
-            value={modelSettings.reasoningEffort}
-            onChange={(event) =>
-              onModelSettingsChange({
-                ...modelSettings,
-                reasoningEffort: event.target.value,
-              })
-            }
-            disabled={!running}
-            className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
-          >
-            {selectedModelEfforts().map((effort) => (
-              <option key={effort.reasoningEffort} value={effort.reasoningEffort}>
-                {effort.reasoningEffort}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center justify-between gap-2">
-          <span className="text-[10px] text-neutral-text-muted">
-            Parla commentary (TTS progressivo)
+/** Review #9: model + reasoning + usage block — lives in the normal
+ *  "Intelligenza" settings. Single source of truth: codex.model +
+ *  reasoningEffort (review #7). Changing model normalizes the reasoning to
+ *  the new model's default effort (review #5). */
+export function CodexModelSettingsSection({
+  models,
+  modelsLoading,
+  usage,
+  rateLimits,
+  modelSettings,
+  running,
+  onModelSettingsChange,
+}: {
+  models: CodexModelCatalog | null;
+  modelsLoading: boolean;
+  usage: CodexUsageView | null;
+  rateLimits: CodexRateLimitsView | null;
+  modelSettings: CodexModelSettings;
+  running: boolean;
+  onModelSettingsChange: (settings: CodexModelSettings) => void;
+}) {
+  const selected = models?.data.find((model) => model.id === modelSettings.model);
+  const efforts = selected?.supportedReasoningEfforts;
+  const handleModelChange = (model: string) => {
+    const next = models?.data.find((candidate) => candidate.id === model);
+    const defaultEffort = next?.defaultReasoningEffort;
+    onModelSettingsChange({
+      ...modelSettings,
+      model,
+      // Review #5: switching model resets the reasoning to the new model's
+      // default effort (read from model/list) instead of keeping a stale
+      // value the new model may not support.
+      ...(defaultEffort ? { reasoningEffort: defaultEffort } : {}),
+    });
+  };
+  return (
+    <div className="grid gap-3 border-y border-neutral-border py-3 sm:grid-cols-2">
+      <label className="block">
+        <span className="text-[10px] text-neutral-text-muted">Modello</span>
+        <select
+          value={modelSettings.model}
+          onChange={(event) => handleModelChange(event.target.value)}
+          disabled={!running || modelsLoading}
+          className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+        >
+          {modelsLoading && <option>Caricamento catalogo…</option>}
+          {!modelsLoading &&
+            (models?.data.length
+              ? models.data.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.displayName ?? model.id}
+                    {model.isDefault ? " (default)" : ""}
+                  </option>
+                ))
+              : [
+                  <option key={modelSettings.model} value={modelSettings.model}>
+                    {modelSettings.model}
+                  </option>,
+                ])}
+        </select>
+      </label>
+      <label className="block">
+        <span className="text-[10px] text-neutral-text-muted">Reasoning</span>
+        <select
+          value={modelSettings.reasoningEffort}
+          onChange={(event) =>
+            onModelSettingsChange({
+              ...modelSettings,
+              reasoningEffort: event.target.value,
+            })
+          }
+          disabled={!running}
+          className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+        >
+          {(efforts?.length
+            ? efforts
+            : [{ reasoningEffort: modelSettings.reasoningEffort }]
+          ).map((effort) => (
+            <option key={effort.reasoningEffort} value={effort.reasoningEffort}>
+              {effort.reasoningEffort}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-neutral-text-muted">
+          Parla commentary (TTS progressivo)
+        </span>
+        <input
+          type="checkbox"
+          checked={modelSettings.speakCommentary}
+          onChange={(event) =>
+            onModelSettingsChange({
+              ...modelSettings,
+              speakCommentary: event.target.checked,
+            })
+          }
+          disabled={!running}
+          className="size-3.5 accent-[var(--color-primary)]"
+        />
+      </label>
+      <div className="flex items-center justify-end text-[10px] text-neutral-text-muted">
+        <span className="truncate">
+          {usage ? (
+            <>
+              Usage · lifetime{" "}
+              <span className="font-mono text-neutral-text">
+                {formatTokens(usage.lifetimeTokens)}
+              </span>{" "}
+              · peak daily{" "}
+              <span className="font-mono text-neutral-text">
+                {formatTokens(usage.peakDailyTokens)}
+              </span>{" "}
+              · streak{" "}
+              <span className="font-mono text-neutral-text">
+                {usage.currentStreakDays ?? 0}d
+              </span>
+            </>
+          ) : (
+            "Usage non disponibile"
+          )}
+        </span>
+      </div>
+      {rateLimits && rateLimitSummary(rateLimits.snapshot) && (
+        <p className="col-span-full text-[10px] text-neutral-text-muted">
+          Rate limits ·{" "}
+          <span className="font-mono text-neutral-text">
+            {rateLimitSummary(rateLimits.snapshot)}
           </span>
-          <input
-            type="checkbox"
-            checked={modelSettings.speakCommentary}
-            onChange={(event) =>
-              onModelSettingsChange({
-                ...modelSettings,
-                speakCommentary: event.target.checked,
-              })
-            }
-            disabled={!running}
-            className="size-3.5 accent-[var(--color-primary)]"
-          />
-        </label>
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Review #9: runtime/thread/streaming block — stays in "Diagnostica
+ *  avanzata" (technical state only). */
+export function CodexDiagnosticsSection({
+  runtime,
+  threads,
+  streamingTurns,
+  loginBusy,
+  onDeleteThread,
+  onRestart,
+}: {
+  runtime: CodexRuntimeStatus | null;
+  threads: Record<string, JarvisCodexThread>;
+  streamingTurns: CodexStreamingTurn[];
+  loginBusy: boolean;
+  onDeleteThread: (workspaceId: string) => void;
+  onRestart: () => void;
+}) {
+  const running = runtime?.state === "running";
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-xs font-semibold text-neutral-text">
+            Runtime Codex
+          </h3>
+          <p className="mt-0.5 text-[10px] text-neutral-text-muted">
+            Stato tecnico del processo App Server.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRestart}
+          disabled={loginBusy}
+          className="ui-icon-button h-8 w-8"
+          title="Restart Codex runtime"
+          aria-label="Restart Codex runtime"
+        >
+          <RefreshCw size={13} />
+        </button>
       </div>
 
-      {/* C3 + spec §22: usage summary from account/usage/read. */}
-      {usage && (
-        <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
-          <p>
-            Usage · lifetime{" "}
-            <span className="font-mono text-neutral-text">
-              {formatTokens(usage.lifetimeTokens)}
-            </span>{" "}
-            · peak daily{" "}
-            <span className="font-mono text-neutral-text">
-              {formatTokens(usage.peakDailyTokens)}
-            </span>{" "}
-            · streak{" "}
-            <span className="font-mono text-neutral-text">
-              {usage.currentStreakDays ?? 0}d
-            </span>
-          </p>
-          {rateLimits && rateLimitSummary(rateLimits.snapshot) && (
-            <p className="mt-1">
-              Rate limits ·{" "}
-              <span className="font-mono text-neutral-text">
-                {rateLimitSummary(rateLimits.snapshot)}
-              </span>
-            </p>
-          )}
-        </div>
+      <dl className="mt-3 grid grid-cols-4 divide-x divide-neutral-border border-y border-neutral-border py-2">
+        <Metric
+          label="Runtime"
+          value={runtimeLabel(runtime?.state)}
+          tone={running ? "ok" : runtime?.state === "failed" || runtime?.state === "crashed" ? "bad" : "dim"}
+        />
+        <Metric label="Version" value={runtime?.version ?? "—"} />
+        <Metric label="PID" value={runtime?.pid != null ? String(runtime.pid) : "—"} />
+        <Metric label="Restarts" value={String(runtime?.restartCount ?? 0)} />
+      </dl>
+      {runtime?.lastError && (
+        <p className="mt-2 truncate text-[10px] text-danger">
+          {runtime.lastError}
+        </p>
       )}
 
       {/* C4: ephemeral threads per workspace (one thread per workspace,
           destroyed by Clear Conversation / clean shutdown). */}
       <div className="mt-3 border-t border-neutral-border pt-3">
-        <p className="text-[10px] text-neutral-text-muted">Thread Codex</p>
+        <p className="text-[10px] text-neutral-text-muted">Thread Codex per workspace</p>
         {Object.keys(threads).length === 0 ? (
           <p className="mt-1 text-[10px] italic text-neutral-text-muted">
             Nessun thread attivo — viene creato al primo turno del workspace.
@@ -383,17 +471,8 @@ export function CodexSettingsSection({
           </ul>
         )}
       </div>
-    </section>
+    </div>
   );
-
-  function selectedModelEfforts() {
-    const selected = models?.data.find((model) => model.id === modelSettings.model);
-    const efforts = selected?.supportedReasoningEfforts;
-    if (efforts?.length) return efforts;
-    // Fallback while the catalog is loading: the current persisted value
-    // (never a fabricated order).
-    return [{ reasoningEffort: modelSettings.reasoningEffort }];
-  }
 }
 
 /** C7: one streaming turn rendered in event order (commentary → tool → …). */
