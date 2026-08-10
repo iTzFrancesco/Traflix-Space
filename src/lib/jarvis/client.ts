@@ -13,7 +13,10 @@ import type {
   AgentSessionRef,
   CodexAccountView,
   CodexLoginStartView,
+  CodexModelCatalog,
+  CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexUsageView,
   ContextPackageV1,
   InvocationBinding,
   JarvisErrorEnvelope,
@@ -515,6 +518,27 @@ export function codexLoginCancel(loginId: string): Promise<void> {
 export function codexLogout(): Promise<void> {
   return invokeWithTimeout(
     () => invoke<void>("jarvis_codex_logout"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexModelList(): Promise<CodexModelCatalog> {
+  return invokeWithTimeout(
+    () => invoke<CodexModelCatalog>("jarvis_codex_model_list"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexRateLimits(): Promise<CodexRateLimitsView> {
+  return invokeWithTimeout(
+    () => invoke<CodexRateLimitsView>("jarvis_codex_rate_limits"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function codexUsage(): Promise<CodexUsageView> {
+  return invokeWithTimeout(
+    () => invoke<CodexUsageView>("jarvis_codex_usage"),
     READ_TIMEOUT_MS,
   );
 }

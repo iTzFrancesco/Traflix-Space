@@ -74,9 +74,43 @@ export interface JarvisSettings {
   standardPipeline: StandardPipelineSettings;
   geminiLive: GeminiLiveSettings;
   textModel: TextModelSettings;
+  codex: CodexModelSettings;
   advancedViewEnabled: boolean;
   voiceInput: VoiceInputSettings;
   voiceOutput: VoiceOutputSettings;
+}
+
+export interface CodexModelSettings {
+  model: string;
+  reasoningEffort: string;
+}
+
+export interface CodexReasoningEffort {
+  reasoningEffort: string;
+  description?: string | null;
+}
+
+export interface CodexModelInfo {
+  id: string;
+  displayName?: string | null;
+  isDefault: boolean;
+  defaultReasoningEffort?: string | null;
+  supportedReasoningEfforts: CodexReasoningEffort[];
+}
+
+export interface CodexModelCatalog {
+  data: CodexModelInfo[];
+}
+
+export interface CodexUsageView {
+  lifetimeTokens?: number | null;
+  peakDailyTokens?: number | null;
+  currentStreakDays?: number | null;
+  longestStreakDays?: number | null;
+}
+
+export interface CodexRateLimitsView {
+  snapshot: unknown;
 }
 
 export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";

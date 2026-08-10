@@ -9,8 +9,11 @@ import {
   codexLoginCancel,
   codexLoginStart,
   codexLogout,
+  codexModelList,
+  codexRateLimits,
   codexRuntimeRestart,
   codexRuntimeStatus,
+  codexUsage,
   confirmAction,
   conversationHistory,
   getSettings,
@@ -48,7 +51,10 @@ import type {
   JarvisRequestState,
   CodexAccountEvent,
   CodexAccountView,
+  CodexModelCatalog,
+  CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexUsageView,
   JarvisUiIntent,
   ModelContextViewV1,
   PendingAction,
@@ -90,6 +96,10 @@ interface JarvisStore {
   codexAccountLoading: boolean;
   codexLoginBusy: boolean;
   codexError: string | null;
+  codexModels: CodexModelCatalog | null;
+  codexModelsLoading: boolean;
+  codexUsage: CodexUsageView | null;
+  codexRateLimits: CodexRateLimitsView | null;
   uiIntents: JarvisUiIntent[];
   followUps: Record<string, string[]>;
   activities: ActivityCheckpoint[];
@@ -136,6 +146,9 @@ interface JarvisStore {
   loadProviderStatus: () => Promise<void>;
   loadCodexRuntime: () => Promise<void>;
   loadCodexAccount: () => Promise<void>;
+  loadCodexModels: () => Promise<void>;
+  loadCodexUsage: () => Promise<void>;
+  loadCodexRateLimits: () => Promise<void>;
   restartCodex: () => Promise<void>;
   startCodexLogin: () => Promise<void>;
   cancelCodexLogin: (loginId: string) => Promise<void>;
@@ -217,7 +230,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   currentResult: null, currentResultSessionId: null, currentResultLoading: false, currentError: null,
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, codexRuntime: null, codexAccount: null,
-  codexAccountLoading: false, codexLoginBusy: false, codexError: null, uiIntents: [], followUps: {},
+  codexAccountLoading: false, codexLoginBusy: false, codexError: null, codexModels: null,
+  codexModelsLoading: false, codexUsage: null, codexRateLimits: null, uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
   activeVoiceRequestId: null,
@@ -393,6 +407,20 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     } catch (error) {
       set({ codexAccountLoading: false, codexError: errorMessage(error) });
     }
+  },
+  loadCodexModels: async () => {
+    set({ codexModelsLoading: true });
+    try {
+      set({ codexModels: await codexModelList(), codexModelsLoading: false });
+    } catch (error) {
+      set({ codexModelsLoading: false, codexError: errorMessage(error) });
+    }
+  },
+  loadCodexUsage: async () => {
+    try { set({ codexUsage: await codexUsage() }); } catch { /* keep last usage */ }
+  },
+  loadCodexRateLimits: async () => {
+    try { set({ codexRateLimits: await codexRateLimits() }); } catch { /* keep last snapshot */ }
   },
   restartCodex: async () => {
     set({ codexLoginBusy: true, codexError: null });
@@ -818,6 +846,13 @@ export function bindCodexEvents(): () => void {
       // token data (login/error only), so a fresh read is always safe.
       void useJarvisStore.getState().loadCodexAccount();
     }
+  }).then((unlisten) => unlisteners.push(unlisten));
+  // C3: the backend merges incremental rate-limit updates into the last
+  // snapshot and forwards the merged result here (never null-overwrites).
+  void listen<unknown>("jarvis://codex-rate-limits", (event) => {
+    useJarvisStore.setState({
+      codexRateLimits: { snapshot: event.payload },
+    });
   }).then((unlisten) => unlisteners.push(unlisten));
   return () => {
     for (const unlisten of unlisteners) unlisten();

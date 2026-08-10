@@ -153,6 +153,11 @@ fn main() {
             app.manage(codex_runtime.clone());
             codex_runtime.start_in_background();
 
+            // C3: model catalog + rate-limit snapshot service.
+            app.manage(jarvis::codex::models::CodexModelService::new(
+                codex_runtime.clone(),
+            ));
+
             // Edge TTS is process-based. Warm it outside the user's first
             // spoken turn so Python/PyInstaller startup + import are not paid
             // after Jarvis has already produced a reply.
@@ -305,6 +310,9 @@ fn main() {
             jarvis::codex::account::jarvis_codex_login_start,
             jarvis::codex::account::jarvis_codex_login_cancel,
             jarvis::codex::account::jarvis_codex_logout,
+            jarvis::codex::models::jarvis_codex_model_list,
+            jarvis::codex::models::jarvis_codex_rate_limits,
+            jarvis::codex::models::jarvis_codex_usage,
             jarvis::voice::commands::jarvis_voice_list_input_devices,
             jarvis::voice::commands::jarvis_voice_sync_shortcut,
             jarvis::voice::commands::jarvis_voice_start,

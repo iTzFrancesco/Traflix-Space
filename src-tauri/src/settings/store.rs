@@ -51,6 +51,8 @@ pub struct JarvisSettings {
     #[serde(default)]
     pub text_model: TextModelSettings,
     #[serde(default)]
+    pub codex: CodexModelSettings,
+    #[serde(default)]
     pub advanced_view_enabled: bool,
     #[serde(default)]
     pub voice_input: VoiceInputSettings,
@@ -176,6 +178,34 @@ pub struct TextModelSettings {
     pub privacy_consent_at: Option<String>,
 }
 
+/// C3 — Codex model selection persisted in settings. The default matches
+/// the spec: GPT-5.6 Luna with Low reasoning effort.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModelSettings {
+    #[serde(default = "default_codex_model")]
+    pub model: String,
+    #[serde(default = "default_codex_reasoning")]
+    pub reasoning_effort: String,
+}
+
+impl Default for CodexModelSettings {
+    fn default() -> Self {
+        Self {
+            model: default_codex_model(),
+            reasoning_effort: default_codex_reasoning(),
+        }
+    }
+}
+
+fn default_codex_model() -> String {
+    "gpt-5.6-luna".to_string()
+}
+
+fn default_codex_reasoning() -> String {
+    "low".to_string()
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProvider {
@@ -251,6 +281,7 @@ struct LegacyJarvisSettings {
     standard_pipeline: Option<StandardPipelineSettings>,
     gemini_live: Option<GeminiLiveSettings>,
     text_model: Option<TextModelSettings>,
+    codex: Option<CodexModelSettings>,
     advanced_view_enabled: Option<bool>,
     voice_input: Option<VoiceInputSettings>,
     voice_output: Option<VoiceOutputSettings>,
@@ -317,6 +348,7 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             standard_pipeline: raw.standard_pipeline.unwrap_or_default(),
             gemini_live: raw.gemini_live.unwrap_or_default(),
             text_model,
+            codex: raw.codex.unwrap_or_default(),
             advanced_view_enabled: raw.advanced_view_enabled.unwrap_or(false),
             voice_input: raw.voice_input.unwrap_or_default(),
             voice_output: raw.voice_output.unwrap_or_default(),
@@ -412,6 +444,7 @@ impl Default for JarvisSettings {
             standard_pipeline: StandardPipelineSettings::default(),
             gemini_live: GeminiLiveSettings::default(),
             text_model: TextModelSettings::default(),
+            codex: CodexModelSettings::default(),
             advanced_view_enabled: false,
             voice_input: VoiceInputSettings::default(),
             voice_output: VoiceOutputSettings::default(),

@@ -2,7 +2,10 @@ import { LogIn, LogOut, RefreshCw } from "lucide-react";
 import type {
   AgentSessionContext,
   CodexAccountView,
+  CodexModelCatalog,
+  CodexModelSettings,
   CodexRuntimeStatus,
+  CodexUsageView,
   JarvisProviderStatus,
   ModelContextViewV1,
 } from "../../lib/jarvis/types";
@@ -24,6 +27,11 @@ export interface CodexSettingsSectionProps {
   accountLoading: boolean;
   loginBusy: boolean;
   error: string | null;
+  models: CodexModelCatalog | null;
+  modelsLoading: boolean;
+  usage: CodexUsageView | null;
+  modelSettings: CodexModelSettings;
+  onModelSettingsChange: (settings: CodexModelSettings) => void;
   onLoadAccount: () => void;
   onLogin: () => void;
   onLogout: () => void;
@@ -73,6 +81,11 @@ export function CodexSettingsSection({
   accountLoading,
   loginBusy,
   error,
+  models,
+  modelsLoading,
+  usage,
+  modelSettings,
+  onModelSettingsChange,
   onLoadAccount,
   onLogin,
   onLogout,
@@ -167,8 +180,91 @@ export function CodexSettingsSection({
           {error}
         </p>
       )}
+
+      {/* C3: model + reasoning selectors populated from the App Server
+          catalog (never hardcoded; effort order from model/list). */}
+      <div className="mt-3 grid gap-3 border-t border-neutral-border pt-3 sm:grid-cols-2">
+        <label className="block">
+          <span className="text-[10px] text-neutral-text-muted">Modello</span>
+          <select
+            value={modelSettings.model}
+            onChange={(event) =>
+              onModelSettingsChange({
+                ...modelSettings,
+                model: event.target.value,
+              })
+            }
+            disabled={!running || modelsLoading}
+            className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+          >
+            {modelsLoading && <option>Caricamento catalogo…</option>}
+            {!modelsLoading &&
+              (models?.data.length
+                ? models.data.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.displayName ?? model.id}
+                      {model.isDefault ? " (default)" : ""}
+                    </option>
+                  ))
+                : [
+                    <option key={modelSettings.model} value={modelSettings.model}>
+                      {modelSettings.model}
+                    </option>,
+                  ])}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-[10px] text-neutral-text-muted">Reasoning</span>
+          <select
+            value={modelSettings.reasoningEffort}
+            onChange={(event) =>
+              onModelSettingsChange({
+                ...modelSettings,
+                reasoningEffort: event.target.value,
+              })
+            }
+            disabled={!running}
+            className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+          >
+            {selectedModelEfforts().map((effort) => (
+              <option key={effort.reasoningEffort} value={effort.reasoningEffort}>
+                {effort.reasoningEffort}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {/* C3: usage summary from account/usage/read. */}
+      {usage && (
+        <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
+          <p>
+            Usage · lifetime{" "}
+            <span className="font-mono text-neutral-text">
+              {formatTokens(usage.lifetimeTokens)}
+            </span>{" "}
+            · peak daily{" "}
+            <span className="font-mono text-neutral-text">
+              {formatTokens(usage.peakDailyTokens)}
+            </span>{" "}
+            · streak{" "}
+            <span className="font-mono text-neutral-text">
+              {usage.currentStreakDays ?? 0}d
+            </span>
+          </p>
+        </div>
+      )}
     </section>
   );
+
+  function selectedModelEfforts() {
+    const selected = models?.data.find((model) => model.id === modelSettings.model);
+    const efforts = selected?.supportedReasoningEfforts;
+    if (efforts?.length) return efforts;
+    // Fallback while the catalog is loading: the current persisted value
+    // (never a fabricated order).
+    return [{ reasoningEffort: modelSettings.reasoningEffort }];
+  }
 }
 
 export function JarvisAdvancedSettings({
@@ -275,6 +371,14 @@ export function JarvisAdvancedSettings({
       )}
     </section>
   );
+}
+
+function formatTokens(value?: number | null): string {
+  if (value === undefined || value === null) return "—";
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
 }
 
 function Metric({

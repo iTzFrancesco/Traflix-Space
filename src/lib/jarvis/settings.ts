@@ -98,6 +98,10 @@ export function defaultJarvisSettings(): JarvisSettings {
       privacyConsent: true,
       privacyConsentAt: OWNER_MODE_MARKER,
     },
+    codex: {
+      model: "gpt-5.6-luna",
+      reasoningEffort: "low",
+    },
     advancedViewEnabled: false,
     voiceInput: {
       enabled: true,

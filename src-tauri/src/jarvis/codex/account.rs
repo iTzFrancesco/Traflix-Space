@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
 use super::runtime::{CodexRuntimeManager, RuntimeError};
 
@@ -91,6 +92,7 @@ pub(crate) fn parse_account(account: Option<&Value>) -> CodexAccount {
 pub fn spawn_account_bridge(
     _runtime: CodexRuntimeManager,
     app: AppHandle,
+    models: Option<CodexModelService>,
     mut rx: mpsc::UnboundedReceiver<ServerMessage>,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -99,6 +101,15 @@ pub fn spawn_account_bridge(
                 ServerMessage::Notification { method, params } => (method.clone(), params.clone()),
                 _ => continue,
             };
+            // C3: incremental rate-limit updates are merged into the last
+            // full snapshot (never overwriting with null) and forwarded.
+            if method == "account/rateLimits/updated" {
+                if let (Some(params), Some(models)) = (&params, &models) {
+                    let update = params.get("rateLimits").cloned().unwrap_or_default();
+                    models.apply_incremental_update(&app, &update);
+                }
+                continue;
+            }
             if !method.starts_with("account/") {
                 continue;
             }

@@ -282,9 +282,15 @@ impl CodexRuntimeManager {
                 }
                 info!(user_agent = %init.user_agent, "codex app-server runtime ready");
                 // Hand the server-notification channel to the account bridge
-                // (C2); later chunks attach their own consumers to it.
+                // (C2) and the rate-limit merger (C3); later chunks attach
+                // their own consumers to it.
                 if let Some(rx) = self.take_server_rx().await {
-                    super::account::spawn_account_bridge(self.clone(), self.app.clone(), rx);
+                    use tauri::Manager;
+                    let models = self
+                        .app
+                        .try_state::<super::models::CodexModelService>()
+                        .map(|state| state.inner().clone());
+                    super::account::spawn_account_bridge(self.clone(), self.app.clone(), models, rx);
                 }
                 self.spawn_monitor(child);
                 Ok(())
@@ -737,6 +743,25 @@ mod tests {
         assert!(
             ids.iter().any(|id| *id == "gpt-5.6-luna"),
             "gpt-5.6-luna present in {ids:?}"
+        );
+
+        // C3: rate limits + usage read must succeed (real payloads).
+        let rate_limits = client
+            .request("account/rateLimits/read", json!({}))
+            .await
+            .expect("account/rateLimits/read response");
+        let codex_limit = rate_limits["rateLimitsByLimitId"]["codex"].clone();
+        assert!(
+            codex_limit.get("primary").is_some() || codex_limit.get("credits").is_some(),
+            "codex rate limit snapshot: {codex_limit}"
+        );
+        let usage = client
+            .request("account/usage/read", json!({}))
+            .await
+            .expect("account/usage/read response");
+        assert!(
+            usage.get("summary").is_some(),
+            "usage summary: {usage}"
         );
 
         // account/login/start (chatgpt) must return authUrl+loginId; we
