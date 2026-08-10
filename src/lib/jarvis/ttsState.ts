@@ -81,15 +81,24 @@ export function applyTtsStatusTransition(
   current: TtsClientState,
   incoming: TtsStatusView,
 ): TtsStateTransition {
+  // `stopped` is a terminal backend notification, not a busy client state.
+  // Keeping it in Zustand caused the progressive Codex speech worker to
+  // consider TTS permanently busy after a barge-in/manual stop. Normalize it
+  // to idle so the next Jarvis turn can speak again immediately.
+  const normalizedIncoming: TtsStatusView =
+    incoming.status === "stopped"
+      ? { ...incoming, status: "idle" }
+      : incoming;
+
   if (
     current.pendingTtsRequestId &&
-    incoming.requestId !== current.pendingTtsRequestId
+    normalizedIncoming.requestId !== current.pendingTtsRequestId
   ) {
     return { ...current, accepted: false };
   }
 
   const currentSequence = current.ttsStatus.sequence;
-  const incomingSequence = incoming.sequence;
+  const incomingSequence = normalizedIncoming.sequence;
   if (
     typeof currentSequence === "number" &&
     typeof incomingSequence === "number" &&
@@ -101,17 +110,17 @@ export function applyTtsStatusTransition(
   if (
     !current.pendingTtsRequestId &&
     current.ttsStatus.requestId &&
-    incoming.requestId &&
-    current.ttsStatus.requestId !== incoming.requestId &&
-    incoming.status !== "synthesizing"
+    normalizedIncoming.requestId &&
+    current.ttsStatus.requestId !== normalizedIncoming.requestId &&
+    normalizedIncoming.status !== "synthesizing"
   ) {
     return { ...current, accepted: false };
   }
 
   return {
-    ttsStatus: incoming,
+    ttsStatus: normalizedIncoming,
     pendingTtsRequestId:
-      incoming.requestId === current.pendingTtsRequestId
+      normalizedIncoming.requestId === current.pendingTtsRequestId
         ? null
         : current.pendingTtsRequestId,
     accepted: true,
