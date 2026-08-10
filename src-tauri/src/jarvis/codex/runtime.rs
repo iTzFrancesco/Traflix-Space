@@ -944,6 +944,98 @@ mod tests {
             "agent.list observed among tool calls: {tool_calls:?}"
         );
 
+        // C6: a third turn that must call `conversational.plan` (the only
+        // side-effecting tool). We answer with a synthetic receipt and
+        // observe the request arriving (proves the namespace is registered
+        // and the model can produce a typed plan end-to-end).
+        let turn3 = client
+            .request(
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{ "type": "text", "text": "Prima di rispondere devi assolutamente chiamare lo strumento conversational.plan (namespace conversational, tool plan) con una sola operazione respond e prompt \"test ok\", poi rispondi in una riga." }],
+                    "effort": "low",
+                }),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("turn/start #3 failed: {err}"));
+        let _ = turn3["turn"]["id"].as_str().expect("turn #3 id present");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        let mut plan_calls: Vec<serde_json::Value> = Vec::new();
+        let mut completed3 = false;
+        while std::time::Instant::now() < deadline && !completed3 {
+            let message = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                server_rx.recv(),
+            )
+            .await;
+            match message {
+                Ok(Some(ServerMessage::Request { id, method, params })) => {
+                    if method == "item/tool/call" {
+                        let namespace = params
+                            .as_ref()
+                            .and_then(|p| p.get("namespace"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let tool = params
+                            .as_ref()
+                            .and_then(|p| p.get("tool"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        if namespace == "conversational" && tool == "plan" {
+                            plan_calls.push(params.clone().unwrap_or_default());
+                            // The arguments must be the typed plan shape.
+                            let args = params
+                                .as_ref()
+                                .and_then(|p| p.get("arguments"))
+                                .cloned()
+                                .unwrap_or_default();
+                            assert!(
+                                args.get("operations").is_some(),
+                                "plan arguments are typed: {args}"
+                            );
+                            // Answer with the ExecutionReceipt shape (C6:
+                            // the receipt comes back in the same turn).
+                            let _ = client
+                                .respond(
+                                    id,
+                                    json!({
+                                        "content": [{
+                                            "type": "inputText",
+                                            "text": "{\"response\":\"Fatto, test ok.\",\"warnings\":[]}",
+                                        }]
+                                    }),
+                                )
+                                .await;
+                        } else {
+                            println!("unexpected server request: {method} {namespace}.{tool}");
+                            let _ = client
+                                .respond_error(id, -32601, "unexpected in C6 test")
+                                .await;
+                        }
+                    } else {
+                        println!("unexpected server request: {method}");
+                    }
+                }
+                Ok(Some(ServerMessage::Notification { method, .. })) => {
+                    if method == "turn/completed" {
+                        completed3 = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !plan_calls.is_empty(),
+            "conversational.plan observed among tool calls"
+        );
+        // The server-side allows multiple plans in one turn; the host-side
+        // single-plan guard lives in CodexToolService (unit-tested). Here we
+        // verify the server accepted the namespace without reserved-name
+        // collisions — the same specs passed to thread/start above.
+        println!("conversational.plan calls observed: {}", plan_calls.len());
+
         // Interrupt is best-effort: the trivial prompt may complete before
         // the interrupt lands (error on an already-finished turn is fine).
         let _ = client

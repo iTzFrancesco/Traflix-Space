@@ -48,6 +48,41 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_POLL: Duration = Duration::from_millis(120);
 static NEXT_AGENT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
+/// JSON input schema of the typed conversational plan tool. Single source of
+/// truth shared by the legacy `conversational_plan` definition (chat.rs) and
+/// the C6 dynamic tool `conversational.plan` (codex/tools.rs), so both model
+/// paths always see the same typed operations.
+pub(crate) fn conversational_plan_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type":"object",
+        "properties": {
+            "operations": {
+                "type":"array",
+                "minItems":1,
+                "maxItems":8,
+                "items": {
+                    "type":"object",
+                    "properties": {
+                        "operation": {"type":"string","enum":["respond","clarify","agent_report","agent_send","agent_open","agent_handoff","agent_abort","terminal_close","terminal_restart","draft_prompt"]},
+                        "provider": {"type":"string","enum":["codex","opencode","pi","freebuff","claude"]},
+                        "target": {"type":"string","maxLength":4096},
+                        "source": {"type":"string","maxLength":4096},
+                        "destination": {"type":"string","maxLength":4096},
+                        "prompt": {"type":"string","maxLength":16384},
+                        "confirmed": {"type":"boolean"},
+                        "allowBusy": {"type":"boolean"}
+                    },
+                    "required":["operation"],
+                    "additionalProperties":false
+                }
+            },
+            "response": {"type":"string","maxLength":4096}
+        },
+        "required":["operations"],
+        "additionalProperties":false
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanOperation {

@@ -136,7 +136,8 @@ pub fn spawn_account_bridge(
                 if method == "turn/started" {
                     if let (Some(params), Some(tools)) = (&params, &tools) {
                         if let Some(thread_id) = params.get("threadId").and_then(|v| v.as_str()) {
-                            tools.reset_budget(thread_id).await;
+                            // C5 tool-call budget + C6 single-plan guard.
+                            tools.reset_turn_state(thread_id).await;
                         }
                     }
                 }

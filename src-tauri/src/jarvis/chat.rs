@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use crate::jarvis::actions::{prompt_bytes, ActionError, PendingAction, PendingActionStatus};
 use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
-use crate::jarvis::control::{execute_plan, ConversationalPlan};
+use crate::jarvis::control::{
+    conversational_plan_schema, execute_plan, ConversationalPlan,
+};
 use crate::jarvis::model::{
     ModelCompletion, ModelError, ModelFunctionDefinition, ModelMessage, ModelRequest,
     ModelToolCall, ModelToolDefinition, ProviderStatus,
@@ -1228,34 +1230,7 @@ fn tool_definitions() -> Vec<ModelToolDefinition> {
         read_tool(
             CONVERSATIONAL_PLAN_TOOL,
             "Return one typed semantic plan for the current user request. Never include shell commands, terminal IDs guessed from context, or provider fallbacks.",
-            json!({
-                "type":"object",
-                "properties": {
-                    "operations": {
-                        "type":"array",
-                        "minItems":1,
-                        "maxItems":8,
-                        "items": {
-                            "type":"object",
-                            "properties": {
-                                "operation": {"type":"string","enum":["respond","clarify","agent_report","agent_send","agent_open","agent_handoff","agent_abort","terminal_close","terminal_restart","draft_prompt"]},
-                                "provider": {"type":"string","enum":["codex","opencode","pi","freebuff","claude"]},
-                                "target": {"type":"string","maxLength":4096},
-                                "source": {"type":"string","maxLength":4096},
-                                "destination": {"type":"string","maxLength":4096},
-                                "prompt": {"type":"string","maxLength":16384},
-                                "confirmed": {"type":"boolean"},
-                                "allowBusy": {"type":"boolean"}
-                            },
-                            "required":["operation"],
-                            "additionalProperties":false
-                        }
-                    },
-                    "response": {"type":"string","maxLength":4096}
-                },
-                "required":["operations"],
-                "additionalProperties":false
-            }),
+            conversational_plan_schema(),
         ),
         read_tool("workspace_overview", "Read bounded metadata for the invocation workspace only.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("terminal_list", "List terminals in the invocation workspace.", json!({"type":"object","properties":{},"additionalProperties":false})),
