@@ -45,7 +45,6 @@ interface SettingsModalProps {
 }
 
 const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
-  openCodeZenConfigured: false,
   groqConfigured: false,
   persistent: false,
 };
@@ -85,7 +84,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const [secretStatus, setSecretStatus] =
     useState<JarvisSecretStatus>(EMPTY_SECRET_STATUS);
   const [secretDrafts, setSecretDrafts] = useState<Record<JarvisSecretId, string>>({
-    open_code_zen: "",
     groq: "",
   });
   const [secretBusy, setSecretBusy] = useState<JarvisSecretId | null>(null);
@@ -102,7 +100,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     });
     setError(null);
     setSaved(false);
-    setSecretDrafts({ open_code_zen: "", groq: "" });
+    setSecretDrafts({ groq: "" });
     void jarvisSecretStatus()
       .then(setSecretStatus)
       .catch((reason) =>
@@ -212,21 +210,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         >
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
             <CredentialField
-              label="OpenCode Zen"
-              description="Conversazione e pianificazione"
-              configured={secretStatus.openCodeZenConfigured}
-              value={secretDrafts.open_code_zen}
-              busy={secretBusy === "open_code_zen"}
-              onChange={(value) =>
-                setSecretDrafts((current) => ({
-                  ...current,
-                  open_code_zen: value,
-                }))
-              }
-              onSave={() => void handleSecretSave("open_code_zen")}
-              onClear={() => void handleSecretClear("open_code_zen")}
-            />
-            <CredentialField
               label="Groq"
               description="Whisper large-v3-turbo"
               configured={secretStatus.groqConfigured}
@@ -258,7 +241,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             <TextField
               label="Modello principale"
               value={jarvis.textModel.primaryModel}
-              placeholder="deepseek-v4-flash-free"
+              placeholder="gpt-5.6-luna"
               onChange={(primaryModel) =>
                 updateJarvis((current) => ({
                   ...current,

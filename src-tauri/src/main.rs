@@ -141,6 +141,11 @@ fn main() {
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
             app.manage(jarvis::JarvisState::default());
+            // C10: the Codex App Server provider needs managed state (runtime
+            // + thread registry); attach the handle right after creation.
+            app.state::<jarvis::JarvisState>()
+                .model
+                .attach(app.handle().clone());
             app.manage(jarvis::voice::VoiceState::default());
             app.manage(settings::store::SettingsManager::new(app.handle()));
             app.manage(TerminalManager::new());

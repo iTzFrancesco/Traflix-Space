@@ -124,6 +124,16 @@ Se l'utente chiede anche **build + push**: `npm run build`, `git add -A`, `git c
 - **Context menu**: Globally suppressed via `contextmenu` listener (except inside `.xterm` elements for right-click paste)
 - **Global drag prevention**: `dragover`/`drop` blocked at document level in `main.tsx` — native Tauri events handle file drops instead
 
+## Jarvis ↔ Codex App Server
+
+- Jarvis usa **Codex App Server** come unico LLM (`src-tauri/src/jarvis/model.rs`
+  `CodexAppServerProvider`): ogni chat è un `turn/start` sul thread della
+  workspace (C4), tool dinamici (C5), `conversational.plan` (C6), streaming
+  `jarvis://chat-stream` (C7), TTS progressivo (C8), steer/interrupt (C9).
+  Il provider HTTP legacy OpenCode Zen è stato rimosso (C10).
+- Docs: `docs/jarvis/codex/` (architettura, protocollo, collaudo Windows).
+- Test reale su Windows: `cargo test -- --ignored spawns_real_app_server_and_handshakes`.
+
 ## Notable files
 
 - `src/main.tsx` — entry point, global event listeners
@@ -135,8 +145,7 @@ Se l'utente chiede anche **build + push**: `npm run build`, `git add -A`, `git c
 - `src/components/workspace/TerminalPane.tsx` — terminal pane with memo, all xterm.js lifecycle
 - `src/components/workspace/WorkspaceView.tsx` — workspace loading, serialized close queue, LRU eviction
 - `src/components/terminal/useTerminalInput.ts` — clipboard paste (text + image), native drag-drop, bracketed paste
-- `src/lib/agents.ts` — agent definitions (Gemini, OpenCode, Claude Code, Codex, Anti-Gravity)
-- `src/lib/agentLauncher.ts` — `AgentLaunchQueue` for batch agent command writes
+- `src/lib/agents.ts` — agent definitions (Gemini, OpenCode, Claude Code, Codex, Anti-Gravity)- `src/lib/agentLauncher.ts` — `AgentLaunchQueue` for batch agent command writes
 - `src/lib/presets.ts` — workspace presets + `computeLayout` (max 2x4 grid) + `QUICK_COUNTS`
 - `src/lib/timeout.ts` — `invokeWithTimeout` utility
 - `scripts/bump-version.js` — version bump script (updates package.json, Cargo.toml, tauri.conf.json)

@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use crate::jarvis::actions::{prompt_bytes, ActionError, PendingAction, PendingActionStatus};
 use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
-use crate::jarvis::control::{
-    conversational_plan_schema, execute_plan, ConversationalPlan,
-};
+use crate::jarvis::control::{execute_plan, ConversationalPlan};
+#[cfg(test)]
+use crate::jarvis::control::conversational_plan_schema;
+#[cfg(test)]
+use crate::jarvis::model::{ModelFunctionDefinition, ModelToolDefinition};
 use crate::jarvis::model::{
-    ModelCompletion, ModelError, ModelFunctionDefinition, ModelMessage, ModelRequest,
-    ModelToolCall, ModelToolDefinition, ProviderStatus,
+    ModelCompletion, ModelError, ModelMessage, ModelRequest, ModelToolCall, ProviderStatus,
 };
 use crate::jarvis::requests::{ChatRequestError, ChatRequestStatus};
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
@@ -385,7 +386,6 @@ async fn run_chat(
     {
         messages.push(ModelMessage::new(&memory.role, memory.content));
     }
-    let tools = tool_definitions();
     let pending_actions = Vec::new();
     let mut ui_intents = Vec::new();
     let mut warnings = Vec::new();
@@ -400,7 +400,9 @@ async fn run_chat(
                 ModelRequest {
                     settings: settings.text_model.clone(),
                     messages: messages.clone(),
-                    tools: tools.clone(),
+                    // C10: the completion runs on the workspace's Codex
+                    // thread; the provider needs the binding.
+                    workspace_id: request.invocation.target_workspace_id.clone(),
                 },
                 cancellation.clone(),
             )
@@ -586,13 +588,11 @@ async fn run_chat(
     Ok(JarvisChatResponse {
         invocation: request.invocation,
         message: assistant_memory.into(),
-        provider: "opencode-zen".to_string(),
+        provider: "codex".to_string(),
         model_used: completion.model_used,
         primary_model: completion.primary_model,
         fallback_used: completion.fallback_used,
-        fallback_reason: completion
-            .fallback_reason
-            .map(|reason| reason.code().to_string()),
+        fallback_reason: None,
         pending_actions,
         ui_intents,
         follow_ups,
@@ -1225,6 +1225,10 @@ async fn read_markdown(
         })
 }
 
+/// C10: the Codex path defines the tools server-side (dynamic tools C5/C6);
+/// the legacy HTTP tool catalog survives only for the chat.rs unit tests
+/// that pin the schema (spec §6).
+#[cfg(test)]
 fn tool_definitions() -> Vec<ModelToolDefinition> {
     vec![
         read_tool(
@@ -1244,6 +1248,7 @@ fn tool_definitions() -> Vec<ModelToolDefinition> {
     ]
 }
 
+#[cfg(test)]
 fn read_tool(name: &str, description: &str, parameters: Value) -> ModelToolDefinition {
     ModelToolDefinition {
         kind: "function",
@@ -1377,43 +1382,17 @@ fn model_error(
     observed_at: &str,
 ) -> JarvisErrorEnvelope {
     let (code, message) = match error {
-        ModelError::ConsentRequired => (
-            "privacy_consent_required",
-            "il consenso privacy è richiesto prima di contattare il modello",
-        ),
+        // C10: the Codex App Server is the only provider; the legacy HTTP
+        // error taxonomy (auth/forbidden/rate/transport/…) is gone.
         ModelError::NotConfigured => (
             "model_provider_not_configured",
-            "configura OPENCODE_ZEN_API_KEY nel backend",
-        ),
-        ModelError::AuthFailed => (
-            "model_auth_failed",
-            "la credenziale del provider non è stata accettata",
-        ),
-        ModelError::Forbidden => ("model_forbidden", "il provider ha rifiutato la richiesta"),
-        ModelError::RateLimited => (
-            "model_rate_limited",
-            "il provider ha applicato un limite temporaneo",
+            "il runtime Codex non è disponibile (avvia Codex App Server)",
         ),
         ModelError::Server => (
             "model_server_error",
             "il provider è temporaneamente indisponibile",
         ),
         ModelError::Timeout => ("model_timeout", "il provider ha superato il timeout"),
-        ModelError::Transport => (
-            "model_transport_error",
-            "connessione al provider non riuscita",
-        ),
-        ModelError::ModelUnavailable => (
-            "model_not_supported",
-            "il modello primario non è disponibile",
-        ),
-        ModelError::InvalidResponse => {
-            ("model_invalid_response", "risposta del provider non valida")
-        }
-        ModelError::PayloadTooLarge => (
-            "model_payload_too_large",
-            "il contesto supera il limite del modello",
-        ),
         ModelError::InvalidPayload => ("model_payload_invalid", "richiesta locale non valida"),
         ModelError::Cancelled => ("chat_cancelled", "richiesta annullata"),
     };
@@ -1537,6 +1516,7 @@ impl From<crate::jarvis::memory::MemoryMessage> for JarvisChatMessage {
 #[cfg(test)]
 mod tests {
     use super::{bounded_tool_json, tool_definitions, CONVERSATIONAL_PLAN_TOOL, MAX_TOOL_ROUNDS};
+    use crate::jarvis::model::{ModelFunctionDefinition, ModelToolDefinition};
     use serde_json::json;
 
     #[test]

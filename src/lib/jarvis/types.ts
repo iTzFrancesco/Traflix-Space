@@ -1,7 +1,7 @@
 export type RequestedDepth = "summary" | "last_result" | "full_messages";
 
 export type VoiceEngine = "standard" | "gemini_live";
-export type ModelProvider = "open_code_zen";
+export type ModelProvider = "codex";
 
 export type CodexRuntimeState =
   | "stopped"

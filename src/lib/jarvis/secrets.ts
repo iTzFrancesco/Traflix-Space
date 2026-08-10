@@ -3,10 +3,9 @@ import { invokeWithTimeout } from "../timeout";
 
 const SECRET_TIMEOUT_MS = 15_000;
 
-export type JarvisSecretId = "open_code_zen" | "groq";
+export type JarvisSecretId = "groq";
 
 export interface JarvisSecretStatus {
-  openCodeZenConfigured: boolean;
   groqConfigured: boolean;
   persistent: boolean;
 }

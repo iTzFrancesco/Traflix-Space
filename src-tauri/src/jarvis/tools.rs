@@ -3,7 +3,7 @@ use crate::jarvis::agent_adapter::{context_from_status, LiveAgentContextSource};
 use crate::jarvis::agent_registry::{AgentSessionRegistry, MAX_ACTIVITY_LIMIT};
 use crate::jarvis::context_broker::ContextBroker;
 use crate::jarvis::memory::ConversationMemory;
-use crate::jarvis::model::{JarvisModelProvider, OpenCodeZenProvider};
+use crate::jarvis::model::{CodexAppServerProvider, JarvisModelProvider};
 use crate::jarvis::requests::ChatRequestRegistry;
 use crate::jarvis::runtime_detector::normalize_provider;
 use crate::jarvis::types::{
@@ -35,7 +35,7 @@ impl Default for JarvisState {
             ))),
             registry,
             memory: Arc::new(ConversationMemory::default()),
-            model: Arc::new(OpenCodeZenProvider::default()),
+            model: Arc::new(CodexAppServerProvider::default()),
             actions: Arc::new(PendingActionRegistry::default()),
             chat_requests: Arc::new(ChatRequestRegistry::default()),
             control: Arc::new(crate::jarvis::control::ConversationalControlState::default()),

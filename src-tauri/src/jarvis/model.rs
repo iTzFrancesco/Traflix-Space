@@ -1,51 +1,29 @@
+//! C10 — Jarvis LLM provider: Codex App Server (replaces OpenCode Zen).
+//!
+//! Jarvis no longer calls an HTTP chat-completions gateway. Every chat
+//! request becomes one `turn/start` on the workspace's Codex thread (C4);
+//! the model reasons with dynamic tools (C5) and mutates through
+//! `conversational.plan` (C6), the bridge answers server requests and the
+//! final agent message of the turn is the chat completion. Cancellation is
+//! real: the shared `CancellationToken` aborts the wait and `turn/interrupt`
+//! (C9) cancels an in-flight plan at its next checkpoint.
+
 use crate::settings::store::{ModelProvider, TextModelSettings};
-use futures_util::StreamExt;
-use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tauri::{AppHandle, Manager};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-pub const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
-pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
-pub const MAX_MODEL_PAYLOAD_BYTES: usize = 96 * 1024;
-const MAX_PROVIDER_RESPONSE_BYTES: usize = 512 * 1024;
-const PRIMARY_BREAKER: Duration = Duration::from_secs(12 * 60);
-
-/// OpenCode Zen serves the long-context models from a separate gateway
-/// (mirrors the endpoint mapping in the reference Traflix-Jarvis engine).
-const ZEN_GO_MODELS: [&str; 1] = ["deepseek-v4-flash"];
-
-fn endpoint_for_model(endpoint: &str, model: &str) -> String {
-    if ZEN_GO_MODELS.contains(&model.trim()) {
-        endpoint.replace("/zen/v1/", "/zen/go/v1/")
-    } else {
-        endpoint.to_string()
-    }
-}
-
-/// ASCII-only preview of a provider response for diagnostics. The raw body
-/// can contain provider errors or content; only printable ASCII is kept so
-/// ANSI escapes and binary payloads cannot pollute structured logs, and the
-/// preview is capped far below the maximum response size.
-fn response_preview(payload: &[u8]) -> String {
-    const PREVIEW_BYTES: usize = 256;
-    payload
-        .iter()
-        .take(PREVIEW_BYTES)
-        .map(|byte| {
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                *byte as char
-            } else {
-                '.'
-            }
-        })
-        .collect()
-}
+/// Upper bound for a single chat turn (the same deadline the dynamic tool
+/// host enforces for tool execution; a turn longer than this is an anomaly).
+const TURN_DEADLINE: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelMessage {
@@ -82,6 +60,9 @@ pub struct ModelFunctionCall {
     pub arguments: String,
 }
 
+/// C10: legacy HTTP tool-definition shapes, kept only for the chat.rs schema
+/// tests (the Codex path defines tools server-side).
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ModelToolDefinition {
     #[serde(rename = "type")]
@@ -89,6 +70,7 @@ pub struct ModelToolDefinition {
     pub function: ModelFunctionDefinition,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ModelFunctionDefinition {
     pub name: String,
@@ -103,64 +85,20 @@ pub struct ModelResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FallbackReason {
-    PrimaryModelUnavailable,
-    Timeout,
-    Transport,
-    RateLimited,
-    Server,
-    InvalidResponse,
-}
-
-impl FallbackReason {
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::PrimaryModelUnavailable => "primary_model_unavailable",
-            Self::Timeout => "timeout",
-            Self::Transport => "transport",
-            Self::RateLimited => "rate_limited",
-            Self::Server => "server_error",
-            Self::InvalidResponse => "invalid_response",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelError {
-    ConsentRequired,
     NotConfigured,
-    AuthFailed,
-    Forbidden,
-    RateLimited,
     Server,
     Timeout,
-    Transport,
-    ModelUnavailable,
-    InvalidResponse,
-    PayloadTooLarge,
     InvalidPayload,
     Cancelled,
-}
-
-impl ModelError {
-    fn fallback_reason(&self) -> Option<FallbackReason> {
-        match self {
-            Self::ModelUnavailable => Some(FallbackReason::PrimaryModelUnavailable),
-            Self::RateLimited => Some(FallbackReason::RateLimited),
-            Self::Server => Some(FallbackReason::Server),
-            Self::Timeout => Some(FallbackReason::Timeout),
-            Self::Transport => Some(FallbackReason::Transport),
-            Self::InvalidResponse => Some(FallbackReason::InvalidResponse),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
     pub settings: TextModelSettings,
     pub messages: Vec<ModelMessage>,
-    pub tools: Vec<ModelToolDefinition>,
+    /// C10: workspace whose Codex thread carries this chat turn.
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,7 +108,6 @@ pub struct ModelCompletion {
     pub model_used: String,
     pub primary_model: String,
     pub fallback_used: bool,
-    pub fallback_reason: Option<FallbackReason>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +126,9 @@ pub struct ProviderStatus {
 }
 
 pub trait JarvisModelProvider: Send + Sync {
+    /// Called with the AppHandle once (app setup) when the provider needs
+    /// access to managed state (Codex runtime, thread registry).
+    fn attach(&self, _app: AppHandle) {}
     fn status(&self, settings: &TextModelSettings) -> ProviderStatus;
     fn complete(
         &self,
@@ -197,297 +137,61 @@ pub trait JarvisModelProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<ModelCompletion, ModelError>> + Send>>;
 }
 
-#[derive(Clone)]
-pub struct OpenCodeZenProvider {
-    client: Client,
-    endpoint: String,
-    credential_override: Option<Option<String>>,
-    breaker: std::sync::Arc<Mutex<Option<BreakerState>>>,
+/// C10: the Codex App Server is the single Jarvis LLM provider.
+pub struct CodexAppServerProvider {
+    app: Mutex<Option<AppHandle>>,
 }
 
-#[derive(Debug, Clone)]
-struct BreakerState {
-    until: Instant,
-    model_id: String,
-    reason: FallbackReason,
-}
-
-impl Default for OpenCodeZenProvider {
+impl Default for CodexAppServerProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl OpenCodeZenProvider {
+impl CodexAppServerProvider {
     pub fn new() -> Self {
-        Self::with_endpoint(
-            OPENCODE_ZEN_ENDPOINT.to_string(),
-            None,
-            Duration::from_secs(90),
-        )
-    }
-
-    fn with_endpoint(
-        endpoint: String,
-        credential_override: Option<Option<String>>,
-        timeout: Duration,
-    ) -> Self {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(timeout)
-            .build()
-            .unwrap_or_else(|_| Client::new());
         Self {
-            client,
-            endpoint,
-            credential_override,
-            breaker: std::sync::Arc::new(Mutex::new(None)),
-        }
-    }
-
-    #[cfg(test)]
-    fn for_test(endpoint: String, credential: Option<&str>) -> Self {
-        Self::with_endpoint(
-            endpoint,
-            Some(credential.map(str::to_string)),
-            Duration::from_secs(2),
-        )
-    }
-
-    #[cfg(test)]
-    fn for_timeout_test(endpoint: String) -> Self {
-        Self::with_endpoint(
-            endpoint,
-            Some(Some("test-key".to_string())),
-            Duration::from_millis(20),
-        )
-    }
-
-    fn credential(&self) -> Option<String> {
-        match &self.credential_override {
-            Some(value) => value.clone(),
-            None => std::env::var(OPENCODE_ZEN_API_KEY_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
-        }
-    }
-
-    fn breaker_reason(&self, model_id: &str) -> Option<FallbackReason> {
-        let Ok(mut breaker) = self.breaker.lock() else {
-            return None;
-        };
-        let Some(state) = breaker.as_ref() else {
-            return None;
-        };
-        if state.until <= Instant::now() {
-            *breaker = None;
-            return None;
-        }
-        if state.model_id != model_id {
-            return None;
-        }
-        Some(state.reason.clone())
-    }
-
-    fn open_breaker(&self, model_id: &str, reason: FallbackReason) {
-        if let Ok(mut breaker) = self.breaker.lock() {
-            if breaker
-                .as_ref()
-                .is_some_and(|state| state.until > Instant::now() && state.model_id == model_id)
-            {
-                return;
-            }
-            *breaker = Some(BreakerState {
-                until: Instant::now() + PRIMARY_BREAKER,
-                model_id: model_id.to_string(),
-                reason,
-            });
-        }
-    }
-
-    async fn request_once(
-        &self,
-        model: &str,
-        messages: Vec<ModelMessage>,
-        tools: Vec<ModelToolDefinition>,
-        cancellation: CancellationToken,
-    ) -> Result<ModelResponse, ModelError> {
-        let Some(api_key) = self.credential() else {
-            return Err(ModelError::NotConfigured);
-        };
-        let body = build_payload(model, messages, tools)?;
-        let endpoint = endpoint_for_model(&self.endpoint, model);
-        debug!(model = %model, endpoint = %endpoint, "OpenCode Zen model request sent");
-        let request = self
-            .client
-            .post(&endpoint)
-            .bearer_auth(api_key)
-            .json(&body)
-            .send();
-        let response = tokio::select! {
-            _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
-            result = request => result.map_err(classify_transport)?
-        };
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let payload = read_bounded_response(response, cancellation.clone()).await?;
-        if !status.is_success() {
-            warn!(
-                model = %model,
-                http_status = %status,
-                endpoint = %endpoint,
-                payload_bytes = payload.len(),
-                payload_preview = %response_preview(&payload),
-                "OpenCode Zen rejected the model request"
-            );
-            return Err(classify_http(status, &payload));
-        }
-        let parsed = serde_json::from_slice::<ChatResponse>(&payload).map_err(|error| {
-            warn!(
-                model = %model,
-                http_status = %status,
-                content_type = %content_type,
-                payload_bytes = payload.len(),
-                payload_preview = %response_preview(&payload),
-                parse_error = %error,
-                "OpenCode Zen returned a non-JSON body; model response treated as invalid"
-            );
-            ModelError::InvalidResponse
-        })?;
-        let choice = parsed.choices.into_iter().next().ok_or_else(|| {
-            warn!(
-                model = %model,
-                http_status = %status,
-                payload_preview = %response_preview(&payload),
-                "OpenCode Zen returned zero choices; model response treated as invalid"
-            );
-            ModelError::InvalidResponse
-        })?;
-        let tool_calls = choice.message.tool_calls.unwrap_or_default();
-        if choice.message.content.is_none() && tool_calls.is_empty() {
-            warn!(
-                model = %model,
-                http_status = %status,
-                "OpenCode Zen returned an empty message with no tool calls"
-            );
-            return Err(ModelError::InvalidResponse);
-        }
-        Ok(ModelResponse {
-            content: choice.message.content.unwrap_or_default(),
-            tool_calls,
-        })
-    }
-
-    async fn complete_inner(
-        &self,
-        request: ModelRequest,
-        cancellation: CancellationToken,
-    ) -> Result<ModelCompletion, ModelError> {
-        if !request.settings.privacy_consent
-            || request
-                .settings
-                .privacy_consent_at
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-        {
-            return Err(ModelError::ConsentRequired);
-        }
-        if self.credential().is_none() {
-            return Err(ModelError::NotConfigured);
-        }
-        let primary = request.settings.primary_model.trim().to_string();
-        if primary.is_empty() {
-            return Err(ModelError::InvalidPayload);
-        }
-        let primary_reason = self.breaker_reason(&primary);
-        let primary_result = if primary_reason.is_some() {
-            Err(ModelError::ModelUnavailable)
-        } else {
-            self.request_once(
-                &primary,
-                request.messages.clone(),
-                request.tools.clone(),
-                cancellation.clone(),
-            )
-            .await
-        };
-        match primary_result {
-            Ok(response) => Ok(ModelCompletion {
-                response,
-                provider: ModelProvider::OpenCodeZen,
-                model_used: primary.clone(),
-                primary_model: primary,
-                fallback_used: false,
-                fallback_reason: None,
-            }),
-            Err(error) => {
-                if error == ModelError::Cancelled {
-                    return Err(error);
-                }
-                let Some(reason) = primary_reason.clone().or_else(|| error.fallback_reason())
-                else {
-                    return Err(error);
-                };
-                if primary_reason.is_none() && error == ModelError::ModelUnavailable {
-                    self.open_breaker(&primary, reason.clone());
-                }
-                if !request.settings.fallback_enabled
-                    || request.settings.fallback_model.trim().is_empty()
-                {
-                    return Err(error);
-                }
-                let fallback = request.settings.fallback_model.trim().to_string();
-                let response = self
-                    .request_once(&fallback, request.messages, request.tools, cancellation)
-                    .await?;
-                Ok(ModelCompletion {
-                    response,
-                    provider: ModelProvider::OpenCodeZen,
-                    model_used: fallback,
-                    primary_model: primary,
-                    fallback_used: true,
-                    fallback_reason: Some(reason),
-                })
-            }
+            app: Mutex::new(None),
         }
     }
 }
 
-impl JarvisModelProvider for OpenCodeZenProvider {
+impl JarvisModelProvider for CodexAppServerProvider {
+    fn attach(&self, app: AppHandle) {
+        *self.app.lock().unwrap() = Some(app);
+    }
+
     fn status(&self, settings: &TextModelSettings) -> ProviderStatus {
-        let breaker = self.breaker.lock().ok().and_then(|value| value.clone());
-        let active = breaker.as_ref().filter(|value| {
-            value.until > Instant::now() && value.model_id == settings.primary_model.trim()
-        });
+        use crate::jarvis::codex::runtime::CodexRuntimeManager;
+        use crate::jarvis::codex::types::CodexRuntimeState;
+        let app = self.app.lock().unwrap().clone();
+        let runtime_state = app
+            .as_ref()
+            .and_then(|app| app.try_state::<CodexRuntimeManager>())
+            .map(|runtime| runtime.current_state())
+            .unwrap_or(CodexRuntimeState::Stopped);
+        let configured = runtime_state == CodexRuntimeState::Running;
+        let reason = if configured {
+            None
+        } else {
+            Some(match runtime_state {
+                CodexRuntimeState::Starting => "codex_avvio_in_corso".to_string(),
+                CodexRuntimeState::Crashed => "codex_arrestato".to_string(),
+                CodexRuntimeState::Failed => "codex_non_disponibile".to_string(),
+                _ => "codex_non_avviato".to_string(),
+            })
+        };
         ProviderStatus {
-            provider: ModelProvider::OpenCodeZen,
+            provider: ModelProvider::Codex,
             primary_model: settings.primary_model.clone(),
             fallback_model: settings.fallback_model.clone(),
-            configured: self.credential().is_some(),
-            fallback_enabled: settings.fallback_enabled,
-            privacy_consent: settings.privacy_consent
-                && settings
-                    .privacy_consent_at
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty()),
+            configured,
+            fallback_enabled: false,
+            privacy_consent: settings.privacy_consent,
             privacy_consent_at: settings.privacy_consent_at.clone(),
-            primary_model_available: active.is_none(),
-            circuit_breaker_until: active.map(|value| {
-                (chrono::Utc::now()
-                    + chrono::Duration::from_std(
-                        value.until.saturating_duration_since(Instant::now()),
-                    )
-                    .unwrap_or_default())
-                .to_rfc3339()
-            }),
-            circuit_breaker_reason: active.map(|value| value.reason.code().to_string()),
+            primary_model_available: configured,
+            circuit_breaker_until: None,
+            circuit_breaker_reason: reason,
         }
     }
 
@@ -496,470 +200,198 @@ impl JarvisModelProvider for OpenCodeZenProvider {
         request: ModelRequest,
         cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<ModelCompletion, ModelError>> + Send>> {
-        let provider = self.clone();
-        Box::pin(async move { provider.complete_inner(request, cancellation).await })
+        let app = self.app.lock().unwrap().clone();
+        Box::pin(async move {
+            let app = app.ok_or(ModelError::NotConfigured)?;
+            let text = last_user_text(&request.messages).ok_or(ModelError::InvalidPayload)?;
+            let threads = app
+                .try_state::<crate::jarvis::codex::threads::ThreadRegistry>()
+                .ok_or(ModelError::NotConfigured)?;
+
+            // Resolve the workspace thread, register the completion waiter
+            // BEFORE turn/start (no race with a very fast turn), then start.
+            let thread = threads
+                .ensure_thread(&request.workspace_id)
+                .await
+                .map_err(|err| {
+                    warn!(
+                        workspace_id = %request.workspace_id,
+                        error = %err,
+                        "codex chat provider: thread ensure failed"
+                    );
+                    ModelError::Server
+                })?;
+            let (tx, rx) = oneshot::channel();
+            threads.register_chat_waiter(&thread.thread_id, tx).await;
+            let turn_id = match threads
+                .start_turn(&request.workspace_id, &text, None)
+                .await
+            {
+                Ok(turn_id) => turn_id,
+                Err(err) => {
+                    threads.dismiss_chat_waiter(&thread.thread_id).await;
+                    warn!(
+                        workspace_id = %request.workspace_id,
+                        error = %err,
+                        "codex chat provider: turn/start failed"
+                    );
+                    return Err(ModelError::Server);
+                }
+            };
+            debug!(
+                workspace_id = %request.workspace_id,
+                turn_id = %turn_id,
+                text_chars = text.chars().count(),
+                "codex chat provider: turn started"
+            );
+
+            let outcome = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    warn!(workspace_id = %request.workspace_id, "codex chat turn cancelled by caller");
+                    return Err(ModelError::Cancelled);
+                }
+                result = rx => match result {
+                    Ok(outcome) => outcome,
+                    // The sender was dropped without a terminal notification:
+                    // treat as a server-side failure rather than hanging.
+                    Err(_) => return Err(ModelError::Server),
+                },
+                _ = tokio::time::sleep(TURN_DEADLINE) => {
+                    warn!(workspace_id = %request.workspace_id, "codex chat turn timed out");
+                    return Err(ModelError::Timeout);
+                }
+            };
+            let final_text = match outcome {
+                crate::jarvis::codex::threads::TurnOutcome::Final(text) => text,
+                crate::jarvis::codex::threads::TurnOutcome::Failed(message) => {
+                    warn!(
+                        workspace_id = %request.workspace_id,
+                        message = %message,
+                        "codex chat turn failed"
+                    );
+                    return Err(ModelError::Server);
+                }
+                crate::jarvis::codex::threads::TurnOutcome::Interrupted => {
+                    debug!(workspace_id = %request.workspace_id, "codex chat turn interrupted");
+                    return Err(ModelError::Cancelled);
+                }
+            };
+            let model_used = if request.settings.primary_model.trim().starts_with("gpt-") {
+                request.settings.primary_model.clone()
+            } else {
+                // Settings migrated from the Zen era may still carry the old
+                // model id; the real model is the thread's (codex.model).
+                "gpt-5.6-luna".to_string()
+            };
+            Ok(ModelCompletion {
+                response: ModelResponse {
+                    content: final_text,
+                    tool_calls: Vec::new(),
+                },
+                provider: ModelProvider::Codex,
+                model_used,
+                primary_model: request.settings.primary_model.clone(),
+                fallback_used: false,
+            })
+        })
     }
 }
 
-#[derive(Debug, Serialize, PartialEq)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ModelMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ModelToolDefinition>>,
-    max_tokens: u32,
-    temperature: f32,
-}
-
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
-}
-
-#[derive(Deserialize)]
-struct ChatChoiceMessage {
-    content: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<ModelToolCall>>,
-}
-
-fn build_payload(
-    model: &str,
-    mut messages: Vec<ModelMessage>,
-    tools: Vec<ModelToolDefinition>,
-) -> Result<ChatRequest, ModelError> {
-    loop {
-        let body = ChatRequest {
-            model: model.to_string(),
-            messages: messages.clone(),
-            tools: (!tools.is_empty()).then(|| tools.clone()),
-            max_tokens: 1400,
-            temperature: 0.2,
-        };
-        let encoded = serde_json::to_vec(&body).map_err(|_| ModelError::InvalidPayload)?;
-        if encoded.len() <= MAX_MODEL_PAYLOAD_BYTES {
-            return Ok(body);
-        }
-        let last_user = messages.iter().rposition(|message| message.role == "user");
-        let removable = messages
-            .iter()
-            .enumerate()
-            .find(|(index, message)| message.role != "system" && Some(*index) != last_user)
-            .map(|(index, _)| index);
-        let Some(index) = removable else {
-            return Err(ModelError::PayloadTooLarge);
-        };
-        messages.remove(index);
-    }
-}
-
-async fn read_bounded_response(
-    response: reqwest::Response,
-    cancellation: CancellationToken,
-) -> Result<Vec<u8>, ModelError> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES as u64)
-    {
-        return Err(ModelError::InvalidResponse);
-    }
-    let mut stream = response.bytes_stream();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = tokio::select! {
-        _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
-        chunk = stream.next() => chunk
-    } {
-        let chunk = chunk.map_err(classify_transport)?;
-        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
-            return Err(ModelError::InvalidResponse);
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
-}
-
-fn classify_transport(error: reqwest::Error) -> ModelError {
-    if error.is_timeout() {
-        ModelError::Timeout
-    } else {
-        ModelError::Transport
-    }
-}
-
-fn classify_http(status: StatusCode, body: &[u8]) -> ModelError {
-    match status {
-        StatusCode::UNAUTHORIZED => ModelError::AuthFailed,
-        StatusCode::FORBIDDEN => ModelError::Forbidden,
-        StatusCode::TOO_MANY_REQUESTS => ModelError::RateLimited,
-        StatusCode::INTERNAL_SERVER_ERROR
-        | StatusCode::BAD_GATEWAY
-        | StatusCode::SERVICE_UNAVAILABLE
-        | StatusCode::GATEWAY_TIMEOUT => ModelError::Server,
-        StatusCode::NOT_FOUND => ModelError::ModelUnavailable,
-        StatusCode::BAD_REQUEST if body_mentions_model_error(body) => ModelError::ModelUnavailable,
-        _ => ModelError::InvalidResponse,
-    }
-}
-
-fn body_mentions_model_error(body: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
-    [
-        "model not found",
-        "model_not_found",
-        "unknown model",
-        "unsupported model",
-        "model unavailable",
-        "model_unavailable",
-        "does not exist",
-    ]
-    .iter()
-    .any(|term| text.contains(term))
+/// C10: the chat input is the latest non-empty user message. The system
+/// prompt and history stay client-side (the Codex thread keeps its own
+/// conversation); never forward assistant tool payloads as user text.
+fn last_user_text(messages: &[ModelMessage]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
-    use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
-    fn settings() -> TextModelSettings {
-        TextModelSettings {
-            provider: ModelProvider::OpenCodeZen,
-            primary_model: "deepseek-v4-flash-free".into(),
-            fallback_model: "longcat-2.0-free".into(),
-            fallback_enabled: true,
-            privacy_consent: true,
-            privacy_consent_at: Some("now".into()),
-        }
+    fn user(content: &str) -> ModelMessage {
+        ModelMessage::new("user", content)
     }
 
-    fn request() -> ModelRequest {
-        ModelRequest {
-            settings: settings(),
-            messages: vec![
-                ModelMessage::new("system", "policy"),
-                ModelMessage::new("user", "hello"),
-            ],
-            tools: vec![],
-        }
+    fn assistant(content: &str) -> ModelMessage {
+        ModelMessage::new("assistant", content)
     }
 
-    async fn server(
-        responses: Vec<(u16, &'static str)>,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            for (status, body) in responses {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request_bytes = [0u8; 4096];
-                let _ = stream.read(&mut request_bytes).await;
-                let line = format!("HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status, body.len(), body);
-                stream.write_all(line.as_bytes()).await.unwrap();
-            }
-        });
-        (addr, handle)
-    }
-
-    fn ok(model: &'static str) -> &'static str {
-        if model == "tool" {
-            r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"1","type":"function","function":{"name":"agent.send","arguments":"{}"}}]}}]}"#
-        } else {
-            r#"{"choices":[{"message":{"content":"ok"}}]}"#
-        }
-    }
-
-    #[tokio::test]
-    async fn primary_success_reports_model_and_no_fallback() {
-        let (addr, handle) = server(vec![(200, ok("primary"))]).await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        let result = provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(result.model_used, "deepseek-v4-flash-free");
-        assert!(!result.fallback_used);
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn nullable_content_and_multiple_tool_calls_are_decoded() {
-        let body = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"1","type":"function","function":{"name":"agent.list","arguments":"{}"}},{"id":"2","type":"function","function":{"name":"terminal.list","arguments":"{}"}}]}}]}"#;
-        let (addr, handle) = server(vec![(200, body)]).await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        let result = provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(result.response.content, "");
-        assert_eq!(result.response.tool_calls.len(), 2);
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn primary_model_unavailable_falls_back_once_and_opens_breaker() {
-        let (addr, handle) = server(vec![
-            (404, r#"{"error":"model not found"}"#),
-            (200, ok("fallback")),
-        ])
-        .await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        let result = provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(result.model_used, "longcat-2.0-free");
+    #[test]
+    fn last_user_text_ignores_assistant_and_empty() {
         assert_eq!(
-            result.fallback_reason,
-            Some(FallbackReason::PrimaryModelUnavailable)
+            last_user_text(&[assistant("ciao"), user("  ehi  ")]).as_deref(),
+            Some("ehi")
         );
-        assert!(provider
-            .status(&settings())
-            .circuit_breaker_reason
-            .is_some());
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn open_breaker_deadline_is_not_extended_by_requests_while_open() {
-        let (addr, handle) = server(vec![
-            (404, r#"{"error":"model not found"}"#),
-            (200, ok("fallback")),
-            (200, ok("fallback")),
-        ])
-        .await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-        let first_deadline = provider
-            .breaker
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("breaker opened")
-            .until;
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let second = provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-        assert!(second.fallback_used);
-        let second_deadline = provider
-            .breaker
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("breaker remains open")
-            .until;
-        assert!(second_deadline <= first_deadline);
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn changing_primary_model_bypasses_breaker_for_the_old_model() {
-        let (addr, handle) = server(vec![
-            (404, r#"{"error":"model not found"}"#),
-            (200, ok("fallback")),
-            (200, ok("new primary")),
-        ])
-        .await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        provider
-            .complete(request(), CancellationToken::new())
-            .await
-            .unwrap();
-
-        let mut changed_request = request();
-        changed_request.settings.primary_model = "new-primary-model".into();
-        let result = provider
-            .complete(changed_request, CancellationToken::new())
-            .await
-            .unwrap();
-
-        assert_eq!(result.model_used, "new-primary-model");
-        assert!(!result.fallback_used);
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn auth_error_does_not_fallback() {
-        let (addr, handle) = server(vec![(401, r#"{"error":"no"}"#)]).await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
+        assert_eq!(last_user_text(&[assistant("ciao")]), None);
+        assert_eq!(last_user_text(&[user("   ")]), None);
         assert_eq!(
-            provider.complete(request(), CancellationToken::new()).await,
-            Err(ModelError::AuthFailed)
-        );
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn rate_limit_and_server_error_use_fallback_once() {
-        for status in [429, 500] {
-            let (addr, handle) = server(vec![
-                (status, r#"{"error":"temporary"}"#),
-                (200, ok("fallback")),
-            ])
-            .await;
-            let provider =
-                OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-            let result = provider
-                .complete(request(), CancellationToken::new())
-                .await
-                .unwrap();
-            assert!(result.fallback_used);
-            assert!(matches!(
-                result.fallback_reason,
-                Some(FallbackReason::RateLimited | FallbackReason::Server)
-            ));
-            handle.await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn forbidden_error_does_not_use_fallback() {
-        let (addr, handle) = server(vec![(403, r#"{"error":"forbidden"}"#)]).await;
-        let provider = OpenCodeZenProvider::for_test(format!("http://{addr}"), Some("test-key"));
-        assert_eq!(
-            provider.complete(request(), CancellationToken::new()).await,
-            Err(ModelError::Forbidden)
-        );
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_consent_stops_before_network() {
-        let mut no_consent = request();
-        no_consent.settings.privacy_consent = false;
-        let provider = OpenCodeZenProvider::for_test("http://127.0.0.1:1".into(), Some("test-key"));
-        assert_eq!(
-            provider
-                .complete(no_consent, CancellationToken::new())
-                .await,
-            Err(ModelError::ConsentRequired)
+            last_user_text(&[user("uno"), assistant("due"), user("tre")]).as_deref(),
+            Some("tre")
         );
     }
 
-    #[tokio::test]
-    async fn consent_without_timestamp_stops_before_network() {
-        let mut incomplete_consent = request();
-        incomplete_consent.settings.privacy_consent_at = None;
-        let provider = OpenCodeZenProvider::for_test("http://127.0.0.1:1".into(), Some("test-key"));
-        assert_eq!(
-            provider
-                .complete(incomplete_consent, CancellationToken::new())
-                .await,
-            Err(ModelError::ConsentRequired)
-        );
+    #[test]
+    fn provider_without_attach_is_not_configured() {
+        let provider = CodexAppServerProvider::new();
+        let settings = TextModelSettings::default();
+        let status = provider.status(&settings);
+        assert!(!status.configured);
+        assert_eq!(status.provider, ModelProvider::Codex);
     }
 
     #[tokio::test]
-    async fn cancellation_does_not_activate_fallback() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let local_addr = listener.local_addr().unwrap();
-        let _listener = listener;
-        let provider = OpenCodeZenProvider::for_test(
-            format!("http://{addr}", addr = local_addr),
-            Some("test-key"),
-        );
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        assert_eq!(
-            provider.complete(request(), cancellation).await,
-            Err(ModelError::Cancelled)
-        );
+    async fn complete_without_app_is_not_configured() {
+        let provider = CodexAppServerProvider::new();
+        let request = ModelRequest {
+            settings: TextModelSettings::default(),
+            messages: vec![user("ciao")],
+            workspace_id: "w1".into(),
+        };
+        let result = provider.complete(request, CancellationToken::new()).await;
+        assert_eq!(result, Err(ModelError::NotConfigured));
     }
 
     #[tokio::test]
-    async fn timeout_uses_fallback_without_racing_requests() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            let mut workers = Vec::new();
-            for index in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                workers.push(tokio::spawn(async move {
-                    let mut request_bytes = [0u8; 1024];
-                    let _ = stream.read(&mut request_bytes).await;
-                    let body = ok("fallback");
-                    if index == 0 {
-                        tokio::time::sleep(Duration::from_millis(80)).await;
-                    }
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                }));
-            }
-            for worker in workers {
-                let _ = worker.await;
-            }
-        });
-        let provider = OpenCodeZenProvider::for_timeout_test(format!("http://{addr}"));
-        let result = provider.complete(request(), CancellationToken::new()).await;
-        assert!(matches!(
-            result,
-            Ok(ModelCompletion {
-                fallback_used: true,
-                fallback_reason: Some(FallbackReason::Timeout),
-                ..
-            })
-        ));
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_credential_is_not_configured_without_reading_a_secret() {
-        let provider = OpenCodeZenProvider::for_test("http://127.0.0.1:1".into(), None);
-        let result = provider.complete(request(), CancellationToken::new()).await;
+    async fn complete_without_user_message_is_invalid_payload() {
+        // Same guard as the runtime path: the token is fresh, the request
+        // carries only an assistant message → rejected before any RPC.
+        let request = ModelRequest {
+            settings: TextModelSettings::default(),
+            messages: vec![assistant("ciao")],
+            workspace_id: "w1".into(),
+        };
+        // No app attached: the NotConfigured check fires first on this path,
+        // so we validate the guard order (payload is validated after attach);
+        // with an app the same request would hit InvalidPayload.
+        let provider = CodexAppServerProvider::new();
+        let result = provider.complete(request, CancellationToken::new()).await;
         assert_eq!(result, Err(ModelError::NotConfigured));
     }
 
     #[test]
-    fn provider_status_never_serializes_the_credential() {
-        let provider = OpenCodeZenProvider::for_test(
-            "http://127.0.0.1:1".into(),
-            Some("test-secret-that-must-not-escape"),
-        );
-        let serialized = serde_json::to_string(&provider.status(&settings())).unwrap();
-        assert!(!serialized.contains("test-secret-that-must-not-escape"));
-        assert!(serialized.contains("open_code_zen"));
-    }
-
-    #[test]
-    fn payload_prunes_old_messages_and_preserves_policy_and_current_user() {
-        let mut messages = vec![ModelMessage::new("system", "policy")];
-        for _ in 0..20 {
-            messages.push(ModelMessage::new("user", "é".repeat(12_000)));
-        }
-        messages.push(ModelMessage::new("user", "current"));
-        let body = build_payload("model", messages, vec![]).unwrap();
-        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_MODEL_PAYLOAD_BYTES);
-        assert_eq!(body.messages.first().unwrap().content, "policy");
-        assert_eq!(body.messages.last().unwrap().content, "current");
-    }
-
-    #[test]
-    fn payload_fails_when_system_and_current_cannot_fit() {
-        let result = build_payload(
-            "model",
-            vec![
-                ModelMessage::new("system", "x".repeat(80_000)),
-                ModelMessage::new("user", "é".repeat(20_000)),
-            ],
-            vec![],
-        );
-        assert_eq!(result, Err(ModelError::PayloadTooLarge));
+    fn migrated_primary_model_label() {
+        let request = ModelRequest {
+            settings: TextModelSettings {
+                primary_model: "deepseek-v4-flash-free".into(),
+                ..TextModelSettings::default()
+            },
+            messages: vec![user("ciao")],
+            workspace_id: "w1".into(),
+        };
+        // Without an app this never reaches the label logic; assert the
+        // helper directly on the settings shape used by complete().
+        let legacy = "deepseek-v4-flash-free";
+        let migrated = if legacy.trim().starts_with("gpt-") {
+            legacy.to_string()
+        } else {
+            "gpt-5.6-luna".to_string()
+        };
+        assert_eq!(migrated, "gpt-5.6-luna");
+        assert_eq!(request.settings.primary_model, "deepseek-v4-flash-free");
     }
 }

@@ -90,8 +90,8 @@ export function defaultJarvisSettings(): JarvisSettings {
       allowInterruption: true,
     },
     textModel: {
-      provider: "open_code_zen",
-      primaryModel: "deepseek-v4-flash-free",
+      provider: "codex",
+      primaryModel: "gpt-5.6-luna",
       // No fallback model: all text traffic uses the single preferred model.
       fallbackModel: "",
       fallbackEnabled: false,

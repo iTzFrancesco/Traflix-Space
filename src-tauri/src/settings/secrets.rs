@@ -8,28 +8,27 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Manager};
 
-pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
 pub const GROQ_API_KEY_ENV: &str = "GROQ_API_KEY";
+/// C10: legacy — Zen is no longer a Jarvis provider; kept only so child
+/// processes keep scrubbing a stale `OPENCODE_ZEN_API_KEY` from the env.
+pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
 const MAX_SECRET_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JarvisSecretId {
-    OpenCodeZen,
     Groq,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JarvisSecretStatus {
-    pub open_code_zen_configured: bool,
     pub groq_configured: bool,
     pub persistent: bool,
 }
 
 pub fn status() -> JarvisSecretStatus {
     JarvisSecretStatus {
-        open_code_zen_configured: read_secret_env(OPENCODE_ZEN_API_KEY_ENV).is_some(),
         groq_configured: read_secret_env(GROQ_API_KEY_ENV).is_some(),
         persistent: cfg!(windows),
     }
@@ -37,7 +36,6 @@ pub fn status() -> JarvisSecretStatus {
 
 pub fn hydrate_process_environment(app: &AppHandle) {
     // Existing process/user environment variables always win over `.env`.
-    let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
     let _ = read_secret_env(GROQ_API_KEY_ENV);
     load_dotenv_environment(dotenv_candidates(app), false);
 }
@@ -54,7 +52,6 @@ pub fn refresh_dotenv_environment(app: &AppHandle) {
     #[cfg(not(debug_assertions))]
     load_dotenv_environment(dotenv_candidates(app), false);
 
-    let _ = read_secret_env(OPENCODE_ZEN_API_KEY_ENV);
     let _ = read_secret_env(GROQ_API_KEY_ENV);
 }
 
@@ -68,7 +65,7 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
             let Some((name, value)) = parse_dotenv_assignment(line) else {
                 continue;
             };
-            if !matches!(name, OPENCODE_ZEN_API_KEY_ENV | GROQ_API_KEY_ENV) {
+            if !matches!(name, GROQ_API_KEY_ENV) {
                 continue;
             }
             if loaded.contains(name) {
@@ -210,7 +207,6 @@ pub fn read_secret_env(name: &str) -> Option<String> {
 
 fn secret_env_name(secret: JarvisSecretId) -> &'static str {
     match secret {
-        JarvisSecretId::OpenCodeZen => OPENCODE_ZEN_API_KEY_ENV,
         JarvisSecretId::Groq => GROQ_API_KEY_ENV,
     }
 }
@@ -297,7 +293,7 @@ mod tests {
     #[test]
     fn dotenv_parser_accepts_comments_exports_and_quotes() {
         assert_eq!(
-            parse_dotenv_assignment("export OPENCODE_ZEN_API_KEY=\"demo-key\"")
+            parse_dotenv_assignment("export GROQ_API_KEY=\"demo-key\"")
                 .map(|(_, value)| value),
             Some("demo-key".to_string())
         );

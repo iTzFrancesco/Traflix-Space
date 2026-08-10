@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, warn};
 
 use super::runtime::{CodexRuntimeManager, RuntimeError};
@@ -66,6 +66,20 @@ pub(crate) fn codex_home_dir(app: &AppHandle) -> Result<PathBuf, RuntimeError> {
 
 /// Registry mapping `workspace_id -> thread`; lives in Tauri managed state.
 #[derive(Clone)]
+/// C10: how a chat turn ended for the Jarvis provider waiter.
+#[derive(Debug)]
+pub enum TurnOutcome {
+    /// Turn completed: the final agent message text.
+    Final(String),
+    /// Turn failed: server-side message.
+    Failed(String),
+    /// Turn interrupted by the user (turn/interrupt).
+    Interrupted,
+}
+
+/// One ephemeral Codex thread per workspace (spec §9) + turn correlation
+/// (C7 request ids, C10 chat waiters).
+#[derive(Clone)]
 pub struct ThreadRegistry {
     runtime: CodexRuntimeManager,
     app: AppHandle,
@@ -73,6 +87,11 @@ pub struct ThreadRegistry {
     /// C7: `turn_id -> app request_id` for streaming correlation. Turns
     /// started outside the app (tests, future steer) have no request id.
     request_ids: Arc<Mutex<HashMap<String, String>>>,
+    /// C10: chat provider waiters (thread → oneshot), completed by the bridge
+    /// on a terminal turn notification.
+    chat_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<TurnOutcome>>>>,
+    /// C10: last completed agent message text per thread (final chat answer).
+    last_message_text: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ThreadRegistry {
@@ -82,6 +101,8 @@ impl ThreadRegistry {
             app,
             threads: Arc::new(Mutex::new(HashMap::new())),
             request_ids: Arc::new(Mutex::new(HashMap::new())),
+            chat_waiters: Arc::new(Mutex::new(HashMap::new())),
+            last_message_text: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -232,6 +253,47 @@ impl ThreadRegistry {
     /// C7: app request id registered for a turn (if any).
     pub async fn request_id_for_turn(&self, turn_id: &str) -> Option<String> {
         self.request_ids.lock().await.get(turn_id).cloned()
+    }
+
+    /// C10: registers the oneshot that the bridge completes when the thread's
+    /// turn reaches a terminal notification. At most one waiter per thread:
+    /// a new waiter replaces a stale one (the old sender is dropped, which
+    /// the provider maps to a server failure).
+    pub async fn register_chat_waiter(
+        &self,
+        thread_id: &str,
+        tx: oneshot::Sender<TurnOutcome>,
+    ) {
+        self.chat_waiters.lock().await.insert(thread_id.to_string(), tx);
+    }
+
+    /// C10: removes a waiter that will never be completed (turn/start failed).
+    pub async fn dismiss_chat_waiter(&self, thread_id: &str) {
+        self.chat_waiters.lock().await.remove(thread_id);
+    }
+
+    /// C10: remembers the text of the last completed agent message of a turn
+    /// (the bridge stores it on `AgentMessageThreadItem`); consumed as the
+    /// final chat answer on `turn/completed`.
+    pub async fn set_last_message_text(&self, thread_id: &str, text: String) {
+        self.last_message_text.lock().await.insert(thread_id.to_string(), text);
+    }
+
+    /// C10: completes the chat waiter with the final text and drops the slot.
+    pub async fn complete_chat_waiter(&self, thread_id: &str) {
+        let text = self.last_message_text.lock().await.remove(thread_id);
+        let final_text = text.unwrap_or_default();
+        if let Some(tx) = self.chat_waiters.lock().await.remove(thread_id) {
+            let _ = tx.send(TurnOutcome::Final(final_text));
+        }
+    }
+
+    /// C10: completes the chat waiter with a terminal failure/interrupt.
+    pub async fn fail_chat_waiter(&self, thread_id: &str, outcome: TurnOutcome) {
+        self.last_message_text.lock().await.remove(thread_id);
+        if let Some(tx) = self.chat_waiters.lock().await.remove(thread_id) {
+            let _ = tx.send(outcome);
+        }
     }
 
     /// C7: drop the request correlation when a turn ends.

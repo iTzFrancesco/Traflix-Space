@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 use super::events::{stream_events_from_notification, CHAT_STREAM_EVENT};
 use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
-use super::threads::ThreadRegistry;
+use super::threads::{ThreadRegistry, TurnOutcome};
 use super::tools::CodexToolService;
 use super::runtime::{CodexRuntimeManager, RuntimeError};
 
@@ -132,6 +132,41 @@ async fn emit_chat_stream(
     }
 }
 
+/// C10: captures the text of a completed agent message item so the chat
+/// provider can return it as the final answer on `turn/completed`. Only
+/// complete text items are stored (defensive: missing/empty text never
+/// overwrites an earlier final candidate).
+async fn capture_final_message_text(threads: &ThreadRegistry, params: &Value) {
+    let Some(thread_id) = params.get("threadId").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(item_type) = params
+        .get("item")
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    if item_type != "agentMessage" {
+        return;
+    }
+    let Some(text) = params
+        .get("item")
+        .and_then(|item| item.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|first| first.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    threads.set_last_message_text(thread_id, text.to_string()).await;
+}
+
 /// Long-lived bridge: consumes App Server notifications and forwards the
 /// account-related ones to the UI as `jarvis://codex-account` events.
 /// Spawned by the runtime after every successful (re)start.
@@ -204,6 +239,35 @@ pub fn spawn_account_bridge(
                     if method.starts_with("turn/") {
                         emit_chat_stream(&app, threads, &method, &params).await;
                     }
+                    // C10: the Jarvis chat provider waits on the turn's
+                    // terminal notification; the final agent message text was
+                    // captured on AgentMessageThreadItem.
+                    if let Some(thread_id) = params
+                        .as_ref()
+                        .and_then(|params| params.get("threadId"))
+                        .and_then(|value| value.as_str())
+                    {
+                        match method.as_str() {
+                            "turn/completed" => threads.complete_chat_waiter(thread_id).await,
+                            "turn/failed" => {
+                                let message = params
+                                    .as_ref()
+                                    .and_then(|params| params.get("error"))
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("turn failed")
+                                    .to_string();
+                                threads
+                                    .fail_chat_waiter(thread_id, TurnOutcome::Failed(message))
+                                    .await;
+                            }
+                            "turn/interrupted" => {
+                                threads
+                                    .fail_chat_waiter(thread_id, TurnOutcome::Interrupted)
+                                    .await;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 continue;
             }
@@ -212,6 +276,16 @@ pub fn spawn_account_bridge(
             if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" {
                 if let Some(threads) = &threads {
                     emit_chat_stream(&app, threads, &method, &params).await;
+                    // C10: capture the final agent message text of the turn
+                    // (content may be empty for items that only carry tool
+                    // metadata — only complete text items are stored).
+                    if method == "AgentMessageThreadItem" {
+                        capture_final_message_text(
+                            threads,
+                            params.as_ref().unwrap_or(&serde_json::Value::Null),
+                        )
+                        .await;
+                    }
                 }
                 continue;
             }

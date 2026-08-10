@@ -26,6 +26,11 @@ multi-pannello, cronologia persistente e drag-and-drop dei file.
   terminale con le scorciatoie standard di Windows.
 - **System tray** — chiudendo la finestra in versione release l'app resta
   disponibile nella tray e può essere riaperta rapidamente.
+- **Jarvis con Codex App Server** — l'assistente vocale Jarvis usa
+  `codex.exe app-server` (ChatGPT, gpt-5.6-luna) come unico LLM: un thread
+  effimero e isolato per workspace, tool dinamici read-only, mutazioni solo
+  tramite `conversational.plan`, streaming dei commentary in tempo reale e
+  TTS progressivo. Dettagli in `docs/jarvis/codex/`.
 
 ## Tecnologia
 

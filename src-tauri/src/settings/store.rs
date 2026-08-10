@@ -213,12 +213,15 @@ fn default_codex_reasoning() -> String {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProvider {
-    OpenCodeZen,
+    /// C10: the Codex App Server is the single Jarvis LLM provider; legacy
+    /// persisted `open_code_zen` values migrate transparently to it.
+    #[serde(alias = "open_code_zen")]
+    Codex,
 }
 
 impl Default for ModelProvider {
     fn default() -> Self {
-        Self::OpenCodeZen
+        Self::Codex
     }
 }
 
@@ -365,7 +368,7 @@ impl<'de> Deserialize<'de> for JarvisSettings {
 impl Default for TextModelSettings {
     fn default() -> Self {
         Self {
-            provider: ModelProvider::OpenCodeZen,
+            provider: ModelProvider::Codex,
             primary_model: default_primary_model(),
             // No fallback: all text traffic uses the single preferred model.
             fallback_model: String::new(),
@@ -508,7 +511,7 @@ fn default_gemini_provider() -> String {
     "Gemini Live".to_string()
 }
 fn default_primary_model() -> String {
-    "deepseek-v4-flash-free".to_string()
+    "gpt-5.6-luna".to_string()
 }
 fn default_groq_provider() -> String {
     "groq".to_string()
@@ -648,7 +651,7 @@ mod tests {
     use super::{AppSettings, ModelProvider, ShortcutBehavior, VoiceActivationMode, VoiceEngine};
 
     #[test]
-    fn legacy_settings_migrate_to_open_code_zen_defaults() {
+    fn legacy_settings_migrate_to_codex_defaults() {
         let legacy = r##"{
             "sidebar": { "isCollapsed": true, "workspaceOrder": ["workspace-a"], "activeWorkspaceId": "workspace-a" },
             "theme": { "accentColor": "#123456" },
@@ -657,7 +660,7 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
         assert_eq!(
             settings.jarvis.text_model.provider,
-            ModelProvider::OpenCodeZen
+            ModelProvider::Codex
         );
         assert_eq!(settings.jarvis.text_model.primary_model, "legacy-model");
         assert!(!settings.jarvis.text_model.fallback_enabled);
@@ -678,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn f513485_longcat_aliases_migrate_to_the_zen_primary() {
+    fn f513485_longcat_aliases_migrate_to_the_codex_primary() {
         for legacy_model in ["LongCat-2.0", "LongCat", "longcat"] {
             let legacy = format!(
                 r##"{{
@@ -688,9 +691,11 @@ mod tests {
                 }}"##
             );
             let settings: AppSettings = serde_json::from_str(&legacy).unwrap();
+            // C10: the legacy Zen gateway is gone; legacy model ids now
+            // resolve to the Codex default model.
             assert_eq!(
                 settings.jarvis.text_model.primary_model,
-                "deepseek-v4-flash-free"
+                "gpt-5.6-luna"
             );
             assert!(!settings.jarvis.text_model.fallback_enabled);
             assert!(settings.jarvis.text_model.fallback_model.is_empty());
@@ -698,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn f513485_direct_deepseek_models_migrate_to_the_zen_primary() {
+    fn f513485_direct_deepseek_models_migrate_to_the_codex_primary() {
         let legacy = r##"{
             "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
             "theme": { "accentColor": "#123456" },
@@ -707,7 +712,7 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
         assert_eq!(
             settings.jarvis.text_model.primary_model,
-            "deepseek-v4-flash-free"
+            "gpt-5.6-luna"
         );
         assert!(!settings.jarvis.text_model.fallback_enabled);
         assert!(settings.jarvis.text_model.fallback_model.is_empty());
@@ -776,11 +781,11 @@ mod tests {
         let settings = AppSettings::default();
         assert_eq!(
             settings.jarvis.text_model.provider,
-            ModelProvider::OpenCodeZen
+            ModelProvider::Codex
         );
         assert_eq!(
             settings.jarvis.text_model.primary_model,
-            "deepseek-v4-flash-free"
+            "gpt-5.6-luna"
         );
         assert!(settings.jarvis.text_model.fallback_model.is_empty());
         assert!(!settings.jarvis.text_model.fallback_enabled);

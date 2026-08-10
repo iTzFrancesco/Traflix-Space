@@ -529,13 +529,13 @@ export function JarvisAdvancedSettings({
       {providerStatus && (
         <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
           <div className="flex items-center justify-between gap-3">
-            <span className="font-medium text-neutral-text">OpenCode Zen</span>
+            <span className="font-medium text-neutral-text">Codex (App Server)</span>
             <span className={providerStatus.configured ? "text-signal" : "text-warning"}>
               {providerStatus.configured ? "configured" : "not configured"}
             </span>
           </div>
           <p className="mt-1 font-mono">{providerStatus.primaryModel}</p>
-          <p>Circuit breaker: {providerStatus.circuitBreakerReason ?? "inactive"}</p>
+          <p>Stato runtime: {providerStatus.circuitBreakerReason ?? "inactive"}</p>
         </div>
       )}
 

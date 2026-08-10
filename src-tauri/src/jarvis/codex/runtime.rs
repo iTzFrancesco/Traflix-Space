@@ -472,6 +472,15 @@ impl CodexRuntimeManager {
         snapshot(&inner)
     }
 
+    /// C10: synchronous state read for the Jarvis provider `status()` (the
+    /// trait is sync). Never blocks: a contended lock is reported as Stopped.
+    pub fn current_state(&self) -> CodexRuntimeState {
+        self.inner
+            .try_lock()
+            .map(|inner| inner.state)
+            .unwrap_or(CodexRuntimeState::Stopped)
+    }
+
     /// Live RPC client when Running, or the specific failure reason.
     /// Consumed by later chunks (account C2, models C3, threads C4).
     #[allow(dead_code)]
