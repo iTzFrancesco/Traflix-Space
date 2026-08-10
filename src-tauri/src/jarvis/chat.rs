@@ -113,7 +113,7 @@ pub async fn jarvis_provider_status(
     let status = app
         .state::<JarvisState>()
         .model
-        .status(&settings.text_model);
+        .status(&settings);
     Ok(status.into())
 }
 
@@ -369,9 +369,8 @@ async fn run_chat(
     let settings: JarvisSettings = app.state::<SettingsManager>().get().await.jarvis;
     info!(
         request_id = %request.invocation.request_id,
-        primary_model = %settings.text_model.primary_model,
-        fallback_model = %settings.text_model.fallback_model,
-        fallback_enabled = settings.text_model.fallback_enabled,
+        codex_model = %settings.codex.model,
+        codex_reasoning = %settings.codex.reasoning_effort,
         "Jarvis chat model configuration loaded"
     );
     state.memory.append_with_id(
@@ -385,7 +384,7 @@ async fn run_chat(
     let messages = vec![ModelMessage::new("user", request.message.clone())];
     let pending_actions = Vec::new();
     let ui_intents = Vec::new();
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
 
     // C10 + spec §27: no more `for round in 0..MAX_TOOL_ROUNDS`. The Codex
     // App Server holds the turn alive; the provider completes it with the
@@ -395,7 +394,6 @@ async fn run_chat(
         .model
         .complete(
             ModelRequest {
-                settings: settings.text_model.clone(),
                 messages,
                 // C10: the completion runs on the workspace's Codex
                 // thread; the provider needs the binding.
@@ -411,12 +409,6 @@ async fn run_chat(
     let final_content = completion.response.content;
 
     ensure_not_cancelled(&cancellation, &request.invocation, &observed_at)?;
-    if completion.fallback_used {
-        warnings.push(format!(
-            "Risposta ottenuta dal modello fallback: {}.",
-            completion.model_used
-        ));
-    }
     let assistant_memory = state.memory.append(
         &request.invocation.target_workspace_id,
         "assistant",
@@ -429,9 +421,10 @@ async fn run_chat(
         invocation: request.invocation,
         message: assistant_memory.into(),
         provider: "codex".to_string(),
-        model_used: completion.model_used,
-        primary_model: completion.primary_model,
-        fallback_used: completion.fallback_used,
+        model_used: completion.model_used.clone(),
+        // Review #7: single source of truth — the thread model is the model.
+        primary_model: completion.model_used,
+        fallback_used: false,
         fallback_reason: None,
         pending_actions,
         ui_intents,

@@ -163,15 +163,11 @@ impl Default for ShortcutBehavior {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// C10 + review #7: the text provider has ONE source of truth —
+/// `codex.model` + `codex.reasoning_effort`. The legacy Zen-era fields
+/// (primary/fallback model, fallback toggle) are gone; only the privacy
+/// consent survives here.
 pub struct TextModelSettings {
-    #[serde(default)]
-    pub provider: ModelProvider,
-    #[serde(default = "default_primary_model")]
-    pub primary_model: String,
-    #[serde(default)]
-    pub fallback_model: String,
-    #[serde(default)]
-    pub fallback_enabled: bool,
     #[serde(default)]
     pub privacy_consent: bool,
     #[serde(default)]
@@ -292,11 +288,6 @@ struct LegacyJarvisSettings {
     advanced_view_enabled: Option<bool>,
     voice_input: Option<VoiceInputSettings>,
     voice_output: Option<VoiceOutputSettings>,
-    // These fields were part of the first text-provider slice. They are read
-    // only to migrate values; they are never serialized again.
-    model: Option<String>,
-    privacy_consent: Option<bool>,
-    privacy_consent_at: Option<String>,
 }
 
 fn enforce_owner_mode(settings: &mut JarvisSettings) {
@@ -332,20 +323,9 @@ impl<'de> Deserialize<'de> for JarvisSettings {
         D: Deserializer<'de>,
     {
         let raw = LegacyJarvisSettings::deserialize(deserializer)?;
-        let has_new_text_model = raw.text_model.is_some();
-        let mut text_model = raw.text_model.clone().unwrap_or_default();
-        if !has_new_text_model {
-            if let Some(model) = raw.model.filter(|value| !value.trim().is_empty()) {
-                text_model.primary_model = migrate_legacy_primary_model(&model);
-            }
-            if let Some(consent) = raw.privacy_consent {
-                text_model.privacy_consent = consent;
-            }
-            text_model.privacy_consent_at = raw.privacy_consent_at;
-            // The legacy provider selector is intentionally not mapped to a
-            // second runtime provider. All text traffic now uses OpenCode Zen
-            // with a single preferred model; no fallback is configured.
-        }
+        // Review #7: no legacy text-provider migration anymore — the model
+        // lives only in `codex.model`; the old primary/fallback fields are
+        // dropped on load. Privacy consent is enforced by owner mode below.
         let mut settings = Self {
             enabled: raw.enabled.unwrap_or_else(default_true),
             voice_engine: raw.voice_engine.unwrap_or_default(),
@@ -354,7 +334,7 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             widget_position: raw.widget_position.unwrap_or_default(),
             standard_pipeline: raw.standard_pipeline.unwrap_or_default(),
             gemini_live: raw.gemini_live.unwrap_or_default(),
-            text_model,
+            text_model: raw.text_model.unwrap_or_default(),
             codex: raw.codex.unwrap_or_default(),
             advanced_view_enabled: raw.advanced_view_enabled.unwrap_or(false),
             voice_input: raw.voice_input.unwrap_or_default(),
@@ -368,11 +348,6 @@ impl<'de> Deserialize<'de> for JarvisSettings {
 impl Default for TextModelSettings {
     fn default() -> Self {
         Self {
-            provider: ModelProvider::Codex,
-            primary_model: default_primary_model(),
-            // No fallback: all text traffic uses the single preferred model.
-            fallback_model: String::new(),
-            fallback_enabled: false,
             privacy_consent: true,
             privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
         }
@@ -510,9 +485,6 @@ fn default_standard_tts() -> String {
 fn default_gemini_provider() -> String {
     "Gemini Live".to_string()
 }
-fn default_primary_model() -> String {
-    "gpt-5.6-luna".to_string()
-}
 fn default_groq_provider() -> String {
     "groq".to_string()
 }
@@ -563,36 +535,6 @@ fn default_edge_pitch() -> String {
 }
 fn default_max_spoken_chars() -> usize {
     800
-}
-
-fn migrate_legacy_primary_model(model: &str) -> String {
-    if is_legacy_longcat_model(model) || is_legacy_deepseek_model(model) {
-        default_primary_model()
-    } else {
-        model.to_string()
-    }
-}
-
-fn is_legacy_longcat_model(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
-        "longcat" | "longcat-2.0" | "longcat-2.0-free"
-    )
-}
-
-fn is_legacy_deepseek_model(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
-        "deepseek"
-            | "deepseek-chat"
-            | "deepseek-coder"
-            | "deepseek-reasoner"
-            | "deepseek-v3"
-            | "deepseek-v3.1"
-            | "deepseek-v4"
-            | "deepseek-v4-flash"
-            | "deepseek-v4-flash-free"
-    )
 }
 
 pub struct SettingsManager {
@@ -658,13 +600,9 @@ mod tests {
             "jarvis": { "modelProvider": "long_cat", "model": "legacy-model", "fallbackToDeepseek": true, "privacyConsent": true, "privacyConsentAt": "2026-08-07T00:00:00Z" }
         }"##;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(
-            settings.jarvis.text_model.provider,
-            ModelProvider::Codex
-        );
-        assert_eq!(settings.jarvis.text_model.primary_model, "legacy-model");
-        assert!(!settings.jarvis.text_model.fallback_enabled);
-        assert!(settings.jarvis.text_model.fallback_model.is_empty());
+        // Review #7: the legacy text-provider fields are dropped on load;
+        // the model lives only in jarvis.codex (default on first migration).
+        assert_eq!(settings.jarvis.codex.model, "gpt-5.6-luna");
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
         assert_eq!(settings.jarvis.voice_input.model, "whisper-large-v3-turbo");
@@ -681,8 +619,8 @@ mod tests {
     }
 
     #[test]
-    fn f513485_longcat_aliases_migrate_to_the_codex_primary() {
-        for legacy_model in ["LongCat-2.0", "LongCat", "longcat"] {
+    fn f513485_legacy_model_aliases_are_ignored_in_favor_of_codex_default() {
+        for legacy_model in ["LongCat-2.0", "LongCat", "longcat", "deepseek-chat"] {
             let legacy = format!(
                 r##"{{
                     "sidebar": {{ "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null }},
@@ -691,31 +629,11 @@ mod tests {
                 }}"##
             );
             let settings: AppSettings = serde_json::from_str(&legacy).unwrap();
-            // C10: the legacy Zen gateway is gone; legacy model ids now
-            // resolve to the Codex default model.
-            assert_eq!(
-                settings.jarvis.text_model.primary_model,
-                "gpt-5.6-luna"
-            );
-            assert!(!settings.jarvis.text_model.fallback_enabled);
-            assert!(settings.jarvis.text_model.fallback_model.is_empty());
+            // C10 + review #7: the legacy Zen gateway is gone and legacy
+            // model ids are NOT mapped anywhere — the only model is the
+            // Codex default until the user picks one in the settings UI.
+            assert_eq!(settings.jarvis.codex.model, "gpt-5.6-luna");
         }
-    }
-
-    #[test]
-    fn f513485_direct_deepseek_models_migrate_to_the_codex_primary() {
-        let legacy = r##"{
-            "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
-            "theme": { "accentColor": "#123456" },
-            "jarvis": { "modelProvider": "deepseek", "model": "deepseek-chat", "fallbackToDeepseek": true }
-        }"##;
-        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(
-            settings.jarvis.text_model.primary_model,
-            "gpt-5.6-luna"
-        );
-        assert!(!settings.jarvis.text_model.fallback_enabled);
-        assert!(settings.jarvis.text_model.fallback_model.is_empty());
     }
 
     #[test]
@@ -726,69 +644,42 @@ mod tests {
             "jarvis": { "modelProvider": "long_cat", "model": "my-private-model", "fallbackToDeepseek": true }
         }"##;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(settings.jarvis.text_model.primary_model, "my-private-model");
+        // Review #7: legacy custom ids are not preserved anywhere — the
+        // only model is jarvis.codex (default until chosen in the UI).
+        assert_eq!(settings.jarvis.codex.model, "gpt-5.6-luna");
     }
 
     #[test]
-    fn custom_deepseek_model_is_not_rewritten() {
-        let legacy = r##"{
-            "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
-            "theme": { "accentColor": "#123456" },
-            "jarvis": { "modelProvider": "long_cat", "model": "deepseek-enterprise-custom", "fallbackToDeepseek": true }
-        }"##;
-        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(
-            settings.jarvis.text_model.primary_model,
-            "deepseek-enterprise-custom"
-        );
-    }
-
-    #[test]
-    fn serialized_new_text_model_preserves_explicit_deepseek_primary() {
+    fn serialized_new_settings_keep_the_codex_model() {
         let mut original = AppSettings::default();
-        original.jarvis.text_model.primary_model = "deepseek-v4-flash-free".to_string();
+        original.jarvis.codex.model = "gpt-5.6-luna".to_string();
 
         let serialized = serde_json::to_string(&original).unwrap();
         let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
 
-        assert_eq!(
-            reloaded.jarvis.text_model.primary_model,
-            "deepseek-v4-flash-free"
-        );
+        assert_eq!(reloaded.jarvis.codex.model, "gpt-5.6-luna");
     }
 
     #[test]
     fn serialized_custom_text_model_is_not_rewritten_by_default_migration() {
+        // Review #7: the text-provider fields are gone; a serialized custom
+        // codex model round-trips untouched.
         let mut original = AppSettings::default();
-        original.jarvis.text_model.primary_model = "my-custom-primary".to_string();
-        original.jarvis.text_model.fallback_model = "my-custom-fallback".to_string();
+        original.jarvis.codex.model = "gpt-5.6-luna".to_string();
+        original.jarvis.codex.reasoning_effort = "medium".to_string();
 
         let serialized = serde_json::to_string(&original).unwrap();
         let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
 
-        assert_eq!(
-            reloaded.jarvis.text_model.primary_model,
-            "my-custom-primary"
-        );
-        assert_eq!(
-            reloaded.jarvis.text_model.fallback_model,
-            "my-custom-fallback"
-        );
+        assert_eq!(reloaded.jarvis.codex.model, "gpt-5.6-luna");
+        assert_eq!(reloaded.jarvis.codex.reasoning_effort, "medium");
     }
 
     #[test]
     fn new_defaults_are_owner_mode_safe() {
         let settings = AppSettings::default();
-        assert_eq!(
-            settings.jarvis.text_model.provider,
-            ModelProvider::Codex
-        );
-        assert_eq!(
-            settings.jarvis.text_model.primary_model,
-            "gpt-5.6-luna"
-        );
-        assert!(settings.jarvis.text_model.fallback_model.is_empty());
-        assert!(!settings.jarvis.text_model.fallback_enabled);
+        assert_eq!(settings.jarvis.codex.model, "gpt-5.6-luna");
+        assert_eq!(settings.jarvis.codex.reasoning_effort, "low");
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(settings.jarvis.text_model.privacy_consent_at.is_some());
         assert!(settings.jarvis.voice_input.enabled);

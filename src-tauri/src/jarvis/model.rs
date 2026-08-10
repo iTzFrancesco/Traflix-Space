@@ -8,7 +8,7 @@
 //! real: the shared `CancellationToken` aborts the wait and `turn/interrupt`
 //! (C9) cancels an in-flight plan at its next checkpoint.
 
-use crate::settings::store::{ModelProvider, TextModelSettings};
+use crate::settings::store::ModelProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::future::Future;
@@ -93,7 +93,6 @@ pub enum ModelError {
 
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
-    pub settings: TextModelSettings,
     pub messages: Vec<ModelMessage>,
     /// C10: workspace whose Codex thread carries this chat turn.
     pub workspace_id: String,
@@ -107,8 +106,6 @@ pub struct ModelCompletion {
     pub response: ModelResponse,
     pub provider: ModelProvider,
     pub model_used: String,
-    pub primary_model: String,
-    pub fallback_used: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,7 +127,9 @@ pub trait JarvisModelProvider: Send + Sync {
     /// Called with the AppHandle once (app setup) when the provider needs
     /// access to managed state (Codex runtime, thread registry).
     fn attach(&self, _app: AppHandle) {}
-    fn status(&self, settings: &TextModelSettings) -> ProviderStatus;
+    /// Review #7: status derives from the full Jarvis settings (the model
+    /// label is the single source of truth `codex.model`).
+    fn status(&self, jarvis: &crate::settings::store::JarvisSettings) -> ProviderStatus;
     fn complete(
         &self,
         request: ModelRequest,
@@ -162,20 +161,33 @@ impl JarvisModelProvider for CodexAppServerProvider {
         *self.app.lock().unwrap() = Some(app);
     }
 
-    fn status(&self, settings: &TextModelSettings) -> ProviderStatus {
+    fn status(&self, jarvis: &crate::settings::store::JarvisSettings) -> ProviderStatus {
         use crate::jarvis::codex::runtime::CodexRuntimeManager;
         use crate::jarvis::codex::types::CodexRuntimeState;
         let app = self.app.lock().unwrap().clone();
-        let runtime_state = app
+        let runtime = app
             .as_ref()
-            .and_then(|app| app.try_state::<CodexRuntimeManager>())
+            .and_then(|app| app.try_state::<CodexRuntimeManager>());
+        let runtime_state = runtime
+            .as_ref()
             .map(|runtime| runtime.current_state())
             .unwrap_or(CodexRuntimeState::Stopped);
-        let configured = runtime_state == CodexRuntimeState::Running;
+        // Review #4: ChatGPT subscription only — an API-key or other account
+        // is not a valid Jarvis backend (cost guard, spec §23).
+        let account_type = runtime.and_then(|runtime| runtime.current_account_type());
+        let configured = runtime_state == CodexRuntimeState::Running
+            && account_type.as_deref() == Some("chatgpt");
         let reason = if configured {
             None
         } else {
             Some(match runtime_state {
+                CodexRuntimeState::Running => {
+                    if account_type.as_deref() == Some("apiKey") {
+                        "codex_richiede_chatgpt".to_string()
+                    } else {
+                        "codex_autenticazione_non_verificata".to_string()
+                    }
+                }
                 CodexRuntimeState::Starting => "codex_avvio_in_corso".to_string(),
                 CodexRuntimeState::Crashed => "codex_arrestato".to_string(),
                 CodexRuntimeState::Failed => "codex_non_disponibile".to_string(),
@@ -184,12 +196,13 @@ impl JarvisModelProvider for CodexAppServerProvider {
         };
         ProviderStatus {
             provider: ModelProvider::Codex,
-            primary_model: settings.primary_model.clone(),
-            fallback_model: settings.fallback_model.clone(),
+            // Review #7: single source of truth for the model label.
+            primary_model: jarvis.codex.model.clone(),
+            fallback_model: String::new(),
             configured,
             fallback_enabled: false,
-            privacy_consent: settings.privacy_consent,
-            privacy_consent_at: settings.privacy_consent_at.clone(),
+            privacy_consent: jarvis.text_model.privacy_consent,
+            privacy_consent_at: jarvis.text_model.privacy_consent_at.clone(),
             primary_model_available: configured,
             circuit_breaker_until: None,
             circuit_breaker_reason: reason,
@@ -330,19 +343,11 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     return Err(ModelError::Cancelled);
                 }
             };
-            let model_used = if request.settings.primary_model.trim().starts_with("gpt-") {
-                request.settings.primary_model.clone()
-            } else {
-                // Settings migrated from the Zen era may still carry the old
-                // model id; the real model is the thread's (codex.model).
-                "gpt-5.6-luna".to_string()
-            };
+            let model_used = thread.model.clone();
             Ok(ModelCompletion {
                 response: ModelResponse { content: final_text },
                 provider: ModelProvider::Codex,
                 model_used,
-                primary_model: request.settings.primary_model.clone(),
-                fallback_used: false,
             })
         })
     }
@@ -389,8 +394,7 @@ mod tests {
     #[test]
     fn provider_without_attach_is_not_configured() {
         let provider = CodexAppServerProvider::new();
-        let settings = TextModelSettings::default();
-        let status = provider.status(&settings);
+        let status = provider.status(&crate::settings::store::JarvisSettings::default());
         assert!(!status.configured);
         assert_eq!(status.provider, ModelProvider::Codex);
     }
@@ -399,7 +403,6 @@ mod tests {
     async fn complete_without_app_is_not_configured() {
         let provider = CodexAppServerProvider::new();
         let request = ModelRequest {
-            settings: TextModelSettings::default(),
             messages: vec![user("ciao")],
             workspace_id: "w1".into(),
             request_id: None,
@@ -413,7 +416,6 @@ mod tests {
         // Same guard as the runtime path: the token is fresh, the request
         // carries only an assistant message → rejected before any RPC.
         let request = ModelRequest {
-            settings: TextModelSettings::default(),
             messages: vec![assistant("ciao")],
             workspace_id: "w1".into(),
             request_id: None,
@@ -427,25 +429,15 @@ mod tests {
     }
 
     #[test]
-    fn migrated_primary_model_label() {
-        let request = ModelRequest {
-            settings: TextModelSettings {
-                primary_model: "deepseek-v4-flash-free".into(),
-                ..TextModelSettings::default()
-            },
-            messages: vec![user("ciao")],
-            workspace_id: "w1".into(),
-            request_id: None,
-        };
-        // Without an app this never reaches the label logic; assert the
-        // helper directly on the settings shape used by complete().
-        let legacy = "deepseek-v4-flash-free";
-        let migrated = if legacy.trim().starts_with("gpt-") {
-            legacy.to_string()
-        } else {
-            "gpt-5.6-luna".to_string()
-        };
-        assert_eq!(migrated, "gpt-5.6-luna");
-        assert_eq!(request.settings.primary_model, "deepseek-v4-flash-free");
+    fn model_label_comes_from_the_codex_settings() {
+        // Review #7: single source of truth — status() reports the model
+        // from jarvis.codex, never a legacy text-provider field.
+        let mut jarvis = crate::settings::store::JarvisSettings::default();
+        jarvis.codex.model = "gpt-5.6-luna".into();
+        let provider = CodexAppServerProvider::new();
+        let status = provider.status(&jarvis);
+        assert_eq!(status.primary_model, "gpt-5.6-luna");
+        assert_eq!(status.fallback_model, "");
+        assert!(!status.fallback_enabled);
     }
 }
