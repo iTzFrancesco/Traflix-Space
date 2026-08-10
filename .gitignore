@@ -52,3 +52,6 @@ src-tauri/icons/
 
 # Python cache
 __pycache__/
+
+# Rust build cache on the secondary disk (D:/rust/target)
+D:/rust/target/
