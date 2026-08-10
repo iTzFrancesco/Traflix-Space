@@ -11,12 +11,10 @@ import type {
   CodexStreamingTurn,
   CodexUsageView,
   JarvisCodexThread,
-  JarvisProviderStatus,
   ModelContextViewV1,
 } from "../../lib/jarvis/types";
 
 export interface JarvisAdvancedSettingsProps {
-  providerStatus: JarvisProviderStatus | null;
   context: ModelContextViewV1 | null;
   contextStatus: string;
   contextError: string | null;
@@ -266,7 +264,7 @@ export function CodexModelSettingsSection({
           value={modelSettings.model}
           onChange={(event) => handleModelChange(event.target.value)}
           disabled={!running || modelsLoading}
-          className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+          className="mt-1 w-full rounded border border-neutral-border bg-neutral-elevated px-2 py-1.5 text-xs text-neutral-text"
         >
           {modelsLoading && <option>Caricamento catalogo…</option>}
           {!modelsLoading &&
@@ -295,7 +293,7 @@ export function CodexModelSettingsSection({
             })
           }
           disabled={!running}
-          className="mt-1 w-full rounded border border-neutral-border bg-surface-raised px-2 py-1.5 text-xs text-neutral-text"
+          className="mt-1 w-full rounded border border-neutral-border bg-neutral-elevated px-2 py-1.5 text-xs text-neutral-text"
         >
           {(efforts?.length
             ? efforts
@@ -581,7 +579,6 @@ function StreamingTurnView({ turn }: { turn: CodexStreamingTurn }) {
 }
 
 export function JarvisAdvancedSettings({
-  providerStatus,
   context,
   contextStatus,
   contextError,
@@ -646,19 +643,6 @@ export function JarvisAdvancedSettings({
               )}
             </div>
           ))}
-        </div>
-      )}
-
-      {providerStatus && (
-        <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
-          <div className="flex items-center justify-between gap-3">
-            <span className="font-medium text-neutral-text">Codex (App Server)</span>
-            <span className={providerStatus.configured ? "text-signal" : "text-warning"}>
-              {providerStatus.configured ? "configured" : "not configured"}
-            </span>
-          </div>
-          <p className="mt-1 font-mono">{providerStatus.primaryModel}</p>
-          <p>Stato runtime: {providerStatus.circuitBreakerReason ?? "inactive"}</p>
         </div>
       )}
 

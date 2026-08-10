@@ -98,7 +98,6 @@ export function defaultJarvisSettings(): JarvisSettings {
       reasoningEffort: "low",
       speakCommentary: true,
     },
-    advancedViewEnabled: false,
     voiceInput: {
       enabled: true,
       provider: "groq",

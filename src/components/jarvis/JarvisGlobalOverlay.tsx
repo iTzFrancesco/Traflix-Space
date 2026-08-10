@@ -414,7 +414,7 @@ export function JarvisGlobalOverlay() {
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
     void refreshRegistry();
-    if (settings.jarvis.advancedViewEnabled) void refreshContext();
+    void refreshContext();
     const interval = window.setInterval(() => void refreshRegistry(), 5000);
     const unsubscribe = subscribeAgentTurnCompleted(() => void refreshRegistry());
     return () => {
@@ -425,7 +425,6 @@ export function JarvisGlobalOverlay() {
     activeWorkspaceId,
     refreshContext,
     refreshRegistry,
-    settings.jarvis.advancedViewEnabled,
     settings.jarvis.enabled,
   ]);
 
@@ -441,14 +440,10 @@ export function JarvisGlobalOverlay() {
   }, [activeWorkspaceId, clearWorkspaceActivities]);
 
   useEffect(() => {
-    if (settingsOpen || settings.jarvis.advancedViewEnabled) {
+    if (settingsOpen || settings.jarvis.enabled) {
       void loadProviderStatus();
     }
-  }, [
-    loadProviderStatus,
-    settings.jarvis.advancedViewEnabled,
-    settingsOpen,
-  ]);
+  }, [loadProviderStatus, settings.jarvis.enabled, settingsOpen]);
 
   useEffect(() => {
     let disposed = false;

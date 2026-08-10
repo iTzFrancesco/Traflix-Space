@@ -75,7 +75,6 @@ export interface JarvisSettings {
   geminiLive: GeminiLiveSettings;
   textModel: TextModelSettings;
   codex: CodexModelSettings;
-  advancedViewEnabled: boolean;
   voiceInput: VoiceInputSettings;
   voiceOutput: VoiceOutputSettings;
 }

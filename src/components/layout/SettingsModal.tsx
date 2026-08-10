@@ -41,7 +41,7 @@ import type { JarvisAdvancedSettingsProps } from "../jarvis/JarvisAdvancedSettin
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
-  advanced?: Omit<JarvisAdvancedSettingsProps, "providerStatus">;
+  advanced?: JarvisAdvancedSettingsProps;
 }
 
 const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
@@ -59,7 +59,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
   const settingsError = useJarvisStore((state) => state.settingsError);
-  const providerStatus = useJarvisStore((state) => state.providerStatus);
   const codexRuntime = useJarvisStore((state) => state.codexRuntime);
   const codexAccount = useJarvisStore((state) => state.codexAccount);
   const codexAccountLoading = useJarvisStore((state) => state.codexAccountLoading);
@@ -267,19 +266,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
 
         <details className="details-panel">
           <summary>Diagnostica avanzata</summary>
-          <div className="mt-3">
-            <ToggleRow
-              label="Mostra diagnostica agenti"
-              description="Dettagli del registry e del Context Broker. Non vengono mostrati nell'interfaccia normale di Jarvis."
-              checked={jarvis.advancedViewEnabled}
-              onChange={(advancedViewEnabled) =>
-                updateJarvis((current) => ({
-                  ...current,
-                  advancedViewEnabled,
-                }))
-              }
-            />
-          </div>
           <CodexDiagnosticsSection
             runtime={codexRuntime}
             threads={codexThreads}
@@ -294,12 +280,9 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             }
             onRestart={() => void useJarvisStore.getState().restartCodex()}
           />
-          {jarvis.advancedViewEnabled && advanced && (
+          {advanced && (
             <div className="mt-4">
-              <JarvisAdvancedSettings
-                {...advanced}
-                providerStatus={providerStatus}
-              />
+              <JarvisAdvancedSettings {...advanced} />
             </div>
           )}
         </details>
