@@ -94,9 +94,6 @@ export function JarvisAdvancedSettings({
             </span>
           </div>
           <p className="mt-1 font-mono">{providerStatus.primaryModel}</p>
-          <p>
-            Fallback: {providerStatus.fallbackEnabled ? providerStatus.fallbackModel : "off"}
-          </p>
           <p>Circuit breaker: {providerStatus.circuitBreakerReason ?? "inactive"}</p>
         </div>
       )}

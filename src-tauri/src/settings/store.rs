@@ -166,9 +166,9 @@ pub struct TextModelSettings {
     pub provider: ModelProvider,
     #[serde(default = "default_primary_model")]
     pub primary_model: String,
-    #[serde(default = "default_fallback_model")]
+    #[serde(default)]
     pub fallback_model: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub fallback_enabled: bool,
     #[serde(default)]
     pub privacy_consent: bool,
@@ -256,9 +256,7 @@ struct LegacyJarvisSettings {
     voice_output: Option<VoiceOutputSettings>,
     // These fields were part of the first text-provider slice. They are read
     // only to migrate values; they are never serialized again.
-    model_provider: Option<String>,
     model: Option<String>,
-    fallback_to_deepseek: Option<bool>,
     privacy_consent: Option<bool>,
     privacy_consent_at: Option<String>,
 }
@@ -301,29 +299,15 @@ impl<'de> Deserialize<'de> for JarvisSettings {
         if !has_new_text_model {
             if let Some(model) = raw.model.filter(|value| !value.trim().is_empty()) {
                 text_model.primary_model = migrate_legacy_primary_model(&model);
-                if is_legacy_deepseek_model(&model) {
-                    text_model.fallback_model = default_fallback_model();
-                }
-            }
-            if let Some(enabled) = raw.fallback_to_deepseek {
-                text_model.fallback_enabled = enabled;
             }
             if let Some(consent) = raw.privacy_consent {
                 text_model.privacy_consent = consent;
             }
             text_model.privacy_consent_at = raw.privacy_consent_at;
             // The legacy provider selector is intentionally not mapped to a
-            // second runtime provider. All text traffic now uses OpenCode Zen.
-            if raw
-                .model_provider
-                .as_deref()
-                .is_some_and(is_legacy_deepseek_provider)
-            {
-                text_model.fallback_model = default_fallback_model();
-            }
+            // second runtime provider. All text traffic now uses OpenCode Zen
+            // with a single preferred model; no fallback is configured.
         }
-        migrate_text_model(&mut text_model);
-
         let mut settings = Self {
             enabled: raw.enabled.unwrap_or_else(default_true),
             voice_engine: raw.voice_engine.unwrap_or_default(),
@@ -347,8 +331,9 @@ impl Default for TextModelSettings {
         Self {
             provider: ModelProvider::OpenCodeZen,
             primary_model: default_primary_model(),
-            fallback_model: default_fallback_model(),
-            fallback_enabled: true,
+            // No fallback: all text traffic uses the single preferred model.
+            fallback_model: String::new(),
+            fallback_enabled: false,
             privacy_consent: true,
             privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
         }
@@ -488,9 +473,6 @@ fn default_gemini_provider() -> String {
 fn default_primary_model() -> String {
     "deepseek-v4-flash-free".to_string()
 }
-fn default_fallback_model() -> String {
-    "longcat-2.0-free".to_string()
-}
 fn default_groq_provider() -> String {
     "groq".to_string()
 }
@@ -543,15 +525,6 @@ fn default_max_spoken_chars() -> usize {
     800
 }
 
-fn migrate_text_model(settings: &mut TextModelSettings) {
-    let legacy_primary = settings.primary_model.trim().to_ascii_lowercase();
-    let legacy_fallback = settings.fallback_model.trim().to_ascii_lowercase();
-    if legacy_primary == "longcat-2.0-free" && legacy_fallback == "deepseek-v4-flash-free" {
-        settings.primary_model = default_primary_model();
-        settings.fallback_model = default_fallback_model();
-    }
-}
-
 fn migrate_legacy_primary_model(model: &str) -> String {
     if is_legacy_longcat_model(model) || is_legacy_deepseek_model(model) {
         default_primary_model()
@@ -579,13 +552,6 @@ fn is_legacy_deepseek_model(model: &str) -> bool {
             | "deepseek-v4"
             | "deepseek-v4-flash"
             | "deepseek-v4-flash-free"
-    )
-}
-
-fn is_legacy_deepseek_provider(provider: &str) -> bool {
-    matches!(
-        provider.trim().to_ascii_lowercase().as_str(),
-        "deepseek" | "deep_seek" | "deep-seek"
     )
 }
 
@@ -657,7 +623,8 @@ mod tests {
             ModelProvider::OpenCodeZen
         );
         assert_eq!(settings.jarvis.text_model.primary_model, "legacy-model");
-        assert!(settings.jarvis.text_model.fallback_enabled);
+        assert!(!settings.jarvis.text_model.fallback_enabled);
+        assert!(settings.jarvis.text_model.fallback_model.is_empty());
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
         assert_eq!(settings.jarvis.voice_input.model, "whisper-large-v3-turbo");
@@ -688,15 +655,13 @@ mod tests {
                 settings.jarvis.text_model.primary_model,
                 "deepseek-v4-flash-free"
             );
-            assert_eq!(
-                settings.jarvis.text_model.fallback_model,
-                "longcat-2.0-free"
-            );
+            assert!(!settings.jarvis.text_model.fallback_enabled);
+            assert!(settings.jarvis.text_model.fallback_model.is_empty());
         }
     }
 
     #[test]
-    fn f513485_direct_deepseek_models_migrate_to_the_free_zen_fallback() {
+    fn f513485_direct_deepseek_models_migrate_to_the_zen_primary() {
         let legacy = r##"{
             "sidebar": { "isCollapsed": false, "workspaceOrder": [], "activeWorkspaceId": null },
             "theme": { "accentColor": "#123456" },
@@ -707,10 +672,8 @@ mod tests {
             settings.jarvis.text_model.primary_model,
             "deepseek-v4-flash-free"
         );
-        assert_eq!(
-            settings.jarvis.text_model.fallback_model,
-            "longcat-2.0-free"
-        );
+        assert!(!settings.jarvis.text_model.fallback_enabled);
+        assert!(settings.jarvis.text_model.fallback_model.is_empty());
     }
 
     #[test]
@@ -782,10 +745,8 @@ mod tests {
             settings.jarvis.text_model.primary_model,
             "deepseek-v4-flash-free"
         );
-        assert_eq!(
-            settings.jarvis.text_model.fallback_model,
-            "longcat-2.0-free"
-        );
+        assert!(settings.jarvis.text_model.fallback_model.is_empty());
+        assert!(!settings.jarvis.text_model.fallback_enabled);
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(settings.jarvis.text_model.privacy_consent_at.is_some());
         assert!(settings.jarvis.voice_input.enabled);

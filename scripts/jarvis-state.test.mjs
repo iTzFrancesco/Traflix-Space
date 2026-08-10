@@ -419,7 +419,10 @@ test("voice failures are observable at every async boundary and rejected drafts 
 });
 
 test("Phase 8 planner remains semantic, typed and allowlisted", () => {
-  assert.match(chatSource, /conversational\.plan/);
+  // The planner tool name must stay OpenAI-compatible: dots in function
+  // names are rejected by OpenCode Zen with a 400 invalid_request_error.
+  assert.match(chatSource, /conversational_plan/);
+  assert.doesNotMatch(chatSource, /conversational\.plan/);
   assert.match(chatSource, /execute_plan\(/);
   assert.match(controlSource, /pub enum PlanOperation/);
   assert.match(controlSource, /AgentHandoff/);

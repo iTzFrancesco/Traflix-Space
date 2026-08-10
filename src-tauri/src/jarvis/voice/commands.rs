@@ -396,7 +396,13 @@ async fn finish_voice_stop(
         .await;
     let (next_status, transcript, error) = match result {
         Ok(text) => {
-            info!(request_id = %request_id, transcript_chars = text.chars().count(), "Voice STT request completed");
+            let preview: String = text.chars().take(200).collect();
+            info!(
+                request_id = %request_id,
+                transcript_chars = text.chars().count(),
+                transcript = %preview,
+                "Voice STT request completed"
+            );
             (VoiceRequestStatus::TranscriptReady, Some(text), None)
         }
         Err(code) => {

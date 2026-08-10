@@ -49,3 +49,6 @@ Thumbs.db
 /warp/
 
 src-tauri/icons/
+
+# Python cache
+__pycache__/

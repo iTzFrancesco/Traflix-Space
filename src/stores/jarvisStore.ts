@@ -488,13 +488,27 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       // The rejection happens in the frontend (chat busy, IPC failure, no
       // active workspace) and would otherwise be invisible in the backend
       // log; report the exact reason so voice failures are diagnosable.
+      // The backend state token only accepts [a-z0-9_.:-], so the human
+      // message is slugified here.
+      const reasonSlug = chatError
+        ? chatError
+            .toLowerCase()
+            .replace(/[àáâãä]/g, "a")
+            .replace(/[èéêë]/g, "e")
+            .replace(/[ìíîï]/g, "i")
+            .replace(/[òóôõö]/g, "o")
+            .replace(/[ùúûü]/g, "u")
+            .replace(/[^a-z0-9_.:-]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 96)
+        : "send-message-failed";
       reportFrontendDiagnosticCode(
         "jarvis-voice-submit-error",
         chatError ? "chat-rejected" : "submit-rejected",
         {
           workspaceId: origin.workspaceId,
           requestId,
-          state: chatError ?? "send-message-failed",
+          state: reasonSlug,
         },
       );
       set({

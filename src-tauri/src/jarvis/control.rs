@@ -8,6 +8,17 @@ use crate::jarvis::actions::{prompt_bytes, validate_agent_text};
 use crate::jarvis::agent_registry::session_id_for;
 use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
 use crate::jarvis::runtime_detector::normalize_provider;
+
+/// Provider alias resolution for plan execution. The pi agent is commonly
+/// named by its single letter ('p', 'agente P') in speech transcripts, which
+/// STT may deliver without the trailing 'i'; map it to the canonical 'pi'
+/// provider instead of rejecting or misreading it as another agent.
+fn normalize_plan_provider(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "p" => Some("pi".to_string()),
+        other => normalize_provider(other),
+    }
+}
 use crate::jarvis::types::{
     AgentSessionContext, AgentState, AgentTail, InvocationBinding, Provenance, TerminalSummary,
 };
@@ -95,7 +106,7 @@ impl ConversationalPlan {
         }
         for step in &self.operations {
             if let Some(provider) = &step.provider {
-                normalize_provider(provider)
+                normalize_plan_provider(provider)
                     .ok_or_else(|| format!("provider non supportato: {provider}"))?;
             }
             for value in [&step.target, &step.source, &step.destination, &step.prompt] {
@@ -340,12 +351,26 @@ pub async fn execute_plan(
                 warnings,
             };
         }
+        info!(
+            request_id = %invocation.request_id,
+            workspace_id = %invocation.target_workspace_id,
+            operation = ?step.operation,
+            provider = step.provider.as_deref().unwrap_or(""),
+            "Jarvis plan step executing"
+        );
         let result =
             execute_step(app, workspace, invocation, context, pending.as_ref(), &step).await;
         match result {
             Ok(step_response) => {
                 if !step_response.is_empty() {
-                    response = step_response;
+                    response = if response.trim().is_empty() {
+                        step_response
+                    } else {
+                        // Multi-operation plans (e.g. two agent opens) must
+                        // mention every executed action, not just the last
+                        // step's reply.
+                        format!("{response} {step_response}")
+                    };
                 }
                 // A clarification/confirmation is a hard conversational
                 // boundary. Never continue later plan operations after asking
@@ -433,7 +458,7 @@ async fn execute_step(
             } else {
                 step.prompt.clone().filter(|value| !value.trim().is_empty())
             };
-            let Some(provider) = step.provider.as_deref().and_then(normalize_provider) else {
+            let Some(provider) = step.provider.as_deref().and_then(normalize_plan_provider) else {
                 let question = "Quale agente vuoi aprire?".to_string();
                 put_clarification(app, invocation, step, question.clone());
                 return Ok(question);
@@ -736,12 +761,12 @@ async fn resolve_target(
     query: Option<&str>,
     provider: Option<&str>,
 ) -> TargetResolution {
-    let explicit_provider = provider.and_then(normalize_provider);
+    let explicit_provider = provider.and_then(normalize_plan_provider);
     let query_text = query.unwrap_or_default().trim();
     let query_provider = if query_text.is_empty() {
         None
     } else {
-        normalize_provider(query_text)
+        normalize_plan_provider(query_text)
     };
     // If the semantic query is only a provider name ("Codex"), constrain to
     // that provider first. With multiple sessions of the same provider this
@@ -1236,7 +1261,7 @@ async fn open_agent(
     provider: &str,
     initial_prompt: Option<String>,
 ) -> Result<OpenResult, String> {
-    let provider = normalize_provider(provider)
+    let provider = normalize_plan_provider(provider)
         .ok_or_else(|| format!("provider non supportato: {provider}"))?;
     let definition = app
         .state::<crate::agent::registry::AgentRegistry>()
@@ -1330,24 +1355,67 @@ async fn open_agent(
     );
 
     let command = provider_command(&definition);
-    if manager
-        .write_typed_for_generation(
+    info!(
+        terminal_id,
+        workspace_id = %workspace.id,
+        generation = runtime.generation,
+        provider = %provider,
+        "Agent open: writing launch command"
+    );
+    // A stalled PTY write (contended session lock, full pipe) must not hang
+    // the whole chat request: bound it and roll back the opened terminal.
+    let write_result = tokio::time::timeout(
+        Duration::from_secs(10),
+        manager.write_typed_for_generation(
             app,
             &terminal_id,
             runtime.generation,
             command.as_bytes(),
             TerminalInputOrigin::Internal,
-        )
-        .await
-        .is_err()
-    {
-        rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
-        return Err("non sono riuscito ad avviare l'agente nella PTY".to_string());
+        ),
+    )
+    .await;
+    match write_result {
+        Ok(Ok(())) => {
+            info!(
+                terminal_id,
+                workspace_id = %workspace.id,
+                generation = runtime.generation,
+                provider = %provider,
+                "Agent open: launch command written"
+            );
+        }
+        Ok(Err(_)) => {
+            rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
+            return Err("non sono riuscito ad avviare l'agente nella PTY".to_string());
+        }
+        Err(_elapsed) => {
+            warn!(
+                terminal_id,
+                workspace_id = %workspace.id,
+                generation = runtime.generation,
+                provider = %provider,
+                error_code = "agent-launch-write-timeout",
+                "Agent open: launch command write timed out"
+            );
+            rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
+            return Err(
+                "non sono riuscito ad avviare l'agente nella PTY (timeout di scrittura)"
+                    .to_string(),
+            );
+        }
     }
     if let Err(error) = wait_until_ready(app, &terminal_id, &runtime, &definition).await {
         rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
         return Err(error);
     }
+    info!(
+        terminal_id,
+        workspace_id = %workspace.id,
+        generation = runtime.generation,
+        provider = %provider,
+        "Agent open: readiness verified"
+    );
     let mut sent = false;
     if let Some(prompt) = initial_prompt {
         let prompt = match validate_agent_text(&prompt) {
@@ -1492,6 +1560,7 @@ async fn wait_until_ready(
     definition: &AgentDefinition,
 ) -> Result<(), String> {
     let deadline = Instant::now() + READINESS_TIMEOUT;
+    let mut last_heartbeat = Instant::now();
     loop {
         let snapshot = app
             .state::<TerminalManager>()
@@ -1517,6 +1586,19 @@ async fn wait_until_ready(
                 content: String::new(),
                 truncated: false,
             });
+        if last_heartbeat.elapsed() >= Duration::from_secs(5) {
+            last_heartbeat = Instant::now();
+            warn!(
+                terminal_id,
+                workspace_id = %expected_runtime.workspace_id,
+                generation = expected_runtime.generation,
+                process_id = ?expected_runtime.process_id,
+                provider = %definition.id,
+                elapsed_ms = deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
+                tail_chars = tail.content.chars().count(),
+                "Agent readiness still pending"
+            );
+        }
         let lower = tail.content.to_ascii_lowercase();
         if let Some(code) = startup_failure_code(&lower) {
             warn!(
@@ -1598,7 +1680,7 @@ fn readiness_evidence(
         && snapshot
             .observed_provider
             .as_deref()
-            .and_then(normalize_provider)
+            .and_then(normalize_plan_provider)
             .as_deref()
             == Some(definition.id.as_str());
     if process_tree_matches {
@@ -1695,7 +1777,7 @@ async fn restart_target(
     let provider = config
         .agent_id
         .as_deref()
-        .and_then(normalize_provider)
+        .and_then(normalize_plan_provider)
         .ok_or_else(|| "provider della sessione non riconosciuto".to_string())?;
     let definition = app
         .state::<crate::agent::registry::AgentRegistry>()
@@ -1987,6 +2069,39 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_provider_alias_maps_p_to_pi() {
+        assert_eq!(normalize_plan_provider("p"), Some("pi".to_string()));
+        assert_eq!(normalize_plan_provider("P"), Some("pi".to_string()));
+        assert_eq!(normalize_plan_provider("pi"), Some("pi".to_string()));
+        assert_eq!(normalize_plan_provider("codex"), Some("codex".to_string()));
+        assert_eq!(
+            normalize_plan_provider("opencode"),
+            Some("opencode".to_string())
+        );
+        // Free text is not a provider token; the backend must clarify.
+        assert_eq!(normalize_plan_provider(" agente P "), None);
+        assert_eq!(normalize_plan_provider("openai"), None);
+    }
+
+    #[test]
+    fn plan_validation_accepts_p_alias_provider() {
+        let plan = ConversationalPlan {
+            response: None,
+            operations: vec![ConversationStep {
+                operation: PlanOperation::AgentOpen,
+                provider: Some("p".to_string()),
+                target: None,
+                source: None,
+                destination: None,
+                prompt: Some("fai una task".to_string()),
+                confirmed: false,
+                allow_busy: false,
+            }],
+        };
+        assert!(plan.validate().is_ok());
+    }
 
     fn readiness_definition() -> AgentDefinition {
         AgentDefinition {

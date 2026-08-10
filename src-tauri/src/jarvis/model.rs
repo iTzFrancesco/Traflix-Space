@@ -8,12 +8,44 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
 pub const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
 pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
 pub const MAX_MODEL_PAYLOAD_BYTES: usize = 96 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 512 * 1024;
 const PRIMARY_BREAKER: Duration = Duration::from_secs(12 * 60);
+
+/// OpenCode Zen serves the long-context models from a separate gateway
+/// (mirrors the endpoint mapping in the reference Traflix-Jarvis engine).
+const ZEN_GO_MODELS: [&str; 1] = ["deepseek-v4-flash"];
+
+fn endpoint_for_model(endpoint: &str, model: &str) -> String {
+    if ZEN_GO_MODELS.contains(&model.trim()) {
+        endpoint.replace("/zen/v1/", "/zen/go/v1/")
+    } else {
+        endpoint.to_string()
+    }
+}
+
+/// ASCII-only preview of a provider response for diagnostics. The raw body
+/// can contain provider errors or content; only printable ASCII is kept so
+/// ANSI escapes and binary payloads cannot pollute structured logs, and the
+/// preview is capped far below the maximum response size.
+fn response_preview(payload: &[u8]) -> String {
+    const PREVIEW_BYTES: usize = 256;
+    payload
+        .iter()
+        .take(PREVIEW_BYTES)
+        .map(|byte| {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte as char
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelMessage {
@@ -284,9 +316,11 @@ impl OpenCodeZenProvider {
             return Err(ModelError::NotConfigured);
         };
         let body = build_payload(model, messages, tools)?;
+        let endpoint = endpoint_for_model(&self.endpoint, model);
+        debug!(model = %model, endpoint = %endpoint, "OpenCode Zen model request sent");
         let request = self
             .client
-            .post(&self.endpoint)
+            .post(&endpoint)
             .bearer_auth(api_key)
             .json(&body)
             .send();
@@ -295,19 +329,52 @@ impl OpenCodeZenProvider {
             result = request => result.map_err(classify_transport)?
         };
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let payload = read_bounded_response(response, cancellation.clone()).await?;
         if !status.is_success() {
+            warn!(
+                model = %model,
+                http_status = %status,
+                endpoint = %endpoint,
+                payload_bytes = payload.len(),
+                payload_preview = %response_preview(&payload),
+                "OpenCode Zen rejected the model request"
+            );
             return Err(classify_http(status, &payload));
         }
-        let parsed = serde_json::from_slice::<ChatResponse>(&payload)
-            .map_err(|_| ModelError::InvalidResponse)?;
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or(ModelError::InvalidResponse)?;
+        let parsed = serde_json::from_slice::<ChatResponse>(&payload).map_err(|error| {
+            warn!(
+                model = %model,
+                http_status = %status,
+                content_type = %content_type,
+                payload_bytes = payload.len(),
+                payload_preview = %response_preview(&payload),
+                parse_error = %error,
+                "OpenCode Zen returned a non-JSON body; model response treated as invalid"
+            );
+            ModelError::InvalidResponse
+        })?;
+        let choice = parsed.choices.into_iter().next().ok_or_else(|| {
+            warn!(
+                model = %model,
+                http_status = %status,
+                payload_preview = %response_preview(&payload),
+                "OpenCode Zen returned zero choices; model response treated as invalid"
+            );
+            ModelError::InvalidResponse
+        })?;
         let tool_calls = choice.message.tool_calls.unwrap_or_default();
         if choice.message.content.is_none() && tool_calls.is_empty() {
+            warn!(
+                model = %model,
+                http_status = %status,
+                "OpenCode Zen returned an empty message with no tool calls"
+            );
             return Err(ModelError::InvalidResponse);
         }
         Ok(ModelResponse {

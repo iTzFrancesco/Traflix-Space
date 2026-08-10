@@ -92,8 +92,9 @@ export function defaultJarvisSettings(): JarvisSettings {
     textModel: {
       provider: "open_code_zen",
       primaryModel: "deepseek-v4-flash-free",
-      fallbackModel: "longcat-2.0-free",
-      fallbackEnabled: true,
+      // No fallback model: all text traffic uses the single preferred model.
+      fallbackModel: "",
+      fallbackEnabled: false,
       privacyConsent: true,
       privacyConsentAt: OWNER_MODE_MARKER,
     },

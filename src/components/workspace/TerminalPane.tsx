@@ -1164,6 +1164,9 @@ export const TerminalPane = memo(function TerminalPane({
         // permanent failure once for the backend diagnostic log.
         retryWhileSettling();
         if (schedule.deadline === 0 && schedule.raf === null) {
+          const layoutElement = term.element?.parentElement ?? term.element;
+          const rect = layoutElement?.getBoundingClientRect();
+          const proposed = fitAddon?.proposeDimensions();
           reportFrontendDiagnosticCode(
             "terminal-fit-unstable",
             "layout-settle-expired",
@@ -1172,7 +1175,14 @@ export const TerminalPane = memo(function TerminalPane({
               workspaceId: terminalWorkspaceId,
               generation: terminalGenerationRef.current ?? undefined,
               processId: terminalProcessIdRef.current,
-              state: "settle-expired",
+              state: [
+                `doc=${document.visibilityState}`,
+                rect ? `w=${Math.round(rect.width)}` : "w=none",
+                rect ? `h=${Math.round(rect.height)}` : "h=none",
+                proposed ? `cols=${proposed.cols}` : "cols=none",
+                proposed ? `rows=${proposed.rows}` : "rows=none",
+                term.element ? "dom=y" : "dom=n",
+              ].join("_"),
             },
           );
         }
