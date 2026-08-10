@@ -141,7 +141,7 @@ export function JarvisGlobalOverlay() {
 
   // C8: progressive commentary speech worker. Speaks the completed
   // commentary/final items in FIFO order while Codex keeps working; never
-  // speaks over the final Zen reply (waits until TTS is idle) and stops
+  // speaks over the final reply (waits until TTS is idle) and stops
   // instantly on barge-in (user speech) or mute.
   useEffect(() => {
     if (speechWorkerBusyRef.current) return;

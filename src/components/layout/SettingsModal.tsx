@@ -68,6 +68,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const codexModels = useJarvisStore((state) => state.codexModels);
   const codexModelsLoading = useJarvisStore((state) => state.codexModelsLoading);
   const codexUsage = useJarvisStore((state) => state.codexUsage);
+  const codexRateLimits = useJarvisStore((state) => state.codexRateLimits);
   const codexThreads = useJarvisStore((state) => state.codexThreads);
   const codexStreamingTurns = useJarvisStore((state) => state.codexStreamingTurns);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -301,6 +302,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
                 models={codexModels}
                 modelsLoading={codexModelsLoading}
                 usage={codexUsage}
+                rateLimits={codexRateLimits}
                 modelSettings={jarvis.codex}
                 threads={codexThreads}
                 streamingTurns={

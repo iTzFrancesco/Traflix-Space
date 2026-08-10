@@ -6,6 +6,7 @@ import type {
   CodexAccountView,
   CodexModelCatalog,
   CodexModelSettings,
+  CodexRateLimitsView,
   CodexRuntimeStatus,
   CodexStreamingTurn,
   CodexUsageView,
@@ -34,6 +35,7 @@ export interface CodexSettingsSectionProps {
   models: CodexModelCatalog | null;
   modelsLoading: boolean;
   usage: CodexUsageView | null;
+  rateLimits: CodexRateLimitsView | null;
   modelSettings: CodexModelSettings;
   threads: Record<string, JarvisCodexThread>;
   /** C7: per-workspace streaming turns of the current workspace. */
@@ -44,6 +46,39 @@ export interface CodexSettingsSectionProps {
   onLogin: () => void;
   onLogout: () => void;
   onRestart: () => void;
+}
+
+function rateLimitSummary(snapshot: unknown): string | null {
+  // Defensive: the rate-limit schema is nested and evolving (spec §22); show
+  // known numeric fields when present, never a hardcoded estimate.
+  const read = (value: unknown): string | null => {
+    if (typeof value !== "object" || value === null) return null;
+    const entry = value as Record<string, unknown>;
+    const used = entry.used ?? entry.usage ?? entry.consumed;
+    const limit = entry.limit ?? entry.limitValue ?? entry.total;
+    if (typeof used === "number" && typeof limit === "number" && limit > 0) {
+      const percent = Math.round((used / limit) * 100);
+      const reset = entry.resetAt ?? entry.resetsAt;
+      const when = typeof reset === "string" ? ` · reset ${reset}` : "";
+      return `${percent}% (${used}/${limit})${when}`;
+    }
+    return null;
+  };
+  if (typeof snapshot !== "object" || snapshot === null) return null;
+  const root = snapshot as Record<string, unknown>;
+  const byId = root.rateLimitsByLimitId as Record<string, unknown> | undefined;
+  const buckets: string[] = [];
+  if (byId && typeof byId === "object") {
+    for (const [id, value] of Object.entries(byId)) {
+      const summary = read(value);
+      if (summary) buckets.push(`${id} ${summary}`);
+    }
+  }
+  if (buckets.length === 0) {
+    const summary = read(root.primary ?? root.codex);
+    if (summary) buckets.push(`primary ${summary}`);
+  }
+  return buckets.length > 0 ? buckets.join(" · ") : null;
 }
 
 function runtimeLabel(state: CodexRuntimeStatus["state"] | undefined): string {
@@ -92,6 +127,7 @@ export function CodexSettingsSection({
   models,
   modelsLoading,
   usage,
+  rateLimits,
   modelSettings,
   threads,
   streamingTurns,
@@ -263,7 +299,7 @@ export function CodexSettingsSection({
         </label>
       </div>
 
-      {/* C3: usage summary from account/usage/read. */}
+      {/* C3 + spec §22: usage summary from account/usage/read. */}
       {usage && (
         <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
           <p>
@@ -280,6 +316,14 @@ export function CodexSettingsSection({
               {usage.currentStreakDays ?? 0}d
             </span>
           </p>
+          {rateLimits && rateLimitSummary(rateLimits.snapshot) && (
+            <p className="mt-1">
+              Rate limits ·{" "}
+              <span className="font-mono text-neutral-text">
+                {rateLimitSummary(rateLimits.snapshot)}
+              </span>
+            </p>
+          )}
         </div>
       )}
 

@@ -25,7 +25,18 @@ Il bridge (C7) inoltra `item/*`, `AgentMessageDelta`, `turn/*` alla UI come
 `jarvis://chat-stream` (commentary progressivi, tool lifecycle, final). Il TTS
 progressivo (C8) parla i commentary completati. `turn/steer` e `turn/interrupt`
 (C9) indirizzano/cancellano il turno attivo; l'interrupt cancella anche il plan
-in esecuzione al checkpoint successivo.
+in esecuzione al checkpoint successivo. **`jarvis_cancel_chat` inoltra a sua
+volta `turn/interrupt`** (spec §18): il token locale e il turno server vengono
+fermati insieme (best-effort, idempotente).
+
+## Niente loop in `run_chat` (spec §27)
+
+Il vecchio `for round in 0..MAX_TOOL_ROUNDS` è stato **rimosso**: il provider
+Codex esegue `turn/start` una volta e il server tiene vivo il turno (i tool
+arrivano come server request `item/tool/call` e vengono risposti dal bridge).
+`run_chat` ora è: validate → context → checkpoint → `complete()` → response.
+Le regole permanenti di Jarvis vivono in `codex-home/AGENTS.md` (spec §10,
+scritto all'avvio del runtime), non più nel `system_prompt()` per-turno.
 
 ## Sicurezza (spec §5, §13, §25)
 

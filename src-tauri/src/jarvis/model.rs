@@ -31,8 +31,6 @@ pub struct ModelMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ModelToolCall>>,
 }
 
 impl ModelMessage {
@@ -41,7 +39,6 @@ impl ModelMessage {
             role: role.to_string(),
             content: content.into(),
             tool_call_id: None,
-            tool_calls: None,
         }
     }
 }
@@ -78,10 +75,12 @@ pub struct ModelFunctionDefinition {
     pub parameters: Value,
 }
 
+/// C10: the Codex provider returns only natural text (the turn's final
+/// agent message); dynamic tool calls arrive through the bridge
+/// (`codex/tools.rs`), never through this response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelResponse {
     pub content: String,
-    pub tool_calls: Vec<ModelToolCall>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,10 +283,7 @@ impl JarvisModelProvider for CodexAppServerProvider {
                 "gpt-5.6-luna".to_string()
             };
             Ok(ModelCompletion {
-                response: ModelResponse {
-                    content: final_text,
-                    tool_calls: Vec::new(),
-                },
+                response: ModelResponse { content: final_text },
                 provider: ModelProvider::Codex,
                 model_used,
                 primary_model: request.settings.primary_model.clone(),

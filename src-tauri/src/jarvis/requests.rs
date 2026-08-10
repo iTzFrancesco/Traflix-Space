@@ -73,6 +73,17 @@ impl ChatRequestRegistry {
         Ok(record.status)
     }
 
+    /// Spec §18: `jarvis_cancel_chat` also has to interrupt the active Codex
+    /// turn of the workspace owning the request; the record keeps the
+    /// workspace binding so the cancel path can reach the thread registry.
+    pub fn workspace_id_of(&self, request_id: &str) -> Option<String> {
+        self.requests
+            .lock()
+            .ok()?
+            .get(request_id)
+            .map(|record| record.workspace_id.clone())
+    }
+
     /// Linearize a tool proposal with cancellation. The request mutex is held
     /// while `operation` runs, so cancellation either wins before the action
     /// is created or is ordered after it and can discard that action before
@@ -115,6 +126,21 @@ mod tests {
     use crate::jarvis::actions::{PendingActionInput, PendingActionRegistry};
     use crate::jarvis::types::InvocationBinding;
     use serde_json::json;
+
+    #[test]
+    fn workspace_id_of_resolves_the_owning_workspace_until_cancel() {
+        let registry = ChatRequestRegistry::default();
+        registry.start("r1", "workspace-x").unwrap();
+        assert_eq!(registry.workspace_id_of("r1"), Some("workspace-x".to_string()));
+        // Unknown requests never resolve — cancel can't interrupt a foreign turn.
+        assert_eq!(registry.workspace_id_of("missing"), None);
+        // The binding survives until the record is removed (cancel keeps it
+        // so the interrupt path can still find the turn).
+        registry.cancel("r1").unwrap();
+        assert_eq!(registry.workspace_id_of("r1"), Some("workspace-x".to_string()));
+        registry.finish("r1");
+        assert_eq!(registry.workspace_id_of("r1"), None);
+    }
 
     #[test]
     fn requests_are_isolated_by_workspace_and_cancel_is_single_request() {
