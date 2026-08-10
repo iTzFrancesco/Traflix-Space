@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use super::rpc::{JsonRpcClient, ServerMessage};
 use super::types::{
     ClientInfo, CodexRuntimeState, CodexRuntimeStatus, CodexVersion, InitializeCapabilities,
-    InitializeParams, InitializeResult, MIN_SUPPORTED_CODEX_VERSION,
+    InitializeParams, InitializeResult, SUPPORTED_CODEX_VERSION,
 };
 
 /// Global Tauri event carrying runtime status snapshots to the UI.
@@ -94,6 +94,14 @@ struct RuntimeInner {
     server_rx: Option<mpsc::UnboundedReceiver<ServerMessage>>,
     executable: Option<PathBuf>,
     shutting_down: bool,
+    /// Review: bumped on every successful (re)start. Ephemeral threads and
+    /// turn correlation of a previous process are invalidated when the
+    /// generation changes (crash/restart).
+    generation: u64,
+    /// Review: cached `account.type` from `account/read` (chatgpt | apiKey |
+    /// other). Populated on start so the provider can enforce the
+    /// ChatGPT-subscription-only cost guard synchronously.
+    account_type: Option<String>,
 }
 
 impl CodexRuntimeManager {
@@ -114,6 +122,8 @@ impl CodexRuntimeManager {
                 server_rx: None,
                 executable: None,
                 shutting_down: false,
+                generation: 0,
+                account_type: None,
             })),
         }
     }
@@ -163,19 +173,23 @@ impl CodexRuntimeManager {
     async fn start(&self) -> Result<(), RuntimeError> {
         let executable = self.resolve_executable().await?;
 
-        // Version gate (spec §25: fail closed below minimum supported).
+        // Version gate (spec §25 + review: fail closed, also on unparseable
+        // output — outside the pinned 0.147.x contract we refuse to guess).
         if let Some(version) = probe_version(&executable).await {
-            match CodexVersion::parse_cli(&version) {
-                Some(parsed) if !parsed.is_supported() => {
-                    let err = RuntimeError::VersionTooOld {
-                        found: version,
-                        minimum: MIN_SUPPORTED_CODEX_VERSION,
-                    };
-                    self.set_failed(&err).await;
-                    return Err(err);
+            let supported = match CodexVersion::parse_cli(&version) {
+                Some(parsed) => parsed.is_supported(),
+                None => {
+                    warn!(version, "unparseable codex version; failing closed");
+                    false
                 }
-                None => warn!(version, "unparseable codex version; proceeding"),
-                _ => {}
+            };
+            if !supported {
+                let err = RuntimeError::VersionTooOld {
+                    found: version,
+                    minimum: SUPPORTED_CODEX_VERSION,
+                };
+                self.set_failed(&err).await;
+                return Err(err);
             }
             self.inner.lock().await.version = Some(version);
         }
@@ -290,9 +304,37 @@ impl CodexRuntimeManager {
                     inner.codex_home = Some(init.codex_home.clone());
                     inner.platform = Some(init.platform_os.clone());
                     inner.consecutive_crashes = 0;
+                    // Review: a new process is up — bump the generation so
+                    // ephemeral threads/state of a previous process die.
+                    inner.generation += 1;
+                    let generation = inner.generation;
                     let status = snapshot(&inner);
                     drop(inner);
                     let _ = self.app.emit(RUNTIME_STATUS_EVENT, status);
+
+                    // Review: invalidate everything bound to an older process
+                    // (ephemeral threads live in the App Server memory).
+                    if generation > 1 {
+                        if let Some(threads) = self
+                            .app
+                            .try_state::<super::threads::ThreadRegistry>()
+                            .map(|state| state.inner().clone())
+                        {
+                            threads.on_runtime_restarted(generation).await;
+                        }
+                    }
+
+                    // Review: cache the account type so the provider can
+                    // enforce the ChatGPT-subscription-only cost guard.
+                    // Best-effort: not blocking startup when unauthenticated.
+                    if let Ok(result) = client.request("account/read", json!({})).await {
+                        let account_type = result
+                            .get("account")
+                            .and_then(|account| account.get("type"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        self.inner.lock().await.account_type = account_type;
+                    }
                 }
                 info!(user_agent = %init.user_agent, "codex app-server runtime ready");
                 // Hand the server-notification channel to the account bridge
@@ -355,6 +397,7 @@ impl CodexRuntimeManager {
                 inner.client = None;
                 inner.server_rx = None;
                 inner.pid = None;
+                inner.account_type = None;
                 if inner.shutting_down {
                     inner.state = CodexRuntimeState::Stopped;
                     return;
@@ -369,6 +412,16 @@ impl CodexRuntimeManager {
                 (false, crashes)
             };
             error!(status, "codex app-server exited unexpectedly");
+
+            // Review: fail pending chat waiters right away — the turn they
+            // wait on died with the process (no 90s hang while we restart).
+            if let Some(threads) = this
+                .app
+                .try_state::<super::threads::ThreadRegistry>()
+                .map(|state| state.inner().clone())
+            {
+                threads.on_runtime_crashed().await;
+            }
 
             if crashes <= MAX_CONSECUTIVE_CRASHES {
                 warn!(attempt = crashes, "restarting codex app-server after crash");
@@ -407,6 +460,7 @@ impl CodexRuntimeManager {
         inner.client = None;
         inner.server_rx = None;
         inner.pid = None;
+        inner.account_type = None;
         emit_status(&self.app, &*inner);
     }
 
@@ -481,9 +535,26 @@ impl CodexRuntimeManager {
             .unwrap_or(CodexRuntimeState::Stopped)
     }
 
+    /// Review: cached `account.type` for the running process (None when
+    /// stopped, not yet read, or contended). Sync — used by the provider
+    /// `status()` path.
+    pub fn current_account_type(&self) -> Option<String> {
+        self.inner.try_lock().ok().and_then(|inner| inner.account_type.clone())
+    }
+
+    /// Current runtime process generation (bumped on every successful
+    /// (re)start). Threads bound to older generations are stale.
+    pub async fn generation(&self) -> u64 {
+        self.inner.lock().await.generation
+    }
+
+    /// Refreshes the cached account type (used by the provider when the
+    /// boot-time cache was not yet populated).
+    pub async fn set_account_type(&self, account_type: Option<String>) {
+        self.inner.lock().await.account_type = account_type;
+    }
+
     /// Live RPC client when Running, or the specific failure reason.
-    /// Consumed by later chunks (account C2, models C3, threads C4).
-    #[allow(dead_code)]
     pub async fn client(&self) -> Result<Arc<JsonRpcClient>, RuntimeError> {
         let inner = self.inner.lock().await;
         match (&inner.client, inner.state) {

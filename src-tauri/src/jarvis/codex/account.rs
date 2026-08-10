@@ -132,39 +132,51 @@ async fn emit_chat_stream(
     }
 }
 
-/// C10: captures the text of a completed agent message item so the chat
-/// provider can return it as the final answer on `turn/completed`. Only
-/// complete text items are stored (defensive: missing/empty text never
+/// C10 + review: pure extraction of the final agent message text from a
+/// completed-item notification. The authoritative source is `item/completed`
+/// with `item.type = "agentMessage"` (official App Server protocol); all
+/// `content[]` text blocks are joined (not just the first one). Returns
+/// `None` for non-agentMessage items (tool metadata) and empty text.
+fn final_message_text(params: &Value) -> Option<String> {
+    let item_type = params
+        .get("item")
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)?;
+    if item_type != "agentMessage" {
+        return None;
+    }
+    let content = params
+        .get("item")
+        .and_then(|item| item.get("content"))
+        .and_then(Value::as_array)?;
+    let mut parts: Vec<String> = Vec::new();
+    for block in content {
+        if let Some(text) = block.get("text").and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+/// C10 + review: stores the final text of a completed agent message item so
+/// the chat provider can return it as the final answer on `turn/completed`.
+/// Only complete text items are stored (defensive: missing/empty text never
 /// overwrites an earlier final candidate).
 async fn capture_final_message_text(threads: &ThreadRegistry, params: &Value) {
     let Some(thread_id) = params.get("threadId").and_then(Value::as_str) else {
         return;
     };
-    let Some(item_type) = params
-        .get("item")
-        .and_then(|item| item.get("type"))
-        .and_then(Value::as_str)
-    else {
+    let Some(text) = final_message_text(params) else {
         return;
     };
-    if item_type != "agentMessage" {
-        return;
-    }
-    let Some(text) = params
-        .get("item")
-        .and_then(|item| item.get("content"))
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|first| first.get("text"))
-        .and_then(Value::as_str)
-    else {
-        return;
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        return;
-    }
-    threads.set_last_message_text(thread_id, text.to_string()).await;
+    threads.set_last_message_text(thread_id, text).await;
 }
 
 /// Long-lived bridge: consumes App Server notifications and forwards the
@@ -276,10 +288,14 @@ pub fn spawn_account_bridge(
             if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" {
                 if let Some(threads) = &threads {
                     emit_chat_stream(&app, threads, &method, &params).await;
-                    // C10: capture the final agent message text of the turn
-                    // (content may be empty for items that only carry tool
-                    // metadata — only complete text items are stored).
-                    if method == "AgentMessageThreadItem" {
+                    // C10 + review: capture the final agent message text of
+                    // the turn. `item/completed` with item.type
+                    // "agentMessage" is the authoritative final state of the
+                    // official protocol; AgentMessageThreadItem is a legacy
+                    // alias kept for compatibility. Content may be empty for
+                    // items that only carry tool metadata — only complete
+                    // text items are stored.
+                    if method == "item/completed" || method == "AgentMessageThreadItem" {
                         capture_final_message_text(
                             threads,
                             params.as_ref().unwrap_or(&serde_json::Value::Null),
@@ -484,6 +500,46 @@ mod tests {
         assert_eq!(body["type"], "chatgpt");
         assert_eq!(body["useHostedLoginSuccessPage"], true);
         assert_eq!(body["appBrand"], "chatgpt");
+    }
+
+    #[tokio::test]
+    async fn capture_final_message_text_joins_all_blocks_on_item_completed() {
+        // Official protocol: item/completed with item.type = agentMessage is
+        // the authoritative final state (review #1).
+        let text = final_message_text(&json!({
+            "threadId": "t1",
+            "turnId": "tu1",
+            "item": {
+                "id": "i1",
+                "type": "agentMessage",
+                "content": [
+                    { "type": "outputText", "text": "Prima parte." },
+                    { "type": "outputText", "text": "  Seconda parte.  " }
+                ]
+            }
+        }));
+        assert_eq!(text.as_deref(), Some("Prima parte.\n\nSeconda parte."));
+
+        // Legacy AgentMessageThreadItem alias still parses (compatibility).
+        let legacy = final_message_text(&json!({
+            "threadId": "t1",
+            "item": { "type": "agentMessage", "content": [{ "text": "Legacy" }] }
+        }));
+        assert_eq!(legacy.as_deref(), Some("Legacy"));
+
+        // Non-agentMessage items (tool metadata) never become the final.
+        let tool_item = final_message_text(&json!({
+            "threadId": "t1",
+            "item": { "type": "toolCall", "content": [] }
+        }));
+        assert_eq!(tool_item, None);
+
+        // Empty/whitespace-only text is never returned.
+        let empty = final_message_text(&json!({
+            "threadId": "t1",
+            "item": { "type": "agentMessage", "content": [{ "text": "   " }] }
+        }));
+        assert_eq!(empty, None);
     }
 
     #[test]

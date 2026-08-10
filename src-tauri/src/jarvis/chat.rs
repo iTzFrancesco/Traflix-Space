@@ -400,6 +400,9 @@ async fn run_chat(
                 // C10: the completion runs on the workspace's Codex
                 // thread; the provider needs the binding.
                 workspace_id: request.invocation.target_workspace_id.clone(),
+                // Review #12: correlate the streamed turn to this app
+                // request (turn_id -> request_id telemetry).
+                request_id: Some(request.invocation.request_id.clone()),
             },
             cancellation.clone(),
         )

@@ -44,6 +44,11 @@ pub struct JarvisCodexThread {
     pub created_at: u64,
     pub status: String,
     pub active_turn_id: Option<String>,
+    /// Review: runtime generation that created this thread. Ephemeral
+    /// threads live in the App Server process memory: after a crash/restart
+    /// the record is stale and must be recreated. Never serialized.
+    #[serde(skip)]
+    pub runtime_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,17 +180,9 @@ impl ThreadRegistry {
 
     /// Returns the thread for `workspace_id`, creating it (or recreating it
     /// when the persisted model/reasoning changed — spec §22: a significant
-    /// model change starts a fresh thread) on first use.
+    /// model change starts a fresh thread — or when the thread belongs to a
+    /// previous runtime process) on first use.
     pub async fn ensure_thread(&self, workspace_id: &str) -> Result<JarvisCodexThread, RuntimeError> {
-        {
-            let threads = self.threads.lock().await;
-            if let Some(thread) = threads.get(workspace_id) {
-                // Model is fixed at thread creation; C3 settings are read at
-                // start time, so a stale thread with a different model is
-                // recreated by the caller path (delete + start below).
-                return Ok(thread.clone());
-            }
-        }
         let settings = match self
             .app
             .try_state::<crate::settings::store::SettingsManager>()
@@ -193,6 +190,24 @@ impl ThreadRegistry {
             Some(manager) => manager.get().await.jarvis.codex.clone(),
             None => CodexModelSettings::default(),
         };
+        let generation = self.runtime.generation().await;
+        {
+            let threads = self.threads.lock().await;
+            if let Some(thread) = threads.get(workspace_id) {
+                // Review #2 + #5: the record is only reusable when it belongs
+                // to the current runtime process AND still matches the
+                // current model/reasoning settings. Ephemeral threads die
+                // with their App Server process; a settings change must
+                // start a fresh thread (single source of truth:
+                // jarvis.codex.model + reasoningEffort).
+                if thread.runtime_generation == generation
+                    && thread.model == settings.model
+                    && thread.reasoning_effort == settings.reasoning_effort
+                {
+                    return Ok(thread.clone());
+                }
+            }
+        }
         self.start_thread(workspace_id, &settings).await
     }
 
@@ -232,6 +247,7 @@ impl ThreadRegistry {
             created_at: now_millis(),
             status: "idle".into(),
             active_turn_id: None,
+            runtime_generation: self.runtime.generation().await,
         };
         self.threads
             .lock()
@@ -355,6 +371,36 @@ impl ThreadRegistry {
         self.last_message_text.lock().await.remove(thread_id);
         if let Some(tx) = self.chat_waiters.lock().await.remove(thread_id) {
             let _ = tx.send(outcome);
+        }
+    }
+
+    /// Review #2: the App Server process died — fail every pending chat
+    /// waiter immediately (otherwise the provider would hang until the turn
+    /// deadline) and drop the turn correlation of the dead process.
+    pub async fn on_runtime_crashed(&self) {
+        self.fail_all_waiters().await;
+        self.request_ids.lock().await.clear();
+    }
+
+    /// Review #2: a new App Server process is running. Ephemeral threads
+    /// lived in the old process memory: drop records bound to older
+    /// generations, clear stale final-text state, and fail any waiter that
+    /// survived (e.g. a manual restart while a turn was active).
+    pub async fn on_runtime_restarted(&self, generation: u64) {
+        self.fail_all_waiters().await;
+        self.request_ids.lock().await.clear();
+        self.last_message_text.lock().await.clear();
+        retain_current_generation(&mut *self.threads.lock().await, generation);
+        self.emit_snapshot().await;
+    }
+
+    async fn fail_all_waiters(&self) {
+        let waiters = {
+            let mut map = self.chat_waiters.lock().await;
+            std::mem::take(&mut *map)
+        };
+        for (_, tx) in waiters {
+            let _ = tx.send(TurnOutcome::Interrupted);
         }
     }
 
@@ -537,6 +583,15 @@ impl ThreadRegistry {
     }
 }
 
+/// Review #2: pure helper — drops thread records bound to a previous
+/// runtime process generation (ephemeral threads die with their server).
+fn retain_current_generation(
+    threads: &mut HashMap<String, JarvisCodexThread>,
+    generation: u64,
+) {
+    threads.retain(|_, thread| thread.runtime_generation == generation);
+}
+
 /// Pure state transition for a thread record given a server notification.
 /// Returns `true` when the notification changed the record.
 #[cfg(test)]
@@ -652,6 +707,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn threads_of_older_runtime_generations_are_dropped_on_restart() {
+        // Review #2: after a crash/restart the ephemeral threads of the old
+        // process must not survive in the registry.
+        let mut threads = HashMap::new();
+        threads.insert(
+            "w1".into(),
+            JarvisCodexThread {
+                thread_id: "t-old".into(),
+                workspace_id: "w1".into(),
+                model: "gpt-5.6-luna".into(),
+                reasoning_effort: "low".into(),
+                created_at: 0,
+                status: "idle".into(),
+                active_turn_id: None,
+                runtime_generation: 1,
+            },
+        );
+        threads.insert(
+            "w2".into(),
+            JarvisCodexThread {
+                thread_id: "t-current".into(),
+                workspace_id: "w2".into(),
+                model: "gpt-5.6-luna".into(),
+                reasoning_effort: "low".into(),
+                created_at: 0,
+                status: "idle".into(),
+                active_turn_id: None,
+                runtime_generation: 2,
+            },
+        );
+        retain_current_generation(&mut threads, 2);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads["w2"].thread_id, "t-current");
+        assert!(threads.get("w1").is_none());
+    }
+
+    #[test]
     fn codex_home_dir_is_under_app_data() {
         // Pure path assertion: the directory is created lazily by the
         // runtime; here we only verify the layout contract.
@@ -669,6 +761,7 @@ mod tests {
             created_at: 0,
             status: "idle".into(),
             active_turn_id: None,
+            runtime_generation: 1,
         };
         let started = json!({ "threadId": "t1", "turn": { "id": "turn-1" } });
         assert!(apply_notification_to_record(&mut record, "turn/started", &Some(started)));
@@ -704,6 +797,7 @@ mod tests {
                 created_at: 0,
                 status: "idle".into(),
                 active_turn_id: None,
+                runtime_generation: 1,
             },
         );
         // No thread at all → hard error.

@@ -10,8 +10,7 @@
 
 use crate::settings::store::{ModelProvider, TextModelSettings};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -98,6 +97,9 @@ pub struct ModelRequest {
     pub messages: Vec<ModelMessage>,
     /// C10: workspace whose Codex thread carries this chat turn.
     pub workspace_id: String,
+    /// Review #12: app request id for turn correlation (`turn_id ->
+    /// request_id` streaming telemetry). None for non-chat callers.
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +209,40 @@ impl JarvisModelProvider for CodexAppServerProvider {
                 .try_state::<crate::jarvis::codex::threads::ThreadRegistry>()
                 .ok_or(ModelError::NotConfigured)?;
 
+            // Review #4: ChatGPT subscription only. The API-key/other account
+            // types are not valid Jarvis backends (cost guard, spec §23);
+            // the boot-time cache may race the first message, so re-read
+            // account/read once before refusing.
+            let runtime = app
+                .try_state::<crate::jarvis::codex::runtime::CodexRuntimeManager>()
+                .ok_or(ModelError::NotConfigured)?;
+            let account_type = match runtime.current_account_type() {
+                Some(account_type) => Some(account_type),
+                None => {
+                    let account_type = match runtime.client().await {
+                        Ok(client) => match client.request("account/read", json!({})).await {
+                            Ok(result) => result
+                                .get("account")
+                                .and_then(|account| account.get("type"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
+                    };
+                    runtime.set_account_type(account_type.clone()).await;
+                    account_type
+                }
+            };
+            if account_type.as_deref() != Some("chatgpt") {
+                warn!(
+                    workspace_id = %request.workspace_id,
+                    account_type = ?account_type,
+                    "codex chat provider: ChatGPT subscription required"
+                );
+                return Err(ModelError::NotConfigured);
+            }
+
             // Resolve the workspace thread, register the completion waiter
             // BEFORE turn/start (no race with a very fast turn), then start.
             let thread = threads
@@ -223,7 +259,7 @@ impl JarvisModelProvider for CodexAppServerProvider {
             let (tx, rx) = oneshot::channel();
             threads.register_chat_waiter(&thread.thread_id, tx).await;
             let turn_id = match threads
-                .start_turn(&request.workspace_id, &text, None)
+                .start_turn(&request.workspace_id, &text, request.request_id.as_deref())
                 .await
             {
                 Ok(turn_id) => turn_id,
@@ -247,6 +283,15 @@ impl JarvisModelProvider for CodexAppServerProvider {
             let outcome = tokio::select! {
                 _ = cancellation.cancelled() => {
                     warn!(workspace_id = %request.workspace_id, "codex chat turn cancelled by caller");
+                    // Review #3: same as the manual cancel path — stop the
+                    // server-side turn too (plan token first, then
+                    // turn/interrupt), best-effort and idempotent.
+                    if let Some(tools) = app.try_state::<crate::jarvis::codex::tools::CodexToolService>() {
+                        if let Err(err) = threads.interrupt_turn(&request.workspace_id, tools.inner()).await {
+                            debug!(error = %err, "cancel: best-effort turn/interrupt failed");
+                        }
+                    }
+                    threads.dismiss_chat_waiter(&thread.thread_id).await;
                     return Err(ModelError::Cancelled);
                 }
                 result = rx => match result {
@@ -257,6 +302,16 @@ impl JarvisModelProvider for CodexAppServerProvider {
                 },
                 _ = tokio::time::sleep(TURN_DEADLINE) => {
                     warn!(workspace_id = %request.workspace_id, "codex chat turn timed out");
+                    // Review #3: the local deadline must ALSO stop the
+                    // server-side turn. Without this the model could keep
+                    // reasoning and later fire a conversational.plan even
+                    // though the caller already got a Timeout.
+                    if let Some(tools) = app.try_state::<crate::jarvis::codex::tools::CodexToolService>() {
+                        if let Err(err) = threads.interrupt_turn(&request.workspace_id, tools.inner()).await {
+                            debug!(error = %err, "timeout: best-effort turn/interrupt failed");
+                        }
+                    }
+                    threads.dismiss_chat_waiter(&thread.thread_id).await;
                     return Err(ModelError::Timeout);
                 }
             };
@@ -347,6 +402,7 @@ mod tests {
             settings: TextModelSettings::default(),
             messages: vec![user("ciao")],
             workspace_id: "w1".into(),
+            request_id: None,
         };
         let result = provider.complete(request, CancellationToken::new()).await;
         assert_eq!(result, Err(ModelError::NotConfigured));
@@ -360,6 +416,7 @@ mod tests {
             settings: TextModelSettings::default(),
             messages: vec![assistant("ciao")],
             workspace_id: "w1".into(),
+            request_id: None,
         };
         // No app attached: the NotConfigured check fires first on this path,
         // so we validate the guard order (payload is validated after attach);
@@ -378,6 +435,7 @@ mod tests {
             },
             messages: vec![user("ciao")],
             workspace_id: "w1".into(),
+            request_id: None,
         };
         // Without an app this never reaches the label logic; assert the
         // helper directly on the settings shape used by complete().

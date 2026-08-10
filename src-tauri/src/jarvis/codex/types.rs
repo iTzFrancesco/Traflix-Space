@@ -72,10 +72,13 @@ pub struct CodexRuntimeStatus {
     pub restart_count: u32,
 }
 
-/// Minimum supported App Server version. The protocol surface (especially
-/// dynamic tools) is experimental: below this version we fail closed instead
-/// of trying to interpret unknown payloads.
-pub const MIN_SUPPORTED_CODEX_VERSION: (u32, u32, u32) = (0, 147, 0);
+/// Supported App Server version. The protocol surface (especially dynamic
+/// tools) is experimental: Jarvis is verified against the **0.147.x** wire
+/// contract (dynamic-tool server requests are answered with
+/// `{content: [...]}`). The official protocol has since moved to
+/// `{contentItems, success}` — outside the verified minor we fail closed
+/// instead of guessing at unknown payload shapes.
+pub const SUPPORTED_CODEX_VERSION: (u32, u32, u32) = (0, 147, 0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexVersion {
@@ -105,15 +108,18 @@ impl CodexVersion {
         })
     }
 
+    /// Review: exact minor pin. Only `0.147.x` is supported — the official
+    /// dynamicTools response moved to `{contentItems, success}`, so any
+    /// other minor would be parsed with the wrong contract.
     pub fn is_supported(&self) -> bool {
-        let (min_major, min_minor, min_patch) = MIN_SUPPORTED_CODEX_VERSION;
-        (self.major, self.minor, self.patch) >= (min_major, min_minor, min_patch)
+        let (major, minor, _) = SUPPORTED_CODEX_VERSION;
+        self.major == major && self.minor == minor
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CodexVersion, MIN_SUPPORTED_CODEX_VERSION};
+    use super::{CodexVersion, SUPPORTED_CODEX_VERSION};
 
     #[test]
     fn parses_cli_version_output() {
@@ -140,33 +146,26 @@ mod tests {
     }
 
     #[test]
-    fn minimum_supported_version_boundary() {
-        let (maj, min, pat) = MIN_SUPPORTED_CODEX_VERSION;
-        assert!(
-            CodexVersion {
-                major: maj,
-                minor: min,
-                patch: pat
-            }
-            .is_supported()
-        );
-        assert!(CodexVersion {
-            major: maj,
-            minor: min,
-            patch: pat + 1
-        }
-        .is_supported());
-        assert!(!CodexVersion {
-            major: maj,
-            minor: min.saturating_sub(1),
-            patch: 999
-        }
-        .is_supported());
-        assert!(CodexVersion {
-            major: maj + 1,
-            minor: 0,
-            patch: 0
-        }
-        .is_supported());
+    fn supported_version_is_pinned_to_the_verified_minor() {
+        // 0.147.x is the verified contract (dynamic tools `{content: [...]}`).
+        assert!(CodexVersion { major: 0, minor: 147, patch: 0 }.is_supported());
+        assert!(CodexVersion { major: 0, minor: 147, patch: 9 }.is_supported());
+        // Older minors and any other minor/major fail closed: the official
+        // protocol moved to `{contentItems, success}` for dynamic tools.
+        assert!(!CodexVersion { major: 0, minor: 146, patch: 0 }.is_supported());
+        assert!(!CodexVersion { major: 0, minor: 148, patch: 0 }.is_supported());
+        assert!(!CodexVersion { major: 1, minor: 147, patch: 0 }.is_supported());
+    }
+
+    #[test]
+    fn supported_version_boundary() {
+        let (maj, min, _pat) = SUPPORTED_CODEX_VERSION;
+        // Any patch of the pinned minor is fine.
+        assert!(CodexVersion { major: maj, minor: min, patch: 0 }.is_supported());
+        assert!(CodexVersion { major: maj, minor: min, patch: 999 }.is_supported());
+        // One minor below/above fails closed.
+        assert!(!CodexVersion { major: maj, minor: min.saturating_sub(1), patch: 999 }.is_supported());
+        assert!(!CodexVersion { major: maj, minor: min + 1, patch: 0 }.is_supported());
+        assert!(!CodexVersion { major: maj + 1, minor: min, patch: 0 }.is_supported());
     }
 }
