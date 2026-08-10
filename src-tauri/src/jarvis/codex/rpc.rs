@@ -290,12 +290,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // A dummy long-running child (Windows `timeout` builtin) provides real
-    // stdio pipes without invoking codex. The JsonRpcClient logic is then
-    // exercised by feeding lines straight into handle_line.
+    // A dummy long-running child provides real stdio pipes without invoking
+    // codex. The JsonRpcClient logic is then exercised by feeding lines
+    // straight into handle_line. Platform-neutral so the suite also runs on
+    // non-Windows hosts (the app itself stays Windows-only).
     fn dummy_child() -> tokio::process::Child {
-        tokio::process::Command::new("cmd.exe")
-            .args(["/c", "timeout", "/t", "30"])
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("cmd.exe");
+            command.args(["/c", "timeout", "/t", "30"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+        command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

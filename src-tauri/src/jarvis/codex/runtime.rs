@@ -637,7 +637,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("codex.exe");
         fs::write(&exe, b"MZ").unwrap();
-        let paths = vec![dir.path().to_path_buf(), PathBuf::from("C:\\nonexistent")];
+        // The second entry is a plain missing directory (platform-neutral;
+        // Windows drive-letter paths cannot be joined on non-Windows hosts).
+        let paths = vec![dir.path().to_path_buf(), dir.path().join("nonexistent")];
         let joined = std::env::join_paths(paths).unwrap();
         std::env::set_var("PATH", joined);
         assert_eq!(find_on_path("codex.exe"), Some(exe));
@@ -646,7 +648,7 @@ mod tests {
     #[test]
     fn path_scan_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = vec![dir.path().to_path_buf(), PathBuf::from("C:\\nonexistent")];
+        let paths = vec![dir.path().to_path_buf(), dir.path().join("nonexistent")];
         let joined = std::env::join_paths(paths).unwrap();
         std::env::set_var("PATH", joined);
         assert!(find_on_path("codex.exe").is_none());
