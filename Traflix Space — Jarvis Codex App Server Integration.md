@@ -17,7 +17,8 @@
 > | C4 Thread lifecycle | ✅ | `19f6137` | thread ephemeral reale + turn/start + interrupt; thread/delete rifiutato ("not persisted") |
 > | C5 Dynamic tools | ✅ | `4315c2f` | turno reale: il modello chiama `agent.list` end-to-end (request namespaced + risposta) |
 > | C6 Conversational control | ✅ | `e52465f` | tool `conversational.plan` registrato e osservato in turno reale (args tipizzati + receipt risposto); guard 1 plan/turno unit-tested |
-> | C7–C10 | ⏳ | — | pianificate |
+> | C7 Streaming UI | ✅ | `37d9fde` | hub `jarvis://chat-stream` (Item/* + AgentMessageDelta normalizzati, reasoning mai emesso), streamingTurns in UI; ordine commentary→tool→final verificato nel test reale |
+> | C8–C10 | ⏳ | — | pianificate |
 >
 > Dettagli, scoperte di protocollo e limiti: vedi §5, §9, §11 e §30.
 
