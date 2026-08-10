@@ -10,7 +10,6 @@ import type {
 
 interface RateLimitBucket {
   key: string;
-  label: string;
   usedPercent: number;
   leftPercent: number;
   windowDurationMins: number | null;
@@ -32,18 +31,6 @@ function asFiniteNumber(value: unknown): number | null {
   return null;
 }
 
-function rateLimitLabel(windowDurationMins: number | null, key: string): string {
-  if (windowDurationMins === 300) return "5h limit";
-  if (windowDurationMins === 10_080) return "Weekly limit";
-  if (windowDurationMins && windowDurationMins % 1_440 === 0) {
-    return `${windowDurationMins / 1_440}d limit`;
-  }
-  if (windowDurationMins && windowDurationMins % 60 === 0) {
-    return `${windowDurationMins / 60}h limit`;
-  }
-  return key === "primary" ? "Primary limit" : "Secondary limit";
-}
-
 function extractRateLimitBuckets(snapshot: unknown): RateLimitBucket[] {
   const root = asRecord(snapshot);
   if (!root) return [];
@@ -60,22 +47,39 @@ function extractRateLimitBuckets(snapshot: unknown): RateLimitBucket[] {
     if (usedPercent === null) continue;
     const windowDurationMins = asFiniteNumber(entry.windowDurationMins);
     const resetsAt =
-      (typeof entry.resetsAt === "number" || typeof entry.resetsAt === "string")
+      typeof entry.resetsAt === "number" || typeof entry.resetsAt === "string"
         ? entry.resetsAt
         : null;
+    const used = Math.max(0, Math.min(100, usedPercent));
     buckets.push({
       key,
-      label: rateLimitLabel(windowDurationMins, key),
-      usedPercent: Math.max(0, Math.min(100, usedPercent)),
-      leftPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
+      usedPercent: used,
+      leftPercent: 100 - used,
       windowDurationMins,
       resetsAt,
     });
   }
 
-  return buckets.sort((left, right) =>
-    (left.windowDurationMins ?? Number.MAX_SAFE_INTEGER) -
-    (right.windowDurationMins ?? Number.MAX_SAFE_INTEGER),
+  return buckets;
+}
+
+function findFiveHourBucket(buckets: RateLimitBucket[]): RateLimitBucket | null {
+  return (
+    buckets.find((bucket) => bucket.windowDurationMins === 300) ??
+    buckets.find(
+      (bucket) =>
+        bucket.key === "primary" &&
+        (bucket.windowDurationMins === null || bucket.windowDurationMins < 1_440),
+    ) ??
+    null
+  );
+}
+
+function findWeeklyBucket(buckets: RateLimitBucket[]): RateLimitBucket | null {
+  return (
+    buckets.find((bucket) => bucket.windowDurationMins === 10_080) ??
+    buckets.find((bucket) => bucket.key === "secondary") ??
+    null
   );
 }
 
@@ -182,6 +186,52 @@ export function CodexConnectionRow({
   );
 }
 
+function StatusLimitRow({
+  label,
+  bucket,
+  inactiveMessage,
+}: {
+  label: string;
+  bucket: RateLimitBucket | null;
+  inactiveMessage: string;
+}) {
+  if (!bucket) {
+    return (
+      <div>
+        <div className="flex items-center justify-between gap-3 text-[10px]">
+          <span className="font-medium text-neutral-text">{label}</span>
+          <span className="text-neutral-text-muted">{inactiveMessage}</span>
+        </div>
+        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-darkest" />
+      </div>
+    );
+  }
+
+  const reset = formatReset(bucket.resetsAt);
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 text-[10px]">
+        <span className="font-medium text-neutral-text">{label}</span>
+        <span className="font-mono text-neutral-text">
+          {Math.round(bucket.leftPercent)}% left
+          {reset ? ` · ${reset}` : ""}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-darkest">
+        <div
+          className="h-full rounded-full bg-primary transition-[width]"
+          // Match Codex /status: the bar fills with quota consumed while the
+          // label reports the complementary percentage left.
+          style={{ width: `${bucket.usedPercent}%` }}
+        />
+      </div>
+      <p className="mt-1 text-right font-mono text-[9px] text-neutral-text-muted">
+        {Math.round(bucket.usedPercent)}% used
+      </p>
+    </div>
+  );
+}
+
 export function CodexStatusSettings({
   account,
   runtime,
@@ -196,6 +246,8 @@ export function CodexStatusSettings({
   const [refreshing, setRefreshing] = useState(false);
   const connected = accountConnected(account);
   const buckets = extractRateLimitBuckets(rateLimits?.snapshot);
+  const fiveHour = findFiveHourBucket(buckets);
+  const weekly = findWeeklyBucket(buckets);
   const accountLabel =
     account?.account.kind === "chatgpt"
       ? `ChatGPT ${account.account.planType}${account.account.email ? ` · ${account.account.email}` : ""}`
@@ -238,39 +290,30 @@ export function CodexStatusSettings({
           <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-text-muted">
             Codex status
           </p>
-          <span className="text-[10px] text-neutral-text-muted">% left</span>
+          <span className="text-[10px] text-neutral-text-muted">quota</span>
         </div>
 
         {!connected ? (
           <p className="mt-2 text-[10px] text-neutral-text-muted">
             Accedi con ChatGPT per leggere i limiti Codex.
           </p>
-        ) : buckets.length === 0 ? (
-          <p className="mt-2 text-[10px] text-neutral-text-muted">
-            Status non disponibile. Premi aggiorna per rileggere i rate limits.
-          </p>
         ) : (
           <div className="mt-2 space-y-3">
-            {buckets.map((bucket) => {
-              const reset = formatReset(bucket.resetsAt);
-              return (
-                <div key={`${bucket.key}-${bucket.windowDurationMins ?? "unknown"}`}>
-                  <div className="flex items-center justify-between gap-3 text-[10px]">
-                    <span className="font-medium text-neutral-text">{bucket.label}</span>
-                    <span className="font-mono text-neutral-text">
-                      {Math.round(bucket.leftPercent)}% left
-                      {reset ? ` · ${reset}` : ""}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-darkest">
-                    <div
-                      className="h-full rounded-full bg-primary transition-[width]"
-                      style={{ width: `${bucket.leftPercent}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+            <StatusLimitRow
+              label="Session · 5h"
+              bucket={fiveHour}
+              inactiveMessage="No active 5h session"
+            />
+            <StatusLimitRow
+              label="Weekly"
+              bucket={weekly}
+              inactiveMessage="Weekly limit non disponibile"
+            />
+            {!fiveHour && !weekly && (
+              <p className="text-[9px] leading-relaxed text-neutral-text-muted">
+                Codex non ha restituito finestre attive. Aggiorna lo status dopo il prossimo turno.
+              </p>
+            )}
           </div>
         )}
       </div>
