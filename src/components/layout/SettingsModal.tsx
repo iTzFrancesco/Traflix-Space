@@ -59,8 +59,6 @@ const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
 
 type VoiceInputSettings = AppSettings["jarvis"]["voiceInput"];
 type VoiceOutputSettings = AppSettings["jarvis"]["voiceOutput"];
-type VoiceActivationMode = VoiceInputSettings["activationMode"];
-type ShortcutBehavior = VoiceInputSettings["shortcutBehavior"];
 
 export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
@@ -202,22 +200,21 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
       open={open}
       onClose={onClose}
       title="Impostazioni Jarvis"
-      width="max-w-[700px]"
+      width="max-w-[920px]"
     >
-      <div className="space-y-7">
+      <div className="space-y-9">
         <header>
           <p className="text-sm font-semibold text-neutral-text">
             La voce è l'interfaccia principale
           </p>
           <p className="mt-1 max-w-xl text-xs leading-relaxed text-neutral-text-muted">
-            Jarvis resta pronto in ascolto. Quando rileva la tua voce avvia il turno,
-            riconosce automaticamente il silenzio finale, invia la richiesta e risponde a voce.
+            Jarvis resta pronto in ascolto e risponde a voce.
           </p>
         </header>
 
         <SettingsSection
           title="Connessioni"
-          description="Groq per il riconoscimento vocale; ChatGPT/Codex per l'intelligenza di Jarvis."
+          description="Groq per la voce, ChatGPT per l'intelligenza di Jarvis."
         >
           <div className="divide-y divide-neutral-border border-y border-neutral-border">
             <CredentialField
@@ -247,7 +244,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
 
         <SettingsSection
           title="Codex"
-          description="Configurazione account e stato dei limiti della tua sottoscrizione ChatGPT."
+          description="Stato e limiti della sottoscrizione ChatGPT."
         >
           <CodexStatusSettings
             account={codexAccount}
@@ -265,7 +262,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
 
         <SettingsSection
           title="Intelligenza"
-          description="Modello e reasoning del turno Codex — unica fonte di verità per Jarvis."
+          description="Modello e reasoning del turno Codex."
         >
           <CodexIntelligenceSettings
             models={codexModels}
@@ -364,7 +361,7 @@ function SettingsSection({
       <p className="mt-1 text-[11px] leading-relaxed text-neutral-text-muted">
         {description}
       </p>
-      <div className="mt-3">{children}</div>
+      <div className="mt-4">{children}</div>
     </section>
   );
 }
@@ -499,18 +496,10 @@ function VoiceOptions({
     }
   };
 
-  const setActivationMode = (activationMode: VoiceActivationMode) => {
-    onInputChange({
-      ...normalizedInput,
-      activationMode,
-      vadEnabled: activationMode !== "hold_to_talk",
-    });
-  };
-
   return (
     <SettingsSection
       title="Voce"
-      description="La modalità predefinita resta sempre pronta e usa il VAD locale per rilevare l'inizio e la fine della frase."
+      description="Microfono e voce di Jarvis."
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="space-y-1.5 text-xs text-neutral-text-muted">
@@ -587,106 +576,6 @@ function VoiceOptions({
         </label>
       </div>
 
-      <details className="details-panel mt-4">
-        <summary>Altre opzioni voce</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr]">
-          <TextField
-            label="Scorciatoia globale"
-            value={normalizedInput.globalShortcut}
-            onChange={(globalShortcut) =>
-              onInputChange({ ...normalizedInput, globalShortcut })
-            }
-          />
-          <ToggleRow
-            label="Abilita scorciatoia"
-            checked={normalizedInput.globalShortcutEnabled}
-            onChange={(globalShortcutEnabled) =>
-              onInputChange({ ...normalizedInput, globalShortcutEnabled })
-            }
-          />
-        </div>
-      </details>
-
-      <details className="details-panel mt-3">
-        <summary>Sensibilità e comportamento</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <SelectField
-            label="Modalità di interazione"
-            value={normalizedInput.activationMode}
-            onChange={(value) => setActivationMode(value as VoiceActivationMode)}
-            options={[
-              { value: "vad", label: "Sempre in ascolto" },
-              { value: "hold_to_talk", label: "Tieni premuto per parlare" },
-            ]}
-          />
-          <SelectField
-            label="Comportamento scorciatoia"
-            value={normalizedInput.shortcutBehavior}
-            onChange={(value) =>
-              onInputChange({
-                ...normalizedInput,
-                shortcutBehavior: value as ShortcutBehavior,
-              })
-            }
-            options={[
-              { value: "toggle", label: "Premi per attivare/disattivare" },
-              { value: "hold", label: "Tieni premuto per parlare" },
-            ]}
-          />
-
-          {normalizedInput.activationMode !== "hold_to_talk" && (
-            <>
-              <TextField
-                label="Sensibilità VAD"
-                value={String(normalizedInput.vadSpeechThreshold)}
-                onChange={(value) => {
-                  const parsed = Number(value);
-                  if (Number.isFinite(parsed)) {
-                    onInputChange({
-                      ...normalizedInput,
-                      vadSpeechThreshold: Math.max(0.001, Math.min(1, parsed)),
-                    });
-                  }
-                }}
-              />
-              <TextField
-                label="Silenzio prima dell'invio (ms)"
-                value={String(normalizedInput.vadPostSpeechMs)}
-                onChange={(value) => {
-                  const parsed = Number(value);
-                  if (Number.isFinite(parsed)) {
-                    onInputChange({
-                      ...normalizedInput,
-                      vadPostSpeechMs: Math.max(100, Math.min(5000, Math.floor(parsed))),
-                    });
-                  }
-                }}
-              />
-            </>
-          )}
-
-          {normalizedInput.activationMode === "vad" && (
-            <TextField
-              label="Attesa massima della voce (s)"
-              value={String(normalizedInput.maxArmedSeconds)}
-              onChange={(value) => {
-                const parsed = Number(value);
-                if (Number.isFinite(parsed)) {
-                  onInputChange({
-                    ...normalizedInput,
-                    maxArmedSeconds: Math.max(2, Math.min(120, Math.floor(parsed))),
-                  });
-                }
-              }}
-            />
-          )}
-        </div>
-        <p className="mt-3 text-[10px] leading-relaxed text-neutral-text-muted">
-          Sempre in ascolto usa il VAD per aprire il turno solo quando rileva la voce.
-          Tieni premuto per parlare termina invece il turno al rilascio.
-        </p>
-      </details>
-
       {voiceSettingsError && (
         <p
           role="alert"
@@ -696,101 +585,5 @@ function VoiceOptions({
         </p>
       )}
     </SettingsSection>
-  );
-}
-
-function TextField({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  onChange?: (value: string) => void;
-}) {
-  return (
-    <label className="space-y-1.5">
-      <span className="text-xs text-neutral-text-muted">{label}</span>
-      <input
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange?.(event.target.value)}
-        className="field-input w-full"
-      />
-    </label>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="space-y-1.5">
-      <span className="text-xs text-neutral-text-muted">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="field-input w-full"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function ToggleRow({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className="flex min-h-10 items-center justify-between gap-3 border-y border-neutral-border px-1 py-2.5">
-      <span>
-        <span className="block text-xs font-medium text-neutral-text">{label}</span>
-        {description && (
-          <span className="mt-0.5 block text-[10px] leading-relaxed text-neutral-text-muted">
-            {description}
-          </span>
-        )}
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={`relative h-[20px] w-9 shrink-0 rounded-full border transition-colors ${
-          checked
-            ? "border-primary/55 bg-primary/25"
-            : "border-neutral-border bg-neutral-darkest"
-        }`}
-      >
-        <span
-          className={`absolute top-[3px] h-3 w-3 rounded-full transition-[left,background-color] ${
-            checked ? "left-[19px] bg-primary" : "left-[3px] bg-neutral-text-muted"
-          }`}
-        />
-      </button>
-    </div>
   );
 }

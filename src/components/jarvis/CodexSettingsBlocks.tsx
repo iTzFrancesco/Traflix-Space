@@ -140,7 +140,7 @@ export function CodexConnectionRow({
   const connected = accountConnected(account);
   return (
     <div className="border-y border-neutral-border">
-      <div className="flex min-h-12 items-center justify-between gap-3 py-3">
+      <div className="flex min-h-14 items-center justify-between gap-3 py-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={connected ? "status-dot status-dot--ok" : "status-dot"}
@@ -160,7 +160,7 @@ export function CodexConnectionRow({
             type="button"
             onClick={onLogout}
             disabled={loginBusy || !running}
-            className="ui-button h-7 gap-1.5 text-[10px]"
+            className="ui-button h-8 gap-1.5 px-3 text-xs"
           >
             <LogOut size={12} />
             Sign out
@@ -170,7 +170,7 @@ export function CodexConnectionRow({
             type="button"
             onClick={onLogin}
             disabled={loginBusy || !running}
-            className="ui-button h-7 gap-1.5 text-[10px]"
+            className="ui-button h-8 gap-1.5 px-3 text-xs"
           >
             <LogIn size={12} />
             {loginBusy ? "Opening…" : "Sign in with ChatGPT"}
@@ -198,11 +198,11 @@ function StatusLimitRow({
   if (!bucket) {
     return (
       <div>
-        <div className="flex items-center justify-between gap-3 text-[10px]">
+        <div className="flex items-center justify-between gap-3 text-xs">
           <span className="font-medium text-neutral-text">{label}</span>
           <span className="text-neutral-text-muted">{inactiveMessage}</span>
         </div>
-        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-darkest" />
+        <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-neutral-darkest" />
       </div>
     );
   }
@@ -210,14 +210,14 @@ function StatusLimitRow({
   const reset = formatReset(bucket.resetsAt);
   return (
     <div>
-      <div className="flex items-center justify-between gap-3 text-[10px]">
+      <div className="flex items-center justify-between gap-3 text-xs">
         <span className="font-medium text-neutral-text">{label}</span>
         <span className="font-mono text-neutral-text">
           {Math.round(bucket.leftPercent)}% left
           {reset ? ` · ${reset}` : ""}
         </span>
       </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-darkest">
+      <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-neutral-darkest">
         <div
           className="h-full rounded-full bg-primary transition-[width]"
           // Match Codex /status: the bar fills with quota consumed while the
@@ -225,7 +225,7 @@ function StatusLimitRow({
           style={{ width: `${bucket.usedPercent}%` }}
         />
       </div>
-      <p className="mt-1 text-right font-mono text-[9px] text-neutral-text-muted">
+      <p className="mt-1 text-right font-mono text-[10px] text-neutral-text-muted">
         {Math.round(bucket.usedPercent)}% used
       </p>
     </div>
@@ -298,7 +298,7 @@ export function CodexStatusSettings({
             Accedi con ChatGPT per leggere i limiti Codex.
           </p>
         ) : (
-          <div className="mt-2 space-y-3">
+          <div className="mt-3 space-y-4">
             <StatusLimitRow
               label="Session · 5h"
               bucket={fiveHour}
@@ -310,7 +310,7 @@ export function CodexStatusSettings({
               inactiveMessage="Weekly limit non disponibile"
             />
             {!fiveHour && !weekly && (
-              <p className="text-[9px] leading-relaxed text-neutral-text-muted">
+              <p className="text-[10px] leading-relaxed text-neutral-text-muted">
                 Codex non ha restituito finestre attive. Aggiorna lo status dopo il prossimo turno.
               </p>
             )}
