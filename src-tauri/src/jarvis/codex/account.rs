@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use super::events::{stream_events_from_notification, CHAT_STREAM_EVENT};
 use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
 use super::threads::ThreadRegistry;
@@ -88,6 +89,49 @@ pub(crate) fn parse_account(account: Option<&Value>) -> CodexAccount {
     }
 }
 
+/// C7: resolves the workspace binding + request correlation for a
+/// notification and forwards every normalized streaming event to
+/// `jarvis://chat-stream`. Turns that ended drop their request mapping.
+async fn emit_chat_stream(
+    app: &AppHandle,
+    threads: &ThreadRegistry,
+    method: &str,
+    params: &Option<Value>,
+) {
+    let Some(params) = params.as_ref() else {
+        return;
+    };
+    let thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if thread_id.is_empty() {
+        return;
+    }
+    let Some(workspace_id) = threads.workspace_for_thread(thread_id).await else {
+        debug!(thread_id, method, "codex streaming: thread has no workspace binding");
+        return;
+    };
+    let turn_id = super::events::turn_id_of(params);
+    let request_id = if turn_id.is_empty() {
+        None
+    } else {
+        threads.request_id_for_turn(&turn_id).await
+    };
+    let events = stream_events_from_notification(method, &Some(params.clone()), &workspace_id, request_id.as_deref());
+    for event in events {
+        if matches!(
+            event.kind,
+            super::events::ChatStreamEventKind::TurnCompleted
+                | super::events::ChatStreamEventKind::TurnFailed
+                | super::events::ChatStreamEventKind::TurnInterrupted
+        ) {
+            threads.forget_turn(&event.turn_id).await;
+        }
+        let _ = app.emit(CHAT_STREAM_EVENT, event);
+    }
+}
+
 /// Long-lived bridge: consumes App Server notifications and forwards the
 /// account-related ones to the UI as `jarvis://codex-account` events.
 /// Spawned by the runtime after every successful (re)start.
@@ -143,6 +187,19 @@ pub fn spawn_account_bridge(
                 }
                 if let Some(threads) = &threads {
                     threads.apply_notification(&method, &params).await;
+                    // C7: turn lifecycle is also part of the chat stream
+                    // (the UI marks the final message on turn/completed).
+                    if method.starts_with("turn/") {
+                        emit_chat_stream(&app, threads, &method, &params).await;
+                    }
+                }
+                continue;
+            }
+            // C7: item lifecycle + agent message deltas are normalized into
+            // `jarvis://chat-stream` events (reasoning is never forwarded).
+            if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" {
+                if let Some(threads) = &threads {
+                    emit_chat_stream(&app, threads, &method, &params).await;
                 }
                 continue;
             }

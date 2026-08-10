@@ -9,6 +9,7 @@
 //! dynamic tools (C5/C6), streaming events (C7), TTS (C8), steering (C9).
 
 pub mod account;
+pub mod events;
 pub mod models;
 pub mod runtime;
 pub mod rpc;

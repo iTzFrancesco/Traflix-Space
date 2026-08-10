@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { useJarvisStore } from "../../stores/jarvisStore";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   defaultJarvisSettings,
   ownerModeJarvisSettings,
@@ -69,6 +70,8 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const codexModelsLoading = useJarvisStore((state) => state.codexModelsLoading);
   const codexUsage = useJarvisStore((state) => state.codexUsage);
   const codexThreads = useJarvisStore((state) => state.codexThreads);
+  const codexStreamingTurns = useJarvisStore((state) => state.codexStreamingTurns);
+  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const saveSettings = useJarvisStore((state) => state.saveSettings);
 
@@ -317,6 +320,11 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
                 usage={codexUsage}
                 modelSettings={jarvis.codex}
                 threads={codexThreads}
+                streamingTurns={
+                  activeWorkspaceId
+                    ? codexStreamingTurns[activeWorkspaceId] ?? []
+                    : []
+                }
                 onModelSettingsChange={(codex) =>
                   updateJarvis((current) => ({ ...current, codex }))
                 }

@@ -891,6 +891,10 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
         let mut tool_calls: Vec<String> = Vec::new();
         let mut completed = false;
+        // C7: every Item/*, AgentMessageDelta and turn/* notification is
+        // passed through the production normalizer; the raw payloads are
+        // printed so a Windows run can confirm the shapes.
+        let mut stream_events: Vec<(String, super::super::events::ChatStreamEventKind)> = Vec::new();
         while std::time::Instant::now() < deadline && !completed {
             let message = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -931,7 +935,19 @@ mod tests {
                         println!("unexpected server request: {method}");
                     }
                 }
-                Ok(Some(ServerMessage::Notification { method, .. })) => {
+                Ok(Some(ServerMessage::Notification { method, params })) => {
+                    if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" || method.starts_with("turn/") {
+                        println!("C7 notification {method}: {}", params.clone().unwrap_or_default());
+                        let events = super::super::events::stream_events_from_notification(
+                            &method,
+                            &params,
+                            "test-workspace",
+                            None,
+                        );
+                        for event in events {
+                            stream_events.push((method.clone(), event.kind));
+                        }
+                    }
                     if method == "turn/completed" {
                         completed = true;
                     }
@@ -942,6 +958,26 @@ mod tests {
         assert!(
             tool_calls.iter().any(|name| name == "agent.list"),
             "agent.list observed among tool calls: {tool_calls:?}"
+        );
+        // C7 ordering: every dynamicToolCall item produced a tool lifecycle
+        // event, and no tool_completed arrived without a matching started.
+        assert!(
+            stream_events
+                .iter()
+                .any(|(_, kind)| *kind == super::super::events::ChatStreamEventKind::ToolStarted),
+            "tool_started observed in stream: {stream_events:?}"
+        );
+        let tool_starts = stream_events
+            .iter()
+            .filter(|(_, kind)| *kind == super::super::events::ChatStreamEventKind::ToolStarted)
+            .count();
+        let tool_finishes = stream_events
+            .iter()
+            .filter(|(_, kind)| *kind == super::super::events::ChatStreamEventKind::ToolCompleted)
+            .count();
+        assert!(
+            tool_finishes <= tool_starts,
+            "tool_completed without started: {stream_events:?}"
         );
 
         // C6: a third turn that must call `conversational.plan` (the only
@@ -964,6 +1000,9 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
         let mut plan_calls: Vec<serde_json::Value> = Vec::new();
         let mut completed3 = false;
+        // C7: same normalization pass on the plan turn; the turn must end
+        // with a TurnCompleted stream event (final-message marker for the UI).
+        let mut turn3_stream: Vec<super::super::events::ChatStreamEventKind> = Vec::new();
         while std::time::Instant::now() < deadline && !completed3 {
             let message = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -1018,7 +1057,19 @@ mod tests {
                         println!("unexpected server request: {method}");
                     }
                 }
-                Ok(Some(ServerMessage::Notification { method, .. })) => {
+                Ok(Some(ServerMessage::Notification { method, params })) => {
+                    if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" || method.starts_with("turn/") {
+                        println!("C7 notification (turn3) {method}: {}", params.clone().unwrap_or_default());
+                        let events = super::super::events::stream_events_from_notification(
+                            &method,
+                            &params,
+                            "test-workspace",
+                            None,
+                        );
+                        for event in events {
+                            turn3_stream.push(event.kind);
+                        }
+                    }
                     if method == "turn/completed" {
                         completed3 = true;
                     }
@@ -1029,6 +1080,12 @@ mod tests {
         assert!(
             !plan_calls.is_empty(),
             "conversational.plan observed among tool calls"
+        );
+        assert!(
+            turn3_stream
+                .iter()
+                .any(|kind| *kind == super::super::events::ChatStreamEventKind::TurnCompleted),
+            "turn3 stream ends with TurnCompleted: {turn3_stream:?}"
         );
         // The server-side allows multiple plans in one turn; the host-side
         // single-plan guard lives in CodexToolService (unit-tested). Here we

@@ -1,6 +1,15 @@
-import type { JarvisConversationMessage, JarvisRequestState, PendingAction } from "./types";
+import type {
+  CodexChatStreamEvent,
+  CodexStreamItem,
+  CodexStreamingTurn,
+  JarvisConversationMessage,
+  JarvisRequestState,
+  PendingAction,
+} from "./types";
 
 export const MAX_COMPLETED_REQUEST_HISTORY = 64;
+/** C7: keep at most this many streaming turns per workspace (LRU drop). */
+export const MAX_STREAMING_TURNS_PER_WORKSPACE = 3;
 
 export function mergeConversationMessages(current: JarvisConversationMessage[], incoming: JarvisConversationMessage[]): JarvisConversationMessage[] {
   const byId = new Map(current.map((message) => [message.id, message]));
@@ -33,3 +42,183 @@ export function isWorkspaceChatLoading(requests: Record<string, JarvisRequestSta
 export function advancedViewVisible(enabled: boolean, settingsOpen: boolean): boolean {
   return enabled && settingsOpen;
 }
+
+// ---------------------------------------------------------------------------
+// C7 — Codex streaming turns (pure state machine, correction #4: agentMessage
+// has NO phase; the final is the last completed message before
+// turn/completed; raw reasoning is never forwarded by the backend).
+// ---------------------------------------------------------------------------
+
+/** Applies one `jarvis://chat-stream` event to the per-workspace turns. */
+export function applyCodexChatStream(
+  turns: Record<string, CodexStreamingTurn[]>,
+  event: CodexChatStreamEvent,
+): Record<string, CodexStreamingTurn[]> {
+  const workspaceTurns = turns[event.workspaceId] ?? [];
+  const next = applyToTurnList(workspaceTurns, event);
+  if (next.length === 0 && workspaceTurns.length === 0) return turns;
+  return { ...turns, [event.workspaceId]: next };
+}
+
+function applyToTurnList(
+  turns: CodexStreamingTurn[],
+  event: CodexChatStreamEvent,
+): CodexStreamingTurn[] {
+  const index = turns.findIndex((turn) => turn.turnId === event.turnId);
+  const turn: CodexStreamingTurn = index >= 0
+    ? turns[index]
+    : {
+        turnId: event.turnId,
+        threadId: event.threadId,
+        requestId: event.requestId,
+        status: "active",
+        items: [],
+        startedAt: event.timestamp,
+        endedAt: null,
+      };
+
+  const nextTurn = reduceTurn(turn, event);
+  const updated = index >= 0
+    ? turns.map((item, i) => (i === index ? nextTurn : item))
+    : [nextTurn, ...turns];
+  return updated.slice(0, MAX_STREAMING_TURNS_PER_WORKSPACE);
+}
+
+function reduceTurn(turn: CodexStreamingTurn, event: CodexChatStreamEvent): CodexStreamingTurn {
+  switch (event.kind) {
+    case "turn_started":
+      return { ...turn, status: "active", startedAt: turn.startedAt || event.timestamp };
+    case "turn_completed":
+    case "turn_failed":
+    case "turn_interrupted": {
+      const status = event.kind === "turn_completed" ? "completed" : event.kind === "turn_failed" ? "failed" : "interrupted";
+      // Correction #4: the last completed message before turn/completed is
+      // the final answer.
+      const items = markLastCompletedMessageFinal(turn.items);
+      return { ...turn, status, items, endedAt: event.timestamp };
+    }
+    case "message_started":
+      return upsertItem(turn, {
+        itemId: event.itemId ?? `msg-${event.turnId}-${turn.items.length}`,
+        kind: "message",
+        status: "started",
+        text: event.text ?? "",
+        toolName: null,
+        final: false,
+        updatedAt: event.timestamp,
+      });
+    case "message_delta": {
+      const itemId = event.itemId ?? lastMessageItemId(turn) ?? `msg-${event.turnId}-${turn.items.length}`;
+      return upsertItem(turn, {
+        itemId,
+        kind: "message",
+        status: "active",
+        text: event.text ?? "",
+        toolName: null,
+        final: false,
+        updatedAt: event.timestamp,
+      }, (existing) => existing.text + (event.text ?? ""));
+    }
+    case "message_completed":
+      return upsertItem(turn, {
+        itemId: event.itemId ?? lastMessageItemId(turn) ?? `msg-${event.turnId}-${turn.items.length}`,
+        kind: "message",
+        status: "completed",
+        // A completed item may carry the full text; otherwise keep the
+        // accumulated delta text.
+        text: event.text ?? "",
+        toolName: null,
+        final: false,
+        updatedAt: event.timestamp,
+      }, (existing) => event.text ?? existing.text);
+    case "tool_started":
+      return upsertItem(turn, {
+        itemId: event.itemId ?? `tool-${event.turnId}-${turn.items.length}`,
+        kind: "tool",
+        status: "started",
+        text: "",
+        toolName: event.toolName ?? "tool",
+        final: false,
+        updatedAt: event.timestamp,
+      });
+    case "tool_completed":
+      return upsertItem(turn, {
+        itemId: event.itemId ?? lastToolItemId(turn) ?? `tool-${event.turnId}-${turn.items.length}`,
+        kind: "tool",
+        status: "completed",
+        text: "",
+        toolName: event.toolName ?? null,
+        final: false,
+        updatedAt: event.timestamp,
+      }, (existing) => ({ ...existing, status: "completed" as const, toolName: event.toolName ?? existing.toolName }));
+  }
+}
+
+function upsertItem(
+  turn: CodexStreamingTurn,
+  item: CodexStreamItemInput,
+  merge?: (existing: CodexStreamItem) => Partial<CodexStreamItem> | string,
+): CodexStreamingTurn {
+  const index = turn.items.findIndex((candidate) => candidate.itemId === item.itemId);
+  if (index < 0) {
+    return { ...turn, items: [...turn.items, toItem(item)] };
+  }
+  const existing = turn.items[index];
+  const patch = merge ? merge(existing) : {};
+  const merged = typeof patch === "string" ? { text: patch } : patch;
+  return {
+    ...turn,
+    items: turn.items.map((candidate, i) =>
+      i === index ? { ...existing, ...item, ...merged, updatedAt: item.updatedAt } : candidate,
+    ),
+  };
+}
+
+function toItem(item: CodexStreamItemInput): CodexStreamItem {
+  return {
+    itemId: item.itemId,
+    kind: item.kind,
+    status: item.status,
+    text: item.text,
+    toolName: item.toolName,
+    final: item.final,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function lastMessageItemId(turn: CodexStreamingTurn): string | null {
+  for (let i = turn.items.length - 1; i >= 0; i -= 1) {
+    if (turn.items[i].kind === "message") return turn.items[i].itemId;
+  }
+  return null;
+}
+
+function lastToolItemId(turn: CodexStreamingTurn): string | null {
+  for (let i = turn.items.length - 1; i >= 0; i -= 1) {
+    if (turn.items[i].kind === "tool") return turn.items[i].itemId;
+  }
+  return null;
+}
+
+function markLastCompletedMessageFinal(items: CodexStreamItem[]): CodexStreamItem[] {
+  let lastIndex = -1;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === "message" && item.status === "completed") lastIndex = i;
+  }
+  if (lastIndex < 0) return items;
+  return items.map((item, i) =>
+    i === lastIndex ? { ...item, final: true } : item,
+  );
+}
+
+interface CodexStreamItemInput {
+  itemId: string;
+  kind: "message" | "tool";
+  status: "started" | "active" | "completed";
+  text: string;
+  toolName: string | null;
+  final: boolean;
+  updatedAt: string;
+}
+

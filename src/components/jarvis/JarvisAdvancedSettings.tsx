@@ -5,6 +5,7 @@ import type {
   CodexModelCatalog,
   CodexModelSettings,
   CodexRuntimeStatus,
+  CodexStreamingTurn,
   CodexUsageView,
   JarvisCodexThread,
   JarvisProviderStatus,
@@ -33,6 +34,8 @@ export interface CodexSettingsSectionProps {
   usage: CodexUsageView | null;
   modelSettings: CodexModelSettings;
   threads: Record<string, JarvisCodexThread>;
+  /** C7: per-workspace streaming turns of the current workspace. */
+  streamingTurns: CodexStreamingTurn[];
   onModelSettingsChange: (settings: CodexModelSettings) => void;
   onDeleteThread: (workspaceId: string) => void;
   onLoadAccount: () => void;
@@ -89,6 +92,7 @@ export function CodexSettingsSection({
   usage,
   modelSettings,
   threads,
+  streamingTurns,
   onModelSettingsChange,
   onDeleteThread,
   onLoadAccount,
@@ -299,6 +303,23 @@ export function CodexSettingsSection({
           </ul>
         )}
       </div>
+      {/* C7: live streaming of the active turn — commentary → tool →
+          commentary → final → turn completed. Raw reasoning is never
+          forwarded by the backend (spec §15). */}
+      <div className="mt-3 border-t border-neutral-border pt-3">
+        <p className="text-[10px] text-neutral-text-muted">Streaming Codex</p>
+        {streamingTurns.length === 0 ? (
+          <p className="mt-1 text-[10px] italic text-neutral-text-muted">
+            Nessun turno streaming — appare qui quando Codex lavora.
+          </p>
+        ) : (
+          <ul className="mt-1 max-h-64 space-y-3 overflow-y-auto pr-1">
+            {streamingTurns.map((turn) => (
+              <StreamingTurnView key={turn.turnId} turn={turn} />
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 
@@ -310,6 +331,70 @@ export function CodexSettingsSection({
     // (never a fabricated order).
     return [{ reasoningEffort: modelSettings.reasoningEffort }];
   }
+}
+
+/** C7: one streaming turn rendered in event order (commentary → tool → …). */
+function StreamingTurnView({ turn }: { turn: CodexStreamingTurn }) {
+  return (
+    <li className="rounded border border-neutral-border bg-surface-raised/40 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-mono text-[9px] text-neutral-text-muted">
+          turn {turn.turnId.slice(0, 8)}
+        </span>
+        <span
+          className={`shrink-0 text-[9px] font-semibold ${
+            turn.status === "active" ? "text-primary" : "text-neutral-text-muted"
+          }`}
+        >
+          {turn.status}
+        </span>
+      </div>
+      <ol className="mt-1.5 space-y-1.5">
+        {turn.items.map((item) => {
+          if (item.kind === "tool") {
+            return (
+              <li
+                key={item.itemId}
+                className="flex items-center gap-1.5 font-mono text-[9px] text-neutral-text-muted"
+              >
+                <span
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                    item.status === "completed"
+                      ? "bg-signal"
+                      : item.status === "started"
+                        ? "animate-pulse bg-primary"
+                        : "bg-warning"
+                  }`}
+                />
+                <span className="truncate">{item.toolName ?? "tool"}</span>
+                <span className="shrink-0">
+                  {item.status === "completed" ? "✓" : "…"}
+                </span>
+              </li>
+            );
+          }
+          const final = item.final;
+          return (
+            <li
+              key={item.itemId}
+              className={`rounded px-1.5 py-1 text-[10px] leading-snug ${
+                final
+                  ? "border-l-2 border-primary bg-surface-raised text-neutral-text"
+                  : "text-neutral-text-muted"
+              }`}
+            >
+              {final && (
+                <span className="mr-1 font-semibold text-primary">Final ·</span>
+              )}
+              <span className="whitespace-pre-wrap break-words">
+                {item.text || "…"}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </li>
+  );
 }
 
 export function JarvisAdvancedSettings({

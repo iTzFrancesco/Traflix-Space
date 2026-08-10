@@ -127,6 +127,56 @@ export interface CodexThreadSnapshot {
   threads: JarvisCodexThread[];
 }
 
+// C7 — streaming conversation (jarvis://chat-stream).
+
+export type CodexChatStreamKind =
+  | "turn_started"
+  | "turn_completed"
+  | "turn_failed"
+  | "turn_interrupted"
+  | "message_started"
+  | "message_delta"
+  | "message_completed"
+  | "tool_started"
+  | "tool_completed";
+
+/** One normalized streaming event emitted by the backend bridge. */
+export interface CodexChatStreamEvent {
+  kind: CodexChatStreamKind;
+  requestId: string | null;
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string | null;
+  text: string | null;
+  toolName: string | null;
+  timestamp: string;
+}
+
+/** One visible item of a streaming turn (message or tool lifecycle). */
+export interface CodexStreamItem {
+  itemId: string;
+  kind: "message" | "tool";
+  status: "started" | "active" | "completed";
+  /** Accumulated agent message text (commentary/final). */
+  text: string;
+  toolName: string | null;
+  /** Marked on the last completed message before turn/completed (correction #4). */
+  final: boolean;
+  updatedAt: string;
+}
+
+/** One streaming Codex turn of a workspace. */
+export interface CodexStreamingTurn {
+  turnId: string;
+  threadId: string;
+  requestId: string | null;
+  status: "active" | "completed" | "failed" | "interrupted";
+  items: CodexStreamItem[];
+  startedAt: string;
+  endedAt: string | null;
+}
+
 export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";
 export type ShortcutBehavior = "toggle" | "hold";
 

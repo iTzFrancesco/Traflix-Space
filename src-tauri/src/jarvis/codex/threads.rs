@@ -66,6 +66,9 @@ pub struct ThreadRegistry {
     runtime: CodexRuntimeManager,
     app: AppHandle,
     threads: Arc<Mutex<HashMap<String, JarvisCodexThread>>>,
+    /// C7: `turn_id -> app request_id` for streaming correlation. Turns
+    /// started outside the app (tests, future steer) have no request id.
+    request_ids: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ThreadRegistry {
@@ -74,6 +77,7 @@ impl ThreadRegistry {
             runtime,
             app,
             threads: Arc::new(Mutex::new(HashMap::new())),
+            request_ids: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -177,11 +181,14 @@ impl ThreadRegistry {
     }
 
     /// Starts a turn on the workspace thread (creating it first).
-    /// Returns the active turn id.
+    /// Returns the active turn id. `request_id` (optional) is registered for
+    /// C7 streaming correlation and returned in `jarvis://chat-stream`
+    /// payloads for the events of this turn.
     pub async fn start_turn(
         &self,
         workspace_id: &str,
         input: &str,
+        request_id: Option<&str>,
     ) -> Result<String, RuntimeError> {
         let thread = self.ensure_thread(workspace_id).await?;
         let client = self.runtime.client().await?;
@@ -201,6 +208,12 @@ impl ThreadRegistry {
             .and_then(Value::as_str)
             .ok_or_else(|| RuntimeError::Rpc("turn/start missing turn.id".into()))?
             .to_owned();
+        if let Some(request_id) = request_id {
+            self.request_ids
+                .lock()
+                .await
+                .insert(turn_id.clone(), request_id.to_owned());
+        }
         {
             let mut threads = self.threads.lock().await;
             if let Some(record) = threads.get_mut(workspace_id) {
@@ -210,6 +223,16 @@ impl ThreadRegistry {
         }
         self.emit_snapshot().await;
         Ok(turn_id)
+    }
+
+    /// C7: app request id registered for a turn (if any).
+    pub async fn request_id_for_turn(&self, turn_id: &str) -> Option<String> {
+        self.request_ids.lock().await.get(turn_id).cloned()
+    }
+
+    /// C7: drop the request correlation when a turn ends.
+    pub async fn forget_turn(&self, turn_id: &str) {
+        self.request_ids.lock().await.remove(turn_id);
     }
 
     /// `turn/interrupt` for the active turn of the workspace thread.
@@ -395,9 +418,10 @@ pub async fn jarvis_codex_turn_start(
     registry: tauri::State<'_, ThreadRegistry>,
     workspace_id: String,
     input: String,
+    request_id: Option<String>,
 ) -> Result<String, String> {
     registry
-        .start_turn(&workspace_id, &input)
+        .start_turn(&workspace_id, &input, request_id.as_deref())
         .await
         .map_err(|err| format!("{}: {}", err.code(), err))
 }

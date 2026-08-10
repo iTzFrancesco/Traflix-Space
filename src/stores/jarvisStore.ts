@@ -40,7 +40,7 @@ import {
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
-import { isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
+import { applyCodexChatStream, isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
 import { mergeActivityEvents, type ActivityCheckpoint } from "../lib/jarvis/activityState";
 import { applyTtsStatusTransition, beginLocalTtsRequest } from "../lib/jarvis/ttsState";
 import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
@@ -57,9 +57,11 @@ import type {
   JarvisRequestState,
   CodexAccountEvent,
   CodexAccountView,
+  CodexChatStreamEvent,
   CodexModelCatalog,
   CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexStreamingTurn,
   CodexThreadSnapshot,
   CodexUsageView,
   JarvisUiIntent,
@@ -108,6 +110,8 @@ interface JarvisStore {
   codexUsage: CodexUsageView | null;
   codexRateLimits: CodexRateLimitsView | null;
   codexThreads: Record<string, JarvisCodexThread>;
+  // C7: per-workspace streaming turns (commentary/tool/final lifecycle).
+  codexStreamingTurns: Record<string, CodexStreamingTurn[]>;
   loadCodexThreads: () => Promise<void>;
   ensureCodexThread: (workspaceId: string) => Promise<void>;
   deleteCodexThread: (workspaceId: string) => Promise<void>;
@@ -245,6 +249,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   requests: {}, chatErrors: {}, providerStatus: null, codexRuntime: null, codexAccount: null,
   codexAccountLoading: false, codexLoginBusy: false, codexError: null, codexModels: null,
   codexModelsLoading: false, codexUsage: null, codexRateLimits: null, codexThreads: {},
+  codexStreamingTurns: {},
   uiIntents: [], followUps: {},
   activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
@@ -926,6 +931,16 @@ export function bindCodexEvents(): () => void {
         event.payload.threads.map((thread) => [thread.workspaceId, thread]),
       ),
     });
+  }).then((unlisten) => unlisteners.push(unlisten));
+  // C7: streaming conversation events (commentary deltas, tool lifecycle,
+  // final message marking, turn completion).
+  void listen<CodexChatStreamEvent>("jarvis://chat-stream", (event) => {
+    useJarvisStore.setState((state) => ({
+      codexStreamingTurns: applyCodexChatStream(
+        state.codexStreamingTurns,
+        event.payload,
+      ),
+    }));
   }).then((unlisten) => unlisteners.push(unlisten));
   return () => {
     for (const unlisten of unlisteners) unlisten();
