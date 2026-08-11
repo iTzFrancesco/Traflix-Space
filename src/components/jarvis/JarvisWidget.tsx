@@ -55,8 +55,6 @@ type DragIntent = {
   offsetY: number;
 };
 
-// The widget starts dragging on the first intentional movement. A small
-// distance threshold keeps ordinary clicks from becoming accidental drags.
 const DRAG_START_DISTANCE = 5;
 
 export function JarvisWidget(props: JarvisWidgetProps) {
@@ -78,8 +76,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const previousVoiceStatusRef = useRef<
     VoiceRequestStatusView["status"] | null
   >(null);
-  const holdPressedRef = useRef(false);
-  const holdGestureHandledRef = useRef(false);
   const onVoiceStopRef = useRef(props.onVoiceStop);
   onVoiceStopRef.current = props.onVoiceStop;
 
@@ -297,8 +293,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
   );
 
-  // Current Codex step derived from the streaming turns (no extra store
-  // field): the newest in-flight tool of the latest active turn wins.
   const codexStreamingTurns = useJarvisStore(
     (state) => state.codexStreamingTurns,
   );
@@ -320,40 +314,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     codexTurnActive,
   });
 
-  const handleMicrophoneClick = async () => {
-    if (
-      props.activationMode === "hold_to_talk" &&
-      holdGestureHandledRef.current
-    ) {
-      holdGestureHandledRef.current = false;
-      return;
-    }
-    getAudioContext();
-    await ensureOwnerMode();
-    // Muted → a click re-enables the microphone (recovery path).
-    if (props.muted) {
-      await props.onToggleMuted();
-      return;
-    }
-    // Recording → a click stops capture and sends the transcript.
-    if (voiceListening) {
-      console.info("[Jarvis voice] manual stop/send", {
-        requestId: props.voiceRequest?.requestId,
-        workspaceId: props.workspaceId,
-      });
-      onVoiceStopRef.current();
-      return;
-    }
-    // Transcribing/stopping/transcript_ready or VAD already armed: no
-    // second capture.
-    if (voiceBusy || voiceArmed) return;
-    // Hold-to-talk only starts from the hold gesture, never a plain click.
-    if (props.activationMode === "hold_to_talk") return;
-    await props.onVoiceStart();
-  };
-
-  // Small "send now" affordance shown while recording (mic click does the
-  // same: stop + transcribe + submit).
+  // Manual submission remains a dedicated action. The mute button never
+  // doubles as stop/send, start capture, or hold-to-talk.
   const handleSendNow = () => {
     console.info("[Jarvis voice] manual stop/send", {
       requestId: props.voiceRequest?.requestId,
@@ -364,103 +326,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
   const microphoneTitle = props.muted
     ? "Riattiva il microfono di Jarvis"
-    : voiceListening
-      ? "Ho finito: invia ora"
-      : voiceArmed
-        ? "Microfono in ascolto attivo"
-        : voiceBusy
-          ? "Sto elaborando l'audio…"
-          : "Avvia il microfono di Jarvis";
-
-  const releaseHeldVoice = () => {
-    if (!holdPressedRef.current) return;
-    holdPressedRef.current = false;
-    holdGestureHandledRef.current = true;
-    onVoiceStopRef.current();
-  };
-
-  useEffect(() => {
-    if (props.activationMode !== "hold_to_talk") return;
-    window.addEventListener("blur", releaseHeldVoice);
-    document.addEventListener("visibilitychange", releaseHeldVoice);
-    return () => {
-      window.removeEventListener("blur", releaseHeldVoice);
-      document.removeEventListener("visibilitychange", releaseHeldVoice);
-      releaseHeldVoice();
-    };
-  }, [props.activationMode]);
-
-  const handleVoicePointerDown = (
-    event: React.PointerEvent<HTMLButtonElement>,
-  ) => {
-    if (props.activationMode !== "hold_to_talk" || props.muted) return;
-    event.preventDefault();
-    getAudioContext();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    if (!voiceListening && !voiceBusy && !holdPressedRef.current) {
-      holdPressedRef.current = true;
-      holdGestureHandledRef.current = false;
-      void ensureOwnerMode()
-        .then(() => props.onVoiceStart())
-        .then(() => {
-          if (!holdPressedRef.current) props.onVoiceStop();
-        });
-    }
-  };
-
-  const handleVoicePointerUp = (
-    event: React.PointerEvent<HTMLButtonElement>,
-  ) => {
-    if (props.activationMode !== "hold_to_talk") return;
-    event.preventDefault();
-    const wasPressed = holdPressedRef.current;
-    holdPressedRef.current = false;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    if (wasPressed) {
-      holdGestureHandledRef.current = true;
-      props.onVoiceStop();
-    }
-  };
-
-  const handleVoiceKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (
-      props.activationMode !== "hold_to_talk" ||
-      props.muted ||
-      (event.key !== " " && event.key !== "Enter") ||
-      event.repeat
-    ) {
-      return;
-    }
-    event.preventDefault();
-    getAudioContext();
-    if (!voiceListening && !voiceBusy && !holdPressedRef.current) {
-      holdPressedRef.current = true;
-      holdGestureHandledRef.current = false;
-      void ensureOwnerMode()
-        .then(() => props.onVoiceStart())
-        .then(() => {
-          if (!holdPressedRef.current) props.onVoiceStop();
-        });
-    }
-  };
-
-  const handleVoiceKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (
-      props.activationMode !== "hold_to_talk" ||
-      (event.key !== " " && event.key !== "Enter")
-    ) {
-      return;
-    }
-    event.preventDefault();
-    const wasPressed = holdPressedRef.current;
-    holdPressedRef.current = false;
-    if (wasPressed) {
-      holdGestureHandledRef.current = true;
-      props.onVoiceStop();
-    }
-  };
+    : "Disattiva il microfono di Jarvis";
 
   const active =
     activeRequests > 0 || speaking || jarvisActive || voiceArmed || voiceListening || voiceBusy;
@@ -503,7 +369,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
         <div className="min-w-0 flex-1">
           {stepLabel ? (
-            <JarvisActivityLoader key={stepLabel} label={stepLabel} />
+            <JarvisActivityLoader label={stepLabel} />
           ) : (
             <p
               className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text"
@@ -533,14 +399,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           <button
             type="button"
             data-jarvis-control
-            onClick={() => void handleMicrophoneClick()}
-            onPointerDown={handleVoicePointerDown}
-            onPointerUp={handleVoicePointerUp}
-            onPointerCancel={handleVoicePointerUp}
-            onBlur={releaseHeldVoice}
-            onKeyDown={handleVoiceKeyDown}
-            onKeyUp={handleVoiceKeyUp}
-            className={`jarvis-control ${props.muted ? "jarvis-control--muted" : voiceListening ? "jarvis-control--listening" : ""}`}
+            onClick={() => void props.onToggleMuted()}
+            className={`jarvis-control ${props.muted ? "jarvis-control--muted" : ""}`}
             title={microphoneTitle}
             aria-label={microphoneTitle}
             aria-pressed={props.muted}
@@ -585,9 +445,6 @@ function VoiceMeter({
   level: number;
   listening: boolean;
 }) {
-  // The capture pipeline already sends a perceptual 0..1 level, so do not
-  // apply a second dB conversion here. That would crush normal speech back
-  // toward zero and make the waves appear frozen.
   const visibleLevel = Math.max(0, Math.min(1, level));
   const factors = [0.42, 0.72, 1, 0.72, 0.42];
   return (
