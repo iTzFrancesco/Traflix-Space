@@ -37,9 +37,9 @@ pub const MAX_SIDE_EFFECT_PLANS_PER_TURN: usize = 1;
 pub const TURN_DEADLINE_SECS: u64 = 90;
 pub const TOOL_CALL_METHOD: &str = "item/tool/call";
 
-/// Dedicated deadline for every read tool. The turn deadline is 90s; a hung
-/// read tool must fail fast with a clear error instead of keeping the model
-/// waiting for the whole turn.
+/// Dedicated wall-clock deadline for every read tool, including preparation.
+/// The JSON-RPC response write is deliberately outside this timeout so a
+/// cancellation can never interrupt a response line half-way through.
 const READ_TOOL_TIMEOUT: Duration = Duration::from_secs(8);
 
 const PLAN_NAMESPACE: &str = "conversational";
@@ -227,6 +227,10 @@ impl CodexToolService {
             .execute_read_tool(&workspace_id, &tool_call_id, &legacy_name, &input)
             .await;
 
+        // Response I/O is intentionally outside the read-tool timeout. The
+        // JsonRpcClient serializes complete JSONL writes through its stdin
+        // mutex, so a slow writer can wait safely without being cancelled
+        // half-way through a response line.
         match result {
             Ok(value) => {
                 let payload = json!({
@@ -393,11 +397,10 @@ impl CodexToolService {
         }
     }
 
-    /// Fast-path read tool execution (C10 latency): each tool loads exactly
-    /// the context slice it needs instead of one full `ContextPackage` per
-    /// call. `terminals.list` never touches the Context Broker; agent tools
-    /// read the live registry directly; only `workspace.overview` and
-    /// `markdown.read` build a bounded `Summary` context.
+    /// Fast-path read tool execution (C10 latency): the 8s deadline now wraps
+    /// the entire tool preparation + execution path. Each tool prepares only
+    /// the runtime slice it needs; agent registry reads do not enumerate all
+    /// terminals and markdown.read does not build a duplicate terminal view.
     async fn execute_read_tool(
         &self,
         workspace_id: &str,
@@ -406,13 +409,74 @@ impl CodexToolService {
         input: &Value,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            READ_TOOL_TIMEOUT,
+            self.execute_read_tool_inner(
+                workspace_id,
+                request_id,
+                legacy_name,
+                input,
+                started,
+            ),
+        )
+        .await;
+
+        match outcome {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(
+                    tool = legacy_name,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    "[JARVIS-CODEX-TOOL] failed: full read tool timed out",
+                );
+                Err(format!(
+                    "{legacy_name} timed out after {}s",
+                    READ_TOOL_TIMEOUT.as_secs()
+                ))
+            }
+        }
+    }
+
+    async fn execute_read_tool_inner(
+        &self,
+        workspace_id: &str,
+        request_id: &str,
+        legacy_name: &str,
+        input: &Value,
+        started: Instant,
+    ) -> Result<Value, String> {
         let observed_at = now();
         let workspace = load_workspace(&self.app, workspace_id, request_id, &observed_at)
             .await
             .map_err(|err| err.message)?;
-        reconcile_live_registry(&self.app, &observed_at).await;
-        let manager = self.app.state::<TerminalManager>();
-        let terminals = list_terminals_for_workspace(&manager, &workspace, &observed_at).await;
+
+        // Registry reconciliation is needed only by tools that expose agent
+        // registry state (and workspace.overview, whose context includes the
+        // agent summary). Terminal-only reads can go straight to the manager.
+        if matches!(
+            legacy_name,
+            "agent_list"
+                | "agent_status"
+                | "agent_last_result"
+                | "agent_activity"
+                | "workspace_overview"
+        ) {
+            reconcile_live_registry(&self.app, &observed_at).await;
+        }
+
+        // Enumerate terminals only for tools that actually consume terminal
+        // summaries. markdown.read builds its own bounded Summary context once,
+        // while agent registry reads use JarvisToolService directly.
+        let terminals = if matches!(
+            legacy_name,
+            "terminal_list" | "agent_tail" | "workspace_overview" | "ui_open_terminal"
+        ) {
+            let manager = self.app.state::<TerminalManager>();
+            list_terminals_for_workspace(&manager, &workspace, &observed_at).await
+        } else {
+            Vec::new()
+        };
+
         let invocation = InvocationBinding::new(
             request_id,
             workspace_id,
@@ -420,28 +484,29 @@ impl CodexToolService {
             None,
             observed_at.clone(),
         );
+        let prepare_ms = started.elapsed().as_millis() as u64;
         info!(
             tool = legacy_name,
-            prepare_ms = started.elapsed().as_millis() as u64,
+            prepare_ms,
             "[JARVIS-CODEX-TOOL] context-ready",
         );
+
         let execution_started = Instant::now();
-        let outcome = tokio::time::timeout(
-            READ_TOOL_TIMEOUT,
-            self.dispatch_read_tool(
+        let result = self
+            .dispatch_read_tool(
                 &workspace,
                 &invocation,
                 &terminals,
                 &observed_at,
                 legacy_name,
                 input,
-            ),
-        )
-        .await;
-        match outcome {
-            Ok(Ok(value)) => {
+            )
+            .await;
+
+        match &result {
+            Ok(value) => {
                 let response_bytes =
-                    serde_json::to_string(&value).map(|json| json.len()).unwrap_or(0);
+                    serde_json::to_string(value).map(|json| json.len()).unwrap_or(0);
                 info!(
                     tool = legacy_name,
                     execute_ms = execution_started.elapsed().as_millis() as u64,
@@ -449,26 +514,18 @@ impl CodexToolService {
                     response_bytes,
                     "[JARVIS-CODEX-TOOL] completed",
                 );
-                Ok(value)
             }
-            Ok(Err(message)) => {
+            Err(message) => {
                 warn!(
                     tool = legacy_name,
                     total_ms = started.elapsed().as_millis() as u64,
                     error = message,
                     "[JARVIS-CODEX-TOOL] failed",
                 );
-                Err(message)
-            }
-            Err(_) => {
-                warn!(
-                    tool = legacy_name,
-                    total_ms = started.elapsed().as_millis() as u64,
-                    "[JARVIS-CODEX-TOOL] failed: read tool timed out",
-                );
-                Err(format!("{legacy_name} timed out after {}s", READ_TOOL_TIMEOUT.as_secs()))
             }
         }
+
+        result
     }
 
     async fn dispatch_read_tool(
@@ -928,5 +985,23 @@ mod tests {
         assert_eq!(legacy_dispatcher_name("ui", "open_terminal"), "ui_open_terminal");
         assert_eq!(legacy_dispatcher_name("terminals", "list"), "terminal_list");
         assert_eq!(legacy_dispatcher_name("workspace", "overview"), "workspace_overview");
+    }
+
+    #[test]
+    fn read_tool_terminal_requirements_are_scoped() {
+        fn needs_terminals(name: &str) -> bool {
+            matches!(
+                name,
+                "terminal_list" | "agent_tail" | "workspace_overview" | "ui_open_terminal"
+            )
+        }
+        assert!(needs_terminals("terminal_list"));
+        assert!(needs_terminals("agent_tail"));
+        assert!(needs_terminals("workspace_overview"));
+        assert!(!needs_terminals("agent_list"));
+        assert!(!needs_terminals("agent_status"));
+        assert!(!needs_terminals("agent_last_result"));
+        assert!(!needs_terminals("agent_activity"));
+        assert!(!needs_terminals("markdown_read"));
     }
 }
