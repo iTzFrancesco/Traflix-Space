@@ -238,6 +238,12 @@ impl JsonRpcClient {
     /// Sends a JSON-RPC response to a server request (e.g. the result of a
     /// dynamic tool call). `id` must match the request id.
     pub async fn respond(&self, id: u64, result: Value) -> Result<(), RpcError> {
+        // Codex App Server 0.147.0 DynamicToolCallResponse requires
+        // `{ contentItems: [...], success: bool }`. Early Jarvis integration
+        // code emitted `{ content: [...] }`; normalize that legacy internal
+        // shape here so every read tool and conversational.plan uses the
+        // canonical wire contract without duplicating protocol logic.
+        let result = normalize_server_response(result);
         let payload = json!({
             "jsonrpc": JSONRPC_VERSION,
             "id": id,
@@ -285,6 +291,19 @@ impl JsonRpcClient {
     }
 }
 
+fn normalize_server_response(result: Value) -> Value {
+    if result.get("contentItems").is_some() {
+        return result;
+    }
+    match result.get("content").cloned() {
+        Some(Value::Array(content_items)) => json!({
+            "contentItems": content_items,
+            "success": true,
+        }),
+        _ => result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +346,32 @@ mod tests {
             malformed_lines: AtomicU64::new(0),
         });
         (client, rx)
+    }
+
+    #[test]
+    fn normalizes_legacy_dynamic_tool_response_shape() {
+        let normalized = normalize_server_response(json!({
+            "content": [{ "type": "inputText", "text": "[]" }]
+        }));
+        assert_eq!(normalized["success"], true);
+        assert_eq!(normalized["contentItems"][0]["type"], "inputText");
+        assert_eq!(normalized["contentItems"][0]["text"], "[]");
+        assert!(normalized.get("content").is_none());
+    }
+
+    #[test]
+    fn preserves_canonical_dynamic_tool_response_shape() {
+        let canonical = json!({
+            "contentItems": [{ "type": "inputText", "text": "ok" }],
+            "success": false
+        });
+        assert_eq!(normalize_server_response(canonical.clone()), canonical);
+    }
+
+    #[test]
+    fn preserves_unrelated_server_response_shape() {
+        let response = json!({ "decision": "accept" });
+        assert_eq!(normalize_server_response(response.clone()), response);
     }
 
     // Direct unit tests: JsonRpcClient::handle_line routes correctly.
