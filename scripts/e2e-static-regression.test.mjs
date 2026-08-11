@@ -230,6 +230,10 @@ test("every Windows MSI build regenerates the current persistent Edge TTS sideca
   assert.match(windowsPrebuild, /build-jarvis-edge-tts-sidecar\.ps1/);
   assert.match(windowsPrebuild, /Get-Command python/);
   assert.match(windowsPrebuild, /Get-Command py/);
+  assert.ok(
+    windowsPrebuild.indexOf('Get-Command py') < windowsPrebuild.indexOf('Get-Command python'),
+    "the real py launcher must win over the Microsoft Store python alias",
+  );
   assert.match(windowsPrebuild, /ReadAllBytes\(\$sidecar\)/);
   assert.match(windowsPrebuild, /\$machine -ne 0x8664/);
   assert.match(windowsPrebuild, /npm run build/);

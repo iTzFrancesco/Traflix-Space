@@ -4,10 +4,12 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sidecarScript = Join-Path $PSScriptRoot "build-jarvis-edge-tts-sidecar.ps1"
 $sidecar = Join-Path $repo "src-tauri\binaries\jarvis-edge-tts-x86_64-pc-windows-msvc.exe"
 
-$python = if (Get-Command python -ErrorAction SilentlyContinue) {
-  "python"
-} elseif (Get-Command py -ErrorAction SilentlyContinue) {
+# Prefer the real Windows Python launcher so a Microsoft Store `python.exe`
+# execution alias cannot mask an installed interpreter.
+$python = if (Get-Command py -ErrorAction SilentlyContinue) {
   "py"
+} elseif (Get-Command python -ErrorAction SilentlyContinue) {
+  "python"
 } else {
   throw "Python 3 is required to build the Jarvis Edge TTS sidecar."
 }
