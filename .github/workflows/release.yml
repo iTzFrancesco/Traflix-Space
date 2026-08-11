@@ -14,7 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TARGET_DIR: D:/rust/target
+  CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
 
 jobs:
   build-and-release:
@@ -35,8 +35,12 @@ jobs:
             (Get-Content src-tauri/Cargo.toml -Raw),
             '(?m)^version\s*=\s*"([^"]+)"'
           ).Groups[1].Value
+          $lockVersion = [regex]::Match(
+            (Get-Content src-tauri/Cargo.lock -Raw),
+            '(?ms)name = "traflix-space"\s+version = "([^"]+)"'
+          ).Groups[1].Value
 
-          $versions = @($packageVersion, $tauriVersion, $cargoVersion)
+          $versions = @($packageVersion, $tauriVersion, $cargoVersion, $lockVersion)
           if ($versions | Where-Object { $_ -ne $tagVersion }) {
             throw "Release tag v$tagVersion does not match project versions: package=$packageVersion, tauri=$tauriVersion, cargo=$cargoVersion"
           }
@@ -47,7 +51,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            D:/rust/target
+            ${{ runner.temp }}/cargo-target
           key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-release-
       - uses: actions/setup-node@v4
@@ -63,6 +67,6 @@ jobs:
       - run: npm run tauri build
       - uses: softprops/action-gh-release@v2
         with:
-          files: D:/rust/target/release/bundle/msi/*.msi
+          files: ${{ runner.temp }}/cargo-target/release/bundle/msi/*.msi
           generate_release_notes: true
           fail_on_unmatched_files: true

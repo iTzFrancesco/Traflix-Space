@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TARGET_DIR: D:/rust/target
+  CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            D:/rust/target
+            ${{ runner.temp }}/cargo-target
           key: rust-${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-
       - uses: actions/setup-node@v4
@@ -64,7 +64,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            D:/rust/target
+            ${{ runner.temp }}/cargo-target
           key: rust-${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-
       - uses: actions/setup-node@v4
@@ -93,7 +93,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            D:/rust/target
+            ${{ runner.temp }}/cargo-target
           key: rust-${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-
       - uses: actions/setup-node@v4
@@ -105,5 +105,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: traflix-space-windows
-          path: D:/rust/target/release/bundle/msi/*.msi
+          path: ${{ runner.temp }}/cargo-target/release/bundle/msi/*.msi
           if-no-files-found: error

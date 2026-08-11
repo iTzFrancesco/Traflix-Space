@@ -28,6 +28,8 @@ const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const voiceTts = source("../src-tauri/src/jarvis/voice/tts.rs");
 const voiceStt = source("../src-tauri/src/jarvis/voice/stt.rs");
 const releaseWorkflow = source("../.github/workflows/release.yml");
+const ciWorkflow = source("../.github/workflows/ci.yml");
+const rustBuildScript = source("../src-tauri/build.rs");
 const strictTestRunner = source("./run-strict-tests.mjs");
 
 test("exited PTY generations remain recoverable until the user chooses an action", () => {
@@ -222,6 +224,21 @@ test("strict regression runner gates frontend, formatting, clippy safety and war
   assert.match(strictTestRunner, /RUSTFLAGS: rustFlags/);
   assert.match(strictTestRunner, /RUSTFLAGS/);
   assert.match(strictTestRunner, /explicit Clippy baseline/);
+});
+
+test("CI and release builds use runner-local Rust paths and version all MSI inputs", () => {
+  assert.doesNotMatch(ciWorkflow, /D:\/rust\/target/);
+  assert.doesNotMatch(releaseWorkflow, /D:\/rust\/target/);
+  assert.match(ciWorkflow, /CARGO_TARGET_DIR: \$\{\{ runner\.temp \}\}\/cargo-target/);
+  assert.match(releaseWorkflow, /CARGO_TARGET_DIR: \$\{\{ runner\.temp \}\}\/cargo-target/);
+  assert.match(releaseWorkflow, /Cargo\.lock/);
+  assert.match(releaseWorkflow, /fail_on_unmatched_files: true/);
+});
+
+test("Windows Rust test binaries activate common-controls v6", () => {
+  assert.match(rustBuildScript, /MANIFESTINPUT/);
+  assert.match(rustBuildScript, /Microsoft\.Windows\.Common-Controls/);
+  assert.match(rustBuildScript, /6\.0\.0\.0/);
 });
 
 test("every Windows MSI build regenerates the current persistent Edge TTS sidecar", () => {
