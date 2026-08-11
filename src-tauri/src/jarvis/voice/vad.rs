@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 /// as trailing silence once a real phrase (much louder) has been heard.
 const RELEASE_RATIO: f32 = 0.375;
 
+/// Once a representative speech peak has been established, a single frame
+/// that jumps far above it is much more likely to be a click/impact than a
+/// meaningful change in speaking level. Let genuine louder speech raise the
+/// peak gradually, but do not let one transient permanently raise the release
+/// threshold and make normal speech look like silence.
+const MAX_PEAK_STEP_RATIO: f32 = 2.0;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VadState {
@@ -47,12 +54,12 @@ pub struct EnergyVad {
     silence_audio_frames: u64,
     speech_started: bool,
     should_stop: bool,
-    /// Highest RMS observed since speech started; drives the release
-    /// threshold via hysteresis so loud speech is not kept alive by a noise
-    /// floor that merely sits above the absolute start threshold.
+    /// Highest representative RMS observed since speech started; drives the
+    /// release threshold via hysteresis. Implausible one-frame spikes are
+    /// ignored so they cannot poison end-of-speech detection.
     speech_peak_rms: f32,
-    /// End-of-speech threshold, recomputed every time a new speech peak is
-    /// observed. Only levels below this count as trailing silence once
+    /// End-of-speech threshold, recomputed when a representative new speech
+    /// peak is accepted. Only levels below this count as trailing silence once
     /// speech has started.
     release_threshold: f32,
 }
@@ -109,11 +116,15 @@ impl EnergyVad {
             return self.state;
         }
 
-        // Speech in progress: track the peak and widen the release
-        // threshold. A frame at or above the release threshold is still
-        // speech and resets any trailing silence (natural pauses in the
-        // middle of a phrase never auto-stop it).
-        if rms > self.speech_peak_rms {
+        // Speech in progress: update the representative peak only when the
+        // increase is plausible relative to the already established voice.
+        // A keyboard click / impact can be many times louder than speech; if
+        // accepted, it would make the release threshold so high that normal
+        // speech would be counted as trailing silence for the rest of the
+        // utterance.
+        if rms > self.speech_peak_rms
+            && rms <= self.speech_peak_rms * MAX_PEAK_STEP_RATIO
+        {
             self.speech_peak_rms = rms;
             self.release_threshold = release_threshold(self.config.threshold, rms);
         }
@@ -317,5 +328,28 @@ mod tests {
         detector.process(&[0.02; 100]);
         detector.process(&[0.02; 100]);
         assert!(detector.should_stop());
+    }
+
+    #[test]
+    fn one_loud_transient_does_not_poison_release_threshold() {
+        let mut detector = vad();
+        // Establish ordinary speech around 0.10 RMS.
+        for _ in 0..3 {
+            detector.process(&[0.10; 100]);
+        }
+        assert!(detector.speech_started());
+        assert_eq!(detector.state(), VadState::Speech);
+
+        // A single impact/click is far louder than the established voice.
+        detector.process(&[0.80; 100]);
+        assert_eq!(detector.state(), VadState::Speech);
+
+        // Normal speech must continue to be recognized and must not inherit
+        // a release threshold derived from the transient 0.80 spike.
+        for _ in 0..10 {
+            detector.process(&[0.10; 100]);
+            assert_eq!(detector.state(), VadState::Speech);
+            assert!(!detector.should_stop());
+        }
     }
 }
