@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 /// as trailing silence once a real phrase (much louder) has been heard.
 const RELEASE_RATIO: f32 = 0.375;
 
-/// Once a representative speech peak has been established, a single frame
-/// that jumps far above it is much more likely to be a click/impact than a
-/// meaningful change in speaking level. Let genuine louder speech raise the
-/// peak gradually, but do not let one transient permanently raise the release
-/// threshold and make normal speech look like silence.
+/// A new RMS peak within this factor is considered a normal change in speaking
+/// level and is accepted immediately. Larger jumps are accepted only after
+/// they persist for multiple frames so a click/impact cannot poison the
+/// release threshold while a genuinely louder phrase still can.
 const MAX_PEAK_STEP_RATIO: f32 = 2.0;
+const PEAK_JUMP_CONFIRM_FRAMES: u16 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -56,8 +56,11 @@ pub struct EnergyVad {
     should_stop: bool,
     /// Highest representative RMS observed since speech started; drives the
     /// release threshold via hysteresis. Implausible one-frame spikes are
-    /// ignored so they cannot poison end-of-speech detection.
+    /// confirmed before they can replace this value.
     speech_peak_rms: f32,
+    /// Candidate for a large sustained jump in speaking level.
+    peak_jump_candidate_rms: f32,
+    peak_jump_candidate_frames: u16,
     /// End-of-speech threshold, recomputed when a representative new speech
     /// peak is accepted. Only levels below this count as trailing silence once
     /// speech has started.
@@ -77,6 +80,8 @@ impl EnergyVad {
             speech_started: false,
             should_stop: false,
             speech_peak_rms: 0.0,
+            peak_jump_candidate_rms: 0.0,
+            peak_jump_candidate_frames: 0,
         }
     }
 
@@ -116,24 +121,19 @@ impl EnergyVad {
             return self.state;
         }
 
-        // Speech in progress: update the representative peak only when the
-        // increase is plausible relative to the already established voice.
-        // A keyboard click / impact can be many times louder than speech; if
-        // accepted, it would make the release threshold so high that normal
-        // speech would be counted as trailing silence for the rest of the
-        // utterance.
-        if rms > self.speech_peak_rms
-            && rms <= self.speech_peak_rms * MAX_PEAK_STEP_RATIO
-        {
-            self.speech_peak_rms = rms;
-            self.release_threshold = release_threshold(self.config.threshold, rms);
-        }
+        self.update_representative_peak(rms);
+
         if rms >= self.release_threshold {
             self.silence_frames = 0;
             self.silence_audio_frames = 0;
             self.state = VadState::Speech;
             return self.state;
         }
+
+        // A candidate large peak jump is only meaningful while the high level
+        // is sustained. Normal/silent frames cancel a one-frame transient.
+        self.peak_jump_candidate_rms = 0.0;
+        self.peak_jump_candidate_frames = 0;
 
         // Below the release threshold: trailing silence. This includes
         // constant background noise that sits above the absolute start
@@ -152,6 +152,38 @@ impl EnergyVad {
             self.should_stop = true;
         }
         self.state
+    }
+
+    fn update_representative_peak(&mut self, rms: f32) {
+        if rms <= self.speech_peak_rms {
+            // Returning to the established speech range proves any pending
+            // large jump was transient.
+            self.peak_jump_candidate_rms = 0.0;
+            self.peak_jump_candidate_frames = 0;
+            return;
+        }
+
+        if rms <= self.speech_peak_rms * MAX_PEAK_STEP_RATIO {
+            self.accept_peak(rms);
+            return;
+        }
+
+        // Large jump: require consecutive high frames. Keep the strongest
+        // value in the candidate window so a genuinely louder phrase can
+        // raise the release threshold after confirmation.
+        self.peak_jump_candidate_rms = self.peak_jump_candidate_rms.max(rms);
+        self.peak_jump_candidate_frames = self.peak_jump_candidate_frames.saturating_add(1);
+        if self.peak_jump_candidate_frames >= PEAK_JUMP_CONFIRM_FRAMES {
+            let confirmed = self.peak_jump_candidate_rms;
+            self.accept_peak(confirmed);
+        }
+    }
+
+    fn accept_peak(&mut self, rms: f32) {
+        self.speech_peak_rms = rms;
+        self.release_threshold = release_threshold(self.config.threshold, rms);
+        self.peak_jump_candidate_rms = 0.0;
+        self.peak_jump_candidate_frames = 0;
     }
 
     pub fn state(&self) -> VadState {
@@ -267,8 +299,8 @@ mod tests {
     fn fixed_noise_above_base_threshold_does_not_keep_recording_after_a_phrase() {
         // Room noise sits ABOVE the absolute start threshold (0.018) the
         // whole time. The absolute threshold may start speech, but once a
-        // much louder phrase raises the peak, the same noise floor must
-        // count as trailing silence instead of keeping the recording alive.
+        // much louder phrase is sustained for two frames, the same noise
+        // floor must count as trailing silence instead of keeping recording.
         let mut detector = vad();
         for _ in 0..3 {
             detector.process(&[0.03; 100]);
@@ -278,7 +310,6 @@ mod tests {
             detector.process(&[0.2; 100]);
         }
         assert_eq!(detector.state(), VadState::Speech);
-        // Back to the same fixed noise: release threshold is well above it.
         for _ in 0..2 {
             detector.process(&[0.03; 100]);
             assert!(!detector.should_stop(), "trailing window not elapsed yet");
@@ -294,16 +325,13 @@ mod tests {
             detector.process(&[0.2; 100]);
         }
         assert!(detector.speech_started());
-        // A short natural pause (still under the trailing window).
         detector.process(&[0.03; 100]);
         detector.process(&[0.03; 100]);
         assert_eq!(detector.state(), VadState::Silence);
         assert!(!detector.should_stop());
-        // The phrase continues: trailing silence must be reset.
         detector.process(&[0.2; 100]);
         assert_eq!(detector.state(), VadState::Speech);
         assert!(!detector.should_stop());
-        // A full trailing window is needed again before stopping.
         detector.process(&[0.03; 100]);
         detector.process(&[0.03; 100]);
         assert!(!detector.should_stop());
@@ -313,8 +341,6 @@ mod tests {
 
     #[test]
     fn release_threshold_tracks_quieter_peaks() {
-        // Soft speech: release sits close to the base threshold, so a noise
-        // floor barely above base still triggers auto-stop.
         let mut detector = vad();
         for _ in 0..3 {
             detector.process(&[0.04; 100]);
@@ -323,7 +349,6 @@ mod tests {
         for _ in 0..4 {
             detector.process(&[0.04; 100]);
         }
-        // Noise between base (0.018) and release (0.02625) is trailing.
         detector.process(&[0.02; 100]);
         detector.process(&[0.02; 100]);
         detector.process(&[0.02; 100]);
@@ -333,23 +358,41 @@ mod tests {
     #[test]
     fn one_loud_transient_does_not_poison_release_threshold() {
         let mut detector = vad();
-        // Establish ordinary speech around 0.10 RMS.
         for _ in 0..3 {
             detector.process(&[0.10; 100]);
         }
         assert!(detector.speech_started());
         assert_eq!(detector.state(), VadState::Speech);
 
-        // A single impact/click is far louder than the established voice.
+        // One impact is not enough to redefine the representative voice peak.
         detector.process(&[0.80; 100]);
         assert_eq!(detector.state(), VadState::Speech);
 
-        // Normal speech must continue to be recognized and must not inherit
-        // a release threshold derived from the transient 0.80 spike.
         for _ in 0..10 {
             detector.process(&[0.10; 100]);
             assert_eq!(detector.state(), VadState::Speech);
             assert!(!detector.should_stop());
         }
+    }
+
+    #[test]
+    fn sustained_large_level_jump_is_accepted_as_real_speech() {
+        let mut detector = vad();
+        // A noisy room can satisfy the absolute start threshold first.
+        for _ in 0..3 {
+            detector.process(&[0.03; 100]);
+        }
+        assert!(detector.speech_started());
+
+        // A true phrase is much louder but sustained, so it must update the
+        // representative peak rather than being rejected as a transient.
+        detector.process(&[0.20; 100]);
+        detector.process(&[0.20; 100]);
+        assert_eq!(detector.state(), VadState::Speech);
+
+        detector.process(&[0.03; 100]);
+        detector.process(&[0.03; 100]);
+        detector.process(&[0.03; 100]);
+        assert!(detector.should_stop());
     }
 }
