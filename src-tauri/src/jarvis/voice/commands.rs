@@ -137,7 +137,6 @@ pub async fn jarvis_voice_start(
     let mut watchdog_config = configured.jarvis.voice_input.clone();
     watchdog_config.max_duration_seconds = max_duration_seconds;
     watchdog_config.max_armed_seconds = options.max_armed_seconds;
-    let level_config = watchdog_config.clone();
     let event_app = app.clone();
     let event_state = (*state).clone();
     let request_id = status.request_id.clone();
@@ -174,20 +173,11 @@ pub async fn jarvis_voice_start(
                     vad_state: status.vad_state,
                 },
             );
-            if signal.should_stop && status.status == VoiceRequestStatus::Recording {
-                info!(request_id = %request_id, "VAD requested automatic voice stop");
-                if let Err(error) = finish_voice_stop(
-                    &event_app,
-                    &event_state,
-                    level_config.clone(),
-                    request_id.clone(),
-                )
-                .await
-                {
-                    error!(request_id = %request_id, error_code = %error.code, "Automatic VAD stop failed");
-                }
-                break;
-            }
+            // VAD is intentionally start-only. Once speech has transitioned
+            // the request to Recording, pauses, breathing and silence never
+            // end the utterance automatically. The user explicitly finishes
+            // with "Invia adesso"; the separate max-duration watchdog below
+            // remains only as a runaway-capture safety cap.
         }
     });
     let watchdog_app = app.clone();
