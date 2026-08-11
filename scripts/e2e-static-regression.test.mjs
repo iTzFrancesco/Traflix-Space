@@ -229,8 +229,8 @@ test("strict regression runner gates frontend, formatting, clippy safety and war
 test("CI and release builds use runner-local Rust paths and version all MSI inputs", () => {
   assert.doesNotMatch(ciWorkflow, /D:\/rust\/target/);
   assert.doesNotMatch(releaseWorkflow, /D:\/rust\/target/);
-  assert.match(ciWorkflow, /CARGO_TARGET_DIR: \$\{\{ runner\.temp \}\}\/cargo-target/);
-  assert.match(releaseWorkflow, /CARGO_TARGET_DIR: \$\{\{ runner\.temp \}\}\/cargo-target/);
+  assert.match(ciWorkflow, /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/\.cargo-target/);
+  assert.match(releaseWorkflow, /CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/\.cargo-target/);
   assert.match(releaseWorkflow, /Cargo\.lock/);
   assert.match(releaseWorkflow, /fail_on_unmatched_files: true/);
 });

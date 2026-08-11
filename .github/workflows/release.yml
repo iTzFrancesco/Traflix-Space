@@ -14,7 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.cargo-target
 
 jobs:
   build-and-release:
@@ -51,7 +51,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ${{ runner.temp }}/cargo-target
+            ${{ github.workspace }}/.cargo-target
           key: rust-${{ runner.os }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-cargo-release-
       - uses: actions/setup-node@v4
@@ -67,6 +67,6 @@ jobs:
       - run: npm run tauri build
       - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ runner.temp }}/cargo-target/release/bundle/msi/*.msi
+          files: ${{ github.workspace }}/.cargo-target/release/bundle/msi/*.msi
           generate_release_notes: true
           fail_on_unmatched_files: true
