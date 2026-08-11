@@ -974,6 +974,39 @@ impl AgentSessionRegistry {
         }
     }
 
+    /// Confirm the identity of a terminal on behalf of the human user.
+    /// Called when the user explicitly confirms an action (send/abort)
+    /// targeting a terminal whose identity is still unconfirmed — e.g. a
+    /// manually launched agent detected from its launch command
+    /// (command-observed, confidence below the 0.75 confirmation gate).
+    /// Returns `true` when a matching unconfirmed record was found and
+    /// unblocked. A prior `Ignored` decision is not overridden.
+    pub fn confirm_identity_for_terminal(&self, terminal_id: &str, generation: u64) -> bool {
+        let provider = {
+            let Ok(sessions) = self.sessions.lock() else {
+                return false;
+            };
+            let Some(record) = sessions.values().find(|record| {
+                record.reference.terminal_id.as_deref() == Some(terminal_id)
+                    && record.reference.generation == generation
+                    && record.reference.identity_needs_confirmation
+                    && record.state != AgentState::Exited
+            }) else {
+                return false;
+            };
+            record
+                .reference
+                .observed_provider
+                .clone()
+                .or_else(|| Some(record.reference.resolved_provider.clone()))
+        };
+        let Some(provider) = provider else {
+            return false;
+        };
+        self.set_identity_decision(terminal_id, generation, &provider, IdentityDecision::Confirmed);
+        true
+    }
+
     pub fn mark_selected(&self, reference: &AgentSessionRef) {
         if let Ok(mut selected) = self.selected_session.lock() {
             *selected = Some(reference.agent_session_id.clone());
@@ -1359,7 +1392,7 @@ mod tests {
         Provenance,
     };
     use super::{
-        fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation,
+        fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation, IdentityDecision,
         TerminalAgentSnapshot, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT, MAX_ACTIVITY_TIMELINE,
         MAX_INPUT_BUFFER_BYTES, MAX_TASK_TEXT_BYTES,
     };
@@ -2165,5 +2198,70 @@ mod tests {
             .iter()
             .any(|event| event.kind == AgentActivityKind::Exited));
         assert!(task_of(&status).completed_at.is_none());
+    }
+
+    // -- identity confirmation (human action confirms manual agent) --
+
+    #[test]
+    fn confirm_identity_unblocks_manual_agent_detected_from_command() {
+        let registry = AgentSessionRegistry::default();
+        // Manual agent (pi) detected from its launch command: observed
+        // provider, command-observed source, confidence 0.7 < 0.75 gate.
+        let mut agent = terminal(1, true);
+        agent.agent_id = Some("pi".to_string());
+        agent.observed_provider = Some("pi".to_string());
+        agent.detection_source = "command-observed".to_string();
+        agent.detection_confidence = 0.7;
+        registry.observe_terminal_started(&agent, "2026-08-11T00:00:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(session.identity_needs_confirmation);
+        assert!(!registry.control_allowed("terminal-1", 1));
+
+        // The human confirmation of the action doubles as the identity
+        // confirmation: control is granted without any extra UI step.
+        assert!(registry.confirm_identity_for_terminal("terminal-1", 1));
+        assert!(registry.control_allowed("terminal-1", 1));
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(!session.identity_needs_confirmation);
+    }
+
+    #[test]
+    fn confirm_identity_is_a_noop_for_already_confirmed_or_ignored_agents() {
+        let registry = AgentSessionRegistry::default();
+        // Codex runtime: process-tree detection, above the gate.
+        let agent = terminal(1, true);
+        registry.observe_terminal_started(&agent, "2026-08-11T00:00:00Z");
+        assert!(!registry.confirm_identity_for_terminal("terminal-1", 1));
+
+        // Ignored decision is never overridden by the action path.
+        let mut manual = terminal(1, true);
+        manual.agent_id = Some("pi".to_string());
+        manual.observed_provider = Some("pi".to_string());
+        manual.detection_source = "command-observed".to_string();
+        manual.detection_confidence = 0.7;
+        registry.observe_terminal_started(&manual, "2026-08-11T00:00:01Z");
+        registry.set_identity_decision(
+            "terminal-1",
+            1,
+            "pi",
+            IdentityDecision::Ignored,
+        );
+        assert!(!registry.confirm_identity_for_terminal("terminal-1", 1));
+        assert!(!registry.control_allowed("terminal-1", 1));
+    }
+
+    #[test]
+    fn confirm_identity_does_not_unblock_exited_sessions() {
+        let registry = AgentSessionRegistry::default();
+        let mut agent = terminal(1, false);
+        agent.agent_id = Some("pi".to_string());
+        agent.observed_provider = Some("pi".to_string());
+        agent.detection_source = "command-observed".to_string();
+        agent.detection_confidence = 0.7;
+        registry.observe_terminal_started(&agent, "2026-08-11T00:00:00Z");
+        assert!(!registry.confirm_identity_for_terminal("terminal-1", 1));
+        assert!(!registry.control_allowed("terminal-1", 1));
     }
 }

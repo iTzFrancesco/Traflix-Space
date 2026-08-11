@@ -513,13 +513,25 @@ pub async fn jarvis_confirm_action(
         .map(provider_display_name)
         .unwrap_or_else(|| "agente".to_string());
     let target_session_id = crate::jarvis::agent_registry::session_id_for(&snapshot);
+    // The user has just explicitly confirmed this action (pending action
+    // taken for confirmation). When the only blocker is an unconfirmed
+    // identity — a manually launched agent detected from its launch
+    // command, whose confidence stays below the 0.75 gate because no
+    // completion event ever arrives — the human confirmation doubles as
+    // the identity confirmation and unblocks the target.
+    let confirmed_target = snapshot.is_agent_terminal
+        && (state
+            .registry
+            .control_allowed(&terminal_id, snapshot.generation)
+            || (state
+                .registry
+                .confirm_identity_for_terminal(&terminal_id, snapshot.generation)
+                && state
+                    .registry
+                    .control_allowed(&terminal_id, snapshot.generation)));
     let result = match record.action.operation.as_str() {
         "agent_send" => {
-            if !snapshot.is_agent_terminal
-                || !state
-                    .registry
-                    .control_allowed(&terminal_id, snapshot.generation)
-            {
+            if !confirmed_target {
                 Err("target is not a confirmed agent".to_string())
             } else {
                 let text = record
@@ -560,11 +572,7 @@ pub async fn jarvis_confirm_action(
             }
         }
         "agent_abort" => {
-            if !snapshot.is_agent_terminal
-                || !state
-                    .registry
-                    .control_allowed(&terminal_id, snapshot.generation)
-            {
+            if !confirmed_target {
                 Err("target is not a confirmed agent".to_string())
             } else {
                 emit_checkpoint(
