@@ -85,6 +85,8 @@ function applyToTurnList(
       };
 
   const nextTurn = reduceTurn(turn, event);
+  // Streaming turns are intentionally stored newest-first. Keep an existing
+  // turn at its current position; insert only genuinely new turns at index 0.
   const updated = index >= 0
     ? turns.map((item, i) => (i === index ? nextTurn : item))
     : [nextTurn, ...turns];
@@ -232,9 +234,9 @@ interface CodexStreamItemInput {
 
 /**
  * The tool currently being executed by the latest active turn of the
- * workspace, if any. Scans the turn's items in reverse so the most recent
- * in-flight tool wins; a completed turn or a turn without an in-flight
- * tool yields null.
+ * workspace, if any. Streaming turns are stored newest-first, so inspect
+ * index 0 first and then scan that turn's items in reverse for the newest
+ * in-flight tool.
  */
 export function currentCodexTool(
   turns: Record<string, CodexStreamingTurn[]>,
@@ -243,7 +245,7 @@ export function currentCodexTool(
   if (!workspaceId) return null;
   const workspaceTurns = turns[workspaceId];
   if (!workspaceTurns?.length) return null;
-  for (let i = workspaceTurns.length - 1; i >= 0; i -= 1) {
+  for (let i = 0; i < workspaceTurns.length; i += 1) {
     const turn = workspaceTurns[i];
     if (turn.status !== "active") continue;
     for (let j = turn.items.length - 1; j >= 0; j -= 1) {
@@ -257,13 +259,12 @@ export function currentCodexTool(
   return null;
 }
 
-/** Whether the latest turn of the workspace is still running. */
+/** Whether the newest turn of the workspace is still running. */
 export function isCodexTurnActive(
   turns: Record<string, CodexStreamingTurn[]>,
   workspaceId: string | null,
 ): boolean {
   if (!workspaceId) return false;
-  const workspaceTurns = turns[workspaceId];
-  const latest = workspaceTurns?.[workspaceTurns.length - 1];
-  return latest?.status === "active";
+  const newest = turns[workspaceId]?.[0];
+  return newest?.status === "active";
 }
