@@ -881,6 +881,14 @@ pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
     if result.is_empty() {
         return None;
     }
+    // Edge TTS verbalizes emoji/symbols as "emoji …"/"simbolo …". Strip
+    // them (plus ZWJ/ZWNJ, variation selectors and private-use glyphs)
+    // before synthesis; letters, numbers, marks, punctuation and
+    // whitespace survive untouched.
+    let result = strip_unspeakable_chars(&result);
+    if result.is_empty() {
+        return None;
+    }
     if result.chars().count() <= max_chars {
         return Some(result);
     }
@@ -908,6 +916,41 @@ pub fn sanitize_for_speech(input: &str, max_chars: usize) -> Option<String> {
     } else {
         Some(truncated.to_string())
     }
+}
+
+/// Replaces every char that Edge TTS would verbalize as an emoji/symbol
+/// name with a space, then collapses whitespace. Keeps letters, numbers,
+/// marks (accents), punctuation and normal whitespace.
+fn strip_unspeakable_chars(text: &str) -> String {
+    let sanitized: String = text
+        .chars()
+        .map(|c| if is_speech_safe_char(c) { c } else { ' ' })
+        .collect();
+    sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_speech_safe_char(c: char) -> bool {
+    let cp = c as u32;
+    // Format/control codepoints: ZWJ, ZWNJ, soft hyphen, BOM, variation
+    // selectors (FE00-FE0F + E0100-E01EF) and private-use glyphs.
+    !matches!(
+        cp,
+        0x200C | 0x200D | 0x00AD | 0xFEFF
+            | 0xFE00..=0xFE0F
+            | 0xE0100..=0xE01EF
+            | 0xE000..=0xF8FF
+            // Arrows, math/misc technical, geometric shapes, dingbats,
+            // misc symbols+arrows (includes ✅ ✔️ ⚡ 🔺 …).
+            | 0x2190..=0x2BFF
+            // Emoji, pictographs, flags, enclosed ideographic supplement…
+            | 0x1F000..=0x1FAFF
+    )
+}
+
+#[cfg(test)]
+fn assert_speech_text(input: &str, expected: &str) {
+    let output = sanitize_for_speech(input, 800).unwrap_or_default();
+    assert_eq!(output, expected, "input: {input:?}");
 }
 
 #[cfg(debug_assertions)]
@@ -1015,6 +1058,21 @@ mod tests {
     fn speech_is_bounded_at_sentence_boundary() {
         let output = sanitize_for_speech("Prima frase. Seconda frase molto lunga", 20).unwrap();
         assert_eq!(output, "Prima frase.");
+    }
+
+    #[test]
+    fn emoji_variation_selectors_and_zwj_are_stripped_for_speech() {
+        super::assert_speech_text("Ciao 👋 mondo! 🎉🔥", "Ciao mondo!");
+        // ZWJ family sequences (man + ZWJ + woman + ZWJ + girl).
+        super::assert_speech_text("👨\u{200d}👩\u{200d}👧 famiglia", "famiglia");
+        // Variation selector after a dingbat.
+        super::assert_speech_text("✔️ Fatto.", "Fatto.");
+        // Emoji glued to words get separated, not fused.
+        super::assert_speech_text("ciao👋mondo", "ciao mondo");
+        // Accents, punctuation and numbers survive.
+        super::assert_speech_text("Perché 2×3? – Sì!…", "Perché 2×3? – Sì!…");
+        // A message that is only emoji becomes None (nothing to say).
+        assert!(sanitize_for_speech("🚀🎉🎊", 800).is_none());
     }
     #[test]
     fn empty_speech_is_rejected() {

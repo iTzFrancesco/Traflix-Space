@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+/// Release ratio used to compute the end-of-speech threshold from the peak
+/// RMS observed during speech: `base + (peak - base) * RELEASE_RATIO`. The
+/// release threshold sits clearly above the absolute start threshold, so a
+/// constant noise floor that is louder than the base threshold still counts
+/// as trailing silence once a real phrase (much louder) has been heard.
+const RELEASE_RATIO: f32 = 0.375;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VadState {
@@ -40,18 +47,29 @@ pub struct EnergyVad {
     silence_audio_frames: u64,
     speech_started: bool,
     should_stop: bool,
+    /// Highest RMS observed since speech started; drives the release
+    /// threshold via hysteresis so loud speech is not kept alive by a noise
+    /// floor that merely sits above the absolute start threshold.
+    speech_peak_rms: f32,
+    /// End-of-speech threshold, recomputed every time a new speech peak is
+    /// observed. Only levels below this count as trailing silence once
+    /// speech has started.
+    release_threshold: f32,
 }
 
 impl EnergyVad {
     pub fn new(config: EnergyVadConfig) -> Self {
+        let config = config.bounded();
         Self {
-            config: config.bounded(),
+            release_threshold: config.threshold,
+            config,
             state: VadState::Silence,
             speech_frames: 0,
             silence_frames: 0,
             silence_audio_frames: 0,
             speech_started: false,
             should_stop: false,
+            speech_peak_rms: 0.0,
         }
     }
 
@@ -65,33 +83,62 @@ impl EnergyVad {
             .sum::<f32>()
             / samples.len() as f32)
             .sqrt();
-        if rms >= self.config.threshold {
-            self.speech_frames = self.speech_frames.saturating_add(1);
+
+        if !self.speech_started {
+            // The absolute threshold still gates speech START; hysteresis
+            // only shapes the release side.
+            if rms >= self.config.threshold {
+                self.speech_frames = self.speech_frames.saturating_add(1);
+                self.silence_frames = 0;
+                self.silence_audio_frames = 0;
+                self.state = if self.speech_frames >= self.config.start_frames {
+                    self.speech_started = true;
+                    self.speech_peak_rms = rms;
+                    self.release_threshold = release_threshold(
+                        self.config.threshold,
+                        rms,
+                    );
+                    VadState::Speech
+                } else {
+                    VadState::MaybeSpeech
+                };
+            } else {
+                self.speech_frames = 0;
+                self.state = VadState::Silence;
+            }
+            return self.state;
+        }
+
+        // Speech in progress: track the peak and widen the release
+        // threshold. A frame at or above the release threshold is still
+        // speech and resets any trailing silence (natural pauses in the
+        // middle of a phrase never auto-stop it).
+        if rms > self.speech_peak_rms {
+            self.speech_peak_rms = rms;
+            self.release_threshold = release_threshold(self.config.threshold, rms);
+        }
+        if rms >= self.release_threshold {
             self.silence_frames = 0;
             self.silence_audio_frames = 0;
-            self.state = if self.speech_frames >= self.config.start_frames {
-                self.speech_started = true;
-                VadState::Speech
-            } else {
-                VadState::MaybeSpeech
-            };
-        } else if self.speech_started {
-            self.silence_frames = self.silence_frames.saturating_add(1);
-            let audio_frames = (samples.len() as u64)
-                .div_ceil(self.config.channels as u64)
-                .max(1);
-            self.silence_audio_frames = self.silence_audio_frames.saturating_add(audio_frames);
-            self.state = VadState::Silence;
-            let silence_ms =
-                self.silence_audio_frames.saturating_mul(1_000) / self.config.sample_rate as u64;
-            if self.silence_frames >= self.config.silence_frames
-                && silence_ms >= self.config.post_speech_ms as u64
-            {
-                self.should_stop = true;
-            }
-        } else {
-            self.speech_frames = 0;
-            self.state = VadState::Silence;
+            self.state = VadState::Speech;
+            return self.state;
+        }
+
+        // Below the release threshold: trailing silence. This includes
+        // constant background noise that sits above the absolute start
+        // threshold but far below the voice peak.
+        self.silence_frames = self.silence_frames.saturating_add(1);
+        let audio_frames = (samples.len() as u64)
+            .div_ceil(self.config.channels as u64)
+            .max(1);
+        self.silence_audio_frames = self.silence_audio_frames.saturating_add(audio_frames);
+        self.state = VadState::Silence;
+        let silence_ms =
+            self.silence_audio_frames.saturating_mul(1_000) / self.config.sample_rate as u64;
+        if self.silence_frames >= self.config.silence_frames
+            && silence_ms >= self.config.post_speech_ms as u64
+        {
+            self.should_stop = true;
         }
         self.state
     }
@@ -107,6 +154,13 @@ impl EnergyVad {
     pub fn should_stop(&self) -> bool {
         self.should_stop
     }
+}
+
+/// Release threshold with relative hysteresis: the quieter the speech, the
+/// closer the release sits to the base threshold; the louder the speech
+/// peak, the higher the release climbs above any noise floor.
+fn release_threshold(base: f32, peak: f32) -> f32 {
+    (base + (peak - base) * RELEASE_RATIO).clamp(base, 1.0)
 }
 
 #[cfg(test)]
@@ -196,5 +250,72 @@ mod tests {
 
         assert_eq!(reaches_stop(1), reaches_stop(2));
         assert!(reaches_stop(1));
+    }
+
+    #[test]
+    fn fixed_noise_above_base_threshold_does_not_keep_recording_after_a_phrase() {
+        // Room noise sits ABOVE the absolute start threshold (0.018) the
+        // whole time. The absolute threshold may start speech, but once a
+        // much louder phrase raises the peak, the same noise floor must
+        // count as trailing silence instead of keeping the recording alive.
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.03; 100]);
+        }
+        assert!(detector.speech_started());
+        for _ in 0..5 {
+            detector.process(&[0.2; 100]);
+        }
+        assert_eq!(detector.state(), VadState::Speech);
+        // Back to the same fixed noise: release threshold is well above it.
+        for _ in 0..2 {
+            detector.process(&[0.03; 100]);
+            assert!(!detector.should_stop(), "trailing window not elapsed yet");
+        }
+        detector.process(&[0.03; 100]);
+        assert!(detector.should_stop(), "noise floor must count as trailing silence");
+    }
+
+    #[test]
+    fn a_continuing_phrase_resets_the_trailing_silence_window() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.2; 100]);
+        }
+        assert!(detector.speech_started());
+        // A short natural pause (still under the trailing window).
+        detector.process(&[0.03; 100]);
+        detector.process(&[0.03; 100]);
+        assert_eq!(detector.state(), VadState::Silence);
+        assert!(!detector.should_stop());
+        // The phrase continues: trailing silence must be reset.
+        detector.process(&[0.2; 100]);
+        assert_eq!(detector.state(), VadState::Speech);
+        assert!(!detector.should_stop());
+        // A full trailing window is needed again before stopping.
+        detector.process(&[0.03; 100]);
+        detector.process(&[0.03; 100]);
+        assert!(!detector.should_stop());
+        detector.process(&[0.03; 100]);
+        assert!(detector.should_stop());
+    }
+
+    #[test]
+    fn release_threshold_tracks_quieter_peaks() {
+        // Soft speech: release sits close to the base threshold, so a noise
+        // floor barely above base still triggers auto-stop.
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.04; 100]);
+        }
+        assert!(detector.speech_started());
+        for _ in 0..4 {
+            detector.process(&[0.04; 100]);
+        }
+        // Noise between base (0.018) and release (0.02625) is trailing.
+        detector.process(&[0.02; 100]);
+        detector.process(&[0.02; 100]);
+        detector.process(&[0.02; 100]);
+        assert!(detector.should_stop());
     }
 }

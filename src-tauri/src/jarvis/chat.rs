@@ -788,6 +788,11 @@ async fn build_context_for_chat(
         })
 }
 
+/// Legacy read-tool dispatcher. The Codex path now uses the fast-path
+/// dispatch in `codex/tools.rs`; this canonical implementation is preserved
+/// for the legacy HTTP provider path and as the reference for read-tool
+/// semantics. See `codex/tools.rs::dispatch_read_tool`.
+#[allow(dead_code)]
 pub(crate) async fn execute_read_tool(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
@@ -1035,7 +1040,7 @@ pub(crate) async fn execute_read_tool(
     (result, None)
 }
 
-async fn read_markdown(
+pub(crate) async fn read_markdown(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
     invocation: InvocationBinding,
@@ -1109,9 +1114,9 @@ fn follow_ups(context: &ModelContextViewV1) -> Vec<String> {
     result
 }
 
-/// Display name used only for user-facing checkpoint labels, e.g.
-/// `codex` → `Codex`. Never exposes terminal IDs or internal identity.
-fn provider_display_name(provider: &str) -> String {
+/// C10 + fast-path read tools need the same checkpoint labels as the legacy
+/// dispatcher; keep the display name helper shared.
+pub(crate) fn provider_display_name(provider: &str) -> String {
     let mut chars = provider.trim().chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),

@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::events::{stream_events_from_notification, CHAT_STREAM_EVENT};
 use super::models::CodexModelService;
@@ -239,12 +239,40 @@ pub fn spawn_account_bridge(
                     (method.clone(), params.clone())
                 }
                 ServerMessage::Request { id, method, params } => {
+                    // C10 latency: never block the App Server channel loop on a
+                    // tool. Independent tool calls (e.g. agent.list while
+                    // terminals.list runs) must proceed in parallel and the
+                    // bridge keeps draining streaming notifications while a
+                    // read tool is executing. The tool service and runtime are
+                    // Clone, so the task owns everything it touches.
+                    info!(
+                        method,
+                        id = *id,
+                        "codex rpc server request received (dispatched async)",
+                    );
                     if let Some(tools) = &tools {
-                        if tools.handle_server_request(*id, method, params.clone()).await {
-                            continue;
-                        }
-                    }
-                    if let Ok(client) = runtime.client().await {
+                        let tools = tools.clone();
+                        let runtime = runtime.clone();
+                        let method = method.clone();
+                        let params = params.clone();
+                        let id = *id;
+                        tauri::async_runtime::spawn(async move {
+                            if tools.handle_server_request(id, &method, params).await {
+                                return;
+                            }
+                            if let Ok(client) = runtime.client().await {
+                                let _ = client
+                                    .respond_error(
+                                        id,
+                                        -32601,
+                                        &format!("unknown server request: {method}"),
+                                    )
+                                    .await;
+                            }
+                        });
+                    } else if let Ok(client) = runtime.client().await {
+                        // No tool service bound: answer immediately without
+                        // blocking the notification loop.
                         let _ = client
                             .respond_error(
                                 *id,

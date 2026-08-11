@@ -7,29 +7,40 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::runtime::CodexRuntimeManager;
 use super::threads::ThreadRegistry;
-use crate::jarvis::chat::{execute_read_tool, load_workspace, now};
+use crate::jarvis::agent_registry::{DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
+use crate::jarvis::chat::{load_workspace, now, provider_display_name, read_markdown};
+use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
 use crate::jarvis::commands::reconcile_live_registry;
-use crate::jarvis::control::{conversational_plan_schema, execute_plan, ConversationalPlan};
-use crate::jarvis::model::{ModelFunctionCall, ModelToolCall};
+use crate::jarvis::control::{
+    build_tail, conversational_plan_schema, execute_plan, ConversationalPlan, DEFAULT_TAIL_LINES,
+    MAX_TAIL_BYTES,
+};
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisToolService};
-use crate::jarvis::types::{InvocationBinding, RequestedDepth};
+use crate::jarvis::types::{InvocationBinding, RequestedDepth, TerminalSummary};
 use crate::jarvis::JarvisState;
 use crate::terminal_engine::TerminalManager;
+use crate::workspace::registry::WorkspaceConfig;
 
 pub const MAX_DYNAMIC_TOOL_CALLS_PER_TURN: usize = 12;
 pub const MAX_SIDE_EFFECT_PLANS_PER_TURN: usize = 1;
 #[allow(dead_code)]
 pub const TURN_DEADLINE_SECS: u64 = 90;
 pub const TOOL_CALL_METHOD: &str = "item/tool/call";
+
+/// Dedicated deadline for every read tool. The turn deadline is 90s; a hung
+/// read tool must fail fast with a clear error instead of keeping the model
+/// waiting for the whole turn.
+const READ_TOOL_TIMEOUT: Duration = Duration::from_secs(8);
 
 const PLAN_NAMESPACE: &str = "conversational";
 const PLAN_TOOL: &str = "plan";
@@ -188,11 +199,26 @@ impl CodexToolService {
             }
             *used += 1;
         }
-        debug!(thread_id, name, "codex dynamic tool call");
+        let started = Instant::now();
+        info!(
+            thread_id,
+            call_id = tool_call_id,
+            workspace_id,
+            tool = name,
+            rpc_id = id,
+            "[JARVIS-CODEX-TOOL] start",
+        );
 
         if namespace == PLAN_NAMESPACE && tool_name == PLAN_TOOL {
-            self.handle_conversational_plan(id, thread_id, &workspace_id, &tool_call_id, &input)
-                .await;
+            self.handle_conversational_plan(
+                id,
+                thread_id,
+                &workspace_id,
+                &tool_call_id,
+                &input,
+                started,
+            )
+            .await;
             return true;
         }
 
@@ -252,6 +278,7 @@ impl CodexToolService {
         workspace_id: &str,
         request_id: &str,
         args: &Value,
+        started: Instant,
     ) {
         {
             let mut executed = self.plan_executed.lock().await;
@@ -338,6 +365,12 @@ impl CodexToolService {
             "response": execution.response,
             "warnings": execution.warnings,
         });
+        info!(
+            thread_id,
+            workspace_id,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "[JARVIS-CODEX-PLAN] completed",
+        );
         debug!(
             thread_id,
             workspace_id,
@@ -360,6 +393,11 @@ impl CodexToolService {
         }
     }
 
+    /// Fast-path read tool execution (C10 latency): each tool loads exactly
+    /// the context slice it needs instead of one full `ContextPackage` per
+    /// call. `terminals.list` never touches the Context Broker; agent tools
+    /// read the live registry directly; only `workspace.overview` and
+    /// `markdown.read` build a bounded `Summary` context.
     async fn execute_read_tool(
         &self,
         workspace_id: &str,
@@ -367,6 +405,7 @@ impl CodexToolService {
         legacy_name: &str,
         input: &Value,
     ) -> Result<Value, String> {
+        let started = Instant::now();
         let observed_at = now();
         let workspace = load_workspace(&self.app, workspace_id, request_id, &observed_at)
             .await
@@ -381,45 +420,303 @@ impl CodexToolService {
             None,
             observed_at.clone(),
         );
-        let context = JarvisToolService::new(&self.app.state::<JarvisState>().broker)
-            .build_context(&workspace, invocation.clone(), terminals, RequestedDepth::LastResult)
-            .map_err(|err| err.message)?
-            .to_model_context_view(&[])
-            .map_err(|err| format!("context projection failed: {err:?}"))?;
-
-        // The legacy dispatcher intentionally keeps workspace.overview small.
-        // For Codex App Server Jarvis, enrich this one read-only tool with the
-        // bounded documentation index so Luna can discover which README,
-        // AGENTS/AGENT, CONTEXT and docs files are relevant before calling
-        // markdown.read. No document body is injected here.
-        if legacy_name == "workspace_overview" {
-            return Ok(json!({
-                "id": workspace.id,
-                "name": workspace.name,
-                "terminalCount": context.terminals.len(),
-                "agentCount": context.agent_sessions.len(),
-                "documentationSummary": context.documentation_summary,
-                "documentIndex": context.document_index,
-                "documentationPolicy": {
-                    "automaticScope": "root *.md + docs/**/*.md",
-                    "priority": ["README.md", "AGENTS.md", "AGENT.md", "CONTEXT.md", "docs/**/*.md"],
-                    "excludedToolingDirectory": ".agents/",
-                    "untrusted": true
-                }
-            }));
+        info!(
+            tool = legacy_name,
+            prepare_ms = started.elapsed().as_millis() as u64,
+            "[JARVIS-CODEX-TOOL] context-ready",
+        );
+        let execution_started = Instant::now();
+        let outcome = tokio::time::timeout(
+            READ_TOOL_TIMEOUT,
+            self.dispatch_read_tool(
+                &workspace,
+                &invocation,
+                &terminals,
+                &observed_at,
+                legacy_name,
+                input,
+            ),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(value)) => {
+                let response_bytes =
+                    serde_json::to_string(&value).map(|json| json.len()).unwrap_or(0);
+                info!(
+                    tool = legacy_name,
+                    execute_ms = execution_started.elapsed().as_millis() as u64,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    response_bytes,
+                    "[JARVIS-CODEX-TOOL] completed",
+                );
+                Ok(value)
+            }
+            Ok(Err(message)) => {
+                warn!(
+                    tool = legacy_name,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    error = message,
+                    "[JARVIS-CODEX-TOOL] failed",
+                );
+                Err(message)
+            }
+            Err(_) => {
+                warn!(
+                    tool = legacy_name,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    "[JARVIS-CODEX-TOOL] failed: read tool timed out",
+                );
+                Err(format!("{legacy_name} timed out after {}s", READ_TOOL_TIMEOUT.as_secs()))
+            }
         }
+    }
 
-        let call = ModelToolCall {
-            id: request_id.to_owned(),
-            kind: "function".into(),
-            function: ModelFunctionCall {
-                name: legacy_name.to_owned(),
-                arguments: serde_json::to_string(input).unwrap_or_else(|_| "{}".into()),
-            },
+    async fn dispatch_read_tool(
+        &self,
+        workspace: &WorkspaceConfig,
+        invocation: &InvocationBinding,
+        terminals: &[TerminalSummary],
+        observed_at: &str,
+        legacy_name: &str,
+        input: &Value,
+    ) -> Result<Value, String> {
+        let app = &self.app;
+        let workspace_id = &invocation.target_workspace_id;
+        let request_id = &invocation.request_id;
+        let manager = app.state::<TerminalManager>();
+        let jarvis_state = app.state::<JarvisState>();
+        let service = JarvisToolService::new(&jarvis_state.broker);
+
+        // Same activity checkpoints as the legacy dispatcher, so the widget
+        // keeps showing "Checking agents…"-style phases during tool work.
+        let checkpoint = read_tool_checkpoint(legacy_name, input);
+        let checkpoint = checkpoint.map(|(phase, label, target)| {
+            emit_checkpoint(
+                app,
+                request_id,
+                workspace_id,
+                &phase,
+                &label,
+                JarvisActivityStatus::Running,
+                target.clone(),
+            );
+            (phase, label, target)
+        });
+
+        let result = match legacy_name {
+            "ui_open_terminal" => {
+                let terminal_id = input
+                    .get("terminalId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !terminals.iter().any(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.workspace_id == *workspace_id
+                }) {
+                    Ok(json!({"error":"terminal target is not owned by invocation workspace"}))
+                } else {
+                    Ok(json!(
+                        {"intent":"open_terminal","executed":false}
+                    ))
+                }
+            }
+            "terminal_list" => serde_json::to_value(terminals)
+                .map_err(|_| "terminal list unavailable".to_string()),
+            "agent_list" => {
+                let envelope = service
+                    .agent_snapshot(workspace_id, Some(request_id.clone()), observed_at)
+                    .map_err(|err| err.message)?;
+                serde_json::to_value(envelope.data)
+                    .map_err(|_| "agent list unavailable".to_string())
+            }
+            "agent_status" => {
+                let session_id = input
+                    .get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let envelope = service
+                    .agent_status(
+                        workspace_id,
+                        session_id,
+                        Some(request_id.clone()),
+                        observed_at,
+                    )
+                    .map_err(|err| err.message)?;
+                serde_json::to_value(envelope.data)
+                    .map_err(|_| "agent status unavailable".to_string())
+            }
+            "agent_last_result" => {
+                let session_id = input
+                    .get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let envelope = service
+                    .agent_last_result(
+                        workspace_id,
+                        session_id,
+                        Some(request_id.clone()),
+                        observed_at,
+                    )
+                    .map_err(|err| err.message)?;
+                if envelope.data.is_none() {
+                    Ok(json!(
+                        {"error":"agent session or result unavailable"}
+                    ))
+                } else {
+                    serde_json::to_value(envelope.data)
+                        .map_err(|_| "agent result unavailable".to_string())
+                }
+            }
+            "agent_activity" => {
+                let session_id = input
+                    .get("agentSessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let limit = input
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(DEFAULT_ACTIVITY_LIMIT as u64)
+                    .min(MAX_ACTIVITY_LIMIT as u64)
+                    .max(1) as usize;
+                let envelope = service
+                    .agent_activity(
+                        workspace_id,
+                        session_id,
+                        limit,
+                        Some(request_id.clone()),
+                        observed_at,
+                    )
+                    .map_err(|err| err.message)?;
+                serde_json::to_value(envelope.data)
+                    .map_err(|_| "agent activity unavailable".to_string())
+            }
+            "agent_tail" => {
+                let terminal_id = input
+                    .get("terminalId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let generation = input
+                    .get("generation")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let Some(terminal) = terminals.iter().find(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.workspace_id == *workspace_id
+                        && terminal.generation == generation
+                }) else {
+                    return Ok(json!({"error":"terminal generation mismatch"}));
+                };
+                let max_lines = input
+                    .get("maxLines")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(DEFAULT_TAIL_LINES as u64) as usize;
+                match manager
+                    .get_recent_normalized_terminal_text_for_runtime(
+                        terminal_id,
+                        &terminal.workspace_id,
+                        terminal.generation,
+                        terminal.process_id,
+                        MAX_TAIL_BYTES,
+                    )
+                    .await
+                {
+                    Ok(raw) => serde_json::to_value(build_tail(
+                        &terminal.workspace_id,
+                        terminal_id,
+                        generation,
+                        &raw.content,
+                        max_lines,
+                        raw.truncated,
+                    ))
+                    .map_err(|_| "terminal tail unavailable".to_string()),
+                    Err(_) => Ok(json!({"error":"terminal tail unavailable"})),
+                }
+            }
+            "workspace_overview" => {
+                // Only this tool needs the bounded documentation index; build
+                // it once at Summary depth (no agent last results).
+                let context = service
+                    .build_context(
+                        workspace,
+                        invocation.clone(),
+                        terminals.to_vec(),
+                        RequestedDepth::Summary,
+                    )
+                    .map_err(|err| err.message)?
+                    .to_model_context_view(&[])
+                    .map_err(|err| format!("context projection failed: {err:?}"))?;
+                Ok(json!({
+                    "id": workspace.id,
+                    "name": workspace.name,
+                    "terminalCount": context.terminals.len(),
+                    "agentCount": context.agent_sessions.len(),
+                    "documentationSummary": context.documentation_summary,
+                    "documentIndex": context.document_index,
+                    "documentationPolicy": {
+                        "automaticScope": "root *.md + docs/**/*.md",
+                        "priority": ["README.md", "AGENTS.md", "AGENT.md", "CONTEXT.md", "docs/**/*.md"],
+                        "excludedToolingDirectory": ".agents/",
+                        "untrusted": true
+                    }
+                }))
+            }
+            "markdown_read" => {
+                let path = input
+                    .get("relativePath")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                match read_markdown(
+                    app,
+                    workspace,
+                    invocation.clone(),
+                    path.to_string(),
+                )
+                .await
+                {
+                    Ok(value) => {
+                        serde_json::to_value(value)
+                            .map_err(|_| "document unavailable".to_string())
+                    }
+                    Err(_) => Ok(json!(
+                        {"error":"document rejected by context policy"}
+                    )),
+                }
+            }
+            other => Err(format!("unknown read-only tool: {other}")),
         };
-        let (result, _intent) =
-            execute_read_tool(&self.app, &workspace, &invocation, call, input, &context).await;
-        Ok(result)
+
+        if let Some((phase, label, target)) = checkpoint {
+            // Keep the legacy label style: agent_status shows the resolved
+            // provider display name on the completion checkpoint.
+            let label = if legacy_name == "agent_status" {
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.get("resolvedProvider"))
+                    .and_then(Value::as_str)
+                    .map(|provider| format!("Checking {}…", provider_display_name(provider)))
+                    .unwrap_or(label)
+            } else {
+                label
+            };
+            let failed = result
+                .as_ref()
+                .map_or(true, |value| value.get("error").is_some());
+            emit_checkpoint(
+                app,
+                request_id,
+                workspace_id,
+                &phase,
+                &label,
+                if failed {
+                    JarvisActivityStatus::Failed
+                } else {
+                    JarvisActivityStatus::Done
+                },
+                target,
+            );
+        }
+        result
     }
 
     async fn respond_error(&self, id: u64, code: i64, message: &str) {
@@ -440,6 +737,54 @@ fn consume_plan_slot(executed: &mut HashMap<String, bool>, thread_id: &str) -> b
     }
     executed.insert(thread_id.to_owned(), true);
     true
+}
+
+/// Same read-checkpoint phases as the legacy dispatcher in `chat.rs`, so the
+/// activity widget keeps showing the same labels while a Codex tool runs.
+fn read_tool_checkpoint(
+    legacy_name: &str,
+    args: &Value,
+) -> Option<(String, String, Option<String>)> {
+    match legacy_name {
+        "agent_list" => Some((
+            "checking_agents".to_string(),
+            "Checking agents…".to_string(),
+            None,
+        )),
+        "agent_status" => {
+            let session_id = args
+                .get("agentSessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some((
+                "checking_agent".to_string(),
+                "Checking agent…".to_string(),
+                Some(session_id.to_string()),
+            ))
+        }
+        "agent_last_result" => Some((
+            "reading_result".to_string(),
+            "Reading last result…".to_string(),
+            args.get("agentSessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )),
+        "agent_activity" => Some((
+            "reading_activity".to_string(),
+            "Reading agent timeline…".to_string(),
+            args.get("agentSessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )),
+        "agent_tail" => Some((
+            "reading_tail".to_string(),
+            "Reading terminal tail…".to_string(),
+            args.get("terminalId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )),
+        _ => None,
+    }
 }
 
 fn legacy_dispatcher_name(namespace: &str, tool: &str) -> String {
