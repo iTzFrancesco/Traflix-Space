@@ -6,6 +6,7 @@
 //! Server account/turn/item notifications to Jarvis state.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -18,7 +19,13 @@ use super::models::CodexModelService;
 use super::rpc::{JsonRpcClient, RpcError, ServerMessage};
 use super::runtime::{CodexRuntimeManager, RuntimeError};
 use super::threads::{ThreadRegistry, TurnOutcome};
-use super::tools::CodexToolService;
+use super::tools::{CodexToolService, TOOL_CALL_METHOD};
+
+/// Hard wall-clock bound for read-only dynamic tools, measured from the
+/// moment App Server requests the tool. This deliberately wraps preparation
+/// too (workspace load / registry reconciliation / terminal enumeration), so
+/// those phases cannot sit outside the per-tool deadline.
+const READ_TOOL_BRIDGE_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl From<RpcError> for RuntimeError {
     fn from(err: RpcError) -> Self {
@@ -92,6 +99,15 @@ fn raw_account_type(account: Option<&Value>) -> Option<String> {
         .get("type")
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+fn is_read_tool_request(method: &str, params: &Option<Value>) -> bool {
+    method == TOOL_CALL_METHOD
+        && params
+            .as_ref()
+            .and_then(|value| value.get("namespace"))
+            .and_then(Value::as_str)
+            != Some("conversational")
 }
 
 async fn emit_chat_stream(
@@ -241,10 +257,8 @@ pub fn spawn_account_bridge(
                 ServerMessage::Request { id, method, params } => {
                     // C10 latency: never block the App Server channel loop on a
                     // tool. Independent tool calls (e.g. agent.list while
-                    // terminals.list runs) must proceed in parallel and the
-                    // bridge keeps draining streaming notifications while a
-                    // read tool is executing. The tool service and runtime are
-                    // Clone, so the task owns everything it touches.
+                    // terminals.list runs) proceed in parallel and the bridge
+                    // keeps draining streaming notifications.
                     info!(
                         method,
                         id = *id,
@@ -256,8 +270,40 @@ pub fn spawn_account_bridge(
                         let method = method.clone();
                         let params = params.clone();
                         let id = *id;
+                        let read_tool = is_read_tool_request(&method, &params);
                         tauri::async_runtime::spawn(async move {
-                            if tools.handle_server_request(id, &method, params).await {
+                            let handled = if read_tool {
+                                match tokio::time::timeout(
+                                    READ_TOOL_BRIDGE_TIMEOUT,
+                                    tools.handle_server_request(id, &method, params),
+                                )
+                                .await
+                                {
+                                    Ok(handled) => handled,
+                                    Err(_) => {
+                                        warn!(
+                                            id,
+                                            method,
+                                            timeout_ms = READ_TOOL_BRIDGE_TIMEOUT.as_millis() as u64,
+                                            "[JARVIS-CODEX-TOOL] failed: full read-tool lifecycle timed out",
+                                        );
+                                        if let Ok(client) = runtime.client().await {
+                                            let _ = client
+                                                .respond_error(
+                                                    id,
+                                                    -32000,
+                                                    "read tool timed out after 8s",
+                                                )
+                                                .await;
+                                        }
+                                        return;
+                                    }
+                                }
+                            } else {
+                                tools.handle_server_request(id, &method, params).await
+                            };
+
+                            if handled {
                                 return;
                             }
                             if let Ok(client) = runtime.client().await {
@@ -676,5 +722,22 @@ mod tests {
             })),
             None
         );
+    }
+
+    #[test]
+    fn identifies_read_tool_requests_without_timing_out_plans() {
+        assert!(is_read_tool_request(
+            TOOL_CALL_METHOD,
+            &Some(json!({"namespace":"agent","tool":"list"})),
+        ));
+        assert!(is_read_tool_request(
+            TOOL_CALL_METHOD,
+            &Some(json!({"namespace":"terminals","tool":"list"})),
+        ));
+        assert!(!is_read_tool_request(
+            TOOL_CALL_METHOD,
+            &Some(json!({"namespace":"conversational","tool":"plan"})),
+        ));
+        assert!(!is_read_tool_request("account/read", &None));
     }
 }
