@@ -78,7 +78,8 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
   assert.match(overlaySource, /store\.startVoice\(\)/);
   assert.match(overlaySource, /toggleMicrophoneMuted/);
-  assert.match(overlaySource, /voiceError && isVoiceConfigurationError\(voiceError\)/);
+  assert.match(overlaySource, /voiceError \|\|/);
+  assert.match(overlaySource, /store\.voiceError \|\|/);
   assert.match(settingsSource, /clearVoiceError\(\)/);
   assert.match(widgetSource, /onToggleMuted/);
   assert.match(widgetSource, /MicOff/);

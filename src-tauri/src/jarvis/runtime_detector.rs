@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 #[cfg(windows)]
 use std::collections::HashSet;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDetection {
@@ -139,15 +144,15 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
         return HashMap::new();
     }
 
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
-        ])
-        .output()
-        .ok();
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
+    ]);
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok();
     let Some(output) = output else {
         return HashMap::new();
     };

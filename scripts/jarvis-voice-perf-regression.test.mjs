@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
@@ -12,6 +12,9 @@ const playbackSource = source("../src-tauri/src/jarvis/voice/playback.rs");
 const helperSource = source("./jarvis-edge-tts.py");
 const mainSource = source("../src-tauri/src/main.rs");
 const beforeBuildSource = source("./tauri-before-build.ps1");
+const sidecarBuildSource = source("./build-jarvis-edge-tts-sidecar.ps1");
+const secretsSource = source("../src-tauri/src/settings/secrets.rs");
+const runtimeDetectorSource = source("../src-tauri/src/jarvis/runtime_detector.rs");
 
 test("STT audio preparation keeps mono/16k zero-copy fast paths", () => {
   assert.match(audioSource, /if audio\.channels <= 1/);
@@ -49,6 +52,13 @@ test("Edge TTS helper stays alive and caches the imported module", () => {
   assert.match(helperSource, /action == "quit"/);
 });
 
+test("Windows backend subprocesses stay hidden and the TTS sidecar has no console", () => {
+  assert.match(secretsSource, /creation_flags\(CREATE_NO_WINDOW\)/);
+  assert.match(runtimeDetectorSource, /creation_flags\(CREATE_NO_WINDOW\)/);
+  assert.match(sidecarBuildSource, /--windowed/);
+  assert.equal(existsSync(new URL("../public/icon.png", import.meta.url)), true);
+});
+
 test("Rust TTS shares one warm worker and prewarms it at startup", () => {
   assert.match(ttsSource, /static WORKER: OnceLock<SharedWorker>/);
   assert.match(ttsSource, /pub fn prewarm_runtime/);
@@ -83,6 +93,7 @@ test("Windows config merge retains MSI settings and binds a verified x86_64 TTS 
   );
   assert.equal(merged.build.frontendDist, "../dist");
   assert.deepEqual(merged.bundle.targets, ["msi"]);
+  assert.equal(merged.bundle.useLocalToolsDir, true);
   assert.deepEqual(merged.bundle.externalBin, ["binaries/jarvis-edge-tts"]);
   assert.ok(merged.bundle.resources["../scripts/agent-notifications/*"]);
 

@@ -22,7 +22,6 @@ import {
   reportFrontendDiagnosticCode,
 } from "../../lib/crashDiagnostics";
 import {
-  isVoiceConfigurationError,
   sanitizedVoiceError,
   sanitizedVoiceErrorView,
 } from "../../lib/jarvis/voiceSettings";
@@ -355,7 +354,7 @@ export function JarvisGlobalOverlay() {
     if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
     if (
       !settingsLoaded ||
-      (voiceError && isVoiceConfigurationError(voiceError)) ||
+      voiceError ||
       !isJarvisOwnerModeReady(settings.jarvis) ||
       settings.jarvis.muted ||
       settings.jarvis.voiceInput.activationMode !== "vad" ||
@@ -390,7 +389,7 @@ export function JarvisGlobalOverlay() {
       const store = useJarvisStore.getState();
       if (
         !store.settingsLoaded ||
-        (store.voiceError && isVoiceConfigurationError(store.voiceError)) ||
+        store.voiceError ||
         !isJarvisOwnerModeReady(store.settings.jarvis) ||
         useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
         !store.settings.jarvis.enabled ||

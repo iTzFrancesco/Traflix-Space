@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::env;
 #[cfg(windows)]
 use std::io::Write;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
@@ -13,6 +15,8 @@ pub const GROQ_API_KEY_ENV: &str = "GROQ_API_KEY";
 /// processes keep scrubbing a stale `OPENCODE_ZEN_API_KEY` from the env.
 pub const OPENCODE_ZEN_API_KEY_ENV: &str = "OPENCODE_ZEN_API_KEY";
 const MAX_SECRET_BYTES: usize = 1024;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -186,12 +190,13 @@ pub fn read_secret_env(name: &str) -> Option<String> {
             "$v=[System.Environment]::GetEnvironmentVariable('{}',[System.EnvironmentVariableTarget]::User); if ($null -ne $v) {{ [Console]::Out.Write($v) }}",
             name
         );
-        let output = Command::new("powershell.exe")
+        let mut command = Command::new("powershell.exe");
+        command
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
+            .stderr(Stdio::null());
+        command.creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -238,7 +243,8 @@ fn persist_user_secret(name: &str, value: Option<&str>) -> Result<(), String> {
         )
     };
 
-    let mut child = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .stdin(if value.is_some() {
             Stdio::piped()
@@ -246,7 +252,9 @@ fn persist_user_secret(name: &str, value: Option<&str>) -> Result<(), String> {
             Stdio::null()
         })
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
         .spawn()
         .map_err(|_| "non sono riuscito ad aggiornare la credenziale Windows".to_string())?;
 
