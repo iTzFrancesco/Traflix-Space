@@ -114,7 +114,11 @@ impl AgentTurnCompletedEvent {
 }
 
 fn matches_terminal_generation(event_generation: Option<u64>, current_generation: u64) -> bool {
-    event_generation == Some(current_generation)
+    // Some Codex adapters do not include the local PTY generation. The
+    // caller has already proven that the terminal id is live and then checks
+    // process/workspace identity when those fields are present. Reject only
+    // an explicitly different generation here.
+    event_generation.is_none_or(|generation| generation == current_generation)
 }
 
 pub fn start_listener(app: AppHandle) {
@@ -459,6 +463,8 @@ mod tests {
     fn completion_generation_must_match_the_current_terminal_generation() {
         assert!(matches_terminal_generation(Some(7), 7));
         assert!(!matches_terminal_generation(Some(6), 7));
-        assert!(!matches_terminal_generation(None, 7));
+        // Codex adapters may omit generation. The live terminal/process
+        // checks in handle_payload provide the remaining stale-event guard.
+        assert!(matches_terminal_generation(None, 7));
     }
 }

@@ -15,7 +15,7 @@ use crate::jarvis::runtime_detector::normalize_provider;
 /// provider instead of rejecting or misreading it as another agent.
 fn normalize_plan_provider(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "p" => Some("pi".to_string()),
+        "p" | "pi" | "agente p" | "agente pi" | "agent p" | "agent pi" => Some("pi".to_string()),
         other => normalize_provider(other),
     }
 }
@@ -28,7 +28,7 @@ use crate::terminal_engine::{
 use crate::workspace::registry::{TerminalConfig, WorkspaceConfig, WorkspaceRegistry};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -242,6 +242,17 @@ impl ConversationalControlState {
             pending.remove(workspace_id);
         }
     }
+
+    pub fn replace_plan(&self, workspace_id: &str, operations: Vec<ConversationStep>) {
+        if operations.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(intent) = pending.get_mut(workspace_id) {
+                intent.plan.operations = operations;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -375,11 +386,19 @@ pub async fn execute_plan(
 
     let state = app.state::<crate::jarvis::JarvisState>();
     let pending = state.control.pending(&invocation.target_workspace_id);
+    let (operations, resumes_pending) = operations_for_execution(&plan, pending.as_ref());
+    if let Err(error) = validate_agent_dispatches(&operations) {
+        return ControlExecution {
+            response: error,
+            warnings: vec!["agent_dispatch_rejected".to_string()],
+        };
+    }
     state.control.clear(&invocation.target_workspace_id);
     let mut response = plan.response.clone().unwrap_or_default();
     let warnings = Vec::new();
+    let mut reserved_terminal_ids = HashSet::new();
 
-    for step in plan.operations {
+    for (index, step) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             return ControlExecution {
                 response: "La richiesta è stata annullata.".to_string(),
@@ -391,10 +410,24 @@ pub async fn execute_plan(
             workspace_id = %invocation.target_workspace_id,
             operation = ?step.operation,
             provider = step.provider.as_deref().unwrap_or(""),
+            target = step.target.as_deref().unwrap_or(""),
             "Jarvis plan step executing"
         );
-        let result =
-            execute_step(app, workspace, invocation, context, pending.as_ref(), &step).await;
+        let step_pending = if resumes_pending && index == 0 {
+            pending.as_ref()
+        } else {
+            None
+        };
+        let result = execute_step(
+            app,
+            workspace,
+            invocation,
+            context,
+            step_pending,
+            &mut reserved_terminal_ids,
+            step,
+        )
+        .await;
         match result {
             Ok(step_response) => {
                 if !step_response.is_empty() {
@@ -415,6 +448,10 @@ pub async fn execute_plan(
                     .pending(&invocation.target_workspace_id)
                     .is_some()
                 {
+                    state.control.replace_plan(
+                        &invocation.target_workspace_id,
+                        operations[index..].to_vec(),
+                    );
                     break;
                 }
             }
@@ -434,12 +471,62 @@ pub async fn execute_plan(
     ControlExecution { response, warnings }
 }
 
+fn operations_for_execution(
+    plan: &ConversationalPlan,
+    pending: Option<&PendingConversationalIntent>,
+) -> (Vec<ConversationStep>, bool) {
+    let Some(pending) = pending else {
+        return (plan.operations.clone(), false);
+    };
+    let Some(first) = plan.operations.first() else {
+        return (plan.operations.clone(), false);
+    };
+    let resumes = pending.operation == first.operation
+        || (first.operation == PlanOperation::AgentOpen
+            && matches!(
+                pending.operation,
+                PlanOperation::AgentSend | PlanOperation::AgentHandoff
+            ));
+    if !resumes {
+        return (plan.operations.clone(), false);
+    }
+
+    let mut operations = vec![merge_step_with_pending(first, Some(pending))];
+    operations.extend(pending.plan.operations.iter().skip(1).cloned());
+    (operations, true)
+}
+
+fn validate_agent_dispatches(operations: &[ConversationStep]) -> Result<(), String> {
+    let sends = operations
+        .iter()
+        .filter(|step| step.operation == PlanOperation::AgentSend)
+        .collect::<Vec<_>>();
+    if sends.len() <= 1 {
+        return Ok(());
+    }
+    if sends.iter().any(|step| {
+        step.provider
+            .as_deref()
+            .is_none_or(|provider| provider.trim().is_empty())
+            && step
+                .target
+                .as_deref()
+                .is_none_or(|target| target.trim().is_empty())
+    }) {
+        return Err(
+            "Non invio il piano multi-agente: ogni task deve indicare esplicitamente il proprio agente (per esempio PI o Codex).".to_string(),
+        );
+    }
+    Ok(())
+}
+
 async fn execute_step(
     app: &AppHandle,
     workspace: &WorkspaceConfig,
     invocation: &InvocationBinding,
     context: &crate::jarvis::types::ModelContextViewV1,
     pending: Option<&PendingConversationalIntent>,
+    reserved_terminal_ids: &mut HashSet<String>,
     incoming_step: &ConversationStep,
 ) -> Result<String, String> {
     // The current turn carries the new choice (provider, confirmed,
@@ -522,6 +609,7 @@ async fn execute_step(
                 .await
             };
             let target = target_or_clarify(app, invocation, step, target, "inviare la task")?;
+            reject_reused_target(&reserved_terminal_ids, &target)?;
             if is_busy(&target.session) && !busy_override_matches(pending, step, &target) {
                 let label = target_label(&target);
                 let question = format!(
@@ -539,6 +627,7 @@ async fn execute_step(
             let prompt = validate_agent_text(step.prompt.as_deref().unwrap_or_default())
                 .map_err(|_| "Non ho inviato il task: il prompt non è valido.".to_string())?;
             send_to_target(app, invocation, &target, &prompt).await?;
+            reserved_terminal_ids.insert(target.terminal.terminal_id.clone());
             Ok(format!("Fatto, l'ho inviato a {}.", target_label(&target)))
         }
         PlanOperation::AgentHandoff => {
@@ -564,6 +653,7 @@ async fn execute_step(
                 };
             let destination =
                 target_or_clarify(app, invocation, step, destination, "inviare l'handoff")?;
+            reject_reused_target(&reserved_terminal_ids, &destination)?;
             if is_busy(&destination.session) && !busy_override_matches(pending, step, &destination)
             {
                 let question = format!(
@@ -586,6 +676,7 @@ async fn execute_step(
                 step.prompt.as_deref().unwrap_or_default(),
             )?;
             send_to_target(app, invocation, &destination, &prompt).await?;
+            reserved_terminal_ids.insert(destination.terminal.terminal_id.clone());
             Ok(format!(
                 "Fatto, ho passato a {} il risultato di {}.",
                 target_label(&destination),
@@ -746,6 +837,20 @@ fn bound_target_from_pending(
     if !step.confirmed && !step.allow_busy {
         return None;
     }
+    // An explicit provider/target in the new turn is a new routing choice;
+    // never let the old confirmation silently override “Codex” with the
+    // previously pending PI target.
+    if step
+        .provider
+        .as_deref()
+        .is_some_and(|provider| !provider.trim().is_empty())
+        || step
+            .target
+            .as_deref()
+            .is_some_and(|target| !target.trim().is_empty())
+    {
+        return None;
+    }
     let pending = pending?;
     if pending.operation != step.operation {
         return None;
@@ -790,6 +895,19 @@ fn target_or_clarify(
     }
 }
 
+fn reject_reused_target(
+    reserved_terminal_ids: &HashSet<String>,
+    target: &ResolvedAgentTarget,
+) -> Result<(), String> {
+    if reserved_terminal_ids.contains(&target.terminal.terminal_id) {
+        return Err(format!(
+            "Non ho inviato il task a {}: il piano indicava già questo stesso agente. Specifica il target distinto, per esempio Codex o PI.",
+            target_label(target)
+        ));
+    }
+    Ok(())
+}
+
 async fn resolve_target(
     app: &AppHandle,
     context: &crate::jarvis::types::ModelContextViewV1,
@@ -820,6 +938,9 @@ async fn resolve_target(
             if terminal.workspace_id != context.invocation.target_workspace_id {
                 return None;
             }
+            if !terminal.process_alive || session.state == AgentState::Exited {
+                return None;
+            }
             if provider_filter.as_deref().is_some_and(|value| {
                 value != session.resolved_provider && value != session.reference.provider
             }) {
@@ -835,6 +956,20 @@ async fn resolve_target(
 
     if candidates.is_empty() {
         return TargetResolution::NotFound;
+    }
+
+    // An omitted target is never permission to guess. In particular, when a
+    // multi-agent plan loses the provider field, choosing the only/most idle
+    // candidate can silently route a Codex task to PI. Force an explicit
+    // semantic choice instead.
+    if query_text.is_empty() && explicit_provider.is_none() {
+        return TargetResolution::Ambiguous(
+            candidates
+                .iter()
+                .take(4)
+                .map(|(_, session, terminal)| display_candidate(session, terminal))
+                .collect(),
+        );
     }
 
     let query_is_provider_only = query_provider.is_some();
@@ -1085,7 +1220,16 @@ async fn send_to_target(
             return Err("prompt agente non valido".to_string());
         }
     };
-    if app
+    info!(
+        request_id = %invocation.request_id,
+        workspace_id = %invocation.target_workspace_id,
+        terminal_id = %snapshot.terminal_id,
+        generation = snapshot.generation,
+        provider = %target.session.resolved_provider,
+        prompt_bytes = bytes.len(),
+        "Jarvis agent PTY write starting"
+    );
+    if let Err(error) = app
         .state::<TerminalManager>()
         .write_typed_for_generation(
             app,
@@ -1095,8 +1239,16 @@ async fn send_to_target(
             TerminalInputOrigin::JarvisPrompt,
         )
         .await
-        .is_err()
     {
+        warn!(
+            request_id = %invocation.request_id,
+            workspace_id = %invocation.target_workspace_id,
+            terminal_id = %snapshot.terminal_id,
+            generation = snapshot.generation,
+            provider = %target.session.resolved_provider,
+            %error,
+            "Jarvis agent PTY write failed"
+        );
         emit_checkpoint(
             app,
             &invocation.request_id,
@@ -1108,6 +1260,14 @@ async fn send_to_target(
         );
         return Err("non sono riuscito a scrivere nella PTY".to_string());
     }
+    info!(
+        request_id = %invocation.request_id,
+        workspace_id = %invocation.target_workspace_id,
+        terminal_id = %snapshot.terminal_id,
+        generation = snapshot.generation,
+        provider = %target.session.resolved_provider,
+        "Jarvis agent PTY write succeeded"
+    );
     app.state::<crate::jarvis::JarvisState>()
         .registry
         .observe_jarvis_send(&snapshot, prompt, &now());
@@ -2115,8 +2275,10 @@ mod tests {
             normalize_plan_provider("opencode"),
             Some("opencode".to_string())
         );
-        // Free text is not a provider token; the backend must clarify.
-        assert_eq!(normalize_plan_provider(" agente P "), None);
+        assert_eq!(
+            normalize_plan_provider(" agente P "),
+            Some("pi".to_string())
+        );
         assert_eq!(normalize_plan_provider("openai"), None);
     }
 
@@ -2136,6 +2298,91 @@ mod tests {
             }],
         };
         assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn multi_agent_dispatch_rejects_a_step_without_an_explicit_target() {
+        let operations = vec![
+            ConversationStep {
+                operation: PlanOperation::AgentSend,
+                provider: Some("pi".into()),
+                target: None,
+                source: None,
+                destination: None,
+                prompt: Some("controlla il frontend".into()),
+                confirmed: false,
+                allow_busy: false,
+            },
+            ConversationStep {
+                operation: PlanOperation::AgentSend,
+                provider: None,
+                target: None,
+                source: None,
+                destination: None,
+                prompt: Some("controlla i test".into()),
+                confirmed: false,
+                allow_busy: false,
+            },
+        ];
+        assert!(validate_agent_dispatches(&operations).is_err());
+    }
+
+    #[test]
+    fn resuming_pending_work_keeps_the_unexecuted_tail() {
+        let pending_first = ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: Some("pi".into()),
+            target: Some("PI".into()),
+            source: None,
+            destination: None,
+            prompt: Some("review frontend".into()),
+            confirmed: false,
+            allow_busy: false,
+        };
+        let pending_tail = ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: Some("codex".into()),
+            target: Some("Codex".into()),
+            source: None,
+            destination: None,
+            prompt: Some("review backend".into()),
+            confirmed: false,
+            allow_busy: false,
+        };
+        let pending = PendingConversationalIntent {
+            workspace_id: "w".into(),
+            kind: PendingConversationKind::Clarification,
+            question: "aggiungo il task?".into(),
+            operation: PlanOperation::AgentSend,
+            terminal_id: Some("pi-terminal".into()),
+            generation: Some(1),
+            created_at: "2026-08-07T00:00:00Z".into(),
+            expires_at: "2999-08-07T00:00:00Z".into(),
+            plan: ConversationalPlan {
+                operations: vec![pending_first, pending_tail.clone()],
+                response: None,
+            },
+        };
+        let answer = ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: None,
+            target: None,
+            source: None,
+            destination: None,
+            prompt: None,
+            confirmed: false,
+            allow_busy: true,
+        };
+        let (operations, resumes) = operations_for_execution(
+            &ConversationalPlan {
+                operations: vec![answer],
+                response: None,
+            },
+            Some(&pending),
+        );
+        assert!(resumes);
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[1], pending_tail);
     }
 
     fn readiness_definition() -> AgentDefinition {

@@ -4,8 +4,8 @@ use crate::jarvis::agent_adapter::{
 use crate::jarvis::cache::ContextCache;
 use crate::jarvis::documentation::{DocumentationError, DocumentationLimits};
 use crate::jarvis::types::{
-    AgentSessionContext, AgentState, ContextPackageV1, InvocationBinding, RequestedDepth,
-    TerminalSummary,
+    AgentSessionContext, AgentState, ContextPackageV1, InvocationBinding, Provenance,
+    RequestedDepth, TerminalSummary,
 };
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 /// Compact agent overview bound: at most the 8 most recently created sessions
 /// are included in a Context Package when no explicit session target is set.
 const MAX_AGENT_OVERVIEW_SESSIONS: usize = 8;
-/// Serialized agent overview budget: 6 KiB. Older sessions are dropped until
-/// the overview fits, so the model view never grows unbounded.
-const MAX_AGENT_OVERVIEW_BYTES: usize = 6 * 1024;
+/// Serialized agent overview budget: 7 KiB. Rich fields are compacted before
+/// this bound is applied so all visible agent identities remain routable.
+const MAX_AGENT_OVERVIEW_BYTES: usize = 7 * 1024;
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> String;
@@ -202,7 +202,11 @@ impl ContextBroker {
 
         warnings.sort();
         warnings.dedup();
-        let agent_sessions = compact_agent_overview(agent_sessions, &terminals);
+        let agent_sessions = compact_agent_overview(
+            agent_sessions,
+            &terminals,
+            requested_depth == RequestedDepth::FullMessages,
+        );
         Ok(ContextPackageV1 {
             package_version: "1".to_string(),
             invocation,
@@ -297,6 +301,7 @@ impl ContextBroker {
 fn compact_agent_overview(
     mut sessions: Vec<AgentSessionContext>,
     terminals: &[TerminalSummary],
+    preserve_messages: bool,
 ) -> Vec<AgentSessionContext> {
     let terminal_order = terminals
         .iter()
@@ -331,16 +336,112 @@ fn compact_agent_overview(
         }
     });
     sessions.truncate(MAX_AGENT_OVERVIEW_SESSIONS);
-    while sessions.len() > 1 {
-        let Ok(size) = serde_json::to_vec(&sessions) else {
-            break;
-        };
-        if size.len() <= MAX_AGENT_OVERVIEW_BYTES {
-            break;
+
+    // Keep every live agent identity in the model view. Dropping whole
+    // sessions when one result is large makes an agent disappear from Jarvis'
+    // routing context (the UI can still show it), which is unsafe for a plan
+    // that addresses more than one visible agent. Rich fields are bounded or
+    // removed first; provider, terminal, generation and state always remain.
+    for session in &mut sessions {
+        compact_session_details(session, preserve_messages);
+    }
+
+    if serialized_size(&sessions) > MAX_AGENT_OVERVIEW_BYTES {
+        for session in &mut sessions {
+            strip_non_identity_details(session);
         }
-        sessions.pop();
     }
     sessions
+}
+
+fn compact_session_details(session: &mut AgentSessionContext, preserve_messages: bool) {
+    session.objective = session
+        .objective
+        .take()
+        .map(|value| truncate_text(&value, 256));
+    if !preserve_messages {
+        session.messages = None;
+    }
+    session.warnings = session
+        .warnings
+        .iter()
+        .take(2)
+        .map(|warning| truncate_text(warning, 128))
+        .collect();
+    session.identity_warnings = session
+        .identity_warnings
+        .iter()
+        .take(2)
+        .map(|warning| truncate_text(warning, 128))
+        .collect();
+    session.reference.identity_warnings = session.identity_warnings.clone();
+
+    if let Some(turn) = session.last_turn.as_mut() {
+        if let Some(objective) = turn.objective.take() {
+            turn.objective = Some(truncate_text(&objective, 256));
+        }
+    }
+
+    if let Some(result) = session.last_result.as_mut() {
+        let content = truncate_text(&result.content, 768);
+        result.truncated |= content.len() != result.content.len();
+        result.content = content;
+    }
+
+    if let Some(task) = session.current_task.as_mut() {
+        task.text = truncate_text(&task.text, 320);
+    }
+    session.reference.current_task = session.current_task.clone();
+}
+
+fn strip_non_identity_details(session: &mut AgentSessionContext) {
+    session.objective = None;
+    session.last_turn = None;
+    session.last_result = None;
+    session.completion_notification = None;
+    session.messages = None;
+    session.current_task = None;
+    session.reference.current_task = None;
+    session.configured_agent_id = None;
+    session.observed_provider = None;
+    session.detection_source.clear();
+    session.reference.configured_agent_id = None;
+    session.reference.observed_provider = None;
+    session.reference.detection_source.clear();
+    session.reference.provider_session_id = None;
+    session.reference.provider_turn_id = None;
+    session.reference.created_at.clear();
+    session.reference.updated_at.clear();
+    session.reference.last_activity_at = None;
+    session.reference.workspace_id.clear();
+    session.reference.provider.clear();
+    session.reference.resolved_provider.clear();
+    session.reference.detection_confidence = 0.0;
+    session.reference.identity_needs_confirmation = false;
+    session.detection_confidence = 0.0;
+    session.identity_needs_confirmation = false;
+    session.confidence = 0.0;
+    session.warnings.clear();
+    session.identity_warnings.clear();
+    session.reference.identity_warnings.clear();
+    session.provenance = Provenance::trusted("", "");
+}
+
+fn serialized_size(sessions: &[AgentSessionContext]) -> usize {
+    serde_json::to_vec(sessions)
+        .map(|value| value.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn truncate_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(1);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
 }
 
 #[cfg(test)]
@@ -401,7 +502,7 @@ mod compact_tests {
                 )
             })
             .collect::<Vec<_>>();
-        let compact = compact_agent_overview(sessions, &[]);
+        let compact = compact_agent_overview(sessions, &[], false);
         assert!(compact.len() <= 8);
         assert_eq!(compact[0].reference.agent_session_id, "session-20");
         assert!(compact.iter().all(|item| {
@@ -434,10 +535,13 @@ mod compact_tests {
                 item
             })
             .collect::<Vec<_>>();
-        let compact = compact_agent_overview(sessions, &[]);
-        assert!(compact.len() < 8);
+        let compact = compact_agent_overview(sessions, &[], false);
+        assert_eq!(compact.len(), 8);
         let size = serde_json::to_vec(&compact).unwrap().len();
-        assert!(size <= 6 * 1024);
+        assert!(
+            size <= super::MAX_AGENT_OVERVIEW_BYTES,
+            "serialized size={size}"
+        );
     }
 
     #[test]
@@ -467,6 +571,7 @@ mod compact_tests {
                 session("right", "2026-08-07T00:10:00Z"),
             ],
             &[terminal("right"), terminal("left")],
+            false,
         );
         assert_eq!(
             compact
