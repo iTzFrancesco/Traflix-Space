@@ -564,6 +564,25 @@ a:not(:disabled),
   from { transform: scaleX(1); }
   to { transform: scaleX(0); }
 }
+/* Jarvis pill step loader: staggered pixel wavefront (see
+   JarvisActivityLoader.tsx). Dim pixels light up in a left-to-right sweep;
+   frozen at the dim state when reduced motion is requested. */
+@keyframes pixel-on {
+  0%, 100% { opacity: 0.15; }
+  35% { opacity: 1; }
+}
+
+.jarvis-activity-loader__pixel {
+  will-change: opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-activity-loader__pixel {
+    animation: none !important;
+    opacity: 0.15 !important;
+  }
+}
+
 
 /* Compact terminal workspace: panes read as one tool, not floating cards. */
 [data-terminal-pane-id] {

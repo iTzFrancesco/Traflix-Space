@@ -973,6 +973,17 @@ async function openCodexAuthUrl(authUrl: string): Promise<void> {
  */
 export function bindCodexEvents(): () => void {
   const unlisteners: Array<() => void> = [];
+
+  // C7 observability: per-turn/per-tool `performance.now()` anchors used to
+  // log latencies from the chat stream. Kept module-private and bounded —
+  // entries are removed when their turn/tool terminates.
+  const chatStreamTimings = new Map<
+    string,
+    { startedAt: number; toolName: string | null }
+  >();
+  const startedAt = () => performance.now();
+  const durationMs = (anchor: { startedAt: number }) =>
+    Math.round(performance.now() - anchor.startedAt);
   void listen<CodexRuntimeStatus>("jarvis://codex-runtime", (event) => {
     useJarvisStore.setState((state) => ({
       codexRuntime: event.payload,
@@ -1011,6 +1022,71 @@ export function bindCodexEvents(): () => void {
   // C7: streaming conversation events (commentary deltas, tool lifecycle,
   // final message marking, turn completion).
   void listen<CodexChatStreamEvent>("jarvis://chat-stream", (event) => {
+    const payload = event.payload;
+    const meta = {
+      requestId: payload.requestId ?? undefined,
+      workspaceId: payload.workspaceId ?? undefined,
+      turnId: payload.turnId ?? undefined,
+      itemId: payload.itemId ?? undefined,
+    };
+    // C7 observability: log lifecycle transitions with real durations
+    // (never reasoning content or tool payloads).
+    switch (payload.kind) {
+      case "turn_started":
+        chatStreamTimings.set(`turn:${payload.turnId}`, {
+          startedAt: startedAt(),
+          toolName: null,
+        });
+        console.info("[Jarvis Codex] turn started", meta);
+        break;
+      case "tool_started":
+        chatStreamTimings.set(`tool:${payload.itemId}`, {
+          startedAt: startedAt(),
+          toolName: payload.toolName,
+        });
+        console.info("[Jarvis Codex tool] started", {
+          ...meta,
+          tool: payload.toolName ?? undefined,
+        });
+        break;
+      case "tool_completed": {
+        const anchor = chatStreamTimings.get(`tool:${payload.itemId}`);
+        console.info("[Jarvis Codex tool] completed", {
+          ...meta,
+          tool: payload.toolName ?? anchor?.toolName ?? undefined,
+          durationMs: anchor ? durationMs(anchor) : undefined,
+        });
+        if (anchor) chatStreamTimings.delete(`tool:${payload.itemId}`);
+        break;
+      }
+      case "message_completed":
+        console.info("[Jarvis Codex] commentary completed", {
+          ...meta,
+          chars: payload.text?.length ?? 0,
+        });
+        break;
+      case "turn_completed": {
+        const anchor = chatStreamTimings.get(`turn:${payload.turnId}`);
+        console.info("[Jarvis Codex] turn completed", {
+          ...meta,
+          durationMs: anchor ? durationMs(anchor) : undefined,
+        });
+        if (anchor) chatStreamTimings.delete(`turn:${payload.turnId}`);
+        break;
+      }
+      case "turn_failed":
+      case "turn_interrupted": {
+        const anchor = chatStreamTimings.get(`turn:${payload.turnId}`);
+        console.info(`[Jarvis Codex] turn ${payload.kind.slice(5)}`, {
+          ...meta,
+          durationMs: anchor ? durationMs(anchor) : undefined,
+        });
+        if (anchor) chatStreamTimings.delete(`turn:${payload.turnId}`);
+        break;
+      }
+      default:
+        break;
+    }
     useJarvisStore.setState((state) => ({
       codexStreamingTurns: applyCodexChatStream(
         state.codexStreamingTurns,
@@ -1019,7 +1095,6 @@ export function bindCodexEvents(): () => void {
     }));
     // C8: progressive TTS — enqueue completed commentary/final items.
     const store = useJarvisStore.getState();
-    const payload = event.payload;
     if (payload.kind === "message_completed" && payload.text) {
       // Review #6: remember the LAST streamed message text per workspace
       // (the final answer) so the chat response path can skip the legacy
@@ -1063,6 +1138,10 @@ export function bindCodexEvents(): () => void {
           text: payload.text ?? "",
         }),
       }));
+      console.info("[Jarvis TTS] commentary queued", {
+        ...meta,
+        chars: payload.text.length,
+      });
     }
   }).then((unlisten) => unlisteners.push(unlisten));
   return () => {

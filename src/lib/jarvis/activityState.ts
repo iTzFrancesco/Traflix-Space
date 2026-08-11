@@ -249,5 +249,102 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   );
   if (thinking) return "Sto elaborando…";
   if (ttsStatus.status === "synthesizing" || ttsStatus.status === "playing") return "Sto parlando…";
-  return "Pronto quando vuoi";
+  return "Al tuo comando";
+}
+
+/**
+ * Priority-ordered compact step label for the Jarvis pill. Returns null
+ * when Jarvis is idle (the pill shows "Jarvis · Al tuo comando" instead).
+ * Voice capture/transcription outranks TTS and tool steps; an in-flight
+ * Codex tool outranks checkpoints and speech so the pill shows the real
+ * step (e.g. "Controllo i terminali") while TTS narrates it.
+ */
+export interface JarvisStepInput {
+  workspaceId: string | null;
+  voiceRequest: VoiceRequestStatusView | null;
+  ttsStatus: TtsStatusView;
+  activities: ActivityCheckpoint[];
+  pendingActions: PendingAction[];
+  codexTool: { toolName: string } | null;
+  codexTurnActive: boolean;
+}
+
+const codexToolLabels: Record<string, string> = {
+  "workspace.overview": "Controllo il workspace",
+  "terminals.list": "Controllo i terminali",
+  "agent.list": "Controllo gli agenti",
+  "agent.status": "Controllo lo stato dell'agente",
+  "agent.last_result": "Leggo l'ultimo risultato",
+  "agent.activity": "Controllo l'attività",
+  "agent.tail": "Leggo il terminale",
+  "markdown.read": "Leggo la documentazione",
+  "conversational.plan": "Eseguo l'azione",
+  "ui.open_terminal": "Apro un terminale Codex",
+  "terminal.snapshot": "Leggo il terminale",
+  "terminal.resize": "Adatto il terminale",
+  "workspace.prompt": "Preparo la richiesta",
+};
+
+const checkpointPhaseLabels: Record<string, string> = {
+  thinking: "Sto pensando",
+  planning: "Sto pensando",
+  checking_agents: "Controllo gli agenti",
+  reading_result: "Leggo l'ultimo risultato",
+  reading_activity: "Controllo l'attività",
+  reading_tail: "Leggo il terminale",
+  writing: "Preparo la risposta",
+  interrupting: "Interrompo l'agente",
+  opening_agent: "Apro l'agente",
+};
+
+export function jarvisStepLabel(input: JarvisStepInput): string | null {
+  const { workspaceId, voiceRequest, ttsStatus, activities, pendingActions, codexTool, codexTurnActive } = input;
+  if (!workspaceId) return null;
+
+  // 1. Voice capture always wins (latency-critical feedback).
+  if (voiceRequest?.status === "recording") return "Ti ascolto";
+  if (
+    voiceRequest?.status === "transcribing" ||
+    voiceRequest?.status === "stopping"
+  ) {
+    return "Trascrivo";
+  }
+  if (voiceRequest?.status === "transcript_ready") return "Invio a Jarvis…";
+
+  // 2. An in-flight Codex tool is the real current step.
+  if (codexTool) {
+    return codexToolLabels[codexTool.toolName] ?? codexTool.toolName;
+  }
+
+  // 3. Open activity checkpoint (backward-compatible legacy requests).
+  const checkpoint = openCheckpoint(activities, workspaceId, pendingActions);
+  if (checkpoint) {
+    return checkpointPhaseLabels[checkpoint.phase] ?? checkpoint.label;
+  }
+
+  // 4. Progressive TTS narrates while the model works.
+  if (ttsStatus.status === "synthesizing") return "Preparo la risposta";
+  if (ttsStatus.status === "playing") return "Ti rispondo";
+
+  // 5. Turn active without tools/messages yet: model is thinking.
+  if (codexTurnActive) return "Sto pensando";
+
+  return null;
+}
+
+/** Newest effective open checkpoint of the workspace, if any. */
+function openCheckpoint(
+  events: ActivityCheckpoint[],
+  workspaceId: string,
+  pendingActions: PendingAction[],
+): ActivityCheckpoint | null {
+  return (
+    events
+      .filter(
+        (event) =>
+          event.workspaceId === workspaceId &&
+          isEffectiveOpenCheckpoint(event, pendingActions),
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
+  );
 }

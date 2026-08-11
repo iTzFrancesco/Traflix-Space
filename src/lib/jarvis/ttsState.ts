@@ -5,7 +5,7 @@ import type { CodexSpeechItem, TtsStatusView } from "./types";
 // skip too-short utterances ("Ok."), FIFO order, clear on barge-in.
 
 /** Skip utterances shorter than this ("Ok.", "Fatto." are noise). */
-export const MIN_SPOKEN_COMMENTARY_CHARS = 14;
+export const MIN_SPOKEN_COMMENTARY_CHARS = 8;
 /** Keep at most this many spoken item ids (bounded dedupe memory). */
 export const MAX_SPOKEN_ITEM_IDS = 200;
 /** At most this many items waiting in the queue (bounded, FIFO drop). */
@@ -16,7 +16,7 @@ export function shouldSpeakCommentary(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < MIN_SPOKEN_COMMENTARY_CHARS) return false;
   const words = trimmed.split(/\s+/).filter(Boolean).length;
-  return words >= 3;
+  return words >= 2;
 }
 
 /** Appends an item to the queue, deduping by itemId (bounded). */

@@ -1,12 +1,18 @@
-import { useCallback, useEffect, useRef } from "react";
-import { Mic, MicOff, Settings, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Mic, MicOff, SendHorizontal, Settings, X } from "lucide-react";
 import { JarvisOrb } from "./JarvisOrb";
+import { JarvisActivityLoader } from "./JarvisActivityLoader";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
 import {
   collapsedJarvisStatus,
   hasOpenActivity,
+  jarvisStepLabel,
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
+import {
+  currentCodexTool,
+  isCodexTurnActive,
+} from "../../lib/jarvis/chatState";
 import {
   isJarvisOwnerModeReady,
   ownerModeJarvisSettings,
@@ -291,6 +297,29 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
   );
 
+  // Current Codex step derived from the streaming turns (no extra store
+  // field): the newest in-flight tool of the latest active turn wins.
+  const codexStreamingTurns = useJarvisStore(
+    (state) => state.codexStreamingTurns,
+  );
+  const codexTool = useMemo(
+    () => currentCodexTool(codexStreamingTurns, props.workspaceId),
+    [codexStreamingTurns, props.workspaceId],
+  );
+  const codexTurnActive = useMemo(
+    () => isCodexTurnActive(codexStreamingTurns, props.workspaceId),
+    [codexStreamingTurns, props.workspaceId],
+  );
+  const stepLabel = jarvisStepLabel({
+    workspaceId: props.workspaceId,
+    voiceRequest: props.voiceRequest,
+    ttsStatus: props.ttsStatus,
+    activities: props.activities,
+    pendingActions: props.pendingActions,
+    codexTool,
+    codexTurnActive,
+  });
+
   const handleMicrophoneClick = async () => {
     if (
       props.activationMode === "hold_to_talk" &&
@@ -301,8 +330,47 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     }
     getAudioContext();
     await ensureOwnerMode();
-    await props.onToggleMuted();
+    // Muted → a click re-enables the microphone (recovery path).
+    if (props.muted) {
+      await props.onToggleMuted();
+      return;
+    }
+    // Recording → a click stops capture and sends the transcript.
+    if (voiceListening) {
+      console.info("[Jarvis voice] manual stop/send", {
+        requestId: props.voiceRequest?.requestId,
+        workspaceId: props.workspaceId,
+      });
+      onVoiceStopRef.current();
+      return;
+    }
+    // Transcribing/stopping/transcript_ready or VAD already armed: no
+    // second capture.
+    if (voiceBusy || voiceArmed) return;
+    // Hold-to-talk only starts from the hold gesture, never a plain click.
+    if (props.activationMode === "hold_to_talk") return;
+    await props.onVoiceStart();
   };
+
+  // Small "send now" affordance shown while recording (mic click does the
+  // same: stop + transcribe + submit).
+  const handleSendNow = () => {
+    console.info("[Jarvis voice] manual stop/send", {
+      requestId: props.voiceRequest?.requestId,
+      workspaceId: props.workspaceId,
+    });
+    onVoiceStopRef.current();
+  };
+
+  const microphoneTitle = props.muted
+    ? "Riattiva il microfono di Jarvis"
+    : voiceListening
+      ? "Ho finito: invia ora"
+      : voiceArmed
+        ? "Microfono in ascolto attivo"
+        : voiceBusy
+          ? "Sto elaborando l'audio…"
+          : "Avvia il microfono di Jarvis";
 
   const releaseHeldVoice = () => {
     if (!holdPressedRef.current) return;
@@ -427,21 +495,40 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Premi e trascina per spostare Jarvis"
-        aria-label={`Jarvis · ${statusLabel}`}
+        aria-label={`Jarvis · ${stepLabel ?? statusLabel}`}
         role="status"
         aria-live={props.voiceError ? "assertive" : "polite"}
       >
         <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
 
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text" title={`Jarvis · ${statusLabel}`}>
-            Jarvis · {statusLabel}
-          </p>
+          {stepLabel ? (
+            <JarvisActivityLoader key={stepLabel} label={stepLabel} />
+          ) : (
+            <p
+              className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text"
+              title={`Jarvis · ${statusLabel}`}
+            >
+              Jarvis · {statusLabel}
+            </p>
+          )}
         </div>
 
         <div className="jarvis-controls" data-jarvis-control-group>
           {(voiceArmed || voiceListening) && (
             <VoiceMeter level={level} listening={voiceListening} />
+          )}
+          {voiceListening && (
+            <button
+              type="button"
+              data-jarvis-control
+              onClick={handleSendNow}
+              className="jarvis-control jarvis-control--listening"
+              title="Invia adesso"
+              aria-label="Invia adesso"
+            >
+              <SendHorizontal size={15} />
+            </button>
           )}
           <button
             type="button"
@@ -454,8 +541,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             onKeyDown={handleVoiceKeyDown}
             onKeyUp={handleVoiceKeyUp}
             className={`jarvis-control ${props.muted ? "jarvis-control--muted" : voiceListening ? "jarvis-control--listening" : ""}`}
-            title={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
-            aria-label={props.muted ? "Riattiva il microfono di Jarvis" : "Disattiva il microfono di Jarvis"}
+            title={microphoneTitle}
+            aria-label={microphoneTitle}
             aria-pressed={props.muted}
           >
             {props.muted ? <MicOff size={15} /> : <Mic size={15} />}

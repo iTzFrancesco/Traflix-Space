@@ -229,3 +229,41 @@ interface CodexStreamItemInput {
   updatedAt: string;
 }
 
+
+/**
+ * The tool currently being executed by the latest active turn of the
+ * workspace, if any. Scans the turn's items in reverse so the most recent
+ * in-flight tool wins; a completed turn or a turn without an in-flight
+ * tool yields null.
+ */
+export function currentCodexTool(
+  turns: Record<string, CodexStreamingTurn[]>,
+  workspaceId: string | null,
+): { toolName: string; itemId: string } | null {
+  if (!workspaceId) return null;
+  const workspaceTurns = turns[workspaceId];
+  if (!workspaceTurns?.length) return null;
+  for (let i = workspaceTurns.length - 1; i >= 0; i -= 1) {
+    const turn = workspaceTurns[i];
+    if (turn.status !== "active") continue;
+    for (let j = turn.items.length - 1; j >= 0; j -= 1) {
+      const item = turn.items[j];
+      if (item.kind === "tool" && item.status !== "completed" && item.toolName) {
+        return { toolName: item.toolName, itemId: item.itemId };
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Whether the latest turn of the workspace is still running. */
+export function isCodexTurnActive(
+  turns: Record<string, CodexStreamingTurn[]>,
+  workspaceId: string | null,
+): boolean {
+  if (!workspaceId) return false;
+  const workspaceTurns = turns[workspaceId];
+  const latest = workspaceTurns?.[workspaceTurns.length - 1];
+  return latest?.status === "active";
+}

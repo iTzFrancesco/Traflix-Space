@@ -149,8 +149,7 @@ export function JarvisGlobalOverlay() {
     if (!item) return;
     const busy =
       ttsStatus.status === "synthesizing" ||
-      ttsStatus.status === "playing" ||
-      ttsStatus.status === "stopped";
+      ttsStatus.status === "playing";
     if (busy) return;
     const store = useJarvisStore.getState();
     if (
@@ -164,6 +163,12 @@ export function JarvisGlobalOverlay() {
     speechWorkerBusyRef.current = true;
     const settings = store.settings.jarvis.voiceOutput;
     const requestId = `tts-codex-${item.itemId}`;
+    console.info("[Jarvis TTS] commentary speaking", {
+      itemId: item.itemId,
+      turnId: item.turnId,
+      requestId,
+      workspaceId: item.workspaceId,
+    });
     void ttsSpeak({
       requestId,
       workspaceId: item.workspaceId,
@@ -174,12 +179,19 @@ export function JarvisGlobalOverlay() {
       pitch: settings.pitch,
     })
       .then((status) => {
+        console.info("[Jarvis TTS] commentary completed", {
+          itemId: item.itemId,
+          turnId: item.turnId,
+          requestId,
+        });
         useJarvisStore.getState().setTtsStatus(status);
       })
       .catch((error) => {
         const errorView = sanitizedVoiceErrorView(error, "tts_ipc_failed");
-        console.warn("[Jarvis speech] commentary synthesis failed", {
+        console.warn("[Jarvis TTS] commentary failed", {
           itemId: item.itemId,
+          turnId: item.turnId,
+          requestId,
           errorCode: errorView.code,
         });
       })
@@ -193,6 +205,13 @@ export function JarvisGlobalOverlay() {
   // commentary speech (the existing voice pipeline stops the active TTS).
   useEffect(() => {
     if (voiceRequest?.status === "recording") {
+      const queued = useJarvisStore.getState().codexSpeechQueue;
+      if (queued.length > 0) {
+        console.info("[Jarvis TTS] queue cleared by barge-in", {
+          droppedItems: queued.length,
+          itemIds: queued.map((entry) => entry.itemId),
+        });
+      }
       clearCodexSpeech();
     }
   }, [clearCodexSpeech, voiceRequest?.status]);
