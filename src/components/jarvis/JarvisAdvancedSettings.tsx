@@ -1,6 +1,7 @@
 import { LogIn, LogOut, RefreshCw } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useJarvisStore } from "../../stores/jarvisStore";
+import { setIdentityDecision } from "../../lib/jarvis/client";
 import type {
   AgentSessionContext,
   CodexAccountView,
@@ -587,6 +588,7 @@ export function JarvisAdvancedSettings({
   onRefresh,
   onRefreshContext,
 }: JarvisAdvancedSettingsProps) {
+  const [decidingIdentity, setDecidingIdentity] = useState<string | null>(null);
   const active = sessions.filter((session) =>
     ["starting", "working", "waiting"].includes(session.state),
   ).length;
@@ -636,7 +638,48 @@ export function JarvisAdvancedSettings({
                 {session.ref.terminalId ?? "unbound"} · confidence {session.ref.detectionConfidence.toFixed(2)}
               </p>
               {session.identityNeedsConfirmation && (
-                <p className="mt-1 text-warning">Identity confirmation required</p>
+                <div className="mt-1">
+                  <p className="text-warning">Identity confirmation required</p>
+                  <p className="mt-0.5 text-neutral-text-muted">
+                    Agente rilevato dal comando di lancio: conferma che questo
+                    terminale è davvero l&apos;agente per sbloccare l&apos;invio dei
+                    prompt.
+                  </p>
+                  <div className="mt-1 flex gap-1.5">
+                    <button
+                      type="button"
+                      disabled={decidingIdentity !== null}
+                      onClick={() => {
+                        setDecidingIdentity(session.ref.agentSessionId);
+                        void setIdentityDecision("confirm", session.ref)
+                          .catch(() => undefined)
+                          .finally(() => {
+                            setDecidingIdentity(null);
+                            onRefresh();
+                          });
+                      }}
+                      className="rounded border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold text-primary transition-colors hover:border-primary disabled:opacity-40"
+                    >
+                      Conferma agente
+                    </button>
+                    <button
+                      type="button"
+                      disabled={decidingIdentity !== null}
+                      onClick={() => {
+                        setDecidingIdentity(session.ref.agentSessionId);
+                        void setIdentityDecision("ignore", session.ref)
+                          .catch(() => undefined)
+                          .finally(() => {
+                            setDecidingIdentity(null);
+                            onRefresh();
+                          });
+                      }}
+                      className="rounded border border-neutral-border px-1.5 py-0.5 text-[10px] text-neutral-text-muted transition-colors hover:border-danger hover:text-danger disabled:opacity-40"
+                    >
+                      Ignora
+                    </button>
+                  </div>
+                </div>
               )}
               {session.identityWarnings.length > 0 && (
                 <p className="mt-1 text-danger">{session.identityWarnings.join(" · ")}</p>
