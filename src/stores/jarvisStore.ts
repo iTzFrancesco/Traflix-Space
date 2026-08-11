@@ -12,6 +12,7 @@ import {
   codexModelList,
   codexRateLimits,
   codexRuntimeRestart,
+  codexRuntimeStart,
   codexRuntimeStatus,
   codexThreadDelete,
   codexThreadEnsure,
@@ -175,6 +176,7 @@ interface JarvisStore {
   updatePendingAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   loadProviderStatus: () => Promise<void>;
   loadCodexRuntime: () => Promise<void>;
+  startCodex: () => Promise<void>;
   loadCodexAccount: () => Promise<void>;
   loadCodexModels: () => Promise<void>;
   loadCodexUsage: () => Promise<void>;
@@ -304,7 +306,11 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     const current = get().settings;
     await get().saveSettings({ ...current, jarvis: updater(current.jarvis) });
   },
-  showJarvis: async () => get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: true })),
+  showJarvis: async () => {
+    await get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: true }));
+    // The right-rail Jarvis/bridge icon is the explicit activation boundary.
+    await get().startCodex();
+  },
   hideJarvis: async () => { set({ expanded: false }); await get().updateJarvisSettings((jarvis) => ({ ...jarvis, enabled: false })); },
   toggleMuted: async () => get().updateJarvisSettings((jarvis) => ({ ...jarvis, muted: !jarvis.muted })),
   updateWidgetPosition: async (position) => get().updateJarvisSettings((jarvis) => ({ ...jarvis, widgetPosition: position })),
@@ -450,6 +456,13 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       const runtime = await codexRuntimeStatus();
       set({ codexRuntime: runtime, codexError: runtime.lastError ? (codexErrorMessage(runtime.lastError)) : get().codexError });
     } catch { /* runtime may be warming up; keep last status */ }
+  },
+  startCodex: async () => {
+    try {
+      set({ codexRuntime: await codexRuntimeStart(), codexError: null });
+    } catch (error) {
+      set({ codexError: errorMessage(error) });
+    }
   },
   loadCodexAccount: async () => {
     set({ codexAccountLoading: true });

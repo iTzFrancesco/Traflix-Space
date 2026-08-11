@@ -223,10 +223,8 @@ impl CodexModelService {
 
 #[tauri::command]
 pub async fn jarvis_codex_model_list(
-    runtime: tauri::State<'_, CodexRuntimeManager>,
     models: tauri::State<'_, CodexModelService>,
 ) -> Result<CodexModelCatalog, String> {
-    let _ = runtime.ensure_started().await;
     models
         .list_models()
         .await

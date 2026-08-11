@@ -229,6 +229,14 @@ impl JarvisModelProvider for CodexAppServerProvider {
             let runtime = app
                 .try_state::<crate::jarvis::codex::runtime::CodexRuntimeManager>()
                 .ok_or(ModelError::NotConfigured)?;
+            // The runtime is lazy by design. A voice/chat turn is an
+            // intentional Jarvis activation, so it is the final fallback if
+            // the user reached the turn before the bridge icon finished its
+            // explicit start request.
+            runtime.ensure_started().await.map_err(|err| {
+                warn!(error = %err, "codex chat provider: lazy runtime start failed");
+                ModelError::Server
+            })?;
             let account_type = match runtime.current_account_type() {
                 Some(account_type) => Some(account_type),
                 None => {

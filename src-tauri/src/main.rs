@@ -153,10 +153,10 @@ fn main() {
             app.manage(agent_events::AgentEventRegistry::default());
 
             // Codex App Server runtime: one global process for the whole
-            // session (spec §3). Warmed in background; never blocks setup.
+            // session (spec §3). It is deliberately lazy: opening Traflix
+            // must not consume Codex quota or create a child process.
             let codex_runtime = jarvis::codex::CodexRuntimeManager::new(app.handle().clone());
             app.manage(codex_runtime.clone());
-            codex_runtime.start_in_background();
 
             // C3: model catalog + rate-limit snapshot service.
             app.manage(jarvis::codex::models::CodexModelService::new(
@@ -348,6 +348,7 @@ fn main() {
             jarvis::chat::jarvis_reject_action,
             jarvis::chat::jarvis_clear_conversation,
             jarvis::codex::runtime::jarvis_codex_runtime_status,
+            jarvis::codex::runtime::jarvis_codex_runtime_start,
             jarvis::codex::runtime::jarvis_codex_runtime_restart,
             jarvis::codex::account::jarvis_codex_account_read,
             jarvis::codex::account::jarvis_codex_login_start,

@@ -78,6 +78,11 @@ impl RuntimeError {
 pub struct CodexRuntimeManager {
     app: AppHandle,
     inner: Arc<Mutex<RuntimeInner>>,
+    /// Serializes all start paths (background startup, first voice turn,
+    /// settings refresh and explicit restart). Without this guard, multiple
+    /// callers can observe `Stopped` before the first caller marks the
+    /// runtime as `Starting` and spawn duplicate App Servers.
+    start_lock: Arc<Mutex<()>>,
 }
 
 struct RuntimeInner {
@@ -125,19 +130,8 @@ impl CodexRuntimeManager {
                 generation: 0,
                 account_type: None,
             })),
+            start_lock: Arc::new(Mutex::new(())),
         }
-    }
-
-    /// Best-effort startup performed once at app setup. Never blocks setup:
-    /// the runtime warms in the background and the first Jarvis request can
-    /// await readiness.
-    pub fn start_in_background(&self) {
-        let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(err) = this.ensure_started().await {
-                warn!(error = %err, "codex runtime background startup failed");
-            }
-        });
     }
 
     /// Ensures the runtime is Running; starts it if not. Concurrent callers
@@ -171,7 +165,32 @@ impl CodexRuntimeManager {
     }
 
     async fn start(&self) -> Result<(), RuntimeError> {
-        let executable = self.resolve_executable().await?;
+        // `ensure_started` intentionally has no reservation state transition:
+        // callers may arrive concurrently while resolving/probing the binary.
+        // Serialize here and re-check the state so only one child can ever be
+        // created for a runtime generation.
+        let _start_guard = self.start_lock.lock().await;
+        if self.inner.lock().await.state == CodexRuntimeState::Running {
+            return Ok(());
+        }
+
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.shutting_down {
+                inner.shutting_down = false;
+            }
+            inner.state = CodexRuntimeState::Starting;
+            inner.last_error = None;
+        }
+
+        let executable = match self.resolve_executable().await {
+            Ok(executable) => executable,
+            Err(error) => {
+                self.set_failed(&error).await;
+                return Err(error);
+            }
+        };
+        info!(executable = %executable.display(), "resolved codex executable");
 
         // Version gate (spec §25 + review: fail closed, also on unparseable
         // output — outside the pinned 0.147.x contract we refuse to guess).
@@ -194,12 +213,6 @@ impl CodexRuntimeManager {
             self.inner.lock().await.version = Some(version);
         }
 
-        {
-            let mut inner = self.inner.lock().await;
-            inner.state = CodexRuntimeState::Starting;
-            inner.last_error = None;
-        }
-
         // Spec §5: the App Server must use a dedicated CODEX_HOME so the
         // normal personal Codex profile can never interfere with Jarvis.
         let codex_home_str = super::threads::codex_home_dir(&self.app)?
@@ -210,7 +223,9 @@ impl CodexRuntimeManager {
             inner.codex_home = Some(codex_home_str.clone());
         }
 
-        let mut child = Command::new(&executable)
+        let mut command = Command::new(&executable);
+        configure_hidden_process(&mut command);
+        let mut child = command
             .arg("app-server")
             // Spec §5: dedicated CODEX_HOME so the personal ~/.codex profile
             // can never leak into Jarvis.
@@ -603,12 +618,29 @@ fn emit_status(app: &AppHandle, inner: &RuntimeInner) {
 
 #[cfg(windows)]
 fn kill_pid(pid: u32) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+
     std::process::Command::new("taskkill.exe")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()?
         .wait()?;
     Ok(())
 }
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn configure_hidden_process(command: &mut Command) {
+    // A packaged Tauri executable has no console of its own. Codex is a
+    // console-subsystem binary, so without CREATE_NO_WINDOW Windows creates
+    // a visible terminal for every App Server.
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_hidden_process(_command: &mut Command) {}
 
 #[cfg(not(windows))]
 fn kill_pid(pid: u32) -> std::io::Result<()> {
@@ -676,11 +708,9 @@ fn find_npm_codex_exe() -> Option<PathBuf> {
 /// Runs `codex --version` once; returns the raw first line (e.g.
 /// `codex-cli 0.147.0`).
 async fn probe_version(executable: &Path) -> Option<String> {
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .await
-        .ok()?;
+    let mut command = Command::new(executable);
+    configure_hidden_process(&mut command);
+    let output = command.arg("--version").output().await.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -697,6 +727,19 @@ async fn probe_version(executable: &Path) -> Option<String> {
 pub async fn jarvis_codex_runtime_status(
     runtime: tauri::State<'_, CodexRuntimeManager>,
 ) -> Result<CodexRuntimeStatus, String> {
+    Ok(runtime.status().await)
+}
+
+/// Starts Codex only after an explicit Jarvis/bridge activation or a real
+/// first-turn fallback. Reading diagnostics never starts a child process.
+#[tauri::command]
+pub async fn jarvis_codex_runtime_start(
+    runtime: tauri::State<'_, CodexRuntimeManager>,
+) -> Result<CodexRuntimeStatus, String> {
+    runtime
+        .ensure_started()
+        .await
+        .map_err(|err| format!("{}: {}", err.code(), err))?;
     Ok(runtime.status().await)
 }
 

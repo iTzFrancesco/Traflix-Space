@@ -488,6 +488,13 @@ export function codexRuntimeStatus(): Promise<CodexRuntimeStatus> {
   );
 }
 
+export function codexRuntimeStart(): Promise<CodexRuntimeStatus> {
+  return invokeWithTimeout(
+    () => invoke<CodexRuntimeStatus>("jarvis_codex_runtime_start"),
+    MODEL_TIMEOUT_MS,
+  );
+}
+
 export function codexRuntimeRestart(): Promise<CodexRuntimeStatus> {
   return invokeWithTimeout(
     () => invoke<CodexRuntimeStatus>("jarvis_codex_runtime_restart"),
