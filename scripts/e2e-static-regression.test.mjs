@@ -146,11 +146,10 @@ test("workspace registry saves through a flushed same-directory atomic replaceme
 test("dotenv credentials are refreshed without exposing secret values to the frontend", () => {
   assert.match(secretLoader, /pub fn hydrate_process_environment/);
   assert.match(secretLoader, /pub fn refresh_dotenv_environment/);
-  assert.match(secretLoader, /let _ = read_secret_env\(OPENCODE_ZEN_API_KEY_ENV\);[\s\S]*let _ = read_secret_env\(GROQ_API_KEY_ENV\);[\s\S]*load_dotenv_environment/);
+  assert.match(secretLoader, /let _ = read_secret_env\(GROQ_API_KEY_ENV\);[\s\S]*load_dotenv_environment/);
   assert.match(secretLoader, /push_ancestor_candidates/);
-  assert.match(secretLoader, /OPENCODE_ZEN_API_KEY_ENV \| GROQ_API_KEY_ENV/);
+  assert.match(secretLoader, /if !matches!\(name, GROQ_API_KEY_ENV\)/);
   assert.match(secretLoader, /fn parse_dotenv_assignment/);
-  assert.match(secretLoader, /export OPENCODE_ZEN_API_KEY/);
   assert.match(secretLoader, /GROQ_API_KEY=\\\"groq # demo\\\"/);
   assert.match(secretLoader, /if already_configured && !overwrite_existing \{\s*continue;\s*\}/s);
   assert.doesNotMatch(secretLoader, /println!/i);

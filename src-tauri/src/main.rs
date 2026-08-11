@@ -192,8 +192,7 @@ fn main() {
             {
                 let watcher_app = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut tick =
-                        tokio::time::interval(std::time::Duration::from_millis(1000));
+                    let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
                     loop {
                         tick.tick().await;
                         let Some(state) = watcher_app.try_state::<jarvis::JarvisState>() else {

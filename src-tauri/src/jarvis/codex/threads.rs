@@ -152,14 +152,12 @@ pub(crate) fn codex_home_dir(app: &AppHandle) -> Result<PathBuf, RuntimeError> {
     std::fs::create_dir_all(&dir)
         .map_err(|err| RuntimeError::Environment(format!("create codex-home: {err}")))?;
     let instructions = dir.join("AGENTS.md");
-    std::fs::write(&instructions, JARVIS_PERMANENT_RULES).map_err(|err| {
-        RuntimeError::Environment(format!("write codex-home/AGENTS.md: {err}"))
-    })?;
+    std::fs::write(&instructions, JARVIS_PERMANENT_RULES)
+        .map_err(|err| RuntimeError::Environment(format!("write codex-home/AGENTS.md: {err}")))?;
     Ok(dir)
 }
 
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TurnOutcome {
     Final(String),
     Failed(String),
@@ -192,7 +190,10 @@ impl ThreadRegistry {
         codex_home_dir(&self.app)
     }
 
-    pub async fn ensure_thread(&self, workspace_id: &str) -> Result<JarvisCodexThread, RuntimeError> {
+    pub async fn ensure_thread(
+        &self,
+        workspace_id: &str,
+    ) -> Result<JarvisCodexThread, RuntimeError> {
         let settings = match self
             .app
             .try_state::<crate::settings::store::SettingsManager>()
@@ -324,12 +325,11 @@ impl ThreadRegistry {
         self.request_ids.lock().await.get(turn_id).cloned()
     }
 
-    pub async fn register_chat_waiter(
-        &self,
-        thread_id: &str,
-        tx: oneshot::Sender<TurnOutcome>,
-    ) {
-        self.chat_waiters.lock().await.insert(thread_id.to_string(), tx);
+    pub async fn register_chat_waiter(&self, thread_id: &str, tx: oneshot::Sender<TurnOutcome>) {
+        self.chat_waiters
+            .lock()
+            .await
+            .insert(thread_id.to_string(), tx);
     }
 
     pub async fn dismiss_chat_waiter(&self, thread_id: &str) {
@@ -337,7 +337,10 @@ impl ThreadRegistry {
     }
 
     pub async fn set_last_message_text(&self, thread_id: &str, text: String) {
-        self.last_message_text.lock().await.insert(thread_id.to_string(), text);
+        self.last_message_text
+            .lock()
+            .await
+            .insert(thread_id.to_string(), text);
     }
 
     pub async fn complete_chat_waiter(&self, thread_id: &str) {
@@ -478,7 +481,10 @@ impl ThreadRegistry {
         F: FnOnce(&mut JarvisCodexThread),
     {
         let mut threads = self.threads.lock().await;
-        if let Some(record) = threads.values_mut().find(|record| record.thread_id == thread_id) {
+        if let Some(record) = threads
+            .values_mut()
+            .find(|record| record.thread_id == thread_id)
+        {
             mutate(record);
             drop(threads);
             self.emit_snapshot().await;
@@ -496,7 +502,10 @@ impl ThreadRegistry {
                 if let Some(params) = params {
                     if let (Some(thread_id), Some(turn_id)) = (
                         params.get("threadId").and_then(Value::as_str),
-                        params.get("turn").and_then(|t| t.get("id")).and_then(Value::as_str),
+                        params
+                            .get("turn")
+                            .and_then(|t| t.get("id"))
+                            .and_then(Value::as_str),
                     ) {
                         self.update_thread(thread_id, |record| {
                             record.status = "in_progress".into();
@@ -536,10 +545,7 @@ impl ThreadRegistry {
     }
 }
 
-fn retain_current_generation(
-    threads: &mut HashMap<String, JarvisCodexThread>,
-    generation: u64,
-) {
+fn retain_current_generation(threads: &mut HashMap<String, JarvisCodexThread>, generation: u64) {
     threads.retain(|_, thread| thread.runtime_generation == generation);
 }
 
@@ -680,7 +686,7 @@ mod tests {
         retain_current_generation(&mut threads, 2);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads["w2"].thread_id, "t-current");
-        assert!(threads.get("w1").is_none());
+        assert!(!threads.contains_key("w1"));
     }
 
     #[test]
@@ -702,15 +708,27 @@ mod tests {
             runtime_generation: 1,
         };
         let started = json!({ "threadId": "t1", "turn": { "id": "turn-1" } });
-        assert!(apply_notification_to_record(&mut record, "turn/started", &Some(started)));
+        assert!(apply_notification_to_record(
+            &mut record,
+            "turn/started",
+            &Some(started)
+        ));
         assert_eq!(record.status, "in_progress");
         assert_eq!(record.active_turn_id.as_deref(), Some("turn-1"));
 
-        assert!(apply_notification_to_record(&mut record, "turn/completed", &None));
+        assert!(apply_notification_to_record(
+            &mut record,
+            "turn/completed",
+            &None
+        ));
         assert_eq!(record.status, "idle");
         assert!(record.active_turn_id.is_none());
 
-        assert!(apply_notification_to_record(&mut record, "turn/failed", &None));
+        assert!(apply_notification_to_record(
+            &mut record,
+            "turn/failed",
+            &None
+        ));
         assert_eq!(record.status, "idle");
 
         assert!(!apply_notification_to_record(
@@ -746,8 +764,7 @@ mod tests {
             Err(RuntimeError::Rpc(_))
         ));
         threads.get_mut("w1").unwrap().active_turn_id = Some("turn-9".into());
-        let (thread_id, turn_id) =
-            ThreadRegistry::resolve_steer_target(&threads, "w1").unwrap();
+        let (thread_id, turn_id) = ThreadRegistry::resolve_steer_target(&threads, "w1").unwrap();
         assert_eq!(thread_id, "t1");
         assert_eq!(turn_id, "turn-9");
     }

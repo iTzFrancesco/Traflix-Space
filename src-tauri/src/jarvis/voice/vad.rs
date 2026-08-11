@@ -106,10 +106,7 @@ impl EnergyVad {
                 self.state = if self.speech_frames >= self.config.start_frames {
                     self.speech_started = true;
                     self.speech_peak_rms = rms;
-                    self.release_threshold = release_threshold(
-                        self.config.threshold,
-                        rms,
-                    );
+                    self.release_threshold = release_threshold(self.config.threshold, rms);
                     VadState::Speech
                 } else {
                     VadState::MaybeSpeech
@@ -315,7 +312,10 @@ mod tests {
             assert!(!detector.should_stop(), "trailing window not elapsed yet");
         }
         detector.process(&[0.03; 100]);
-        assert!(detector.should_stop(), "noise floor must count as trailing silence");
+        assert!(
+            detector.should_stop(),
+            "noise floor must count as trailing silence"
+        );
     }
 
     #[test]

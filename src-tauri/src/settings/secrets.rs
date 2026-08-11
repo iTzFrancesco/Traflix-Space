@@ -293,8 +293,7 @@ mod tests {
     #[test]
     fn dotenv_parser_accepts_comments_exports_and_quotes() {
         assert_eq!(
-            parse_dotenv_assignment("export GROQ_API_KEY=\"demo-key\"")
-                .map(|(_, value)| value),
+            parse_dotenv_assignment("export GROQ_API_KEY=\"demo-key\"").map(|(_, value)| value),
             Some("demo-key".to_string())
         );
         assert_eq!(

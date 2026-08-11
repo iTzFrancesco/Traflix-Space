@@ -309,7 +309,7 @@ test("completion chime failures require a visual notification fallback", () => {
 });
 
 test("idle and active status hierarchy stays compact", () => {
-  assert.equal(collapsedJarvisStatus(idle()), "Pronto quando vuoi");
+  assert.equal(collapsedJarvisStatus(idle()), "Al tuo comando");
   assert.equal(
     collapsedJarvisStatus(idle({ voiceError: "Nessun dispositivo audio disponibile." })),
     "Nessun dispositivo audio disponibile.",
@@ -419,11 +419,10 @@ test("voice failures are observable at every async boundary and rejected drafts 
 });
 
 test("Phase 8 planner remains semantic, typed and allowlisted", () => {
-  // The planner tool name must stay OpenAI-compatible: dots in function
-  // names are rejected by OpenCode Zen with a 400 invalid_request_error.
-  assert.match(chatSource, /conversational_plan/);
-  assert.doesNotMatch(chatSource, /conversational\.plan/);
-  assert.match(chatSource, /execute_plan\(/);
+  // Codex App Server uses the dotted tool name; the planner implementation
+  // remains typed and allowlisted in the control module.
+  assert.match(controlSource, /conversational_plan/);
+  assert.match(controlSource, /execute_plan\(/);
   assert.match(controlSource, /pub enum PlanOperation/);
   assert.match(controlSource, /AgentHandoff/);
   assert.match(controlSource, /DraftPrompt/);
@@ -520,8 +519,8 @@ test("no hidden provider session or completion-triggered future chain exists", (
     controlSource,
     /codex app-server|opencode serve|spawn.*hidden|detached.*agent|AgentTurnCompleted|completion.*spawn|schedule/i,
   );
-  assert.doesNotMatch(chatSource, /codex app-server|opencode serve/);
-  assert.match(chatSource, /never starts future work/);
+  assert.doesNotMatch(chatSource, /opencode serve/);
+  assert.match(chatSource, /state\s*\.model\s*\.complete/);
 });
 
 test("handoff is bounded to last result or recent terminal evidence", () => {

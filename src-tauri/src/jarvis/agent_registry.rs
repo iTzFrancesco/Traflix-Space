@@ -646,10 +646,7 @@ impl AgentSessionRegistry {
         };
         let mut settled = Vec::new();
         for record in sessions.values_mut() {
-            if !matches!(
-                record.state,
-                AgentState::Starting | AgentState::Working
-            ) {
+            if !matches!(record.state, AgentState::Starting | AgentState::Working) {
                 continue;
             }
             let Some(last) = record.last_activity_at.as_deref() else {
@@ -1057,7 +1054,12 @@ impl AgentSessionRegistry {
         let Some(provider) = provider else {
             return false;
         };
-        self.set_identity_decision(terminal_id, generation, &provider, IdentityDecision::Confirmed);
+        self.set_identity_decision(
+            terminal_id,
+            generation,
+            &provider,
+            IdentityDecision::Confirmed,
+        );
         true
     }
 
@@ -1446,9 +1448,9 @@ mod tests {
         Provenance,
     };
     use super::{
-        fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation, IdentityDecision,
-        TerminalAgentSnapshot, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT, MAX_ACTIVITY_TIMELINE,
-        MAX_INPUT_BUFFER_BYTES, MAX_TASK_TEXT_BYTES,
+        fallback_result_from_terminal, AgentSessionRegistry, CompletionObservation,
+        IdentityDecision, TerminalAgentSnapshot, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT,
+        MAX_ACTIVITY_TIMELINE, MAX_INPUT_BUFFER_BYTES, MAX_TASK_TEXT_BYTES,
     };
 
     fn terminal(generation: u64, alive: bool) -> TerminalAgentSnapshot {
@@ -2254,7 +2256,6 @@ mod tests {
         assert!(task_of(&status).completed_at.is_none());
     }
 
-
     // -- idle completion detector --
 
     #[test]
@@ -2267,7 +2268,10 @@ mod tests {
             "2026-08-11T00:00:00Z",
         );
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
-        assert_eq!(registry.status(&session).unwrap().state, AgentState::Working);
+        assert_eq!(
+            registry.status(&session).unwrap().state,
+            AgentState::Working
+        );
 
         // 11 seconds of output silence: the session settles to waiting.
         let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:11Z");
@@ -2294,7 +2298,10 @@ mod tests {
         let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:15Z");
         assert!(settled.is_empty());
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
-        assert_eq!(registry.status(&session).unwrap().state, AgentState::Working);
+        assert_eq!(
+            registry.status(&session).unwrap().state,
+            AgentState::Working
+        );
     }
 
     #[test]
@@ -2353,12 +2360,7 @@ mod tests {
         manual.detection_source = "command-observed".to_string();
         manual.detection_confidence = 0.7;
         registry.observe_terminal_started(&manual, "2026-08-11T00:00:01Z");
-        registry.set_identity_decision(
-            "terminal-1",
-            1,
-            "pi",
-            IdentityDecision::Ignored,
-        );
+        registry.set_identity_decision("terminal-1", 1, "pi", IdentityDecision::Ignored);
         assert!(!registry.confirm_identity_for_terminal("terminal-1", 1));
         assert!(!registry.control_allowed("terminal-1", 1));
     }

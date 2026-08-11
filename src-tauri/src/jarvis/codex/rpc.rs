@@ -24,8 +24,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum ServerMessage {
-    Notification { method: String, params: Option<Value> },
-    Request { id: u64, method: String, params: Option<Value> },
+    Notification {
+        method: String,
+        params: Option<Value>,
+    },
+    Request {
+        id: u64,
+        method: String,
+        params: Option<Value>,
+    },
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -42,6 +49,8 @@ pub enum RpcError {
     Transport(String),
 }
 
+type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>;
+
 /// JSON-RPC 2.0 client over a `codex app-server` stdio pipe.
 ///
 /// - One reader task owns stdout and dispatches responses to pending
@@ -51,7 +60,7 @@ pub enum RpcError {
 ///   protocol version — handled by the runtime).
 pub struct JsonRpcClient {
     stdin: Mutex<ChildStdin>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>,
+    pending: PendingRequests,
     server_events: mpsc::UnboundedSender<ServerMessage>,
     next_id: AtomicU64,
     malformed_lines: AtomicU64,
@@ -131,11 +140,9 @@ impl JsonRpcClient {
             let params = message.get("params").cloned();
             if is_request {
                 if let Some(id) = message.get("id").and_then(Value::as_u64) {
-                    let _ = self.server_events.send(ServerMessage::Request {
-                        id,
-                        method,
-                        params,
-                    });
+                    let _ = self
+                        .server_events
+                        .send(ServerMessage::Request { id, method, params });
                 }
             } else {
                 let _ = self
@@ -165,7 +172,10 @@ impl JsonRpcClient {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown error")
                 .to_string();
-            let _ = tx.send(Err(RpcError::Server { code, message: text }));
+            let _ = tx.send(Err(RpcError::Server {
+                code,
+                message: text,
+            }));
         } else if let Some(result) = message.get("result") {
             let _ = tx.send(Ok(result.clone()));
         } else {
@@ -187,8 +197,8 @@ impl JsonRpcClient {
             "method": method,
             "params": params,
         });
-        let mut line = serde_json::to_string(&payload)
-            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        let mut line =
+            serde_json::to_string(&payload).map_err(|err| RpcError::Protocol(err.to_string()))?;
         line.push('\n');
 
         let result = async {
@@ -197,9 +207,13 @@ impl JsonRpcClient {
                 .write_all(line.as_bytes())
                 .await
                 .map_err(|err| RpcError::Transport(err.to_string()))?;
-            stdin.flush().await.map_err(|err| RpcError::Transport(err.to_string()))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|err| RpcError::Transport(err.to_string()))?;
             drop(stdin);
-            rx.await.map_err(|_| RpcError::StreamClosed(method.to_string()))?
+            rx.await
+                .map_err(|_| RpcError::StreamClosed(method.to_string()))?
         };
 
         match timeout(REQUEST_TIMEOUT, result).await {
@@ -221,8 +235,8 @@ impl JsonRpcClient {
             "method": method,
             "params": params,
         });
-        let mut line = serde_json::to_string(&payload)
-            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        let mut line =
+            serde_json::to_string(&payload).map_err(|err| RpcError::Protocol(err.to_string()))?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
         stdin
@@ -249,8 +263,8 @@ impl JsonRpcClient {
             "id": id,
             "result": result,
         });
-        let mut line = serde_json::to_string(&payload)
-            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        let mut line =
+            serde_json::to_string(&payload).map_err(|err| RpcError::Protocol(err.to_string()))?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
         stdin
@@ -270,8 +284,8 @@ impl JsonRpcClient {
             "id": id,
             "error": { "code": code, "message": message },
         });
-        let mut line = serde_json::to_string(&payload)
-            .map_err(|err| RpcError::Protocol(err.to_string()))?;
+        let mut line =
+            serde_json::to_string(&payload).map_err(|err| RpcError::Protocol(err.to_string()))?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
         stdin
@@ -398,7 +412,9 @@ mod tests {
 
         // Server-initiated request (dynamic tool call shape).
         client
-            .handle_line(r#"{"jsonrpc":"2.0","id":7,"method":"item/tool/call","params":{"tool":"x"}}"#)
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":7,"method":"item/tool/call","params":{"tool":"x"}}"#,
+            )
             .await;
         match rx.recv().await.unwrap() {
             ServerMessage::Request { id, method, .. } => {
@@ -436,7 +452,9 @@ mod tests {
         let (pending_tx, pending_rx) = oneshot::channel();
         client.pending.lock().await.insert(3, pending_tx);
         client
-            .handle_line(r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found"}}"#)
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found"}}"#,
+            )
             .await;
         match pending_rx.await.unwrap() {
             Err(RpcError::Server { code, message }) => {

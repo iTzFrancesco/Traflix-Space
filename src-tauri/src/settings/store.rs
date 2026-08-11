@@ -590,7 +590,7 @@ impl SettingsManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ModelProvider, ShortcutBehavior, VoiceActivationMode, VoiceEngine};
+    use super::{AppSettings, ShortcutBehavior, VoiceActivationMode, VoiceEngine};
 
     #[test]
     fn legacy_settings_migrate_to_codex_defaults() {

@@ -91,6 +91,7 @@ pub async fn browser_create(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[allow(deprecated)] // Shell::open remains the compatible opener API in this Tauri 2 setup.
 pub fn browser_navigate(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = url
         .parse::<tauri::Url>()

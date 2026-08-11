@@ -87,7 +87,10 @@ pub(crate) fn stream_events_from_notification(
         "item/agentMessage/delta" | "AgentMessageDelta" => {
             let (item_id, text) = delta_text(params);
             let Some(text) = text else {
-                debug!(method, "agent message delta without recognizable text payload");
+                debug!(
+                    method,
+                    "agent message delta without recognizable text payload"
+                );
                 return Vec::new();
             };
             let mut event = base(ChatStreamEventKind::MessageDelta);
@@ -231,10 +234,7 @@ fn delta_text(params: &Value) -> (Option<String>, Option<String>) {
                 .and_then(Value::as_array)
                 .and_then(|blocks| {
                     blocks.iter().find_map(|block| {
-                        block
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
+                        block.get("text").and_then(Value::as_str).map(str::to_owned)
                     })
                 })
         });

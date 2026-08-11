@@ -202,7 +202,9 @@ impl CodexRuntimeManager {
 
         // Spec §5: the App Server must use a dedicated CODEX_HOME so the
         // normal personal Codex profile can never interfere with Jarvis.
-        let codex_home_str = super::threads::codex_home_dir(&self.app)?.to_string_lossy().to_string();
+        let codex_home_str = super::threads::codex_home_dir(&self.app)?
+            .to_string_lossy()
+            .to_string();
         {
             let mut inner = self.inner.lock().await;
             inner.codex_home = Some(codex_home_str.clone());
@@ -368,13 +370,15 @@ impl CodexRuntimeManager {
             }
             Ok(Err(err)) => {
                 let message = err.to_string();
-                self.set_failed(&RuntimeError::Handshake(message.clone())).await;
+                self.set_failed(&RuntimeError::Handshake(message.clone()))
+                    .await;
                 child.start_kill().ok();
                 Err(RuntimeError::Handshake(message))
             }
             Err(_) => {
                 let message = "initialize handshake timed out".to_string();
-                self.set_failed(&RuntimeError::Handshake(message.clone())).await;
+                self.set_failed(&RuntimeError::Handshake(message.clone()))
+                    .await;
                 child.start_kill().ok();
                 Err(RuntimeError::Handshake(message))
             }
@@ -429,17 +433,16 @@ impl CodexRuntimeManager {
                 if let Err(err) = this.start().await {
                     warn!(error = %err, "codex app-server restart failed");
                     let mut inner = this.inner.lock().await;
-                    if inner.state == CodexRuntimeState::Crashed
-                        || inner.state == CodexRuntimeState::Failed
+                    if (inner.state == CodexRuntimeState::Crashed
+                        || inner.state == CodexRuntimeState::Failed)
+                        && inner.consecutive_crashes >= MAX_CONSECUTIVE_CRASHES
                     {
-                        if inner.consecutive_crashes >= MAX_CONSECUTIVE_CRASHES {
-                            inner.state = CodexRuntimeState::Failed;
-                            inner.last_error = Some(format!(
-                                "codex app-server crashed {} times; restart budget exhausted",
-                                inner.consecutive_crashes
-                            ));
-                            emit_status(&this.app, &*inner);
-                        }
+                        inner.state = CodexRuntimeState::Failed;
+                        inner.last_error = Some(format!(
+                            "codex app-server crashed {} times; restart budget exhausted",
+                            inner.consecutive_crashes
+                        ));
+                        emit_status(&this.app, &inner);
                     }
                 }
             } else {
@@ -448,7 +451,7 @@ impl CodexRuntimeManager {
                 inner.last_error = Some(format!(
                     "codex app-server crashed {crashes} times; restart budget exhausted"
                 ));
-                emit_status(&this.app, &*inner);
+                emit_status(&this.app, &inner);
             }
         });
     }
@@ -461,7 +464,7 @@ impl CodexRuntimeManager {
         inner.server_rx = None;
         inner.pid = None;
         inner.account_type = None;
-        emit_status(&self.app, &*inner);
+        emit_status(&self.app, &inner);
     }
 
     async fn resolve_executable(&self) -> Result<PathBuf, RuntimeError> {
@@ -500,9 +503,7 @@ impl CodexRuntimeManager {
         let pid = {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down {
-                return Err(RuntimeError::NotRunning {
-                    state: inner.state,
-                });
+                return Err(RuntimeError::NotRunning { state: inner.state });
             }
             inner.shutting_down = false;
             inner.restart_count += 1;
@@ -539,7 +540,10 @@ impl CodexRuntimeManager {
     /// stopped, not yet read, or contended). Sync — used by the provider
     /// `status()` path.
     pub fn current_account_type(&self) -> Option<String> {
-        self.inner.try_lock().ok().and_then(|inner| inner.account_type.clone())
+        self.inner
+            .try_lock()
+            .ok()
+            .and_then(|inner| inner.account_type.clone())
     }
 
     /// Current runtime process generation (bumped on every successful
@@ -852,7 +856,7 @@ mod tests {
             .filter_map(|m| m["id"].as_str())
             .collect();
         assert!(
-            ids.iter().any(|id| *id == "gpt-5.6-luna"),
+            ids.contains(&"gpt-5.6-luna"),
             "gpt-5.6-luna present in {ids:?}"
         );
 
@@ -870,10 +874,7 @@ mod tests {
             .request("account/usage/read", json!({}))
             .await
             .expect("account/usage/read response");
-        assert!(
-            usage.get("summary").is_some(),
-            "usage summary: {usage}"
-        );
+        assert!(usage.get("summary").is_some(), "usage summary: {usage}");
 
         // account/login/start (chatgpt) must return authUrl+loginId; we
         // immediately cancel the flow so no OAuth session is left pending.
@@ -896,7 +897,10 @@ mod tests {
             .get("loginId")
             .and_then(serde_json::Value::as_str)
             .expect("loginId present");
-        assert!(auth_url.starts_with("https://"), "authUrl is https: {auth_url}");
+        assert!(
+            auth_url.starts_with("https://"),
+            "authUrl is https: {auth_url}"
+        );
         let _ = client
             .request("account/login/cancel", json!({ "loginId": login_id }))
             .await;
@@ -944,9 +948,7 @@ mod tests {
             )
             .await
             .unwrap_or_else(|err| panic!("turn/start failed: {err}"));
-        let turn_id = turn["turn"]["id"]
-            .as_str()
-            .expect("turn.id present");
+        let turn_id = turn["turn"]["id"].as_str().expect("turn.id present");
 
         // C5: a second turn that must call the `agent.list` dynamic tool.
         // We answer the server request with a synthetic result and observe
@@ -963,9 +965,7 @@ mod tests {
             )
             .await
             .unwrap_or_else(|err| panic!("turn/start #2 failed: {err}"));
-        let turn2_id = turn2["turn"]["id"]
-            .as_str()
-            .expect("turn #2 id present");
+        let turn2_id = turn2["turn"]["id"].as_str().expect("turn #2 id present");
         let _ = turn2_id;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
@@ -974,13 +974,11 @@ mod tests {
         // C7: every Item/*, AgentMessageDelta and turn/* notification is
         // passed through the production normalizer; the raw payloads are
         // printed so a Windows run can confirm the shapes.
-        let mut stream_events: Vec<(String, super::super::events::ChatStreamEventKind)> = Vec::new();
+        let mut stream_events: Vec<(String, super::super::events::ChatStreamEventKind)> =
+            Vec::new();
         while std::time::Instant::now() < deadline && !completed {
-            let message = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                server_rx.recv(),
-            )
-            .await;
+            let message =
+                tokio::time::timeout(std::time::Duration::from_secs(10), server_rx.recv()).await;
             match message {
                 Ok(Some(ServerMessage::Request { id, method, params })) => {
                     if method == "item/tool/call" {
@@ -1016,8 +1014,15 @@ mod tests {
                     }
                 }
                 Ok(Some(ServerMessage::Notification { method, params })) => {
-                    if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" || method.starts_with("turn/") {
-                        println!("C7 notification {method}: {}", params.clone().unwrap_or_default());
+                    if method.starts_with("item/")
+                        || method == "AgentMessageDelta"
+                        || method == "AgentMessageThreadItem"
+                        || method.starts_with("turn/")
+                    {
+                        println!(
+                            "C7 notification {method}: {}",
+                            params.clone().unwrap_or_default()
+                        );
                         let events = super::super::events::stream_events_from_notification(
                             &method,
                             &params,
@@ -1084,11 +1089,8 @@ mod tests {
         // with a TurnCompleted stream event (final-message marker for the UI).
         let mut turn3_stream: Vec<super::super::events::ChatStreamEventKind> = Vec::new();
         while std::time::Instant::now() < deadline && !completed3 {
-            let message = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                server_rx.recv(),
-            )
-            .await;
+            let message =
+                tokio::time::timeout(std::time::Duration::from_secs(10), server_rx.recv()).await;
             match message {
                 Ok(Some(ServerMessage::Request { id, method, params })) => {
                     if method == "item/tool/call" {
@@ -1138,8 +1140,15 @@ mod tests {
                     }
                 }
                 Ok(Some(ServerMessage::Notification { method, params })) => {
-                    if method.starts_with("item/") || method == "AgentMessageDelta" || method == "AgentMessageThreadItem" || method.starts_with("turn/") {
-                        println!("C7 notification (turn3) {method}: {}", params.clone().unwrap_or_default());
+                    if method.starts_with("item/")
+                        || method == "AgentMessageDelta"
+                        || method == "AgentMessageThreadItem"
+                        || method.starts_with("turn/")
+                    {
+                        println!(
+                            "C7 notification (turn3) {method}: {}",
+                            params.clone().unwrap_or_default()
+                        );
                         let events = super::super::events::stream_events_from_notification(
                             &method,
                             &params,
@@ -1162,9 +1171,7 @@ mod tests {
             "conversational.plan observed among tool calls"
         );
         assert!(
-            turn3_stream
-                .iter()
-                .any(|kind| *kind == super::super::events::ChatStreamEventKind::TurnCompleted),
+            turn3_stream.contains(&super::super::events::ChatStreamEventKind::TurnCompleted),
             "turn3 stream ends with TurnCompleted: {turn3_stream:?}"
         );
         // The server-side allows multiple plans in one turn; the host-side

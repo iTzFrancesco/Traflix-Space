@@ -4,9 +4,9 @@ use crate::jarvis::actions::{prompt_bytes, ActionError, PendingAction, PendingAc
 use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
 #[cfg(test)]
 use crate::jarvis::control::conversational_plan_schema;
+use crate::jarvis::model::{ModelError, ModelMessage, ModelRequest, ModelToolCall, ProviderStatus};
 #[cfg(test)]
 use crate::jarvis::model::{ModelFunctionDefinition, ModelToolDefinition};
-use crate::jarvis::model::{ModelError, ModelMessage, ModelRequest, ModelToolCall, ProviderStatus};
 use crate::jarvis::requests::{ChatRequestError, ChatRequestStatus};
 use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
 use crate::jarvis::types::{
@@ -110,10 +110,7 @@ pub async fn jarvis_provider_status(
     app: AppHandle,
 ) -> Result<JarvisProviderStatus, JarvisErrorEnvelope> {
     let settings = app.state::<SettingsManager>().get().await.jarvis;
-    let status = app
-        .state::<JarvisState>()
-        .model
-        .status(&settings);
+    let status = app.state::<JarvisState>().model.status(&settings);
     Ok(status.into())
 }
 
@@ -1111,7 +1108,6 @@ fn read_tool(name: &str, description: &str, parameters: Value) -> ModelToolDefin
 /// on startup) instead of a per-turn system prompt; the Codex thread keeps
 /// the conversation memory (spec §20). The per-turn bounded context now
 /// reaches the model exclusively through the dynamic tools (spec §19).
-
 fn follow_ups(context: &ModelContextViewV1) -> Vec<String> {
     let mut result = Vec::new();
     if let Some(document) = context.document_index.first() {

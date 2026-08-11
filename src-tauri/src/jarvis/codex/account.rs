@@ -40,7 +40,9 @@ pub enum CodexAccount {
     },
     ApiKey,
     #[serde(rename_all = "camelCase")]
-    Other { account_type: String },
+    Other {
+        account_type: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,7 +113,10 @@ async fn emit_chat_stream(
         return;
     }
     let Some(workspace_id) = threads.workspace_for_thread(thread_id).await else {
-        debug!(thread_id, method, "codex streaming: thread has no workspace binding");
+        debug!(
+            thread_id,
+            method, "codex streaming: thread has no workspace binding"
+        );
         return;
     };
     let turn_id = super::events::turn_id_of(params);
@@ -235,9 +240,7 @@ pub fn spawn_account_bridge(
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
             let (method, params) = match &message {
-                ServerMessage::Notification { method, params } => {
-                    (method.clone(), params.clone())
-                }
+                ServerMessage::Notification { method, params } => (method.clone(), params.clone()),
                 ServerMessage::Request { id, method, params } => {
                     // Never block the App Server channel loop on a tool.
                     // Independent tool calls proceed in parallel and this
@@ -284,10 +287,7 @@ pub fn spawn_account_bridge(
 
             if method == "account/rateLimits/updated" {
                 if let (Some(params), Some(models)) = (&params, &models) {
-                    let update = params
-                        .get("rateLimits")
-                        .cloned()
-                        .unwrap_or_default();
+                    let update = params.get("rateLimits").cloned().unwrap_or_default();
                     models.apply_incremental_update(&app, &update);
                 }
                 continue;
@@ -296,9 +296,7 @@ pub fn spawn_account_bridge(
             if method.starts_with("thread/") || method.starts_with("turn/") {
                 if method == "turn/started" {
                     if let (Some(params), Some(tools)) = (&params, &tools) {
-                        if let Some(thread_id) =
-                            params.get("threadId").and_then(Value::as_str)
-                        {
+                        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
                             tools.reset_turn_state(thread_id).await;
                         }
                     }
@@ -309,9 +307,7 @@ pub fn spawn_account_bridge(
                     "turn/completed" | "turn/failed" | "turn/interrupted"
                 ) {
                     if let (Some(params), Some(tools)) = (&params, &tools) {
-                        if let Some(thread_id) =
-                            params.get("threadId").and_then(Value::as_str)
-                        {
+                        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
                             tools.clear_plan_cancel(thread_id).await;
                         }
                     }
@@ -328,9 +324,7 @@ pub fn spawn_account_bridge(
                             capture_turn_final_fallback(threads, params).await;
                         }
 
-                        if let Some(thread_id) =
-                            params.get("threadId").and_then(Value::as_str)
-                        {
+                        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
                             match method.as_str() {
                                 "turn/completed" => match turn_status(params) {
                                     Some("failed") => {
@@ -343,10 +337,7 @@ pub fn spawn_account_bridge(
                                     }
                                     Some("interrupted") => {
                                         threads
-                                            .fail_chat_waiter(
-                                                thread_id,
-                                                TurnOutcome::Interrupted,
-                                            )
+                                            .fail_chat_waiter(thread_id, TurnOutcome::Interrupted)
                                             .await;
                                     }
                                     _ => threads.complete_chat_waiter(thread_id).await,
@@ -361,10 +352,7 @@ pub fn spawn_account_bridge(
                                 }
                                 "turn/interrupted" => {
                                     threads
-                                        .fail_chat_waiter(
-                                            thread_id,
-                                            TurnOutcome::Interrupted,
-                                        )
+                                        .fail_chat_waiter(thread_id, TurnOutcome::Interrupted)
                                         .await;
                                 }
                                 _ => {}
@@ -405,10 +393,7 @@ pub fn spawn_account_bridge(
             }
 
             debug!(method, "codex account notification");
-            let _ = app.emit(
-                ACCOUNT_EVENT,
-                json!({ "method": method, "params": params }),
-            );
+            let _ = app.emit(ACCOUNT_EVENT, json!({ "method": method, "params": params }));
         }
         warn!("codex account bridge stopped (server channel closed)");
     });

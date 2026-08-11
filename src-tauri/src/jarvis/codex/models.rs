@@ -72,13 +72,9 @@ pub struct CodexRateLimitsView {
 /// - every field present in `update` overwrites the snapshot;
 /// - a field present with `null` is *ignored* (never erases data);
 /// - when there is no previous snapshot, the update becomes the snapshot.
-pub fn merge_rate_limit_snapshot(
-    previous: Option<&Value>,
-    update: &Value,
-) -> Value {
+pub fn merge_rate_limit_snapshot(previous: Option<&Value>, update: &Value) -> Value {
     fn merge_into(target: &mut Value, update: &Value) {
-        let (Some(target_obj), Some(update_obj)) =
-            (target.as_object_mut(), update.as_object())
+        let (Some(target_obj), Some(update_obj)) = (target.as_object_mut(), update.as_object())
         else {
             // Non-objects (or null) never overwrite a snapshot.
             return;
@@ -134,7 +130,11 @@ pub(crate) fn parse_catalog(result: &Value) -> CodexModelCatalog {
                 })
                 .unwrap_or_default();
             catalog.data.push(CodexModelInfo {
-                id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                id: entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
                 display_name: entry
                     .get("displayName")
                     .and_then(Value::as_str)
@@ -195,8 +195,7 @@ impl CodexModelService {
     pub fn apply_incremental_update(&self, app: &AppHandle, update: &Value) {
         let snapshot = {
             let mut guard = self.rate_limit_snapshot.lock().expect("rate limit mutex");
-            let merged =
-                merge_rate_limit_snapshot(guard.as_ref(), update);
+            let merged = merge_rate_limit_snapshot(guard.as_ref(), update);
             *guard = Some(merged.clone());
             merged
         };
@@ -207,7 +206,10 @@ impl CodexModelService {
     /// Last merged snapshot, if any.
     #[allow(dead_code)]
     pub fn snapshot(&self) -> Option<Value> {
-        self.rate_limit_snapshot.lock().expect("rate limit mutex").clone()
+        self.rate_limit_snapshot
+            .lock()
+            .expect("rate limit mutex")
+            .clone()
     }
 
     fn store_snapshot(&self, snapshot: Value) {
@@ -333,8 +335,14 @@ mod tests {
         assert_eq!(catalog.data.len(), 2);
         assert_eq!(catalog.data[0].id, "gpt-5.6-sol");
         assert!(catalog.data[0].is_default);
-        assert_eq!(catalog.data[0].supported_reasoning_efforts[0].reasoning_effort, "low");
-        assert_eq!(catalog.data[0].supported_reasoning_efforts[1].reasoning_effort, "high");
+        assert_eq!(
+            catalog.data[0].supported_reasoning_efforts[0].reasoning_effort,
+            "low"
+        );
+        assert_eq!(
+            catalog.data[0].supported_reasoning_efforts[1].reasoning_effort,
+            "high"
+        );
         assert_eq!(catalog.data[1].id, "gpt-5.6-luna");
         assert!(catalog.data[1].supported_reasoning_efforts.is_empty());
     }

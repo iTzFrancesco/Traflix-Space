@@ -161,7 +161,10 @@ impl CodexToolService {
             self.respond_error(id, -32602, "missing params").await;
             return true;
         };
-        let thread_id = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
+        let thread_id = params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let tool_call_id = params
             .get("callId")
             .and_then(Value::as_str)
@@ -171,16 +174,23 @@ impl CodexToolService {
             .get("namespace")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let tool_name = params.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let tool_name = params
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let name = format!("{namespace}.{tool_name}");
-        let input = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let input = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
 
         let workspace_id = match self.app.try_state::<ThreadRegistry>() {
             Some(registry) => registry.workspace_for_thread(thread_id).await,
             None => None,
         };
         let Some(workspace_id) = workspace_id else {
-            self.respond_error(id, -32001, "thread has no workspace binding").await;
+            self.respond_error(id, -32001, "thread has no workspace binding")
+                .await;
             return true;
         };
 
@@ -261,7 +271,10 @@ impl CodexToolService {
     }
 
     pub async fn register_plan_cancel(&self, thread_id: &str, token: CancellationToken) {
-        self.plan_cancellations.lock().await.insert(thread_id.to_string(), token);
+        self.plan_cancellations
+            .lock()
+            .await
+            .insert(thread_id.to_string(), token);
     }
 
     pub async fn cancel_plan(&self, thread_id: &str) {
@@ -288,7 +301,10 @@ impl CodexToolService {
             let mut executed = self.plan_executed.lock().await;
             if !consume_plan_slot(&mut executed, thread_id) {
                 drop(executed);
-                warn!(thread_id, "codex second conversational.plan in the same turn rejected");
+                warn!(
+                    thread_id,
+                    "codex second conversational.plan in the same turn rejected"
+                );
                 self.respond_error(
                     id,
                     PLAN_ALREADY_EXECUTED_CODE,
@@ -312,33 +328,41 @@ impl CodexToolService {
             }
         };
         if let Err(error) = plan.validate() {
-            self.respond_error(id, PLAN_REJECTED_CODE, &format!("conversational_plan_rejected: {error}"))
-                .await;
+            self.respond_error(
+                id,
+                PLAN_REJECTED_CODE,
+                &format!("conversational_plan_rejected: {error}"),
+            )
+            .await;
             return;
         }
 
         let observed_at = now();
-        let workspace = match load_workspace(&self.app, workspace_id, request_id, &observed_at).await
-        {
-            Ok(workspace) => workspace,
-            Err(err) => {
-                self.respond_error(id, PLAN_REJECTED_CODE, &format!("workspace unavailable: {}", err.message))
+        let workspace =
+            match load_workspace(&self.app, workspace_id, request_id, &observed_at).await {
+                Ok(workspace) => workspace,
+                Err(err) => {
+                    self.respond_error(
+                        id,
+                        PLAN_REJECTED_CODE,
+                        &format!("workspace unavailable: {}", err.message),
+                    )
                     .await;
-                return;
-            }
-        };
+                    return;
+                }
+            };
         reconcile_live_registry(&self.app, &observed_at).await;
         let manager = self.app.state::<TerminalManager>();
         let terminals = list_terminals_for_workspace(&manager, &workspace, &observed_at).await;
-        let invocation = InvocationBinding::new(
-            request_id,
-            workspace_id,
-            None,
-            None,
-            observed_at.clone(),
-        );
+        let invocation =
+            InvocationBinding::new(request_id, workspace_id, None, None, observed_at.clone());
         let context = match JarvisToolService::new(&self.app.state::<JarvisState>().broker)
-            .build_context(&workspace, invocation.clone(), terminals, RequestedDepth::LastResult)
+            .build_context(
+                &workspace,
+                invocation.clone(),
+                terminals,
+                RequestedDepth::LastResult,
+            )
             .map_err(|err| err.message)
             .and_then(|package| {
                 package
@@ -347,14 +371,19 @@ impl CodexToolService {
             }) {
             Ok(context) => context,
             Err(message) => {
-                self.respond_error(id, PLAN_REJECTED_CODE, &format!("context unavailable: {message}"))
-                    .await;
+                self.respond_error(
+                    id,
+                    PLAN_REJECTED_CODE,
+                    &format!("context unavailable: {message}"),
+                )
+                .await;
                 return;
             }
         };
 
         let cancellation = CancellationToken::new();
-        self.register_plan_cancel(thread_id, cancellation.clone()).await;
+        self.register_plan_cancel(thread_id, cancellation.clone())
+            .await;
         let execution = execute_plan(
             &self.app,
             &workspace,
@@ -411,13 +440,7 @@ impl CodexToolService {
         let started = Instant::now();
         let outcome = tokio::time::timeout(
             READ_TOOL_TIMEOUT,
-            self.execute_read_tool_inner(
-                workspace_id,
-                request_id,
-                legacy_name,
-                input,
-                started,
-            ),
+            self.execute_read_tool_inner(workspace_id, request_id, legacy_name, input, started),
         )
         .await;
 
@@ -477,18 +500,12 @@ impl CodexToolService {
             Vec::new()
         };
 
-        let invocation = InvocationBinding::new(
-            request_id,
-            workspace_id,
-            None,
-            None,
-            observed_at.clone(),
-        );
+        let invocation =
+            InvocationBinding::new(request_id, workspace_id, None, None, observed_at.clone());
         let prepare_ms = started.elapsed().as_millis() as u64;
         info!(
             tool = legacy_name,
-            prepare_ms,
-            "[JARVIS-CODEX-TOOL] context-ready",
+            prepare_ms, "[JARVIS-CODEX-TOOL] context-ready",
         );
 
         let execution_started = Instant::now();
@@ -505,8 +522,9 @@ impl CodexToolService {
 
         match &result {
             Ok(value) => {
-                let response_bytes =
-                    serde_json::to_string(value).map(|json| json.len()).unwrap_or(0);
+                let response_bytes = serde_json::to_string(value)
+                    .map(|json| json.len())
+                    .unwrap_or(0);
                 info!(
                     tool = legacy_name,
                     execute_ms = execution_started.elapsed().as_millis() as u64,
@@ -567,8 +585,7 @@ impl CodexToolService {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if !terminals.iter().any(|terminal| {
-                    terminal.terminal_id == terminal_id
-                        && terminal.workspace_id == *workspace_id
+                    terminal.terminal_id == terminal_id && terminal.workspace_id == *workspace_id
                 }) {
                     Ok(json!({"error":"terminal target is not owned by invocation workspace"}))
                 } else {
@@ -577,8 +594,9 @@ impl CodexToolService {
                     ))
                 }
             }
-            "terminal_list" => serde_json::to_value(terminals)
-                .map_err(|_| "terminal list unavailable".to_string()),
+            "terminal_list" => {
+                serde_json::to_value(terminals).map_err(|_| "terminal list unavailable".to_string())
+            }
             "agent_list" => {
                 let envelope = service
                     .agent_snapshot(workspace_id, Some(request_id.clone()), observed_at)
@@ -722,17 +740,9 @@ impl CodexToolService {
                     .get("relativePath")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                match read_markdown(
-                    app,
-                    workspace,
-                    invocation.clone(),
-                    path.to_string(),
-                )
-                .await
-                {
+                match read_markdown(app, workspace, invocation.clone(), path.to_string()).await {
                     Ok(value) => {
-                        serde_json::to_value(value)
-                            .map_err(|_| "document unavailable".to_string())
+                        serde_json::to_value(value).map_err(|_| "document unavailable".to_string())
                     }
                     Err(_) => Ok(json!(
                         {"error":"document rejected by context policy"}
@@ -884,12 +894,22 @@ mod tests {
             .collect();
         assert_eq!(
             namespaces,
-            vec!["workspace", "terminals", "agent", "markdown", "ui", "conversational"]
+            vec![
+                "workspace",
+                "terminals",
+                "agent",
+                "markdown",
+                "ui",
+                "conversational"
+            ]
         );
         for spec in &specs {
             for tool in spec["tools"].as_array().unwrap_or(&Vec::new()) {
                 let tool_name = tool["name"].as_str().unwrap_or_default();
-                assert!(!tool_name.contains('.'), "tool name must be plain: {tool_name}");
+                assert!(
+                    !tool_name.contains('.'),
+                    "tool name must be plain: {tool_name}"
+                );
                 assert!(tool.get("inputSchema").is_some());
             }
         }
@@ -933,13 +953,13 @@ mod tests {
             ]
         );
         assert!(schema["properties"]["operations"]["items"]["properties"]["allowBusy"].is_object());
-        let read_only = vec!["workspace", "terminals", "agent", "markdown", "ui"];
-        for spec in specs
-            .iter()
-            .filter(|spec| spec["name"] != "conversational")
-        {
+        let read_only = ["workspace", "terminals", "agent", "markdown", "ui"];
+        for spec in specs.iter().filter(|spec| spec["name"] != "conversational") {
             let name = spec["name"].as_str().unwrap_or_default();
-            assert!(read_only.contains(&name), "unexpected extra namespace {name}");
+            assert!(
+                read_only.contains(&name),
+                "unexpected extra namespace {name}"
+            );
         }
     }
 
@@ -972,7 +992,8 @@ mod tests {
         assert!(serde_json::from_value::<ConversationalPlan>(unknown).is_err());
 
         let empty = json!({ "operations": [] });
-        let plan = serde_json::from_value::<ConversationalPlan>(empty).expect("empty array decodes");
+        let plan =
+            serde_json::from_value::<ConversationalPlan>(empty).expect("empty array decodes");
         assert!(plan.validate().is_err());
 
         assert!(serde_json::from_value::<ConversationalPlan>(json!({"operations": 3})).is_err());
@@ -982,9 +1003,15 @@ mod tests {
     #[test]
     fn namespaced_name_maps_to_legacy_dispatcher() {
         assert_eq!(legacy_dispatcher_name("agent", "list"), "agent_list");
-        assert_eq!(legacy_dispatcher_name("ui", "open_terminal"), "ui_open_terminal");
+        assert_eq!(
+            legacy_dispatcher_name("ui", "open_terminal"),
+            "ui_open_terminal"
+        );
         assert_eq!(legacy_dispatcher_name("terminals", "list"), "terminal_list");
-        assert_eq!(legacy_dispatcher_name("workspace", "overview"), "workspace_overview");
+        assert_eq!(
+            legacy_dispatcher_name("workspace", "overview"),
+            "workspace_overview"
+        );
     }
 
     #[test]

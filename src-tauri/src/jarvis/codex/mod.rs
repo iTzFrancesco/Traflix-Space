@@ -11,8 +11,8 @@
 pub mod account;
 pub mod events;
 pub mod models;
-pub mod runtime;
 pub mod rpc;
+pub mod runtime;
 pub mod threads;
 pub mod tools;
 pub mod types;

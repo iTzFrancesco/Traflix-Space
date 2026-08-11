@@ -85,7 +85,7 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /workspaceName: string \| null/);
   assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
-  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{statusLabel\}`\}/);
+  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{stepLabel \?\? statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
   assert.match(widgetSource, /aria-live=\{props\.voiceError \? "assertive" : "polite"\}/);
   assert.match(widgetSource, /const statusLabel = props\.voiceError/);
@@ -221,17 +221,15 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings stay hands-free, localized and keep hold-to-talk reachable", () => {
+test("normal Jarvis settings stay compact, localized and expose voice devices", () => {
   assert.match(settingsSource, /La voce è l'interfaccia principale/);
-  assert.match(settingsSource, /Modalità di interazione/);
-  assert.match(settingsSource, /Sempre in ascolto/);
-  assert.match(settingsSource, /hold_to_talk/);
-  assert.match(settingsSource, /Tieni premuto per parlare/);
-  assert.match(settingsSource, /Comportamento scorciatoia/);
-  assert.match(settingsSource, /Silenzio prima dell'invio \(ms\)/);
-  assert.match(settingsSource, /Attesa massima della voce \(s\)/);
-  assert.match(settingsSource, /vadPostSpeechMs/);
-  assert.match(settingsSource, /maxArmedSeconds/);
+  assert.match(settingsSource, /title="Voce"/);
+  assert.match(settingsSource, /description="Microfono e voce di Jarvis\."/);
+  assert.match(settingsSource, />Microfono<\/span>/);
+  assert.match(settingsSource, />Voce di Jarvis<\/span>/);
+  assert.match(settingsSource, /inputDeviceOptions\(devices\)/);
+  assert.match(settingsSource, /italianVoices\(await ttsListVoices\(\)\)/);
+  assert.doesNotMatch(settingsSource, /Modalità di interazione|Comportamento scorciatoia/);
   assert.doesNotMatch(settingsSource, /value: "click_toggle"/);
   assert.doesNotMatch(
     settingsSource,

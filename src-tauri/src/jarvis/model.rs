@@ -345,7 +345,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
             };
             let model_used = thread.model.clone();
             Ok(ModelCompletion {
-                response: ModelResponse { content: final_text },
+                response: ModelResponse {
+                    content: final_text,
+                },
                 provider: ModelProvider::Codex,
                 model_used,
             })
