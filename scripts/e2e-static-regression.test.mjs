@@ -236,6 +236,7 @@ test("CI and release builds use runner-local Rust paths and version all MSI inpu
 });
 
 test("Windows Rust test binaries activate common-controls v6", () => {
+  assert.match(rustBuildScript, /TRAFLIX_RUST_TEST_MANIFEST/);
   assert.match(rustBuildScript, /MANIFESTINPUT/);
   assert.match(rustBuildScript, /Microsoft\.Windows\.Common-Controls/);
   assert.match(rustBuildScript, /6\.0\.0\.0/);

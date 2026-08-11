@@ -77,7 +77,10 @@ jobs:
         working-directory: .
       - run: npm run test:jarvis
         working-directory: .
-      - run: cargo test
+      - name: Run Rust library tests with Windows manifest
+        env:
+          TRAFLIX_RUST_TEST_MANIFEST: "1"
+        run: cargo test --lib
 
   build:
     name: Build (Windows MSI)

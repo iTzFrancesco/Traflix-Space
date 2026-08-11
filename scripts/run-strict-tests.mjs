@@ -75,8 +75,12 @@ run(cargoCommand, [
   "clippy::match_result_ok",
 ]);
 const rustFlags = [process.env.RUSTFLAGS, "-D warnings"].filter(Boolean).join(" ");
-run(cargoCommand, ["test", "--manifest-path", "src-tauri/Cargo.toml"], {
-  env: { ...process.env, RUSTFLAGS: rustFlags },
+run(cargoCommand, ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib"], {
+  env: {
+    ...process.env,
+    RUSTFLAGS: rustFlags,
+    TRAFLIX_RUST_TEST_MANIFEST: "1",
+  },
 });
 
 console.log("Strict regression suite passed: TypeScript, frontend tests, terminal tests, rustfmt, release check, explicit Clippy baseline, and warning-free Rust tests.");
