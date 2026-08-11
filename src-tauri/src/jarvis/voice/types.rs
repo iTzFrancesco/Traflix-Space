@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const MIN_RECORDING_MS: u64 = 250;
-pub const MAX_RECORDING_MS: u64 = 45_000;
+pub const MAX_RECORDING_MS: u64 = 180_000;
 pub const MAX_WAV_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_VOICE_REQUESTS: usize = 32;
 pub const GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
@@ -200,7 +200,7 @@ mod tests {
     fn corrupted_duration_is_bounded_for_capture_and_watchdog() {
         assert_eq!(normalize_max_duration_seconds(0), 1);
         assert_eq!(
-            normalize_max_duration_seconds(99),
+            normalize_max_duration_seconds(999),
             MAX_RECORDING_MS as u32 / 1000
         );
         assert_eq!(normalize_max_duration_seconds(12), 12);

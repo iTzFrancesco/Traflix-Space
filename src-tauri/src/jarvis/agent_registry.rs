@@ -22,6 +22,10 @@ const MAX_COMPLETION_KEYS: usize = 4096;
 /// Output-driven `lastActivityAt`/`working` updates are throttled to at most
 /// one per second per session so PTY chunks never grow the timeline.
 const OUTPUT_ACTIVITY_THROTTLE_SECS: u64 = 1;
+
+/// Seconds of terminal-output silence after which a working session is
+/// considered finished (see `mark_idle_sessions_completed`).
+const AGENT_IDLE_COMPLETION_SECS: u64 = 10;
 /// A `working` activity is only appended when the previous one is older than
 /// this window, otherwise it would dominate the bounded timeline.
 const WORKING_ACTIVITY_MIN_GAP_SECS: u64 = 10;
@@ -624,6 +628,56 @@ impl AgentSessionRegistry {
             }
             break;
         }
+    }
+
+    /// Idle-based completion detector: sessions that were working (or still
+    /// starting) and produced no terminal output for `AGENT_IDLE_COMPLETION_SECS`
+    /// are transitioned to `Waiting`. Manually launched CLIs (pi, opencode,
+    /// claude, freebuff) never emit a completion event through the named pipe,
+    /// so without this fallback they would stay `Working` forever and Jarvis
+    /// would keep treating them as busy. The observation is best-effort:
+    /// output silence is a strong but not perfect signal, so the event is
+    /// recorded as untrusted with modest confidence and no completion
+    /// notification is emitted (no false chime/toast). Returns the terminal
+    /// ids that were transitioned, for logging.
+    pub fn mark_idle_sessions_completed(&self, observed_at: &str) -> Vec<String> {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        let mut settled = Vec::new();
+        for record in sessions.values_mut() {
+            if !matches!(
+                record.state,
+                AgentState::Starting | AgentState::Working
+            ) {
+                continue;
+            }
+            let Some(last) = record.last_activity_at.as_deref() else {
+                // Never observed output yet: keep waiting for the first
+                // activity before deciding anything.
+                continue;
+            };
+            if seconds_since(last, observed_at) < AGENT_IDLE_COMPLETION_SECS {
+                continue;
+            }
+            let terminal_id = record.reference.terminal_id.clone().unwrap_or_default();
+            record.state = AgentState::Waiting;
+            record.reference.updated_at = observed_at.to_string();
+            record.last_activity_at = Some(observed_at.to_string());
+            if let Some(task) = record.current_task.as_mut() {
+                task.completed_at = Some(observed_at.to_string());
+            }
+            record.push_activity(activity_event(
+                AgentActivityKind::CompletionObserved,
+                AgentInteractionSource::System,
+                observed_at,
+                None,
+                0.6,
+                true,
+            ));
+            settled.push(terminal_id);
+        }
+        settled
     }
 
     /// Append a throttled `working` activity while the user is actively
@@ -2198,6 +2252,63 @@ mod tests {
             .iter()
             .any(|event| event.kind == AgentActivityKind::Exited));
         assert!(task_of(&status).completed_at.is_none());
+    }
+
+
+    // -- idle completion detector --
+
+    #[test]
+    fn working_session_without_output_for_idle_window_settles_to_waiting() {
+        let registry = AgentSessionRegistry::default();
+        registry.observe_jarvis_send(
+            &terminal(1, true),
+            "refactor the module
+",
+            "2026-08-11T00:00:00Z",
+        );
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(registry.status(&session).unwrap().state, AgentState::Working);
+
+        // 11 seconds of output silence: the session settles to waiting.
+        let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:11Z");
+        assert_eq!(settled.len(), 1);
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        let status = registry.status(&session).unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
+        assert!(status
+            .activity_timeline
+            .iter()
+            .any(|event| event.kind == AgentActivityKind::CompletionObserved));
+    }
+
+    #[test]
+    fn active_working_session_is_not_settled_while_output_continues() {
+        let registry = AgentSessionRegistry::default();
+        registry.observe_jarvis_send(
+            &terminal(1, true),
+            "start task
+",
+            "2026-08-11T00:00:00Z",
+        );
+        registry.observe_output("terminal-1", 1, "2026-08-11T00:00:09Z");
+        let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:15Z");
+        assert!(settled.is_empty());
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(registry.status(&session).unwrap().state, AgentState::Working);
+    }
+
+    #[test]
+    fn session_without_observed_output_is_left_untouched() {
+        let registry = AgentSessionRegistry::default();
+        let mut agent = terminal(1, true);
+        agent.agent_id = Some("pi".to_string());
+        agent.observed_provider = Some("pi".to_string());
+        agent.detection_source = "command-observed".to_string();
+        agent.detection_confidence = 0.7;
+        registry.observe_terminal_started(&agent, "2026-08-11T00:00:00Z");
+        // No output ever observed (last_activity_at is None): not settled.
+        let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:30Z");
+        assert!(settled.is_empty());
     }
 
     // -- identity confirmation (human action confirms manual agent) --

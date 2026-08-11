@@ -185,6 +185,33 @@ fn main() {
             // never participates in the agent's execution path.
             agent_events::start_listener(app.handle().clone());
 
+            // Idle-completion watcher: manually launched CLIs never emit a
+            // completion event, so sessions that stop producing output for
+            // AGENT_IDLE_COMPLETION_SECS are settled to Waiting by the
+            // registry. One lightweight 1 Hz tick for the whole app.
+            {
+                let watcher_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut tick =
+                        tokio::time::interval(std::time::Duration::from_millis(1000));
+                    loop {
+                        tick.tick().await;
+                        let Some(state) = watcher_app.try_state::<jarvis::JarvisState>() else {
+                            continue;
+                        };
+                        let settled = state
+                            .registry
+                            .mark_idle_sessions_completed(&chrono::Utc::now().to_rfc3339());
+                        for terminal_id in settled {
+                            info!(
+                                terminal_id = %terminal_id,
+                                "Agent settled to waiting after output idle"
+                            );
+                        }
+                    }
+                });
+            }
+
             // Avvia skills watcher
             skills::watcher::start_skills_watcher(app.handle().clone());
 
