@@ -704,9 +704,10 @@ impl AgentSessionRegistry {
         }
     }
 
-    /// Compatibility seam retained for callers from older builds. Output
-    /// silence is diagnostic only and never proves that a turn completed.
-    pub fn mark_idle_sessions_completed(&self, observed_at: &str) -> Vec<String> {
+    /// Test seam: output silence is diagnostic only and never proves that a
+    /// turn completed. Production has no idle-completion watcher.
+    #[cfg(test)]
+    fn mark_idle_sessions_completed(&self, observed_at: &str) -> Vec<String> {
         let _ = observed_at;
         Vec::new()
     }
