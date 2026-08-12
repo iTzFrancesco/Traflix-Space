@@ -3491,6 +3491,22 @@ mod tests {
             target.session.reference.agent_alias.as_deref(),
             Some("codex-2")
         );
+
+        for (alias, terminal_id) in [("codex-1", "terminal-1"), ("codex-3", "terminal-3")] {
+            let binding = AgentAssignmentBinding {
+                assignment_id: format!("assignment:test:{alias}"),
+                agent_alias: alias.into(),
+                agent_session_id: format!("session-{alias}"),
+                terminal_id: terminal_id.into(),
+                generation: 7,
+                process_id: Some(if alias == "codex-1" { 100 } else { 102 }),
+                provider: "codex".into(),
+                provider_session_id: None,
+            };
+            let target = target_from_binding(&context, &binding).expect("exact alias binding");
+            assert_eq!(target.terminal.terminal_id, terminal_id);
+            assert_eq!(target.session.reference.agent_alias.as_deref(), Some(alias));
+        }
     }
 
     #[test]
@@ -3538,6 +3554,20 @@ mod tests {
         let mut process_mismatch = binding;
         process_mismatch.process_id = Some(999);
         assert!(!binding_matches_target(&process_mismatch, &target));
+
+        let mut provider_mismatch = AgentAssignmentBinding {
+            assignment_id: "assignment:test:1".into(),
+            agent_alias: "codex-1".into(),
+            agent_session_id: "session-codex-1".into(),
+            terminal_id: "terminal-1".into(),
+            generation: 7,
+            process_id: Some(100),
+            provider: "claude".into(),
+            provider_session_id: None,
+        };
+        assert!(!binding_matches_target(&provider_mismatch, &target));
+        provider_mismatch.provider = "codex".into();
+        assert!(binding_matches_target(&provider_mismatch, &target));
     }
 
     #[test]
@@ -3670,6 +3700,7 @@ mod tests {
         let registry = crate::jarvis::agent_registry::AgentSessionRegistry::default();
         let first = registry.dispatch_lock("codex-1");
         let second = registry.dispatch_lock("codex-1");
+        let different_alias = registry.dispatch_lock("codex-2");
         let guard = first.lock().await;
         let waiter = tokio::spawn(async move {
             let _guard = second.lock().await;
@@ -3677,6 +3708,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
+        assert!(!std::sync::Arc::ptr_eq(&first, &different_alias));
         drop(guard);
         assert!(waiter.await.expect("lock waiter completed"));
     }

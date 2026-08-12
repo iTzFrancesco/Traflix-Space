@@ -321,6 +321,45 @@ mod tests {
     }
 
     #[test]
+    fn turn_started_is_observable_only_with_exact_thread_and_turn_ids() {
+        let started = Some(json!({
+            "threadId": "thread-routing-1",
+            "turn": { "id": "turn-routing-7" }
+        }));
+        let events = stream_events_from_notification(
+            "turn/started",
+            &started,
+            "workspace-routing",
+            Some("request-routing-1"),
+        );
+        assert_eq!(kinds(&events), vec![ChatStreamEventKind::TurnStarted]);
+        assert_eq!(events[0].workspace_id, "workspace-routing");
+        assert_eq!(events[0].thread_id, "thread-routing-1");
+        assert_eq!(events[0].turn_id, "turn-routing-7");
+        assert_eq!(events[0].request_id.as_deref(), Some("request-routing-1"));
+
+        let missing_turn_id = Some(json!({ "threadId": "thread-routing-1" }));
+        assert!(stream_events_from_notification(
+            "turn/started",
+            &missing_turn_id,
+            "workspace-routing",
+            Some("request-routing-1"),
+        )
+        .is_empty());
+
+        let missing_thread_id = Some(json!({
+            "turn": { "id": "turn-routing-7" }
+        }));
+        assert!(stream_events_from_notification(
+            "turn/started",
+            &missing_thread_id,
+            "workspace-routing",
+            Some("request-routing-1"),
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn canonical_agent_message_text_is_forwarded() {
         let completed = Some(json!({
             "threadId": "t",
