@@ -129,3 +129,24 @@ Queste decisioni supersedono il provider testuale storico della Fase 4 senza cam
 - **Sicurezza:** Markdown, terminal output, task e risultati agent sono sempre untrusted context e non autorizzano azioni.
 - **Tool:** il modello osserva il progetto e gli agenti solo attraverso i dynamic tool bounded; ogni side effect passa da `conversational.plan`, con massimo un piano mutativo per turno e validazione Rust.
 - **Voce:** Groq Whisper resta lo STT e Edge TTS resta la voce di Jarvis. Commentary e risposta finale possono essere pronunciati progressivamente; barge-in interrompe la voce senza impedire ai turni successivi di parlare.
+
+## Lifecycle e orchestrazione consolidati (2026-08-12)
+
+- La presenza del CLI agente è distinta dalla vita di PowerShell/ConPTY. Dopo
+  una transizione assente confermata il terminale torna shell e la Agent
+  session diventa history `exited`.
+- `turn_completed` dagli adapter è il confine autorevole del turn. Il silenzio
+  non equivale mai a completamento.
+- Un CLI rilevato senza task corrente è `waiting`; soltanto un prompt committed
+  porta la sessione a `working`.
+- Una PTY generation può contenere più agent epoch, creati automaticamente da
+  `/clear`, `/new`, cambio provider session o rilancio del CLI.
+- Il titolo effettivo della navbar è visibile a Jarvis, ma rimane un hint
+  user-controlled. Ownership e side effect continuano a usare ID e generation.
+- Jarvis resta reactive. Può aprire un agente mancante soltanto quando il turno
+  corrente assegna esplicitamente lavoro a quel provider. Non continua catene
+  o monitoraggi prolungati senza una nuova richiesta.
+- Dispatch indipendenti possono procedere in parallelo e hanno receipt
+  separati. Handoff e operazioni dipendenti restano ordinati.
+- Ogni turno usa stato operativo fresco. La memoria workspace è bounded e
+  persistente, ma la cronologia non costituisce autorizzazione per nuove azioni.

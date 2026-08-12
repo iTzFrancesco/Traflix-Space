@@ -1,6 +1,8 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -24,12 +26,34 @@ pub struct MemoryMessage {
     pub untrusted: bool,
 }
 
-#[derive(Default)]
 pub struct ConversationMemory {
     messages: Mutex<HashMap<String, VecDeque<MemoryMessage>>>,
+    persistence_path: Option<PathBuf>,
+}
+
+impl Default for ConversationMemory {
+    fn default() -> Self {
+        Self {
+            messages: Mutex::new(HashMap::new()),
+            persistence_path: None,
+        }
+    }
 }
 
 impl ConversationMemory {
+    pub fn persistent(path: PathBuf) -> Self {
+        let messages = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let memory = Self {
+            messages: Mutex::new(messages),
+            persistence_path: Some(path),
+        };
+        memory.enforce_bounds();
+        memory
+    }
+
     pub fn append(
         &self,
         workspace_id: &str,
@@ -118,6 +142,7 @@ impl ConversationMemory {
                 }
                 all.retain(|_, messages| !messages.is_empty());
             }
+            self.persist_locked(&all);
         }
         message
     }
@@ -143,6 +168,62 @@ impl ConversationMemory {
     pub fn clear(&self, workspace_id: &str) {
         if let Ok(mut all) = self.messages.lock() {
             all.remove(workspace_id);
+            self.persist_locked(&all);
+        }
+    }
+
+    fn enforce_bounds(&self) {
+        let Ok(mut all) = self.messages.lock() else {
+            return;
+        };
+        for messages in all.values_mut() {
+            while messages.len() > MAX_MESSAGES_PER_WORKSPACE
+                || history_bytes(messages) > MAX_MEMORY_WORKSPACE_BYTES
+            {
+                messages.pop_front();
+            }
+        }
+        all.retain(|_, messages| !messages.is_empty());
+        while all.values().map(VecDeque::len).sum::<usize>() > MAX_MESSAGES_GLOBAL
+            || all.values().map(history_bytes).sum::<usize>() > MAX_MEMORY_GLOBAL_BYTES
+        {
+            let Some(workspace_id) = all
+                .iter()
+                .filter_map(|(id, messages)| {
+                    messages
+                        .front()
+                        .map(|message| (id.clone(), message.created_at.clone()))
+                })
+                .min_by(|left, right| left.1.cmp(&right.1))
+                .map(|(id, _)| id)
+            else {
+                break;
+            };
+            if let Some(messages) = all.get_mut(&workspace_id) {
+                messages.pop_front();
+            }
+            all.retain(|_, messages| !messages.is_empty());
+        }
+    }
+
+    fn persist_locked(&self, all: &HashMap<String, VecDeque<MemoryMessage>>) {
+        let Some(path) = self.persistence_path.as_ref() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec(all) {
+            let Ok(mut temporary) = tempfile::NamedTempFile::new_in(parent) else {
+                return;
+            };
+            if temporary.write_all(&bytes).is_err() || temporary.as_file_mut().sync_all().is_err() {
+                return;
+            }
+            let _ = temporary.persist(path);
         }
     }
 }
@@ -260,5 +341,34 @@ mod tests {
             .map(|message| message.content.len())
             .sum();
         assert!(total <= super::MAX_MEMORY_GLOBAL_BYTES);
+    }
+
+    #[test]
+    fn persistent_memory_restores_workspace_history_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("jarvis-memory.json");
+        let memory = ConversationMemory::persistent(path.clone());
+        memory.append(
+            "workspace-a",
+            "user",
+            "delega la review a Codex".into(),
+            None,
+            false,
+        );
+        memory.append(
+            "workspace-a",
+            "assistant",
+            "delegazione inviata".into(),
+            None,
+            false,
+        );
+        drop(memory);
+
+        let restored = ConversationMemory::persistent(path);
+        assert_eq!(restored.recent("workspace-a", 4).len(), 2);
+        assert_eq!(
+            restored.recent("workspace-a", 4)[0].content,
+            "delega la review a Codex"
+        );
     }
 }

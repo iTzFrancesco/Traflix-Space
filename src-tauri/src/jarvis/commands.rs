@@ -1,5 +1,7 @@
 use crate::jarvis::agent_registry::{IdentityDecision, DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
-use crate::jarvis::tools::{list_terminals_for_workspace, JarvisState, JarvisToolService};
+use crate::jarvis::tools::{
+    attach_terminal_titles, list_terminals_for_workspace, JarvisState, JarvisToolService,
+};
 use crate::jarvis::types::{
     AgentActivityEvent, AgentMessage, AgentResult, AgentSessionContext, AgentSessionRef, AgentTail,
     ContextPackageV1, InvocationBinding, JarvisErrorEnvelope, ModelContextViewV1, RequestedDepth,
@@ -101,7 +103,7 @@ pub async fn jarvis_agent_list(
 ) -> Result<ToolEnvelope<Vec<AgentSessionRef>>, JarvisErrorEnvelope> {
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
-    load_workspace(
+    let workspace = load_workspace(
         &workspace_registry,
         &workspace_id,
         request_id.clone(),
@@ -109,11 +111,25 @@ pub async fn jarvis_agent_list(
     )
     .await?;
     reconcile_live_registry(&app, &observed_at).await;
-    JarvisToolService::new(&app.state::<JarvisState>().broker).agent_list(
+    let mut envelope = JarvisToolService::new(&app.state::<JarvisState>().broker).agent_list(
         &workspace_id,
         request_id,
         &observed_at,
-    )
+    )?;
+    let manager = app.state::<TerminalManager>();
+    let terminals = list_terminals_for_workspace(&manager, &workspace, &observed_at).await;
+    for reference in &mut envelope.data {
+        reference.terminal_title = reference.terminal_id.as_deref().and_then(|terminal_id| {
+            terminals
+                .iter()
+                .find(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.generation == reference.generation
+                })
+                .map(|terminal| terminal.title.clone())
+        });
+    }
+    Ok(envelope)
 }
 
 #[tauri::command]
@@ -124,7 +140,7 @@ pub async fn jarvis_agent_snapshot(
 ) -> Result<ToolEnvelope<Vec<AgentSessionContext>>, JarvisErrorEnvelope> {
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
-    load_workspace(
+    let workspace = load_workspace(
         &workspace_registry,
         &workspace_id,
         request_id.clone(),
@@ -132,11 +148,15 @@ pub async fn jarvis_agent_snapshot(
     )
     .await?;
     reconcile_live_registry(&app, &observed_at).await;
-    JarvisToolService::new(&app.state::<JarvisState>().broker).agent_snapshot(
+    let mut envelope = JarvisToolService::new(&app.state::<JarvisState>().broker).agent_snapshot(
         &workspace_id,
         request_id,
         &observed_at,
-    )
+    )?;
+    let manager = app.state::<TerminalManager>();
+    let terminals = list_terminals_for_workspace(&manager, &workspace, &observed_at).await;
+    attach_terminal_titles(&mut envelope.data, &terminals);
+    Ok(envelope)
 }
 
 #[tauri::command]
@@ -148,19 +168,25 @@ pub async fn jarvis_agent_get_status(
 ) -> Result<ToolEnvelope<AgentSessionContext>, JarvisErrorEnvelope> {
     let observed_at = now();
     let workspace_registry = app.state::<WorkspaceRegistry>();
-    load_workspace(
+    let workspace = load_workspace(
         &workspace_registry,
         &workspace_id,
         request_id.clone(),
         &observed_at,
     )
     .await?;
-    JarvisToolService::new(&app.state::<JarvisState>().broker).agent_status(
+    reconcile_live_registry(&app, &observed_at).await;
+    let mut envelope = JarvisToolService::new(&app.state::<JarvisState>().broker).agent_status(
         &workspace_id,
         &agent_session_id,
         request_id,
         &observed_at,
-    )
+    )?;
+    let terminals =
+        list_terminals_for_workspace(&app.state::<TerminalManager>(), &workspace, &observed_at)
+            .await;
+    attach_terminal_titles(std::slice::from_mut(&mut envelope.data), &terminals);
+    Ok(envelope)
 }
 
 #[tauri::command]

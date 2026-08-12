@@ -23,9 +23,6 @@ const MAX_COMPLETION_KEYS: usize = 4096;
 /// one per second per session so PTY chunks never grow the timeline.
 const OUTPUT_ACTIVITY_THROTTLE_SECS: u64 = 1;
 
-/// Seconds of terminal-output silence after which a working session is
-/// considered finished (see `mark_idle_sessions_completed`).
-const AGENT_IDLE_COMPLETION_SECS: u64 = 10;
 /// A `working` activity is only appended when the previous one is older than
 /// this window, otherwise it would dominate the bounded timeline.
 const WORKING_ACTIVITY_MIN_GAP_SECS: u64 = 10;
@@ -153,6 +150,7 @@ pub struct AgentSessionRegistry {
     identity_decisions: Mutex<HashMap<IdentityDecisionKey, IdentityDecision>>,
     selected_session: Mutex<Option<String>>,
     input_trackers: Mutex<HashMap<(String, u64), InputTracker>>,
+    session_epochs: Mutex<HashMap<(String, u64), u64>>,
 }
 
 /// Bounded per-`(terminalId, generation)` tracker that reconstructs only the
@@ -356,11 +354,24 @@ impl AgentSessionRegistry {
             return None;
         }
         let identity = identity_from_snapshot(terminal);
-
+        let epoch_key = (terminal.terminal_id.clone(), terminal.generation);
+        let Ok(mut epochs) = self.session_epochs.lock() else {
+            return None;
+        };
         let Ok(mut sessions) = self.sessions.lock() else {
             return None;
         };
-        let session_id = session_id_for(terminal);
+        let epoch = epochs.entry(epoch_key).or_default();
+        let mut session_id = session_id_for_epoch(terminal, *epoch);
+        if terminal.process_alive
+            && sessions
+                .get(&session_id)
+                .is_some_and(|record| record.state == AgentState::Exited)
+        {
+            *epoch = epoch.saturating_add(1);
+            session_id = session_id_for_epoch(terminal, *epoch);
+        }
+        drop(epochs);
         mark_previous_generations_exited(&mut sessions, terminal, &session_id, observed_at);
         let record = sessions.entry(session_id.clone()).or_insert_with(|| {
             let state = if terminal.process_alive {
@@ -381,6 +392,7 @@ impl AgentSessionRegistry {
                     identity_needs_confirmation: identity.identity_needs_confirmation,
                     workspace_id: terminal.workspace_id.clone(),
                     terminal_id: Some(terminal.terminal_id.clone()),
+                    terminal_title: None,
                     generation: terminal.generation,
                     provider_session_id: None,
                     provider_turn_id: None,
@@ -414,7 +426,13 @@ impl AgentSessionRegistry {
         record.reference.updated_at = observed_at.to_string();
         record.state = if terminal.process_alive {
             match record.state {
-                AgentState::Starting | AgentState::Exited => AgentState::Working,
+                AgentState::Starting
+                    if identity_source_priority(&record.reference.detection_source) >= 4 =>
+                {
+                    AgentState::Waiting
+                }
+                AgentState::Exited if record.current_task.is_some() => AgentState::Working,
+                AgentState::Exited => AgentState::Waiting,
                 current => current,
             }
         } else {
@@ -450,7 +468,7 @@ impl AgentSessionRegistry {
         data: &[u8],
         observed_at: &str,
     ) {
-        let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
+        let Some(mut reference) = self.observe_terminal_started(terminal, observed_at) else {
             return;
         };
         let Ok(mut trackers) = self.input_trackers.lock() else {
@@ -469,6 +487,13 @@ impl AgentSessionRegistry {
                 TrackerSignal::Committed(text) => {
                     if is_agent_launch_command(&text) {
                         // Launching the CLI is session startup, not a task.
+                        continue;
+                    }
+                    if is_session_reset_command(&text) {
+                        self.begin_new_session_epoch(terminal, observed_at);
+                        if let Some(next) = self.observe_terminal_started(terminal, observed_at) {
+                            reference = next;
+                        }
                         continue;
                     }
                     let local_command = is_local_agent_command(&text);
@@ -607,6 +632,55 @@ impl AgentSessionRegistry {
         sync_reference_enrichment(record);
     }
 
+    fn begin_new_session_epoch(&self, terminal: &TerminalAgentSnapshot, observed_at: &str) {
+        let key = (terminal.terminal_id.clone(), terminal.generation);
+        let Ok(mut epochs) = self.session_epochs.lock() else {
+            return;
+        };
+        let epoch = epochs.entry(key).or_default();
+        *epoch = epoch.saturating_add(1);
+        let next_session_id = session_id_for_epoch(terminal, *epoch);
+        drop(epochs);
+
+        if let Ok(mut sessions) = self.sessions.lock() {
+            for record in sessions.values_mut() {
+                if record.reference.terminal_id.as_deref() == Some(terminal.terminal_id.as_str())
+                    && record.reference.generation == terminal.generation
+                    && record.reference.agent_session_id != next_session_id
+                    && record.state != AgentState::Exited
+                {
+                    record.state = AgentState::Exited;
+                    record.reference.updated_at = observed_at.to_string();
+                    record.last_activity_at = Some(observed_at.to_string());
+                    record.push_activity(activity_event(
+                        AgentActivityKind::Exited,
+                        AgentInteractionSource::System,
+                        observed_at,
+                        Some("agent session reset".to_string()),
+                        1.0,
+                        false,
+                    ));
+                    sync_reference_enrichment(record);
+                }
+            }
+        }
+        self.observe_terminal_started(terminal, observed_at);
+    }
+
+    pub fn current_session_id(&self, terminal: &TerminalAgentSnapshot) -> String {
+        let epoch = self
+            .session_epochs
+            .lock()
+            .ok()
+            .and_then(|epochs| {
+                epochs
+                    .get(&(terminal.terminal_id.clone(), terminal.generation))
+                    .copied()
+            })
+            .unwrap_or_default();
+        session_id_for_epoch(terminal, epoch)
+    }
+
     /// Throttled (max once per second per session) update of `lastActivityAt`
     /// from terminal output. Output is never stored and never becomes a task.
     pub fn observe_output(&self, terminal_id: &str, generation: u64, observed_at: &str) {
@@ -630,51 +704,11 @@ impl AgentSessionRegistry {
         }
     }
 
-    /// Idle-based completion detector: sessions that were working (or still
-    /// starting) and produced no terminal output for `AGENT_IDLE_COMPLETION_SECS`
-    /// are transitioned to `Waiting`. Manually launched CLIs (pi, opencode,
-    /// claude, freebuff) never emit a completion event through the named pipe,
-    /// so without this fallback they would stay `Working` forever and Jarvis
-    /// would keep treating them as busy. The observation is best-effort:
-    /// output silence is a strong but not perfect signal, so the event is
-    /// recorded as untrusted with modest confidence and no completion
-    /// notification is emitted (no false chime/toast). Returns the terminal
-    /// ids that were transitioned, for logging.
+    /// Compatibility seam retained for callers from older builds. Output
+    /// silence is diagnostic only and never proves that a turn completed.
     pub fn mark_idle_sessions_completed(&self, observed_at: &str) -> Vec<String> {
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return Vec::new();
-        };
-        let mut settled = Vec::new();
-        for record in sessions.values_mut() {
-            if !matches!(record.state, AgentState::Starting | AgentState::Working) {
-                continue;
-            }
-            let Some(last) = record.last_activity_at.as_deref() else {
-                // Never observed output yet: keep waiting for the first
-                // activity before deciding anything.
-                continue;
-            };
-            if seconds_since(last, observed_at) < AGENT_IDLE_COMPLETION_SECS {
-                continue;
-            }
-            let terminal_id = record.reference.terminal_id.clone().unwrap_or_default();
-            record.state = AgentState::Waiting;
-            record.reference.updated_at = observed_at.to_string();
-            record.last_activity_at = Some(observed_at.to_string());
-            if let Some(task) = record.current_task.as_mut() {
-                task.completed_at = Some(observed_at.to_string());
-            }
-            record.push_activity(activity_event(
-                AgentActivityKind::CompletionObserved,
-                AgentInteractionSource::System,
-                observed_at,
-                None,
-                0.6,
-                true,
-            ));
-            settled.push(terminal_id);
-        }
-        settled
+        let _ = observed_at;
+        Vec::new()
     }
 
     /// Append a throttled `working` activity while the user is actively
@@ -691,6 +725,7 @@ impl AgentSessionRegistry {
         let Some(record) = sessions.values_mut().find(|record| {
             record.reference.terminal_id.as_deref() == Some(terminal.terminal_id.as_str())
                 && record.reference.generation == terminal.generation
+                && record.state != AgentState::Exited
         }) else {
             return;
         };
@@ -779,6 +814,17 @@ impl AgentSessionRegistry {
                 provider,
             );
         }
+        if let Some(provider_session_id) = observation
+            .provider_session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            self.rotate_epoch_for_provider_session_change(
+                &completion_terminal,
+                provider_session_id,
+                observed_at,
+            );
+        }
         let reference = self.observe_terminal_started(&completion_terminal, observed_at);
         let Some(reference) = reference else {
             return false;
@@ -863,6 +909,25 @@ impl AgentSessionRegistry {
         }
         self.prune_sessions_locked(&mut sessions);
         true
+    }
+
+    fn rotate_epoch_for_provider_session_change(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        provider_session_id: &str,
+        observed_at: &str,
+    ) {
+        let current_id = self.current_session_id(terminal);
+        let changed = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(&current_id).cloned())
+            .and_then(|record| record.reference.provider_session_id)
+            .is_some_and(|current| current != provider_session_id);
+        if changed {
+            self.begin_new_session_epoch(terminal, observed_at);
+        }
     }
 
     pub fn observe_terminal_exit(&self, terminal_id: &str, generation: u64, observed_at: &str) {
@@ -1097,10 +1162,10 @@ impl AgentSessionRegistry {
     }
 }
 
-pub fn session_id_for(terminal: &TerminalAgentSnapshot) -> String {
+fn session_id_for_epoch(terminal: &TerminalAgentSnapshot, epoch: u64) -> String {
     format!(
-        "agent-session:{}:{}",
-        terminal.terminal_id, terminal.generation
+        "agent-session:{}:{}:{}",
+        terminal.terminal_id, terminal.generation, epoch
     )
 }
 
@@ -1372,14 +1437,23 @@ fn is_agent_launch_command(text: &str) -> bool {
 }
 
 /// Local TUI commands may become activity events but never replace the main
-/// task: `/model`, `/help`, `/clear`.
+/// task. Session resets are handled separately.
 fn is_local_agent_command(text: &str) -> bool {
     let first = text.split_whitespace().next().unwrap_or_default();
     let token = first
         .strip_prefix('/')
         .unwrap_or(first)
         .to_ascii_lowercase();
-    matches!(token.as_str(), "model" | "help" | "clear")
+    matches!(token.as_str(), "model" | "help")
+}
+
+fn is_session_reset_command(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or_default();
+    let Some(token) = first.strip_prefix('/') else {
+        return false;
+    };
+    let token = token.to_ascii_lowercase();
+    matches!(token.as_str(), "clear" | "new")
 }
 
 /// Approximate seconds between two RFC3339 timestamps produced by the same
@@ -1584,7 +1658,7 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             source.get_status(&sessions[0]).unwrap().state,
-            AgentState::Working
+            AgentState::Starting
         );
         let error = source.get_messages(&sessions[0]).unwrap_err();
         assert_eq!(error.code, "agent_messages_unavailable");
@@ -1784,7 +1858,7 @@ mod tests {
         assert_eq!(registry.list_sessions("workspace-a").unwrap().len(), 1);
         assert_eq!(
             registry.status(&session).unwrap().state,
-            AgentState::Working
+            AgentState::Starting
         );
 
         registry.reconcile(&[], "third");
@@ -1792,6 +1866,21 @@ mod tests {
     }
 
     // ---- Phase 7: agent session intelligence -----------------------------
+
+    #[test]
+    fn observed_agent_process_without_a_task_is_waiting_not_working() {
+        let registry = AgentSessionRegistry::default();
+        let mut observed = terminal(1, true);
+        observed.observed_provider = Some("codex".to_string());
+        observed.detection_source = "process-tree".to_string();
+        observed.detection_confidence = 0.95;
+        registry.observe_terminal_started(&observed, "2026-08-07T00:00:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(
+            registry.status(&session).unwrap().state,
+            AgentState::Waiting
+        );
+    }
 
     fn task_of(status: &super::AgentRegistryStatus) -> &AgentTaskContext {
         status
@@ -1964,7 +2053,7 @@ mod tests {
     }
 
     #[test]
-    fn local_commands_are_activity_but_never_replace_the_task() {
+    fn model_and_help_are_activity_but_never_replace_the_task() {
         let registry = AgentSessionRegistry::default();
         let terminal = terminal(1, true);
         commit(
@@ -1975,7 +2064,6 @@ mod tests {
         );
         commit(&registry, &terminal, "/model", "2026-08-07T00:01:00Z");
         commit(&registry, &terminal, "/help", "2026-08-07T00:02:00Z");
-        commit(&registry, &terminal, "/clear", "2026-08-07T00:03:00Z");
 
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
         let status = registry.status(&session).unwrap();
@@ -1985,7 +2073,81 @@ mod tests {
             .iter()
             .filter(|event| event.kind == AgentActivityKind::PromptSubmitted)
             .count();
-        assert_eq!(prompts, 4);
+        assert_eq!(prompts, 3);
+    }
+
+    #[test]
+    fn clear_and_new_archive_the_previous_agent_epoch_in_the_same_pty() {
+        for reset_command in ["/clear", "/new"] {
+            let registry = AgentSessionRegistry::default();
+            let terminal = terminal(1, true);
+            commit(
+                &registry,
+                &terminal,
+                "task before reset",
+                "2026-08-07T00:00:00Z",
+            );
+            let previous = registry.list_sessions("workspace-a").unwrap().remove(0);
+
+            commit(&registry, &terminal, reset_command, "2026-08-07T00:01:00Z");
+
+            let sessions = registry.list_sessions("workspace-a").unwrap();
+            assert_eq!(sessions.len(), 2, "{reset_command}");
+            let archived = sessions
+                .iter()
+                .find(|session| session.agent_session_id == previous.agent_session_id)
+                .expect("previous epoch retained");
+            assert_eq!(
+                registry.status(archived).unwrap().state,
+                AgentState::Exited,
+                "{reset_command}",
+            );
+            let current = sessions
+                .iter()
+                .find(|session| session.agent_session_id != previous.agent_session_id)
+                .expect("new epoch created");
+            let status = registry.status(current).unwrap();
+            assert!(status.current_task.is_none(), "{reset_command}");
+            assert_ne!(current.agent_session_id, previous.agent_session_id);
+        }
+    }
+
+    #[test]
+    fn pasted_task_after_session_reset_is_attributed_to_the_new_epoch() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        commit(
+            &registry,
+            &terminal,
+            "task before reset",
+            "2026-08-07T00:00:00Z",
+        );
+
+        registry.observe_user_input(
+            &terminal,
+            b"/clear\rnew task after reset\r",
+            "2026-08-07T00:01:00Z",
+        );
+
+        let current = registry
+            .list_sessions("workspace-a")
+            .unwrap()
+            .into_iter()
+            .find(|session| {
+                registry
+                    .status(session)
+                    .is_ok_and(|status| status.state != AgentState::Exited)
+            })
+            .expect("current epoch");
+        assert_eq!(
+            registry
+                .status(&current)
+                .unwrap()
+                .current_task
+                .expect("task")
+                .text,
+            "new task after reset"
+        );
     }
 
     #[test]
@@ -2256,10 +2418,29 @@ mod tests {
         assert!(task_of(&status).completed_at.is_none());
     }
 
+    #[test]
+    fn relaunch_after_agent_child_exit_creates_a_new_epoch_without_reopening_the_pty() {
+        let registry = AgentSessionRegistry::default();
+        let terminal = terminal(1, true);
+        registry.observe_terminal_started(&terminal, "2026-08-07T00:00:00Z");
+        let first = registry.list_sessions("workspace-a").unwrap().remove(0);
+        registry.observe_terminal_exit("terminal-1", 1, "2026-08-07T00:01:00Z");
+
+        registry.observe_terminal_started(&terminal, "2026-08-07T00:02:00Z");
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .any(|session| session.agent_session_id == first.agent_session_id));
+        assert!(sessions
+            .iter()
+            .any(|session| session.agent_session_id != first.agent_session_id));
+    }
+
     // -- idle completion detector --
 
     #[test]
-    fn working_session_without_output_for_idle_window_settles_to_waiting() {
+    fn output_silence_never_claims_that_a_working_turn_completed() {
         let registry = AgentSessionRegistry::default();
         registry.observe_jarvis_send(
             &terminal(1, true),
@@ -2273,13 +2454,14 @@ mod tests {
             AgentState::Working
         );
 
-        // 11 seconds of output silence: the session settles to waiting.
+        // Reasoning can be silent for much longer than ten seconds. Only a
+        // provider completion notification may settle the turn.
         let settled = registry.mark_idle_sessions_completed("2026-08-11T00:00:11Z");
-        assert_eq!(settled.len(), 1);
+        assert!(settled.is_empty());
         let session = registry.list_sessions("workspace-a").unwrap().remove(0);
         let status = registry.status(&session).unwrap();
-        assert_eq!(status.state, AgentState::Waiting);
-        assert!(status
+        assert_eq!(status.state, AgentState::Working);
+        assert!(!status
             .activity_timeline
             .iter()
             .any(|event| event.kind == AgentActivityKind::CompletionObserved));

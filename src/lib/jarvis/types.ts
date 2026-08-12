@@ -415,6 +415,7 @@ export interface AgentSessionRef {
   identityNeedsConfirmation: boolean;
   workspaceId: string;
   terminalId?: string;
+  terminalTitle?: string;
   generation: number;
   providerSessionId?: string;
   providerTurnId?: string;
@@ -601,4 +602,19 @@ export interface JarvisRequestState {
   createdAt: string;
   status: JarvisRequestStatus;
   error?: string;
+}
+
+export interface NotificationAdapterStatus {
+  provider: string;
+  installed: boolean;
+  path: string;
+  detail: string;
+}
+
+export interface NotificationAdapterHealth {
+  ready: boolean;
+  bridgeAvailable: boolean;
+  adapters: NotificationAdapterStatus[];
+  restartRequired: boolean;
+  message: string;
 }

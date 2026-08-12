@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::AppHandle;
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
@@ -180,6 +179,14 @@ pub async fn update_terminal_title(
     let workspace = registry
         .update_terminal_title_and_save(&workspace_id, &terminal_id, title)
         .await?;
+    let _ = app.emit(
+        "jarvis://agent-registry-changed",
+        serde_json::json!({
+            "workspaceId": workspace_id,
+            "terminalId": terminal_id,
+            "reason": "title_changed",
+        }),
+    );
     Ok(workspace)
 }
 

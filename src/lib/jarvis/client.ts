@@ -26,6 +26,7 @@ import type {
   JarvisProviderStatus,
   PendingAction,
   ModelContextViewV1,
+  NotificationAdapterHealth,
   Provenance,
   RequestedDepth,
   TerminalSummary,
@@ -40,6 +41,20 @@ import type {
 
 const READ_TIMEOUT_MS = 15_000;
 const MODEL_TIMEOUT_MS = 90_000;
+
+export function notificationAdapterStatus(): Promise<NotificationAdapterHealth> {
+  return invokeWithTimeout(
+    () => invoke<NotificationAdapterHealth>("jarvis_notification_adapter_status"),
+    READ_TIMEOUT_MS,
+  );
+}
+
+export function installNotificationAdapters(): Promise<NotificationAdapterHealth> {
+  return invokeWithTimeout(
+    () => invoke<NotificationAdapterHealth>("jarvis_notification_adapter_install"),
+    60_000,
+  );
+}
 
 export interface JarvisChatRequest {
   invocation: InvocationBinding;

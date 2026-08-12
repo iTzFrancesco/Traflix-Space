@@ -103,6 +103,7 @@ fn fake_session(
             identity_needs_confirmation: false,
             workspace_id: workspace_id.to_string(),
             terminal_id: Some(format!("terminal-{session_id}")),
+            terminal_title: None,
             generation: 1,
             provider_session_id: Some(format!("provider-{session_id}")),
             provider_turn_id: None,

@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 const MAX_COMMAND_BUFFER_BYTES: usize = 8 * 1024;
 const MAX_INPUT_OPERATIONS: usize = 128;
+pub(crate) const AGENT_PROCESS_MISS_THRESHOLD: u8 = 3;
 pub const MIN_TERMINAL_COLS: u16 = 8;
 pub const MIN_TERMINAL_ROWS: u16 = 2;
 
@@ -23,6 +24,52 @@ struct InputOperationOutcome {
     id: String,
     payload_fingerprint: u64,
     result: Result<(), String>,
+}
+
+/// Liveness of the provider CLI below the long-lived PTY shell. PowerShell
+/// can remain alive after the agent exits, so PTY liveness is a separate fact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AgentRuntimePresence {
+    ever_observed: bool,
+    alive: bool,
+    consecutive_misses: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPresenceTransition {
+    Unchanged,
+    BecameActive,
+    BecameInactive,
+}
+
+impl AgentRuntimePresence {
+    pub(crate) fn observed(&mut self) -> AgentPresenceTransition {
+        let transition = if self.alive {
+            AgentPresenceTransition::Unchanged
+        } else {
+            AgentPresenceTransition::BecameActive
+        };
+        self.ever_observed = true;
+        self.alive = true;
+        self.consecutive_misses = 0;
+        transition
+    }
+
+    pub(crate) fn missed(&mut self) -> AgentPresenceTransition {
+        if !self.ever_observed || !self.alive {
+            return AgentPresenceTransition::Unchanged;
+        }
+        self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        if self.consecutive_misses < AGENT_PROCESS_MISS_THRESHOLD {
+            return AgentPresenceTransition::Unchanged;
+        }
+        self.alive = false;
+        AgentPresenceTransition::BecameInactive
+    }
+
+    pub(crate) fn alive(&self) -> Option<bool> {
+        self.ever_observed.then_some(self.alive)
+    }
 }
 
 fn input_payload_fingerprint(data: &[u8]) -> u64 {
@@ -157,6 +204,7 @@ pub struct TerminalSession {
     pub identity_warnings: Vec<String>,
     pub process_id: Option<u32>,
     pub is_agent_terminal: bool,
+    pub(crate) agent_runtime_presence: AgentRuntimePresence,
     /// Set only by Jarvis backend-owned open/restart flows. Returning this in
     /// runtime identity prevents a missed frontend event from launching the
     /// provider CLI a second time.
@@ -221,6 +269,7 @@ impl TerminalSession {
             identity_warnings: Vec::new(),
             process_id: None,
             is_agent_terminal: false,
+            agent_runtime_presence: AgentRuntimePresence::default(),
             backend_agent_launch_state: None,
             workspace_id: None,
             generation: 0,
@@ -977,11 +1026,27 @@ fn resolve_agent_bridge_path(app: &AppHandle) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalSession;
+    use super::{AgentPresenceTransition, AgentRuntimePresence, TerminalSession};
     use portable_pty::ChildKiller;
     use std::io;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn agent_child_exit_is_detected_while_the_pty_shell_remains_alive() {
+        let mut presence = AgentRuntimePresence::default();
+        assert_eq!(presence.alive(), None);
+        assert_eq!(presence.observed(), AgentPresenceTransition::BecameActive);
+        assert_eq!(presence.alive(), Some(true));
+        assert_eq!(presence.missed(), AgentPresenceTransition::Unchanged);
+        assert_eq!(presence.alive(), Some(true));
+        assert_eq!(presence.missed(), AgentPresenceTransition::Unchanged);
+        assert_eq!(presence.alive(), Some(true));
+        assert_eq!(presence.missed(), AgentPresenceTransition::BecameInactive);
+        assert_eq!(presence.alive(), Some(false));
+        assert_eq!(presence.missed(), AgentPresenceTransition::Unchanged);
+        assert_eq!(presence.observed(), AgentPresenceTransition::BecameActive);
+    }
 
     #[derive(Clone, Copy, Debug)]
     struct TestChildKiller {

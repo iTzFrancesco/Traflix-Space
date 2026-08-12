@@ -10,6 +10,13 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceRoot = Resolve-Path (Join-Path $scriptRoot "..\..")
 $sourceBridge = Join-Path $scriptRoot "traflix-agent-event.ps1"
 
+function Resolve-AdapterSource {
+    param([string]$Name)
+    $bundled = Join-Path $scriptRoot $Name
+    if (Test-Path -LiteralPath $bundled -PathType Leaf) { return $bundled }
+    return (Join-Path $sourceRoot "scripts\agent-notifications\$Name")
+}
+
 function Resolve-BridgePath {
     param([string]$ExplicitPath)
 
@@ -151,8 +158,8 @@ Write-Host "Traflix notification adapters: bridge=$bridge"
 
 Install-CodexAdapter $bridge
 Install-ClaudeAdapter $bridge
-Install-AdapterFile (Join-Path $sourceRoot "scripts\agent-notifications\opencode-traflix-plugin.ts") (Join-Path $env:USERPROFILE ".config\opencode\plugin\opencode-traflix-plugin.ts") "OpenCode"
-Install-AdapterFile (Join-Path $sourceRoot "scripts\agent-notifications\pi-traflix-extension.ts") (Join-Path $env:USERPROFILE ".pi\agent\extensions\traflix-notify.ts") "Pi"
-Install-AdapterFile (Join-Path $sourceRoot "scripts\agent-notifications\cline-traflix-hook.ps1") (Join-Path $env:USERPROFILE ".cline\hooks\TaskComplete.ps1") "Cline"
+Install-AdapterFile (Resolve-AdapterSource "opencode-traflix-plugin.ts") (Join-Path $env:USERPROFILE ".config\opencode\plugin\opencode-traflix-plugin.ts") "OpenCode"
+Install-AdapterFile (Resolve-AdapterSource "pi-traflix-extension.ts") (Join-Path $env:USERPROFILE ".pi\agent\extensions\traflix-notify.ts") "Pi"
+Install-AdapterFile (Resolve-AdapterSource "cline-traflix-hook.ps1") (Join-Path $env:USERPROFILE ".cline\hooks\TaskComplete.ps1") "Cline"
 
 Write-Host "Riavvia gli agenti già aperti per caricare gli adapter aggiornati." -ForegroundColor Yellow

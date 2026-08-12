@@ -11,6 +11,7 @@ pub mod control;
 pub mod documentation;
 pub mod memory;
 pub mod model;
+pub mod notification_adapters;
 pub mod requests;
 pub mod runtime_detector;
 pub mod tools;

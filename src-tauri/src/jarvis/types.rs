@@ -198,6 +198,10 @@ pub struct AgentSessionRef {
     pub identity_needs_confirmation: bool,
     pub workspace_id: String,
     pub terminal_id: Option<String>,
+    /// Effective navbar title at the time of the read. It is a user-controlled
+    /// routing hint, never part of session ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_title: Option<String>,
     pub generation: u64,
     pub provider_session_id: Option<String>,
     pub provider_turn_id: Option<String>,

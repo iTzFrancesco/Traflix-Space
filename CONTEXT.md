@@ -43,6 +43,9 @@ or an actionable waiting state. An agent session may contain many turns.
 
 The lifetime of an agent process and its conversation context. It can remain
 alive after an agent turn completes and wait for another user submission.
+It is nested inside a terminal generation: `/clear`, `/new`, a provider-session
+change, or exiting and relaunching the CLI in the same PowerShell starts a new
+agent epoch without replacing the PTY generation.
 
 ## Agent completion notification
 
@@ -50,3 +53,9 @@ A signal that an agent turn has reached a stable waiting boundary and Traflix
 Space can mark that terminal as needing the user's attention. It is distinct
 from closing the shell or PTY, and it must be correlated to the owning
 terminal rather than inferred from terminal output alone.
+
+## Agent process presence
+
+The independently observed liveness of the provider CLI below the PTY shell.
+PowerShell may stay alive after the agent exits. A successful process-tree scan
+can change agent presence; PTY liveness and output silence cannot.

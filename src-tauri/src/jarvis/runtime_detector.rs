@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-#[cfg(windows)]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -12,6 +10,16 @@ pub struct AgentDetection {
     pub provider: String,
     pub source: String,
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProcessTreeScan {
+    pub detections: HashMap<u32, AgentDetection>,
+    /// A provider launched through a JS/package shim may appear as `node.exe`.
+    /// Only known launcher descendants count as presence when the provider
+    /// cannot be recovered from the executable. Arbitrary background children
+    /// of PowerShell must not keep an exited agent alive.
+    pub roots_with_candidate_descendants: HashSet<u32>,
 }
 
 const SUPPORTED_PROVIDERS: [&str; 5] = ["codex", "opencode", "claude", "pi", "freebuff"];
@@ -127,8 +135,17 @@ fn normalize_executable(value: &str) -> Option<String> {
     (!leaf.is_empty()).then(|| leaf.to_string())
 }
 
+fn is_agent_launcher_executable(value: &str) -> bool {
+    normalize_executable(value).is_some_and(|leaf| {
+        matches!(
+            leaf.as_str(),
+            "node" | "npm" | "npx" | "cmd" | "bun" | "deno"
+        )
+    })
+}
+
 #[cfg(windows)]
-pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, AgentDetection> {
+pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> Result<ProcessTreeScan, String> {
     use serde::Deserialize;
     use std::process::Command;
 
@@ -141,7 +158,7 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
     }
 
     if root_pids.is_empty() {
-        return HashMap::new();
+        return Ok(ProcessTreeScan::default());
     }
 
     let mut command = Command::new("powershell.exe");
@@ -152,12 +169,11 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
     ]);
     command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok();
-    let Some(output) = output else {
-        return HashMap::new();
-    };
+    let output = command
+        .output()
+        .map_err(|error| format!("process-tree-query-failed: {error}"))?;
     if !output.status.success() {
-        return HashMap::new();
+        return Err("process-tree-query-failed: non-zero exit".to_string());
     }
 
     let rows: Vec<ProcessRow> = match serde_json::from_slice(&output.stdout) {
@@ -165,7 +181,7 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
         Err(_) => serde_json::from_slice::<ProcessRow>(&output.stdout)
             .ok()
             .map(|row| vec![row])
-            .unwrap_or_default(),
+            .ok_or_else(|| "process-tree-query-failed: invalid JSON".to_string())?,
     };
 
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -180,7 +196,7 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
         }
     }
 
-    let mut detections = HashMap::new();
+    let mut scan = ProcessTreeScan::default();
     for root_pid in root_pids {
         let mut queue = vec![*root_pid];
         let mut visited = HashSet::new();
@@ -193,7 +209,7 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
                     if let Some(provider) =
                         normalize_executable(name).and_then(|leaf| normalize_provider(&leaf))
                     {
-                        detections.insert(
+                        scan.detections.insert(
                             *root_pid,
                             AgentDetection {
                                 provider,
@@ -203,6 +219,9 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
                         );
                         break;
                     }
+                    if is_agent_launcher_executable(name) {
+                        scan.roots_with_candidate_descendants.insert(*root_pid);
+                    }
                 }
             }
             if let Some(descendants) = children.get(&pid) {
@@ -210,21 +229,22 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> HashMap<u32, Age
             }
         }
     }
-    detections
+    Ok(scan)
 }
 
 #[cfg(windows)]
-pub async fn detect_from_process_tree_async(root_pids: Vec<u32>) -> HashMap<u32, AgentDetection> {
+pub async fn scan_process_tree_async(root_pids: Vec<u32>) -> Result<ProcessTreeScan, String> {
     let query = tokio::task::spawn_blocking(move || detect_from_process_tree_for_roots(&root_pids));
     match tokio::time::timeout(std::time::Duration::from_secs(2), query).await {
         Ok(Ok(result)) => result,
-        _ => HashMap::new(),
+        Ok(Err(error)) => Err(format!("process-tree-query-join-failed: {error}")),
+        Err(_) => Err("process-tree-query-timeout".to_string()),
     }
 }
 
 #[cfg(not(windows))]
-pub async fn detect_from_process_tree_async(_root_pids: Vec<u32>) -> HashMap<u32, AgentDetection> {
-    HashMap::new()
+pub async fn scan_process_tree_async(_root_pids: Vec<u32>) -> Result<ProcessTreeScan, String> {
+    Ok(ProcessTreeScan::default())
 }
 
 #[cfg(test)]

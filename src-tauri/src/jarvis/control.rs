@@ -5,9 +5,11 @@
 
 use crate::agent::registry::AgentDefinition;
 use crate::jarvis::actions::{prompt_bytes, validate_agent_text};
-use crate::jarvis::agent_registry::session_id_for;
 use crate::jarvis::checkpoints::{emit_checkpoint, JarvisActivityStatus};
 use crate::jarvis::runtime_detector::normalize_provider;
+use crate::jarvis::tools::{
+    attach_terminal_titles, list_terminals_for_workspace, JarvisToolService,
+};
 
 /// Provider alias resolution for plan execution. The pi agent is commonly
 /// named by its single letter ('p', 'agente P') in speech transcripts, which
@@ -27,6 +29,7 @@ use crate::terminal_engine::{
 };
 use crate::workspace::registry::{TerminalConfig, WorkspaceConfig, WorkspaceRegistry};
 use chrono::Utc;
+use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -291,6 +294,16 @@ pub struct ResolvedAgentTarget {
 pub struct ControlExecution {
     pub response: String,
     pub warnings: Vec<String>,
+    pub steps: Vec<StepExecutionReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepExecutionReceipt {
+    pub operation: PlanOperation,
+    pub status: &'static str,
+    pub target: Option<String>,
+    pub message: String,
 }
 
 /// Request-scoped safety net: every running control checkpoint is closed even
@@ -381,6 +394,7 @@ pub async fn execute_plan(
         return ControlExecution {
             response: format!("Non ho potuto validare il piano: {error}."),
             warnings: vec!["typed_plan_rejected".to_string()],
+            steps: Vec::new(),
         };
     }
 
@@ -391,18 +405,76 @@ pub async fn execute_plan(
         return ControlExecution {
             response: error,
             warnings: vec!["agent_dispatch_rejected".to_string()],
+            steps: Vec::new(),
         };
     }
     state.control.clear(&invocation.target_workspace_id);
     let mut response = plan.response.clone().unwrap_or_default();
-    let warnings = Vec::new();
+    let mut warnings = Vec::new();
+    let mut receipts = Vec::new();
     let mut reserved_terminal_ids = HashSet::new();
+
+    if !cancellation.is_cancelled()
+        && pending.is_none()
+        && should_parallelize_agent_sends(&operations)
+    {
+        let parallel_context = refresh_operational_context(app, workspace, invocation, context)
+            .await
+            .unwrap_or_else(|_| context.clone());
+        if let Some(prepared) =
+            prepare_parallel_agent_sends(app, &parallel_context, &operations).await
+        {
+            let results = join_all(
+                prepared
+                    .into_iter()
+                    .map(|(step, target, prompt)| async move {
+                        let label = target_label(&target);
+                        let result = send_to_target(app, invocation, &target, &prompt).await;
+                        (step, label, result)
+                    }),
+            )
+            .await;
+            for (step, label, result) in results {
+                match result {
+                    Ok(()) => {
+                        let message = format!("Fatto, l'ho inviato a {label}.");
+                        response = append_response(response, &message);
+                        receipts.push(StepExecutionReceipt {
+                            operation: step.operation,
+                            status: "succeeded",
+                            target: Some(label),
+                            message,
+                        });
+                    }
+                    Err(error) => {
+                        warnings.push("independent_agent_step_failed".to_string());
+                        response = append_response(response, &error);
+                        receipts.push(StepExecutionReceipt {
+                            operation: step.operation,
+                            status: "failed",
+                            target: Some(label),
+                            message: error,
+                        });
+                    }
+                }
+            }
+            if response.trim().is_empty() {
+                response = "Fatto.".to_string();
+            }
+            return ControlExecution {
+                response: compact_response(&response),
+                warnings,
+                steps: receipts,
+            };
+        }
+    }
 
     for (index, step) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             return ControlExecution {
                 response: "La richiesta è stata annullata.".to_string(),
                 warnings,
+                steps: receipts,
             };
         }
         info!(
@@ -418,11 +490,33 @@ pub async fn execute_plan(
         } else {
             None
         };
+        let step_context =
+            match refresh_operational_context(app, workspace, invocation, context).await {
+                Ok(context) => context,
+                Err(error) => {
+                    let message = format!("Non ho eseguito questo passaggio: {error}.");
+                    response = append_response(response, &message);
+                    warnings.push("operational_context_refresh_failed".to_string());
+                    receipts.push(StepExecutionReceipt {
+                        operation: step.operation.clone(),
+                        status: "failed",
+                        target: step.target.clone().or_else(|| step.provider.clone()),
+                        message,
+                    });
+                    if matches!(
+                        step.operation,
+                        PlanOperation::AgentSend | PlanOperation::AgentOpen
+                    ) {
+                        continue;
+                    }
+                    break;
+                }
+            };
         let result = execute_step(
             app,
             workspace,
             invocation,
-            context,
+            &step_context,
             step_pending,
             &mut reserved_terminal_ids,
             step,
@@ -431,18 +525,44 @@ pub async fn execute_plan(
         match result {
             Ok(step_response) => {
                 if !step_response.is_empty() {
-                    response = if response.trim().is_empty() {
-                        step_response
-                    } else {
-                        // Multi-operation plans (e.g. two agent opens) must
-                        // mention every executed action, not just the last
-                        // step's reply.
-                        format!("{response} {step_response}")
-                    };
+                    response = append_response(response, &step_response);
                 }
                 // A clarification/confirmation is a hard conversational
                 // boundary. Never continue later plan operations after asking
                 // the user for a choice, even if the model emitted more steps.
+                if state
+                    .control
+                    .pending(&invocation.target_workspace_id)
+                    .is_some()
+                {
+                    receipts.push(StepExecutionReceipt {
+                        operation: step.operation.clone(),
+                        status: "paused",
+                        target: step.target.clone().or_else(|| step.provider.clone()),
+                        message: step_response,
+                    });
+                    state.control.replace_plan(
+                        &invocation.target_workspace_id,
+                        operations[index..].to_vec(),
+                    );
+                    break;
+                }
+                receipts.push(StepExecutionReceipt {
+                    operation: step.operation.clone(),
+                    status: "succeeded",
+                    target: step.target.clone().or_else(|| step.provider.clone()),
+                    message: step_response,
+                });
+            }
+            Err(step_error) => {
+                response = append_response(response, &step_error);
+                warnings.push("plan_step_failed".to_string());
+                receipts.push(StepExecutionReceipt {
+                    operation: step.operation.clone(),
+                    status: "failed",
+                    target: step.target.clone().or_else(|| step.provider.clone()),
+                    message: step_error,
+                });
                 if state
                     .control
                     .pending(&invocation.target_workspace_id)
@@ -454,12 +574,12 @@ pub async fn execute_plan(
                     );
                     break;
                 }
-            }
-            Err(step_error) => {
-                return ControlExecution {
-                    response: step_error,
-                    warnings,
-                };
+                if !matches!(
+                    step.operation,
+                    PlanOperation::AgentSend | PlanOperation::AgentOpen
+                ) {
+                    break;
+                }
             }
         }
     }
@@ -468,7 +588,80 @@ pub async fn execute_plan(
         response = "Fatto.".to_string();
     }
     response = compact_response(&response);
-    ControlExecution { response, warnings }
+    ControlExecution {
+        response,
+        warnings,
+        steps: receipts,
+    }
+}
+
+async fn refresh_operational_context(
+    app: &AppHandle,
+    workspace: &WorkspaceConfig,
+    invocation: &InvocationBinding,
+    base: &crate::jarvis::types::ModelContextViewV1,
+) -> Result<crate::jarvis::types::ModelContextViewV1, String> {
+    crate::jarvis::commands::reconcile_live_registry(app, &now()).await;
+    let terminals =
+        list_terminals_for_workspace(&app.state::<TerminalManager>(), workspace, &now()).await;
+    let state = app.state::<crate::jarvis::JarvisState>();
+    let mut sessions = JarvisToolService::new(&state.broker)
+        .agent_snapshot(
+            &invocation.target_workspace_id,
+            Some(invocation.request_id.clone()),
+            &now(),
+        )
+        .map_err(|error| error.message)?
+        .data;
+    attach_terminal_titles(&mut sessions, &terminals);
+    let mut context = base.clone();
+    context.terminals = terminals;
+    context.agent_sessions = sessions;
+    Ok(context)
+}
+
+fn append_response(current: String, message: &str) -> String {
+    if current.trim().is_empty() {
+        message.to_string()
+    } else if message.trim().is_empty() {
+        current
+    } else {
+        format!("{current} {message}")
+    }
+}
+
+fn should_parallelize_agent_sends(operations: &[ConversationStep]) -> bool {
+    operations.len() > 1
+        && operations
+            .iter()
+            .all(|step| step.operation == PlanOperation::AgentSend)
+}
+
+async fn prepare_parallel_agent_sends(
+    app: &AppHandle,
+    context: &crate::jarvis::types::ModelContextViewV1,
+    operations: &[ConversationStep],
+) -> Option<Vec<(ConversationStep, ResolvedAgentTarget, String)>> {
+    let mut prepared = Vec::with_capacity(operations.len());
+    let mut terminal_ids = HashSet::new();
+    for step in operations {
+        let resolution = resolve_target(
+            app,
+            context,
+            step.target.as_deref(),
+            step.provider.as_deref(),
+        )
+        .await;
+        let TargetResolution::Selected(target) = resolution else {
+            return None;
+        };
+        if is_busy(&target.session) || !terminal_ids.insert(target.terminal.terminal_id.clone()) {
+            return None;
+        }
+        let prompt = validate_agent_text(step.prompt.as_deref().unwrap_or_default()).ok()?;
+        prepared.push((step.clone(), target, prompt));
+    }
+    Some(prepared)
 }
 
 fn operations_for_execution(
@@ -597,7 +790,10 @@ async fn execute_step(
             })
         }
         PlanOperation::AgentSend => {
-            let target = if let Some(target) = bound_target_from_pending(context, pending, step) {
+            let prompt = validate_agent_text(step.prompt.as_deref().unwrap_or_default())
+                .map_err(|_| "Non ho inviato il task: il prompt non è valido.".to_string())?;
+            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            {
                 TargetResolution::Selected(target)
             } else {
                 resolve_target(
@@ -608,7 +804,19 @@ async fn execute_step(
                 )
                 .await
             };
-            let target = target_or_clarify(app, invocation, step, target, "inviare la task")?;
+            if resolution == TargetResolution::NotFound {
+                if let Some(provider) = step.provider.as_deref().and_then(normalize_plan_provider) {
+                    let opened =
+                        open_agent(app, workspace, invocation, &provider, Some(prompt.clone()))
+                            .await?;
+                    return Ok(match opened {
+                        OpenResult::Opened { provider, .. } => {
+                            format!("Fatto, ho aperto {provider} e gli ho inviato la task.")
+                        }
+                    });
+                }
+            }
+            let target = target_or_clarify(app, invocation, step, resolution, "inviare la task")?;
             reject_reused_target(&reserved_terminal_ids, &target)?;
             if is_busy(&target.session) && !busy_override_matches(pending, step, &target) {
                 let label = target_label(&target);
@@ -624,8 +832,6 @@ async fn execute_step(
                 );
                 return Ok(question);
             }
-            let prompt = validate_agent_text(step.prompt.as_deref().unwrap_or_default())
-                .map_err(|_| "Non ho inviato il task: il prompt non è valido.".to_string())?;
             send_to_target(app, invocation, &target, &prompt).await?;
             reserved_terminal_ids.insert(target.terminal.terminal_id.clone());
             Ok(format!("Fatto, l'ho inviato a {}.", target_label(&target)))
@@ -1203,7 +1409,11 @@ async fn send_to_target(
             provider_display_name(&target.session.resolved_provider)
         ),
         JarvisActivityStatus::Running,
-        Some(session_id_for(&snapshot)),
+        Some(
+            app.state::<crate::jarvis::JarvisState>()
+                .registry
+                .current_session_id(&snapshot),
+        ),
     );
     let bytes = match prompt_bytes(prompt) {
         Ok(bytes) => bytes,
@@ -1986,7 +2196,11 @@ async fn restart_target(
         "restarting_agent",
         &format!("Restarting {}…", definition.name),
         JarvisActivityStatus::Running,
-        Some(session_id_for(&snapshot)),
+        Some(
+            app.state::<crate::jarvis::JarvisState>()
+                .registry
+                .current_session_id(&snapshot),
+        ),
     );
     let mut checkpoint = CheckpointGuard::new(app, invocation, "restarting_agent");
     app.state::<TerminalManager>()
@@ -2145,6 +2359,7 @@ fn synthetic_session(config: &TerminalConfig, generation: u64) -> AgentSessionCo
             identity_needs_confirmation: false,
             workspace_id: config.workspace_id.clone().unwrap_or_default(),
             terminal_id: Some(config.id.clone()),
+            terminal_title: Some(config.title.clone()),
             generation,
             provider_session_id: None,
             provider_turn_id: None,
@@ -2325,6 +2540,24 @@ mod tests {
             },
         ];
         assert!(validate_agent_dispatches(&operations).is_err());
+    }
+
+    #[test]
+    fn independent_agent_sends_are_the_only_plan_shape_parallelized() {
+        let send = |provider: &str| ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: Some(provider.into()),
+            target: None,
+            source: None,
+            destination: None,
+            prompt: Some(format!("task for {provider}")),
+            confirmed: false,
+            allow_busy: false,
+        };
+        assert!(should_parallelize_agent_sends(&[send("codex"), send("pi")]));
+        let mut dependent = send("pi");
+        dependent.operation = PlanOperation::AgentHandoff;
+        assert!(!should_parallelize_agent_sends(&[send("codex"), dependent]));
     }
 
     #[test]

@@ -4,8 +4,8 @@ use crate::jarvis::agent_adapter::{
 use crate::jarvis::cache::ContextCache;
 use crate::jarvis::documentation::{DocumentationError, DocumentationLimits};
 use crate::jarvis::types::{
-    AgentSessionContext, AgentState, ContextPackageV1, InvocationBinding, Provenance,
-    RequestedDepth, TerminalSummary,
+    AgentSessionContext, AgentState, ContextPackageV1, InvocationBinding, RequestedDepth,
+    TerminalSummary,
 };
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -303,6 +303,20 @@ fn compact_agent_overview(
     terminals: &[TerminalSummary],
     preserve_messages: bool,
 ) -> Vec<AgentSessionContext> {
+    for session in &mut sessions {
+        session.reference.terminal_title = session
+            .reference
+            .terminal_id
+            .as_deref()
+            .and_then(|terminal_id| {
+                terminals.iter().find(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.generation == session.reference.generation
+                        && terminal.workspace_id == session.reference.workspace_id
+                })
+            })
+            .map(|terminal| terminal.title.clone());
+    }
     let terminal_order = terminals
         .iter()
         .enumerate()
@@ -402,29 +416,16 @@ fn strip_non_identity_details(session: &mut AgentSessionContext) {
     session.messages = None;
     session.current_task = None;
     session.reference.current_task = None;
-    session.configured_agent_id = None;
-    session.observed_provider = None;
-    session.detection_source.clear();
-    session.reference.configured_agent_id = None;
-    session.reference.observed_provider = None;
-    session.reference.detection_source.clear();
+    // Routing identity, workspace ownership and the effective terminal title
+    // must survive compaction. Only rich turn/result fields are disposable.
     session.reference.provider_session_id = None;
     session.reference.provider_turn_id = None;
     session.reference.created_at.clear();
     session.reference.updated_at.clear();
     session.reference.last_activity_at = None;
-    session.reference.workspace_id.clear();
-    session.reference.provider.clear();
-    session.reference.resolved_provider.clear();
-    session.reference.detection_confidence = 0.0;
-    session.reference.identity_needs_confirmation = false;
-    session.detection_confidence = 0.0;
-    session.identity_needs_confirmation = false;
-    session.confidence = 0.0;
     session.warnings.clear();
-    session.identity_warnings.clear();
-    session.reference.identity_warnings.clear();
-    session.provenance = Provenance::trusted("", "");
+    session.identity_warnings.truncate(1);
+    session.reference.identity_warnings = session.identity_warnings.clone();
 }
 
 fn serialized_size(sessions: &[AgentSessionContext]) -> usize {
@@ -463,6 +464,7 @@ mod compact_tests {
                 identity_needs_confirmation: false,
                 workspace_id: "workspace-a".to_string(),
                 terminal_id: Some(format!("terminal-{id}")),
+                terminal_title: Some(id.to_string()),
                 generation: 1,
                 provider_session_id: None,
                 provider_turn_id: None,
@@ -542,6 +544,11 @@ mod compact_tests {
             size <= super::MAX_AGENT_OVERVIEW_BYTES,
             "serialized size={size}"
         );
+        assert!(compact.iter().all(|item| {
+            !item.reference.workspace_id.is_empty()
+                && !item.reference.provider.is_empty()
+                && !item.reference.resolved_provider.is_empty()
+        }));
     }
 
     #[test]

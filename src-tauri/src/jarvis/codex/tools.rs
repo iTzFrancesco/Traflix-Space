@@ -25,7 +25,9 @@ use crate::jarvis::control::{
     build_tail, conversational_plan_schema, execute_plan, ConversationalPlan, DEFAULT_TAIL_LINES,
     MAX_TAIL_BYTES,
 };
-use crate::jarvis::tools::{list_terminals_for_workspace, JarvisToolService};
+use crate::jarvis::tools::{
+    attach_terminal_titles, list_terminals_for_workspace, JarvisToolService,
+};
 use crate::jarvis::types::{InvocationBinding, RequestedDepth, TerminalSummary};
 use crate::jarvis::JarvisState;
 use crate::terminal_engine::TerminalManager;
@@ -141,7 +143,7 @@ impl CodexToolService {
                 "Conversational control. The ONLY namespace that can cause real side effects, executed by Traflix Space through visible PTYs. At most one plan per turn.",
                 vec![tool_spec(
                     PLAN_TOOL,
-                    "Return one typed conversational plan for the current user request. It may contain up to 8 operations, executed in order by Traflix Space. General orchestration rules: (1) when the user assigns work to several agents, emit one agent_send step per agent, each naming its own target and carrying the prompt meant for that specific agent; (2) different assignments require different prompts: never send the same prompt to two different agents unless the user explicitly asked for identical work on both; (3) check the agent state first: waiting or idle agents are ready, busy agents need a clarification unless the user explicitly allows it; (4) when the plan pauses for a clarification or confirmation, the next turn must continue with the remaining operations only, without repeating steps that already succeeded or prompts that were already sent; (5) never include shell commands or guessed terminal IDs; target is a semantic query (provider name, terminal title or task topic). Operations: respond, clarify, agent_report, agent_send, agent_open, agent_handoff, agent_abort, terminal_close, terminal_restart, draft_prompt. The backend validates and executes the plan, then returns the execution receipt in this same turn.",
+                    "Return one typed conversational plan for the current user request. It may contain up to 8 operations. General orchestration rules: (1) when the user assigns work to several agents, emit one agent_send step per agent, each naming its own target and carrying the prompt meant for that specific agent; independent ready targets may run concurrently and return separate receipts; (2) different assignments require different prompts: never send the same prompt to two different agents unless the user explicitly asked for identical work on both; (3) check the fresh agent state first: waiting agents are ready, working agents need a clarification unless the user explicitly allows it; terminal silence is not completion; (4) if the current request explicitly names a supported provider with no live session, agent_send may open its visible terminal automatically; (5) when the plan pauses for a clarification or confirmation, the next turn must continue with the remaining operations only, without repeating steps that already succeeded or prompts that were already sent; (6) never include shell commands or guessed terminal IDs; target is a semantic query (provider name, terminal title or task topic). Operations: respond, clarify, agent_report, agent_send, agent_open, agent_handoff, agent_abort, terminal_close, terminal_restart, draft_prompt. The backend validates and executes the plan, then returns per-step execution receipts in this same turn.",
                     conversational_plan_schema(),
                 )],
             ),
@@ -397,6 +399,7 @@ impl CodexToolService {
         let receipt = json!({
             "response": execution.response,
             "warnings": execution.warnings,
+            "steps": execution.steps,
         });
         info!(
             thread_id,
@@ -487,12 +490,19 @@ impl CodexToolService {
             reconcile_live_registry(&self.app, &observed_at).await;
         }
 
-        // Enumerate terminals only for tools that actually consume terminal
-        // summaries. markdown.read builds its own bounded Summary context once,
-        // while agent registry reads use JarvisToolService directly.
+        // Agent reads join the live terminal view so the model receives the
+        // same effective navbar title as the user, correlated by immutable
+        // terminal id + generation. Titles remain semantic hints only.
         let terminals = if matches!(
             legacy_name,
-            "terminal_list" | "agent_tail" | "workspace_overview" | "ui_open_terminal"
+            "terminal_list"
+                | "agent_list"
+                | "agent_status"
+                | "agent_last_result"
+                | "agent_activity"
+                | "agent_tail"
+                | "workspace_overview"
+                | "ui_open_terminal"
         ) {
             let manager = self.app.state::<TerminalManager>();
             list_terminals_for_workspace(&manager, &workspace, &observed_at).await
@@ -601,8 +611,9 @@ impl CodexToolService {
                 let envelope = service
                     .agent_snapshot(workspace_id, Some(request_id.clone()), observed_at)
                     .map_err(|err| err.message)?;
-                serde_json::to_value(envelope.data)
-                    .map_err(|_| "agent list unavailable".to_string())
+                let mut sessions = envelope.data;
+                attach_terminal_titles(&mut sessions, terminals);
+                serde_json::to_value(sessions).map_err(|_| "agent list unavailable".to_string())
             }
             "agent_status" => {
                 let session_id = input
@@ -617,8 +628,9 @@ impl CodexToolService {
                         observed_at,
                     )
                     .map_err(|err| err.message)?;
-                serde_json::to_value(envelope.data)
-                    .map_err(|_| "agent status unavailable".to_string())
+                let mut status = envelope.data;
+                attach_terminal_titles(std::slice::from_mut(&mut status), terminals);
+                serde_json::to_value(status).map_err(|_| "agent status unavailable".to_string())
             }
             "agent_last_result" => {
                 let session_id = input

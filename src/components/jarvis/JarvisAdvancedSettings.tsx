@@ -1,7 +1,11 @@
 import { LogIn, LogOut, RefreshCw } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useJarvisStore } from "../../stores/jarvisStore";
-import { setIdentityDecision } from "../../lib/jarvis/client";
+import {
+  installNotificationAdapters,
+  notificationAdapterStatus,
+  setIdentityDecision,
+} from "../../lib/jarvis/client";
 import type {
   AgentSessionContext,
   CodexAccountView,
@@ -13,6 +17,7 @@ import type {
   CodexUsageView,
   JarvisCodexThread,
   ModelContextViewV1,
+  NotificationAdapterHealth,
 } from "../../lib/jarvis/types";
 
 export interface JarvisAdvancedSettingsProps {
@@ -589,6 +594,23 @@ export function JarvisAdvancedSettings({
   onRefreshContext,
 }: JarvisAdvancedSettingsProps) {
   const [decidingIdentity, setDecidingIdentity] = useState<string | null>(null);
+  const [adapterHealth, setAdapterHealth] =
+    useState<NotificationAdapterHealth | null>(null);
+  const [adapterBusy, setAdapterBusy] = useState(false);
+  const [adapterError, setAdapterError] = useState<string | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    void notificationAdapterStatus()
+      .then((health) => {
+        if (!disposed) setAdapterHealth(health);
+      })
+      .catch((error) => {
+        if (!disposed) setAdapterError(String(error));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
   const active = sessions.filter((session) =>
     ["starting", "working", "waiting"].includes(session.state),
   ).length;
@@ -628,7 +650,7 @@ export function JarvisAdvancedSettings({
             <div key={session.ref.agentSessionId} className="py-2 text-[10px]">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="min-w-0 flex-1 truncate font-medium text-neutral-text">
-                  {session.ref.resolvedProvider}
+                  {session.ref.terminalTitle ?? session.ref.resolvedProvider}
                 </span>
                 <span className="font-mono text-neutral-text-muted">
                   {session.state} · g{session.ref.generation}
@@ -688,6 +710,42 @@ export function JarvisAdvancedSettings({
           ))}
         </div>
       )}
+
+      <div className="mt-3 border-t border-neutral-border pt-3 text-[10px]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-semibold text-neutral-text">Notifiche agenti</p>
+            <p className="mt-0.5 text-neutral-text-muted">
+              {adapterHealth?.message ?? "Controllo adapter…"}
+            </p>
+          </div>
+          {adapterHealth && !adapterHealth.ready && (
+            <button
+              type="button"
+              disabled={adapterBusy}
+              onClick={() => {
+                setAdapterBusy(true);
+                setAdapterError(null);
+                void installNotificationAdapters()
+                  .then(setAdapterHealth)
+                  .catch((error) => setAdapterError(String(error)))
+                  .finally(() => setAdapterBusy(false));
+              }}
+              className="shrink-0 rounded border border-primary/40 px-2 py-1 font-semibold text-primary transition-colors hover:border-primary disabled:opacity-40"
+            >
+              {adapterBusy ? "Installazione…" : "Installa/Ripara"}
+            </button>
+          )}
+        </div>
+        {adapterHealth && (
+          <p className="mt-1.5 text-neutral-text-muted">
+            {adapterHealth.adapters
+              .map((adapter) => `${adapter.provider}: ${adapter.installed ? "ok" : "manca"}`)
+              .join(" · ")}
+          </p>
+        )}
+        {adapterError && <p className="mt-1 text-danger">{adapterError}</p>}
+      </div>
 
       {context && (
         <div className="mt-3 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">

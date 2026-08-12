@@ -15,6 +15,7 @@ use crate::terminal_engine::TerminalManager;
 use crate::workspace::registry::WorkspaceConfig;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 
 pub struct JarvisState {
     pub broker: ContextBroker,
@@ -28,13 +29,29 @@ pub struct JarvisState {
 
 impl Default for JarvisState {
     fn default() -> Self {
+        Self::with_memory(Arc::new(ConversationMemory::default()))
+    }
+}
+
+impl JarvisState {
+    pub fn new(app: &AppHandle) -> Self {
+        let memory = app
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|dir| ConversationMemory::persistent(dir.join("jarvis-memory-v1.json")))
+            .unwrap_or_default();
+        Self::with_memory(Arc::new(memory))
+    }
+
+    fn with_memory(memory: Arc<ConversationMemory>) -> Self {
         let registry = Arc::new(AgentSessionRegistry::default());
         Self {
             broker: ContextBroker::with_source(Arc::new(LiveAgentContextSource::new(
                 registry.clone(),
             ))),
             registry,
-            memory: Arc::new(ConversationMemory::default()),
+            memory,
             model: Arc::new(CodexAppServerProvider::default()),
             actions: Arc::new(PendingActionRegistry::default()),
             chat_requests: Arc::new(ChatRequestRegistry::default()),
@@ -415,20 +432,35 @@ pub async fn list_terminals_for_workspace(
         terminals.push(TerminalSummary {
             terminal_id: session.id.clone(),
             workspace_id: workspace.id.clone(),
-            title: session.title.clone(),
+            title: effective_terminal_title(
+                &session.title,
+                session
+                    .is_agent_terminal
+                    .then_some(session.agent_id.as_deref())
+                    .flatten(),
+                &session.shell,
+                &cwd,
+            ),
             shell: session.shell.clone(),
             cwd,
             active: session.active,
             process_id: session.process_id,
             process_alive: session.process_alive.load(Ordering::Acquire),
-            agent_id: session.agent_id.clone(),
+            agent_id: session
+                .is_agent_terminal
+                .then(|| session.agent_id.clone())
+                .flatten(),
             configured_agent_id: session.agent_id.clone(),
             observed_provider: session.observed_provider.clone(),
-            resolved_provider: session
-                .observed_provider
-                .clone()
-                .or_else(|| session.agent_id.as_deref().and_then(normalize_provider))
-                .unwrap_or_else(|| "terminal-agent".to_string()),
+            resolved_provider: if session.is_agent_terminal {
+                session
+                    .observed_provider
+                    .clone()
+                    .or_else(|| session.agent_id.as_deref().and_then(normalize_provider))
+                    .unwrap_or_else(|| "terminal-agent".to_string())
+            } else {
+                "powershell".to_string()
+            },
             detection_source: session.detection_source.clone(),
             detection_confidence: session.detection_confidence,
             identity_warnings: session.identity_warnings.clone(),
@@ -453,7 +485,19 @@ pub fn canonicalize_terminal_order(
     let mut ordered = Vec::with_capacity(runtime.len());
     for config in &workspace.terminals {
         if let Some(mut terminal) = runtime.remove(&config.id) {
-            terminal.title = config.title.clone();
+            let configured_title = if terminal.agent_id.is_none()
+                && is_default_terminal_title(&config.title, config.agent_id.as_deref())
+            {
+                "Terminal"
+            } else {
+                &config.title
+            };
+            terminal.title = effective_terminal_title(
+                configured_title,
+                terminal.agent_id.as_deref(),
+                &terminal.shell,
+                &terminal.cwd,
+            );
             ordered.push(terminal);
         }
     }
@@ -461,6 +505,77 @@ pub fn canonicalize_terminal_order(
     extras.sort_by(|left, right| left.terminal_id.cmp(&right.terminal_id));
     ordered.extend(extras);
     ordered
+}
+
+pub fn effective_terminal_title(
+    configured_title: &str,
+    agent_id: Option<&str>,
+    shell: &str,
+    cwd: &str,
+) -> String {
+    let agent_name = agent_id.map(agent_display_name);
+    let configured = configured_title.trim();
+    let is_default = is_default_terminal_title(configured, agent_id);
+    if !is_default {
+        return configured.to_string();
+    }
+    let project = cwd
+        .trim_end_matches(['\\', '/'])
+        .rsplit(['\\', '/'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(cwd)
+        .trim();
+    let project = if project.is_empty() {
+        "workspace"
+    } else {
+        project
+    };
+    match agent_name {
+        Some(name) => format!("{name} — {project}"),
+        None => format!("{shell} — {project}"),
+    }
+}
+
+fn is_default_terminal_title(configured_title: &str, agent_id: Option<&str>) -> bool {
+    let configured = configured_title.trim();
+    configured.is_empty()
+        || configured.eq_ignore_ascii_case("terminal")
+        || configured.eq_ignore_ascii_case("terminale")
+        || agent_id
+            .map(agent_display_name)
+            .as_deref()
+            .is_some_and(|name| configured.eq_ignore_ascii_case(name))
+}
+
+fn agent_display_name(agent_id: &str) -> String {
+    match agent_id.trim().to_ascii_lowercase().as_str() {
+        "codex" => "Codex".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "claude" => "Claude".to_string(),
+        "pi" => "PI".to_string(),
+        "freebuff" => "Freebuff".to_string(),
+        "anti-gravity" | "agy" => "Anti-Gravity".to_string(),
+        "cline" => "Cline".to_string(),
+        "cmdc" => "Command Code".to_string(),
+        value => value.to_string(),
+    }
+}
+
+pub fn attach_terminal_titles(sessions: &mut [AgentSessionContext], terminals: &[TerminalSummary]) {
+    for session in sessions {
+        session.reference.terminal_title = session
+            .reference
+            .terminal_id
+            .as_deref()
+            .and_then(|terminal_id| {
+                terminals.iter().find(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.generation == session.reference.generation
+                        && terminal.workspace_id == session.reference.workspace_id
+                })
+            })
+            .map(|terminal| terminal.title.clone());
+    }
 }
 
 fn source_error(
@@ -529,7 +644,7 @@ mod terminal_order_tests {
     }
 
     #[test]
-    fn persisted_order_and_titles_win_while_runtime_extras_are_sorted() {
+    fn persisted_order_and_effective_navbar_titles_win_while_runtime_extras_are_sorted() {
         let workspace = WorkspaceConfig {
             id: "workspace".into(),
             name: "Workspace".into(),
@@ -570,5 +685,58 @@ mod terminal_order_tests {
         );
         assert_eq!(ordered[0].title, "Right");
         assert_eq!(ordered[1].title, "Left");
+    }
+
+    #[test]
+    fn default_agent_title_is_the_same_automatic_title_shown_in_the_navbar() {
+        let mut terminal = terminal("codex-pane", "Codex");
+        terminal.cwd = "C:\\work\\Traflix-Space".into();
+        terminal.agent_id = Some("codex".into());
+        terminal.configured_agent_id = Some("codex".into());
+        terminal.resolved_provider = "codex".into();
+        let workspace = WorkspaceConfig {
+            id: "workspace".into(),
+            name: "Workspace".into(),
+            root_path: "C:\\work\\Traflix-Space".into(),
+            layout: GridLayout { rows: 1, cols: 1 },
+            terminals: vec![TerminalConfig {
+                agent_id: Some("codex".into()),
+                title: "Codex".into(),
+                ..config("codex-pane", "Codex")
+            }],
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+
+        let ordered = canonicalize_terminal_order(vec![terminal], &workspace);
+        assert_eq!(ordered[0].title, "Codex — Traflix-Space");
+    }
+
+    #[test]
+    fn exited_agent_child_exposes_the_remaining_powershell_terminal() {
+        let mut terminal = terminal("codex-pane", "Codex");
+        terminal.cwd = "C:\\work\\Traflix-Space".into();
+        terminal.agent_id = None;
+        terminal.configured_agent_id = Some("codex".into());
+        terminal.resolved_provider = "powershell".into();
+        terminal.detection_source = "agent-process-exited".into();
+        let workspace = WorkspaceConfig {
+            id: "workspace".into(),
+            name: "Workspace".into(),
+            root_path: "C:\\work\\Traflix-Space".into(),
+            layout: GridLayout { rows: 1, cols: 1 },
+            terminals: vec![TerminalConfig {
+                agent_id: Some("codex".into()),
+                title: "Codex".into(),
+                ..config("codex-pane", "Codex")
+            }],
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        let ordered = canonicalize_terminal_order(vec![terminal], &workspace);
+        assert_eq!(ordered[0].resolved_provider, "powershell");
+        assert_eq!(ordered[0].title, "powershell.exe — Traflix-Space");
+        assert!(ordered[0].agent_id.is_none());
+        assert_eq!(ordered[0].configured_agent_id.as_deref(), Some("codex"));
     }
 }

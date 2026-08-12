@@ -435,9 +435,29 @@ export function JarvisGlobalOverlay() {
     void refreshContext();
     const interval = window.setInterval(() => void refreshRegistry(), 5000);
     const unsubscribe = subscribeAgentTurnCompleted(() => void refreshRegistry());
+    let disposed = false;
+    let unlistenRegistry: (() => void) | undefined;
+    void listen<{ workspaceId?: string }>(
+      "jarvis://agent-registry-changed",
+      (event) => {
+        if (
+          !disposed &&
+          (!event.payload.workspaceId ||
+            event.payload.workspaceId ===
+              useWorkspaceStore.getState().activeWorkspaceId)
+        ) {
+          void refreshRegistry();
+        }
+      },
+    ).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenRegistry = unlisten;
+    });
     return () => {
+      disposed = true;
       window.clearInterval(interval);
       unsubscribe();
+      unlistenRegistry?.();
     };
   }, [
     activeWorkspaceId,

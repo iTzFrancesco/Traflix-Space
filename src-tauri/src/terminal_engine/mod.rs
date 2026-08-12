@@ -8,6 +8,7 @@ mod session;
 
 pub use cell::{Cell, Color};
 pub use frame::{FrameSnapshot, TerminalRehydrateState, TerminalRuntimeIdentity};
+use session::AgentPresenceTransition;
 pub use session::{TerminalSession, MIN_TERMINAL_COLS, MIN_TERMINAL_ROWS};
 
 use dashmap::mapref::entry::Entry;
@@ -20,7 +21,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 #[cfg(windows)]
-use crate::jarvis::runtime_detector::detect_from_process_tree_async;
+use crate::jarvis::runtime_detector::scan_process_tree_async;
 use crate::jarvis::runtime_detector::{normalize_provider, AgentDetection};
 use crate::terminal_engine::scheduler::FrameScheduler;
 
@@ -1377,10 +1378,14 @@ impl TerminalManager {
                     .iter()
                     .map(|(_, _, pid, _)| *pid)
                     .collect::<Vec<_>>();
-                let detections = detect_from_process_tree_async(root_pids).await;
-                manager
-                    .apply_process_detections(targets, detections, &app)
-                    .await;
+                match scan_process_tree_async(root_pids).await {
+                    Ok(scan) => {
+                        manager.apply_process_detections(targets, scan, &app).await;
+                    }
+                    Err(error) => {
+                        warn!(%error, "Agent process-tree scan unavailable; liveness unchanged");
+                    }
+                }
                 let retry_fast = manager
                     .process_detection_targets()
                     .await
@@ -1413,7 +1418,10 @@ impl TerminalManager {
             let session = session.read().await;
             if !session.process_alive.load(Ordering::Acquire)
                 || session.process_id.is_none()
-                || identity_source_priority(&session.detection_source) >= 4
+                || (!session.is_agent_terminal
+                    && session.agent_id.is_none()
+                    && session.observed_provider.is_none()
+                    && session.agent_runtime_presence.alive().is_none())
             {
                 continue;
             }
@@ -1431,13 +1439,10 @@ impl TerminalManager {
     async fn apply_process_detections(
         &self,
         targets: Vec<(String, u64, u32, String)>,
-        detections: std::collections::HashMap<u32, AgentDetection>,
+        scan: crate::jarvis::runtime_detector::ProcessTreeScan,
         app: &AppHandle,
     ) {
         for (terminal_id, generation, pid, _) in targets {
-            let Some(detection) = detections.get(&pid) else {
-                continue;
-            };
             let Some(session_arc) = self
                 .sessions
                 .get(&terminal_id)
@@ -1456,10 +1461,52 @@ impl TerminalManager {
                 && session.process_alive.load(Ordering::Acquire)
                 && current
             {
-                apply_runtime_identity(&mut session, detection);
-                let snapshot = snapshot_from_session(&session);
-                drop(session);
-                notify_agent_started(app, &snapshot);
+                if let Some(detection) = scan.detections.get(&pid) {
+                    let presence_transition = session.agent_runtime_presence.observed();
+                    let identity_changed = session.observed_provider.as_deref()
+                        != Some(detection.provider.as_str())
+                        || session.detection_source != detection.source
+                        || !session.is_agent_terminal;
+                    apply_runtime_identity(&mut session, detection);
+                    if presence_transition == AgentPresenceTransition::BecameActive
+                        || identity_changed
+                    {
+                        let snapshot = snapshot_from_session(&session);
+                        drop(session);
+                        notify_agent_started(app, &snapshot);
+                    }
+                } else if scan.roots_with_candidate_descendants.contains(&pid) {
+                    let transition = session.agent_runtime_presence.observed();
+                    if transition == AgentPresenceTransition::BecameActive {
+                        let provider = session
+                            .observed_provider
+                            .clone()
+                            .or_else(|| session.agent_id.as_deref().and_then(normalize_provider));
+                        if let Some(provider) = provider {
+                            apply_runtime_identity(
+                                &mut session,
+                                &AgentDetection {
+                                    provider,
+                                    source: "process-tree".to_string(),
+                                    confidence: 0.9,
+                                },
+                            );
+                            let snapshot = snapshot_from_session(&session);
+                            drop(session);
+                            notify_agent_started(app, &snapshot);
+                        }
+                    }
+                } else if session.agent_runtime_presence.missed()
+                    == AgentPresenceTransition::BecameInactive
+                {
+                    session.is_agent_terminal = false;
+                    session.observed_provider = None;
+                    session.detection_source = "agent-process-exited".to_string();
+                    session.detection_confidence = 0.9;
+                    let snapshot = snapshot_from_session(&session);
+                    drop(session);
+                    notify_agent_exit(app, &snapshot);
+                }
             }
         }
     }
@@ -1511,6 +1558,7 @@ fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetect
     session.detection_source = detection.source.clone();
     session.detection_confidence = detection.confidence;
     session.is_agent_terminal = true;
+    session.agent_runtime_presence.observed();
     if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
         if configured != detection.provider {
             push_identity_warning(
@@ -1646,6 +1694,7 @@ fn notify_agent_started(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
             .registry
             .observe_terminal_started(snapshot, &chrono::Utc::now().to_rfc3339());
     }
+    emit_agent_registry_changed(app, snapshot, "started");
 }
 
 fn notify_agent_user_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot, data: &[u8]) {
@@ -1658,6 +1707,11 @@ fn notify_agent_user_input(app: &AppHandle, snapshot: &TerminalAgentSnapshot, da
             .registry
             .observe_user_typing(snapshot, data, &observed_at);
     }
+    // Typing alone does not change the user-visible lifecycle. Refresh only
+    // after a committed line to avoid an IPC/context refresh per keystroke.
+    if data.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        emit_agent_registry_changed(app, snapshot, "input_committed");
+    }
 }
 
 fn notify_agent_abort(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
@@ -1666,6 +1720,7 @@ fn notify_agent_abort(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
             .registry
             .observe_abort(snapshot, &chrono::Utc::now().to_rfc3339());
     }
+    emit_agent_registry_changed(app, snapshot, "interrupted");
 }
 
 fn notify_agent_exit(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
@@ -1676,6 +1731,19 @@ fn notify_agent_exit(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
             &chrono::Utc::now().to_rfc3339(),
         );
     }
+    emit_agent_registry_changed(app, snapshot, "exited");
+}
+
+fn emit_agent_registry_changed(app: &AppHandle, snapshot: &TerminalAgentSnapshot, reason: &str) {
+    let _ = app.emit(
+        "jarvis://agent-registry-changed",
+        serde_json::json!({
+            "workspaceId": snapshot.workspace_id,
+            "terminalId": snapshot.terminal_id,
+            "generation": snapshot.generation,
+            "reason": reason,
+        }),
+    );
 }
 
 fn convert_vt_cell(vt_cell: &vt100::Cell) -> Cell {

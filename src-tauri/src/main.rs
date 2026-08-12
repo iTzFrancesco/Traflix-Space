@@ -140,7 +140,7 @@ fn main() {
             settings::secrets::hydrate_process_environment(app.handle());
             app.manage(workspace::WorkspaceRegistry::new(app.handle().clone()));
             app.manage(agent::AgentRegistry::new());
-            app.manage(jarvis::JarvisState::default());
+            app.manage(jarvis::JarvisState::new(app.handle()));
             // C10: the Codex App Server provider needs managed state (runtime
             // + thread registry); attach the handle right after creation.
             app.state::<jarvis::JarvisState>()
@@ -184,32 +184,6 @@ fn main() {
             // this local Windows named pipe. The listener is best-effort and
             // never participates in the agent's execution path.
             agent_events::start_listener(app.handle().clone());
-
-            // Idle-completion watcher: manually launched CLIs never emit a
-            // completion event, so sessions that stop producing output for
-            // AGENT_IDLE_COMPLETION_SECS are settled to Waiting by the
-            // registry. One lightweight 1 Hz tick for the whole app.
-            {
-                let watcher_app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut tick = tokio::time::interval(std::time::Duration::from_millis(1000));
-                    loop {
-                        tick.tick().await;
-                        let Some(state) = watcher_app.try_state::<jarvis::JarvisState>() else {
-                            continue;
-                        };
-                        let settled = state
-                            .registry
-                            .mark_idle_sessions_completed(&chrono::Utc::now().to_rfc3339());
-                        for terminal_id in settled {
-                            info!(
-                                terminal_id = %terminal_id,
-                                "Agent settled to waiting after output idle"
-                            );
-                        }
-                    }
-                });
-            }
 
             // Avvia skills watcher
             skills::watcher::start_skills_watcher(app.handle().clone());
@@ -347,6 +321,8 @@ fn main() {
             jarvis::chat::jarvis_update_pending_action,
             jarvis::chat::jarvis_reject_action,
             jarvis::chat::jarvis_clear_conversation,
+            jarvis::notification_adapters::jarvis_notification_adapter_status,
+            jarvis::notification_adapters::jarvis_notification_adapter_install,
             jarvis::codex::runtime::jarvis_codex_runtime_status,
             jarvis::codex::runtime::jarvis_codex_runtime_start,
             jarvis::codex::runtime::jarvis_codex_runtime_restart,
