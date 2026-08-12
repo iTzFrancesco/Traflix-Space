@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+﻿import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import { agentSnapshot, buildModelContext, ttsSpeak } from "../../lib/jarvis/client";
@@ -46,6 +46,7 @@ export function JarvisGlobalOverlay() {
   const requests = useJarvisStore((state) => state.requests);
   const chatErrors = useJarvisStore((state) => state.chatErrors);
   const voiceRequests = useJarvisStore((state) => state.voiceRequests);
+  const voiceSubmitStates = useJarvisStore((state) => state.voiceSubmitStates);
   const activeVoiceRequestId = useJarvisStore(
     (state) => state.activeVoiceRequestId,
   );
@@ -74,6 +75,7 @@ export function JarvisGlobalOverlay() {
   const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const startVoice = useJarvisStore((state) => state.startVoice);
   const stopVoice = useJarvisStore((state) => state.stopVoice);
+  const sendVoiceTranscript = useJarvisStore((state) => state.sendVoiceTranscript);
   const loadVoiceDraft = useJarvisStore((state) => state.loadVoiceDraft);
   const setVoiceRequest = useJarvisStore((state) => state.setVoiceRequest);
   const applyActivityEvents = useJarvisStore((state) => state.applyActivityEvents);
@@ -322,6 +324,35 @@ export function JarvisGlobalOverlay() {
     settingsOpen,
   ]);
 
+  // A transcript that reached the endpoint while the current turn was still
+  // running remains a draft. Retry only queued request ids; the store owns the
+  // single-flight guard and never drops the transcript.
+  useEffect(() => {
+    if (!activeWorkspaceId || settingsOpen || !settings.jarvis.voiceInput.autoSubmitTranscript) return;
+    const draft = voiceRequests[activeWorkspaceId];
+    if (
+      draft?.status !== "transcript_ready" ||
+      !draft.transcript?.trim() ||
+      voiceSubmitStates[draft.requestId] !== "queued"
+    ) {
+      return;
+    }
+    void sendVoiceTranscript(draft.requestId, draft.transcript, { automatic: true }).catch((error) => {
+      console.warn("[Jarvis voice] queued transcript retry failed", {
+        requestId: draft.requestId,
+        error: sanitizedVoiceError(error),
+      });
+    });
+  }, [
+    activeWorkspaceId,
+    requests,
+    sendVoiceTranscript,
+    settings.jarvis.voiceInput.autoSubmitTranscript,
+    settingsOpen,
+    voiceRequests,
+    voiceSubmitStates,
+  ]);
+
   // An armed VAD capture is only ambient readiness, so it follows workspace
   // focus. A capture that already heard speech keeps its original immutable
   // workspace binding and is allowed to finish before the new workspace arms.
@@ -379,10 +410,11 @@ export function JarvisGlobalOverlay() {
         (request.status === "running" || request.status === "cancellation_requested"),
     );
     const ttsBusy = ttsStatus.status === "synthesizing" || ttsStatus.status === "playing";
-    // Do not arm the microphone while Jarvis is generating or playing a reply.
-    // Otherwise VAD can capture Jarvis's own voice, submit a phantom transcript,
-    // and start a second turn before the first one is visibly finished.
-    if (chatBusy || ttsBusy) return;
+    const bargeInReady = vadFallbackReady && settings.jarvis.voiceOutput.stopOnUserSpeech && ttsBusy;
+    // During active TTS, VAD is intentionally allowed to arm for barge-in.
+    // The backend cancels only the TTS token; chat/task cancellation remains
+    // an explicit action. Wake-word capture keeps its existing gate.
+    if ((chatBusy || ttsBusy) && !bargeInReady) return;
 
     const workspaceId = activeWorkspaceId;
     const timer = window.setTimeout(() => {
@@ -693,3 +725,58 @@ export function JarvisGlobalOverlay() {
     </>
   );
 }
+        voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
+        onVoiceSend={() => {
+          if (voiceRequest?.transcript?.trim()) {
+            void sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript);
+          }
+        }}
+  // Barge-in is a VAD-only capture path. It is allowed while TTS is active,
+  // but it never calls chat/task cancellation; startVoice owns only the
+  // audio/TTS stop token and preserves the running turn.
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !settingsLoaded ||
+      settingsOpen ||
+      !settings.jarvis.enabled ||
+      settings.jarvis.muted ||
+      settings.jarvis.voiceInput.activationMode !== "vad" ||
+      !settings.jarvis.voiceOutput.stopOnUserSpeech ||
+      activeVoiceRequestId ||
+      (ttsStatus.status !== "synthesizing" && ttsStatus.status !== "playing")
+    ) {
+      return;
+    }
+
+    const workspaceId = activeWorkspaceId;
+    const timer = window.setTimeout(() => {
+      const store = useJarvisStore.getState();
+      const ttsBusy =
+        store.ttsStatus.status === "synthesizing" ||
+        store.ttsStatus.status === "playing";
+      if (
+        useWorkspaceStore.getState().activeWorkspaceId === workspaceId &&
+        ttsBusy &&
+        !store.activeVoiceRequestId &&
+        store.settings.jarvis.enabled &&
+        !store.settings.jarvis.muted &&
+        store.settings.jarvis.voiceInput.activationMode === "vad" &&
+        store.settings.jarvis.voiceOutput.stopOnUserSpeech
+      ) {
+        void store.startVoice();
+      }
+    }, AUTO_ARM_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeVoiceRequestId,
+    activeWorkspaceId,
+    settings.jarvis.enabled,
+    settings.jarvis.muted,
+    settings.jarvis.voiceInput.activationMode,
+    settings.jarvis.voiceOutput.stopOnUserSpeech,
+    settingsLoaded,
+    settingsOpen,
+    ttsStatus.status,
+  ]);

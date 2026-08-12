@@ -101,6 +101,14 @@ pub struct VoiceInputSettings {
     pub vad_pre_roll_ms: u32,
     #[serde(default = "default_vad_post_speech_ms")]
     pub vad_post_speech_ms: u32,
+    /// End-of-speech silence from VAD. This is intentionally longer than a
+    /// conversational breath; endpointing adds a separate grace period.
+    #[serde(default = "default_true")]
+    pub endpointing_enabled: bool,
+    #[serde(default = "default_endpoint_grace_ms")]
+    pub endpoint_grace_ms: u32,
+    #[serde(default = "default_min_spoken_ms")]
+    pub min_spoken_ms: u32,
     #[serde(default = "default_max_armed_seconds")]
     pub max_armed_seconds: u32,
 }
@@ -376,6 +384,9 @@ impl Default for VoiceInputSettings {
             vad_silence_frames: default_vad_silence_frames(),
             vad_pre_roll_ms: default_vad_preroll_ms(),
             vad_post_speech_ms: default_vad_post_speech_ms(),
+            endpointing_enabled: true,
+            endpoint_grace_ms: default_endpoint_grace_ms(),
+            min_spoken_ms: default_min_spoken_ms(),
             max_armed_seconds: default_max_armed_seconds(),
         }
     }

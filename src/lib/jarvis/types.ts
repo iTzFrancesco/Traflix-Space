@@ -210,6 +210,9 @@ export interface VoiceInputSettings {
   vadSilenceFrames: number;
   vadPreRollMs: number;
   vadPostSpeechMs: number;
+  endpointingEnabled: boolean;
+  endpointGraceMs: number;
+  minSpokenMs: number;
   maxArmedSeconds: number;
 }
 
@@ -248,6 +251,7 @@ export type VoiceRequestStatus = "idle" | "armed" | "recording" | "stopping" | "
 export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
 export interface VoiceErrorView { code: string; message: string; }
 export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; activationMode: VoiceActivationMode; vadState: VadState; }
+export type VoiceSubmitState = "manual" | "queued" | "submitting" | "sent";
 export type VadState = "silence" | "maybe_speech" | "speech";
 export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; vadState: VadState; }
 export type TtsStatus = "idle" | "synthesizing" | "playing" | "stopped" | "failed";

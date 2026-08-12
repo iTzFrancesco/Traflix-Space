@@ -86,7 +86,7 @@ impl EnergyVad {
     }
 
     pub fn process(&mut self, samples: &[f32]) -> VadState {
-        if samples.is_empty() || self.should_stop {
+        if samples.is_empty() {
             return self.state;
         }
         let rms = (samples
@@ -123,6 +123,10 @@ impl EnergyVad {
         if rms >= self.release_threshold {
             self.silence_frames = 0;
             self.silence_audio_frames = 0;
+            // A speaker may resume during the endpoint grace period. VAD is
+            // reusable for that utterance; endpointing, not VAD, owns the
+            // final stop decision.
+            self.should_stop = false;
             self.state = VadState::Speech;
             return self.state;
         }
@@ -337,6 +341,20 @@ mod tests {
         assert!(!detector.should_stop());
         detector.process(&[0.03; 100]);
         assert!(detector.should_stop());
+    }
+
+    #[test]
+    fn speech_can_resume_after_an_endpoint_candidate() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.2; 100]);
+        }
+        for _ in 0..3 {
+            detector.process(&[0.0; 100]);
+        }
+        assert!(detector.should_stop());
+        assert_eq!(detector.process(&[0.2; 100]), VadState::Speech);
+        assert!(!detector.should_stop());
     }
 
     #[test]

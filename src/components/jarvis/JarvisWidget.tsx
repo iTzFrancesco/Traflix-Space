@@ -24,6 +24,7 @@ import type {
   TtsStatusView,
   VoiceActivationMode,
   VoiceRequestStatusView,
+  VoiceSubmitState,
   WidgetPosition,
 } from "../../lib/jarvis/types";
 
@@ -39,9 +40,11 @@ interface JarvisWidgetProps {
   onHide: () => void;
   onToggleMuted: () => Promise<void> | void;
   voiceRequest: VoiceRequestStatusView | null;
+  voiceSubmitState?: VoiceSubmitState;
   activationMode: VoiceActivationMode;
   onVoiceStart: () => Promise<void> | void;
   onVoiceStop: () => void;
+  onVoiceSend: () => void;
   ttsStatus: TtsStatusView;
   activities: ActivityCheckpoint[];
 }
@@ -288,6 +291,18 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.voiceRequest?.status === "transcribing" ||
     props.voiceRequest?.status === "stopping" ||
     props.voiceRequest?.status === "transcript_ready";
+  const voiceStatusLabel =
+    props.voiceRequest?.status === "recording" && props.voiceRequest.vadState === "silence"
+      ? "Pausa — puoi continuare"
+      : props.voiceRequest?.status === "stopping"
+        ? "Preparazione invio…"
+        : props.voiceRequest?.status === "transcribing"
+          ? "Trascrizione…"
+          : props.voiceRequest?.status === "transcript_ready" && props.voiceSubmitState === "queued"
+            ? "In coda…"
+            : props.voiceRequest?.status === "transcript_ready"
+              ? "Pronto — Invia adesso"
+              : null;
   const level = Math.max(
     0,
     Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
@@ -321,7 +336,11 @@ export function JarvisWidget(props: JarvisWidgetProps) {
       requestId: props.voiceRequest?.requestId,
       workspaceId: props.workspaceId,
     });
-    onVoiceStopRef.current();
+    if (props.voiceRequest?.status === "transcript_ready") {
+      props.onVoiceSend();
+    } else {
+      onVoiceStopRef.current();
+    }
   };
 
   const microphoneTitle = props.muted
@@ -334,7 +353,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     ? props.voiceError
     : props.muted
       ? "Microfono disattivato"
-      : collapsedJarvisStatus({
+      : voiceStatusLabel ?? collapsedJarvisStatus({
         workspaceId: props.workspaceId,
         workspaceName: props.workspaceName,
         voiceError: props.voiceError,
@@ -384,7 +403,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           {(voiceArmed || voiceListening) && (
             <VoiceMeter level={level} listening={voiceListening} />
           )}
-          {voiceListening && (
+          {(voiceListening || props.voiceRequest?.status === "transcript_ready") && (
             <button
               type="button"
               data-jarvis-control

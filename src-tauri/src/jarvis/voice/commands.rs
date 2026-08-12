@@ -2,11 +2,13 @@ use crate::settings::store::SettingsManager;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use tracing::{debug, error, info, warn};
 
 use super::audio::{encode_wav_pcm16, wav_duration_ms};
+use super::endpointing::{EndpointingConfig, EndpointingController, EndpointingDecision};
 use super::playback::PlaybackContext;
 use super::registry::{friendly_message, VoiceState};
 use super::stt::{GroqSpeechToTextProvider, SpeechToTextProvider};
@@ -184,6 +186,11 @@ pub async fn jarvis_voice_start(
     let watchdog_state = (*state).clone();
     let watchdog_request_id = status.request_id.clone();
     tokio::spawn(async move {
+        let mut endpointing = EndpointingController::new(EndpointingConfig {
+            enabled: watchdog_config.endpointing_enabled,
+            grace_ms: watchdog_config.endpoint_grace_ms,
+            min_spoken_ms: watchdog_config.min_spoken_ms,
+        });
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let Ok(signal) = watchdog_state.signal(&watchdog_request_id) else {
@@ -193,6 +200,25 @@ pub async fn jarvis_voice_start(
             if signal.status_changed {
                 emit_voice_state(&watchdog_app, &current);
                 stop_tts_on_speech(&watchdog_app, &watchdog_state, &current);
+            }
+            if current.status == VoiceRequestStatus::Recording {
+                match endpointing.observe(Instant::now(), &current, signal.should_stop) {
+                    EndpointingDecision::Stop => {
+                        info!(request_id = %watchdog_request_id, "Voice endpoint confirmed after silence grace period");
+                        if let Err(error) = finish_voice_stop(
+                            &watchdog_app,
+                            &watchdog_state,
+                            watchdog_config.clone(),
+                            watchdog_request_id.clone(),
+                        )
+                        .await
+                        {
+                            error!(request_id = %watchdog_request_id, error_code = %error.code, "Automatic voice endpoint stop failed");
+                        }
+                        break;
+                    }
+                    EndpointingDecision::PauseCandidate | EndpointingDecision::Continue => {}
+                }
             }
             if current.status == VoiceRequestStatus::Armed {
                 if current.duration_ms.unwrap_or_default()
@@ -916,7 +942,9 @@ fn stop_tts_on_speech(app: &AppHandle, state: &VoiceState, status: &VoiceRequest
     if status.status != VoiceRequestStatus::Recording {
         return;
     }
-    let (tts, request_id) = state.request_stop_tts();
+    let current_tts = state.tts_status();
+    let (tts, request_id) =
+        state.request_stop_tts_if_current(current_tts.request_id.as_deref(), current_tts.sequence);
     if request_id.is_some() {
         info!(request_id = ?request_id, "Stopping TTS because VAD confirmed user speech");
         emit_tts_state(app, &tts);

@@ -464,6 +464,10 @@ function VoiceOptions({
     enabled: true,
     autoSubmitTranscript: true,
     vadEnabled: input.activationMode !== "hold_to_talk",
+    endpointingEnabled: input.endpointingEnabled ?? true,
+    endpointGraceMs: input.endpointGraceMs ?? 1200,
+    minSpokenMs: input.minSpokenMs ?? 350,
+    vadPostSpeechMs: input.vadPostSpeechMs ?? 1800,
   };
   const normalizedOutput: VoiceOutputSettings = {
     ...output,
@@ -573,6 +577,79 @@ function VoiceOptions({
               />
             </button>
           </div>
+        </label>
+      </div>
+
+      <div className="mt-4 grid gap-3 border-y border-neutral-border py-3 sm:grid-cols-3">
+        <label className="flex items-start gap-2 text-xs text-neutral-text sm:col-span-3">
+          <input
+            type="checkbox"
+            checked={normalizedInput.endpointingEnabled}
+            onChange={(event) =>
+              onInputChange({
+                ...normalizedInput,
+                endpointingEnabled: event.target.checked,
+              })
+            }
+            className="mt-0.5 accent-[var(--color-accent)]"
+          />
+          <span>
+            <span className="block font-medium">Invio automatico dopo pausa naturale</span>
+            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
+              VAD ed endpointing attendono la fine della frase; il pulsante “Invia adesso” resta sempre disponibile.
+            </span>
+          </span>
+        </label>
+        <label className="space-y-1.5 text-xs text-neutral-text-muted">
+          <span>Silenzio di fine frase (ms)</span>
+          <input
+            type="number"
+            min="1000"
+            max="5000"
+            step="100"
+            value={normalizedInput.vadPostSpeechMs}
+            onChange={(event) =>
+              onInputChange({
+                ...normalizedInput,
+                vadPostSpeechMs: Number(event.target.value),
+              })
+            }
+            className="field-input w-full"
+          />
+        </label>
+        <label className="space-y-1.5 text-xs text-neutral-text-muted">
+          <span>Grace period (ms)</span>
+          <input
+            type="number"
+            min="250"
+            max="5000"
+            step="100"
+            value={normalizedInput.endpointGraceMs}
+            onChange={(event) =>
+              onInputChange({
+                ...normalizedInput,
+                endpointGraceMs: Number(event.target.value),
+              })
+            }
+            className="field-input w-full"
+          />
+        </label>
+        <label className="space-y-1.5 text-xs text-neutral-text-muted">
+          <span>Parlato minimo (ms)</span>
+          <input
+            type="number"
+            min="100"
+            max="10000"
+            step="50"
+            value={normalizedInput.minSpokenMs}
+            onChange={(event) =>
+              onInputChange({
+                ...normalizedInput,
+                minSpokenMs: Number(event.target.value),
+              })
+            }
+            className="field-input w-full"
+          />
         </label>
       </div>
 

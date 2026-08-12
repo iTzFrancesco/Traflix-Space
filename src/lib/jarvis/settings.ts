@@ -117,7 +117,10 @@ export function defaultJarvisSettings(): JarvisSettings {
       vadStartFrames: 3,
       vadSilenceFrames: 16,
       vadPreRollMs: 250,
-      vadPostSpeechMs: 650,
+      vadPostSpeechMs: 1800,
+      endpointingEnabled: true,
+      endpointGraceMs: 1200,
+      minSpokenMs: 350,
       maxArmedSeconds: ALWAYS_READY_ARM_SECONDS,
     },
     voiceOutput: {

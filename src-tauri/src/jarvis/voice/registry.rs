@@ -438,18 +438,24 @@ impl VoiceState {
 
     pub fn request_stop_tts(&self) -> (TtsStatusView, Option<String>) {
         let mut inner = self.inner.lock();
-        let request_id = if let Some(token) = inner.tts_cancellation.clone() {
-            token.cancel();
-            inner.tts_cancel_requested = true;
-            inner.tts_sequence = inner.tts_sequence.saturating_add(1);
-            inner.tts.sequence = inner.tts_sequence;
-            inner.tts.status = TtsStatus::Stopped;
-            inner.tts.error = None;
-            inner.tts.request_id.clone()
-        } else {
-            None
-        };
-        (inner.tts.clone(), request_id)
+        stop_tts_locked(&mut inner, None, None)
+    }
+
+    /// Compare-and-stop used by audio-boundary barge-in. A delayed capture
+    /// event must never stop a newer TTS request that reused the same output
+    /// channel; the request id and monotonic sequence form the TTS-only CAS.
+    pub fn request_stop_tts_if_current(
+        &self,
+        expected_request_id: Option<&str>,
+        expected_sequence: u64,
+    ) -> (TtsStatusView, Option<String>) {
+        let mut inner = self.inner.lock();
+        if inner.tts.sequence != expected_sequence
+            || inner.tts.request_id.as_deref() != expected_request_id
+        {
+            return (inner.tts.clone(), None);
+        }
+        stop_tts_locked(&mut inner, expected_request_id, Some(expected_sequence))
     }
 
     pub fn finish_stopped_tts(&self, request_id: &str) -> Option<TtsStatusView> {
@@ -632,6 +638,31 @@ fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
     request.view.status != previous_status
 }
 
+fn stop_tts_locked(
+    inner: &mut VoiceRegistryInner,
+    expected_request_id: Option<&str>,
+    expected_sequence: Option<u64>,
+) -> (TtsStatusView, Option<String>) {
+    if expected_sequence.is_some_and(|sequence| inner.tts.sequence != sequence)
+        || expected_request_id
+            .is_some_and(|request_id| inner.tts.request_id.as_deref() != Some(request_id))
+    {
+        return (inner.tts.clone(), None);
+    }
+    let request_id = if let Some(token) = inner.tts_cancellation.clone() {
+        token.cancel();
+        inner.tts_cancel_requested = true;
+        inner.tts_sequence = inner.tts_sequence.saturating_add(1);
+        inner.tts.sequence = inner.tts_sequence;
+        inner.tts.status = TtsStatus::Stopped;
+        inner.tts.error = None;
+        inner.tts.request_id.clone()
+    } else {
+        None
+    };
+    (inner.tts.clone(), request_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,6 +729,31 @@ mod tests {
         assert!(state.set_tts_for("tts-a", TtsStatus::Idle, None).is_none());
         assert_eq!(state.tts_status().request_id.as_deref(), Some("tts-b"));
         assert_eq!(state.tts_status().status, TtsStatus::Synthesizing);
+    }
+
+    #[test]
+    fn stale_audio_barge_in_cannot_stop_newer_tts_sequence() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        let (_a_token, a_started) = state.begin_tts("tts-a".into(), Some("workspace".into()));
+        let (_stopped, _a_id) = state.request_stop_tts();
+        let (_b_token, b_started) = state.begin_tts("tts-b".into(), Some("workspace".into()));
+        let (current, stopped_id) =
+            state.request_stop_tts_if_current(a_started.request_id.as_deref(), a_started.sequence);
+        assert!(stopped_id.is_none());
+        assert_eq!(
+            current.request_id.as_deref(),
+            b_started.request_id.as_deref()
+        );
+        assert_eq!(current.status, TtsStatus::Synthesizing);
     }
 
     #[test]

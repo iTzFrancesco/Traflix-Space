@@ -49,6 +49,7 @@ import { applyTtsStatusTransition, beginLocalTtsRequest } from "../lib/jarvis/tt
 import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
 import { useWorkspaceStore } from "./workspaceStore";
 import { sanitizedVoiceError, sanitizedVoiceErrorView } from "../lib/jarvis/voiceSettings";
+import { decideVoiceSubmit } from "../lib/jarvis/voiceState";
 import type {
   AgentResult,
   AgentSessionContext,
@@ -75,6 +76,7 @@ import type {
   TtsStatusView,
   VoiceLevelEvent,
   VoiceRequestStatusView,
+  VoiceSubmitState,
 } from "../lib/jarvis/types";
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
@@ -135,6 +137,7 @@ interface JarvisStore {
   followUps: Record<string, string[]>;
   activities: ActivityCheckpoint[];
   voiceRequests: Record<string, VoiceRequestStatusView>;
+  voiceSubmitStates: Record<string, VoiceSubmitState>;
   activeVoiceRequestId: string | null;
   voiceStopRequested: boolean;
   voiceCancelRequested: boolean;
@@ -190,9 +193,10 @@ interface JarvisStore {
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
-  sendVoiceTranscript: (requestId: string, text: string) => Promise<boolean>;
+  sendVoiceTranscript: (requestId: string, text: string, options?: { automatic?: boolean }) => Promise<boolean>;
   loadVoiceDraft: (workspaceId: string) => Promise<void>;
   setVoiceRequest: (status: VoiceRequestStatusView) => void;
+  setVoiceSubmitState: (requestId: string, state: VoiceSubmitState) => void;
   applyActivityEvents: (events: ActivityCheckpoint[]) => void;
   clearWorkspaceActivities: (workspaceId: string) => void;
   setVoiceLevel: (event: VoiceLevelEvent) => void;
@@ -203,6 +207,7 @@ interface JarvisStore {
 
 let settingsSaveQueue = Promise.resolve();
 const autoSubmittedVoiceRequests = new Set<string>();
+const voiceSubmissionInFlight = new Set<string>();
 const acceptedVoiceRequestIds = new Set<string>();
 const ACCEPTED_VOICE_REQUESTS_STORAGE_KEY = "traflix.jarvis.accepted-voice-requests";
 const MAX_ACCEPTED_VOICE_REQUESTS = 128;
@@ -269,7 +274,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   codexSpokenItemIds: [],
   codexStreamFinal: {},
   uiIntents: [], followUps: {},
-  activities: [], voiceRequests: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
+  activities: [], voiceRequests: {}, voiceSubmitStates: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
   activeVoiceRequestId: null,
   voiceStopRequested: false,
@@ -607,11 +612,10 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     set({ activeVoiceRequestId: requestId, voiceStopRequested: false, voiceCancelRequested: false, voiceError: null });
     try {
       if (options.interruptTts && get().settings.jarvis.voiceOutput.stopOnUserSpeech && (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing")) {
-        const stopped = await ttsStop();
-        get().setTtsStatus(stopped);
-        if (stopped.status === "playing" || stopped.status === "synthesizing") {
-          throw new Error("La riproduzione vocale non si è arrestata.");
-        }
+        // Do not block microphone startup on TTS acknowledgement. The
+        // backend also stops the TTS-only token at the audio boundary when
+        // VAD confirms speech, so this fast path cannot cancel the chat/task.
+        void get().stopTts();
       }
       const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
       voiceLog("start completed", { requestId, workspaceId, status: status.status, vadState: status.vadState });
@@ -689,7 +693,14 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     }
   },
   discardVoiceTranscript: async () => { try { set({ voiceError: null }); const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId; if (!activeWorkspaceId) return; const workspaceId = activeWorkspaceId; const requestId = get().voiceRequests[workspaceId]?.requestId; if (!requestId) return; await voiceDiscardTranscript(requestId); set((state) => { const voiceRequests = { ...state.voiceRequests }; delete voiceRequests[workspaceId]; return { voiceRequests, activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId }; }); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
-  sendVoiceTranscript: async (requestId, text) => {
+  sendVoiceTranscript: async (requestId, text, options = {}) => {
+    const automatic = options.automatic === true;
+    const submitState = get().voiceSubmitStates[requestId];
+    if (submitState === "sent" || submitState === "submitting") {
+      // The transcript is already owned by this handoff. This is the
+      // frontend half of the single-flight guard against duplicate submits.
+      return true;
+    }
     const origin = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
     const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
     if (!origin || origin.status !== "transcript_ready" || origin.workspaceId !== activeWorkspaceId || !text.trim()) {
@@ -705,13 +716,38 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     }
     if (isWorkspaceChatLoading(get().requests, origin.workspaceId)) {
       // A chat turn may begin between transcript_ready and this handoff. Keep
-      // the draft without creating a chat error; the overlay will retry once
-      // the current turn leaves the running state.
+      // the draft and explicitly queue it; the overlay retries when the
+      // current turn leaves the running state.
       voiceWarn("transcript handoff deferred because chat is busy", { requestId });
-      return false;
+      if (get().voiceSubmitStates[requestId] !== "queued") {
+        set((state) => ({
+          voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "queued" },
+        }));
+      }
+      return true;
     }
-    voiceLog("transcript submission started", { requestId, workspaceId: origin.workspaceId, transcriptChars: text.trim().length });
-    const accepted = await get().sendMessage(text);
+    if (voiceSubmissionInFlight.has(requestId)) return true;
+    voiceSubmissionInFlight.add(requestId);
+    set((state) => ({
+      voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "submitting" },
+    }));
+    voiceLog("transcript submission started", {
+      requestId,
+      workspaceId: origin.workspaceId,
+      transcriptChars: text.trim().length,
+      automatic,
+    });
+    let accepted: boolean;
+    try {
+      accepted = await get().sendMessage(text);
+    } catch (error) {
+      voiceSubmissionInFlight.delete(requestId);
+      set((state) => ({
+        voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "manual" },
+        voiceError: sanitizedVoiceError(error),
+      }));
+      throw error;
+    }
     if (!accepted) {
       const chatError = get().chatErrors[origin.workspaceId];
       voiceWarn("transcript submission rejected; keeping draft and allowing a new capture", {
@@ -748,7 +784,12 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         voiceError: chatError
           ? `Jarvis non ha accettato la trascrizione: ${chatError}`
           : "La trascrizione non è stata inviata a Jarvis. Riprovare quando vuoi.",
+        voiceSubmitStates: {
+          ...get().voiceSubmitStates,
+          [requestId]: chatError ? "queued" : "manual",
+        },
       });
+      voiceSubmissionInFlight.delete(requestId);
       return false;
     }
     voiceLog("transcript accepted by Jarvis chat", { requestId });
@@ -759,8 +800,13 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     set((state) => {
       const voiceRequests = { ...state.voiceRequests };
       delete voiceRequests[origin.workspaceId];
-      return { voiceRequests, activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId };
+      return {
+        voiceRequests,
+        voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "sent" },
+        activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId,
+      };
     });
+    voiceSubmissionInFlight.delete(requestId);
     try {
       await voiceDiscardTranscript(requestId);
       voiceLog("transcript draft discarded after successful submission", { requestId });
@@ -850,12 +896,18 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         && current.status !== "recording"
         && state.settings.jarvis.voiceOutput.stopOnUserSpeech
         && (state.ttsStatus.status === "playing" || state.ttsStatus.status === "synthesizing");
-      shouldAutoSubmit = voiceRequest.status === "transcript_ready"
-        && Boolean(voiceRequest.transcript?.trim())
-        && state.settings.jarvis.voiceInput.autoSubmitTranscript
-        && useWorkspaceStore.getState().activeWorkspaceId === voiceRequest.workspaceId
-        && !isWorkspaceChatLoading(state.requests, voiceRequest.workspaceId)
-        && !autoSubmittedVoiceRequests.has(voiceRequest.requestId);
+      const submitDecision = decideVoiceSubmit({
+        status: voiceRequest.status,
+        hasTranscript: Boolean(voiceRequest.transcript?.trim()),
+        autoSubmit: state.settings.jarvis.voiceInput.autoSubmitTranscript,
+        chatBusy: isWorkspaceChatLoading(state.requests, voiceRequest.workspaceId),
+        alreadyClaimed: Boolean(
+          autoSubmittedVoiceRequests.has(voiceRequest.requestId) ||
+          ["sent", "submitting"].includes(state.voiceSubmitStates[voiceRequest.requestId] ?? ""),
+        ),
+      });
+      shouldAutoSubmit = ["send", "queue"].includes(submitDecision)
+        && useWorkspaceStore.getState().activeWorkspaceId === voiceRequest.workspaceId;
       if (voiceRequest.status === "transcript_ready") {
         voiceLog("transcript ready for chat handoff", {
           requestId: voiceRequest.requestId,
@@ -866,8 +918,17 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         });
       }
       const terminal = ["idle", "transcript_ready", "cancelled", "failed"].includes(voiceRequest.status);
+      const voiceSubmitStates = { ...state.voiceSubmitStates };
+      if (
+        voiceRequest.status === "transcript_ready" &&
+        !voiceSubmitStates[voiceRequest.requestId] &&
+        !state.settings.jarvis.voiceInput.autoSubmitTranscript
+      ) {
+        voiceSubmitStates[voiceRequest.requestId] = "manual";
+      }
       return {
         voiceRequests: { ...state.voiceRequests, [voiceRequest.workspaceId]: voiceRequest },
+        voiceSubmitStates,
         activeVoiceRequestId: terminal && state.activeVoiceRequestId === voiceRequest.requestId ? null : state.activeVoiceRequestId ?? (terminal ? null : voiceRequest.requestId),
         voiceError: voiceRequest.error?.code === "voice_vad_timeout" ? null : voiceRequest.error ? sanitizedVoiceError(voiceRequest.error) : state.voiceError,
       };
@@ -882,7 +943,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     if (shouldAutoSubmit && !autoSubmittedVoiceRequests.has(voiceRequest.requestId)) {
       autoSubmittedVoiceRequests.add(voiceRequest.requestId);
       while (autoSubmittedVoiceRequests.size > 128) autoSubmittedVoiceRequests.delete(autoSubmittedVoiceRequests.values().next().value as string);
-      void get().sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript ?? "").then((accepted) => {
+      void get().sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript ?? "", { automatic: true }).then((accepted) => {
         if (!accepted) {
           autoSubmittedVoiceRequests.delete(voiceRequest.requestId);
           voiceWarn("automatic transcript submission did not start chat", { requestId: voiceRequest.requestId });
@@ -898,6 +959,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   applyActivityEvents: (activities) => set((state) => ({ activities: mergeActivityEvents(state.activities, activities) })),
   clearWorkspaceActivities: (workspaceId) => set((state) => ({ activities: state.activities.filter((event) => event.workspaceId !== workspaceId) })),
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),
+  setVoiceSubmitState: (requestId, submitState) => set((state) => ({
+    voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: submitState },
+  })),
   setTtsStatus: (ttsStatus) => set((state) => {
     const transition = applyTtsStatusTransition(state, ttsStatus);
     if (!transition.accepted) {
