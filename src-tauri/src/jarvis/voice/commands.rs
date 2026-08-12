@@ -11,7 +11,7 @@ use super::playback::PlaybackContext;
 use super::registry::{friendly_message, VoiceState};
 use super::stt::{GroqSpeechToTextProvider, SpeechToTextProvider};
 use super::tts::{
-    cleanup_temp_file, sanitize_for_speech, EdgeTextToSpeechProvider, TextToSpeechProvider,
+    cleanup_temp_file, normalize_for_speech, EdgeTextToSpeechProvider, TextToSpeechProvider,
 };
 use super::types::{
     error_view, normalize_max_duration_seconds, TtsSpeakRequest, TtsStatus, TtsStatusView,
@@ -508,7 +508,7 @@ pub async fn jarvis_tts_speak(
         );
         return Err(error);
     }
-    let text = match sanitize_for_speech(&request.text, config.max_spoken_chars) {
+    let text = match normalize_for_speech(&request.text, config.max_spoken_chars) {
         Some(text) => text,
         None => {
             warn!(
@@ -516,7 +516,7 @@ pub async fn jarvis_tts_speak(
                 workspace_id = ?workspace_id,
                 input_chars = request.text.chars().count(),
                 max_spoken_chars = config.max_spoken_chars,
-                "[JARVIS-TTS] speak rejected after text sanitization",
+                "[JARVIS-TTS] speak rejected after text normalization",
             );
             return Err(to_error(VoiceErrorCode::InvalidRequest));
         }
@@ -548,7 +548,6 @@ pub async fn jarvis_tts_speak(
             rate,
             volume,
             pitch,
-            config.max_spoken_chars,
             cancellation.clone(),
         )
         .await
