@@ -3513,6 +3513,34 @@ mod tests {
     }
 
     #[test]
+    fn binding_identity_mismatches_reject_session_terminal_and_process_changes() {
+        let context = routing_fixture_context(7);
+        let binding = AgentAssignmentBinding {
+            assignment_id: "assignment:test:1".into(),
+            agent_alias: "codex-1".into(),
+            agent_session_id: "session-codex-1".into(),
+            terminal_id: "terminal-1".into(),
+            generation: 7,
+            process_id: Some(100),
+            provider: "codex".into(),
+            provider_session_id: None,
+        };
+        let target = target_from_binding(&context, &binding).expect("valid binding");
+
+        let mut session_mismatch = binding.clone();
+        session_mismatch.agent_session_id = "session-codex-other".into();
+        assert!(!binding_matches_target(&session_mismatch, &target));
+
+        let mut terminal_mismatch = binding.clone();
+        terminal_mismatch.terminal_id = "terminal-other".into();
+        assert!(!binding_matches_target(&terminal_mismatch, &target));
+
+        let mut process_mismatch = binding;
+        process_mismatch.process_id = Some(999);
+        assert!(!binding_matches_target(&process_mismatch, &target));
+    }
+
+    #[test]
     fn follow_up_uses_the_pending_binding_with_duplicate_titles() {
         let context = routing_fixture_context(7);
         let binding = AgentAssignmentBinding {
