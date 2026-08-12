@@ -39,6 +39,9 @@ export interface TerminalConfig {
   command: string | null;
   cwd: string;
   title: string;
+  /** Stable Jarvis identity; never use the navbar title for routing. */
+  agentAlias?: string | null;
+  titleManual?: boolean;
 }
 
 interface TerminalStore {

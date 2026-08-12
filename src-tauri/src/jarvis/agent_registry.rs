@@ -5,7 +5,7 @@ use crate::jarvis::types::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub const MAX_TERMINAL_FALLBACK_BYTES: usize = 32 * 1024;
 pub const MAX_TASK_TEXT_BYTES: usize = 2048;
@@ -34,6 +34,7 @@ pub struct TerminalAgentSnapshot {
     pub workspace_id: String,
     pub is_agent_terminal: bool,
     pub agent_id: Option<String>,
+    pub agent_alias: Option<String>,
     pub observed_provider: Option<String>,
     pub detection_source: String,
     pub detection_confidence: f32,
@@ -151,6 +152,7 @@ pub struct AgentSessionRegistry {
     selected_session: Mutex<Option<String>>,
     input_trackers: Mutex<HashMap<(String, u64), InputTracker>>,
     session_epochs: Mutex<HashMap<(String, u64), u64>>,
+    dispatch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Bounded per-`(terminalId, generation)` tracker that reconstructs only the
@@ -342,6 +344,66 @@ impl AgentSessionRegistry {
         })
     }
 
+    /// Validate the exact session selected by a binding. This is deliberately
+    /// stricter than `control_allowed`: a live terminal with the same title or
+    /// provider is never an acceptable substitute for a stale session.
+    pub fn validate_session_binding(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        expected_session_id: &str,
+        expected_alias: &str,
+        expected_provider: &str,
+    ) -> Result<(), String> {
+        if self.current_session_id(terminal) != expected_session_id {
+            return Err("agent_session_stale".to_string());
+        }
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "agent_registry_unavailable".to_string())?;
+        let record = sessions
+            .get(expected_session_id)
+            .ok_or_else(|| "agent_session_not_found".to_string())?;
+        if record.state == AgentState::Exited
+            || record.reference.workspace_id != terminal.workspace_id
+            || record.reference.terminal_id.as_deref() != Some(terminal.terminal_id.as_str())
+            || record.reference.generation != terminal.generation
+        {
+            return Err("agent_session_stale".to_string());
+        }
+        if record.reference.agent_alias.as_deref() != Some(expected_alias) {
+            return Err("agent_alias_mismatch".to_string());
+        }
+        let provider = normalize_observed_provider(expected_provider)
+            .unwrap_or_else(|| expected_provider.trim().to_ascii_lowercase());
+        if record.reference.resolved_provider != provider {
+            return Err("agent_provider_mismatch".to_string());
+        }
+        if record.reference.identity_needs_confirmation
+            || self.identity_decision(
+                &terminal.terminal_id,
+                terminal.generation,
+                &record.reference.resolved_provider,
+            ) == Some(IdentityDecision::Ignored)
+        {
+            return Err("agent_identity_unconfirmed".to_string());
+        }
+        Ok(())
+    }
+
+    /// Per-alias mutex used to serialize prompt writes. The lock key is the
+    /// internal alias, never the mutable display title.
+    pub fn dispatch_lock(&self, alias: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .dispatch_locks
+            .lock()
+            .expect("agent dispatch lock registry poisoned");
+        locks
+            .entry(alias.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     pub fn observe_terminal_started(
         &self,
         terminal: &TerminalAgentSnapshot,
@@ -392,6 +454,7 @@ impl AgentSessionRegistry {
                     identity_needs_confirmation: identity.identity_needs_confirmation,
                     workspace_id: terminal.workspace_id.clone(),
                     terminal_id: Some(terminal.terminal_id.clone()),
+                    agent_alias: terminal.agent_alias.clone(),
                     terminal_title: None,
                     generation: terminal.generation,
                     provider_session_id: None,
@@ -571,16 +634,34 @@ impl AgentSessionRegistry {
         text: &str,
         observed_at: &str,
     ) {
+        let session_id = self.current_session_id(terminal);
+        let _ = self.observe_jarvis_send_for_session(terminal, &session_id, text, observed_at);
+    }
+
+    /// Record a Jarvis task only for the exact session that was validated by
+    /// the dispatcher. A new session on the same terminal is an error, not a
+    /// reason to silently rebind the follow-up.
+    pub fn observe_jarvis_send_for_session(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        expected_session_id: &str,
+        text: &str,
+        observed_at: &str,
+    ) -> Result<(), String> {
         let Some(reference) = self.observe_terminal_started(terminal, observed_at) else {
-            return;
+            return Err("agent_session_not_found".to_string());
         };
+        if reference.agent_session_id != expected_session_id {
+            return Err("agent_session_stale".to_string());
+        }
         let excerpt = bounded_excerpt(text, MAX_ACTIVITY_EXCERPT_BYTES);
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return;
-        };
-        let Some(record) = sessions.get_mut(&reference.agent_session_id) else {
-            return;
-        };
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "agent_registry_unavailable".to_string())?;
+        let record = sessions
+            .get_mut(&reference.agent_session_id)
+            .ok_or_else(|| "agent_session_not_found".to_string())?;
         record.state = AgentState::Working;
         record.reference.updated_at = observed_at.to_string();
         record.last_activity_at = Some(observed_at.to_string());
@@ -602,6 +683,7 @@ impl AgentSessionRegistry {
             false,
         ));
         sync_reference_enrichment(record);
+        Ok(())
     }
 
     /// Record a confirmed, successfully written `agent.abort` (Ctrl+C). The
@@ -1256,6 +1338,9 @@ fn update_identity_from_snapshot(
     terminal: &TerminalAgentSnapshot,
     identity: &ResolvedIdentity,
 ) {
+    if terminal.agent_alias.is_some() {
+        record.reference.agent_alias = terminal.agent_alias.clone();
+    }
     if record.reference.configured_agent_id.is_none() {
         record.reference.configured_agent_id = terminal.agent_id.clone();
     }
@@ -1542,6 +1627,7 @@ mod tests {
             workspace_id: "workspace-a".to_string(),
             is_agent_terminal: true,
             agent_id: Some("codex".to_string()),
+            agent_alias: Some("codex-1".to_string()),
             observed_provider: None,
             detection_source: "configured-hint".to_string(),
             detection_confidence: 0.65,

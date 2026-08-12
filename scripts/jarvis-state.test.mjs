@@ -456,10 +456,11 @@ test("every PTY mutation revalidates workspace, generation, process and identity
 });
 
 test("Jarvis registers provenance only after shared-PTY writes", () => {
-  assert.match(controlSource, /write_typed_for_generation\(/);
+  assert.match(controlSource, /write_typed_for_runtime\(/);
   assert.match(controlSource, /TerminalInputOrigin::JarvisPrompt/);
-  assert.match(controlSource, /observe_jarvis_send/);
-  assert.match(registrySource, /observe_jarvis_send/);
+  assert.match(controlSource, /observe_jarvis_send_for_session/);
+  assert.match(registrySource, /observe_jarvis_send_for_session/);
+  assert.match(controlSource, /submission_unconfirmed/);
 });
 
 test("semantic target resolution remains bounded and ambiguity-aware", () => {
@@ -469,6 +470,18 @@ test("semantic target resolution remains bounded and ambiguity-aware", () => {
   assert.match(controlSource, /read_agent_tail/);
   assert.match(controlSource, /MAX_TAIL_BYTES: usize = 12 \* 1024/);
   assert.match(controlSource, /TargetResolution::Ambiguous/);
+});
+
+test("agent routing binds alias separately from duplicate display titles", () => {
+  assert.match(controlSource, /agent_alias/);
+  assert.match(controlSource, /agent_session_id/);
+  assert.match(controlSource, /provider_session_id/);
+  assert.match(controlSource, /target_from_binding/);
+  assert.match(controlSource, /agent_binding_stale_or_mismatch/);
+  assert.match(controlSource, /Non ho un binding attivo per questo follow-up/);
+  assert.match(controlSource, /TargetResolution::Selected\(target_from_binding\(context, &binding\)\?\)/);
+  assert.match(registrySource, /dispatch_lock/);
+  assert.match(registrySource, /current_session_id/);
 });
 
 test("busy and destructive actions remain conversational and stale-safe", () => {

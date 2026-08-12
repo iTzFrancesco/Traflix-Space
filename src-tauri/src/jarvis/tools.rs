@@ -441,6 +441,7 @@ pub async fn list_terminals_for_workspace(
                 &session.shell,
                 &cwd,
             ),
+            agent_alias: session.agent_alias.clone(),
             shell: session.shell.clone(),
             cwd,
             active: session.active,
@@ -485,10 +486,13 @@ pub fn canonicalize_terminal_order(
     let mut ordered = Vec::with_capacity(runtime.len());
     for config in &workspace.terminals {
         if let Some(mut terminal) = runtime.remove(&config.id) {
-            let configured_title = if terminal.agent_id.is_none()
+            if terminal.agent_alias.is_none() {
+                terminal.agent_alias = config.agent_alias.clone();
+            }
+            let configured_title = if !config.title_manual
                 && is_default_terminal_title(&config.title, config.agent_id.as_deref())
             {
-                "Terminal"
+                config.agent_id.as_deref().unwrap_or("Terminal")
             } else {
                 &config.title
             };
@@ -575,6 +579,18 @@ pub fn attach_terminal_titles(sessions: &mut [AgentSessionContext], terminals: &
                 })
             })
             .map(|terminal| terminal.title.clone());
+        session.reference.agent_alias = session
+            .reference
+            .terminal_id
+            .as_deref()
+            .and_then(|terminal_id| {
+                terminals.iter().find(|terminal| {
+                    terminal.terminal_id == terminal_id
+                        && terminal.generation == session.reference.generation
+                        && terminal.workspace_id == session.reference.workspace_id
+                })
+            })
+            .and_then(|terminal| terminal.agent_alias.clone());
     }
 }
 
@@ -614,6 +630,7 @@ mod terminal_order_tests {
             terminal_id: id.into(),
             workspace_id: "workspace".into(),
             title: title.into(),
+            agent_alias: None,
             shell: "powershell.exe".into(),
             cwd: "C:\\repo".into(),
             active: false,
@@ -639,6 +656,8 @@ mod terminal_order_tests {
             command: None,
             cwd: "C:\\repo".into(),
             title: title.into(),
+            agent_alias: None,
+            title_manual: false,
             workspace_id: Some("workspace".into()),
         }
     }

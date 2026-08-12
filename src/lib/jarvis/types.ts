@@ -338,6 +338,8 @@ export interface TerminalSummary {
   workspaceId: string;
   /** User-controlled title; Jarvis treats it as a read-only semantic hint. */
   title: string;
+  /** Stable internal identity; never use title as an authorization key. */
+  agentAlias?: string | null;
   shell: string;
   cwd: string;
   active: boolean;
@@ -370,6 +372,37 @@ export interface AgentOpenResult {
   terminalId: string;
   generation: number;
   initialPromptSent: boolean;
+  agentAlias: string;
+  agentSessionId: string;
+  assignmentId?: string;
+  dispatchStatus?:
+    | "pty_write_accepted"
+    | "prompt_submitted"
+    | "turn_started"
+    | "submission_unconfirmed"
+    | "turn_failed";
+  dispatchStages: Array<
+    | "pty_write_accepted"
+    | "prompt_submitted"
+    | "turn_started"
+    | "submission_unconfirmed"
+    | "turn_failed"
+  >;
+}
+
+export interface AgentAssignmentBinding {
+  assignmentId: string;
+  agentAlias: string;
+  agentSessionId: string;
+  terminalId: string;
+  generation: number;
+  processId: number | null;
+  provider: string;
+  providerSessionId?: string;
+}
+
+export interface AgentRecipientReceipt extends AgentAssignmentBinding {
+  displayTitle: string;
 }
 
 export type AgentInteractionSource = "user" | "jarvis" | "system";
@@ -415,6 +448,7 @@ export interface AgentSessionRef {
   identityNeedsConfirmation: boolean;
   workspaceId: string;
   terminalId?: string;
+  agentAlias?: string;
   terminalTitle?: string;
   generation: number;
   providerSessionId?: string;

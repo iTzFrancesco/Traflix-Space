@@ -650,7 +650,9 @@ export function JarvisAdvancedSettings({
             <div key={session.ref.agentSessionId} className="py-2 text-[10px]">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="min-w-0 flex-1 truncate font-medium text-neutral-text">
-                  {session.ref.terminalTitle ?? session.ref.resolvedProvider}
+                  {session.ref.agentAlias
+                    ? `${session.ref.agentAlias} · ${session.ref.terminalTitle ?? session.ref.resolvedProvider}`
+                    : session.ref.terminalTitle ?? session.ref.resolvedProvider}
                 </span>
                 <span className="font-mono text-neutral-text-muted">
                   {session.state} · g{session.ref.generation}

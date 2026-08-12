@@ -198,6 +198,9 @@ pub struct TerminalSession {
     pub active: bool,
     #[allow(dead_code)]
     pub agent_id: Option<String>,
+    /// Stable persisted identity for Jarvis routing; never derived from the
+    /// editable terminal title.
+    pub agent_alias: Option<String>,
     pub observed_provider: Option<String>,
     pub detection_source: String,
     pub detection_confidence: f32,
@@ -263,6 +266,7 @@ impl TerminalSession {
             parser: Arc::new(Mutex::new(AnsiParser::new(cols, rows))),
             active: false,
             agent_id: None,
+            agent_alias: None,
             observed_provider: None,
             detection_source: "fallback".to_string(),
             detection_confidence: 0.2,
@@ -423,6 +427,7 @@ impl TerminalSession {
         let registry_workspace_id = self.workspace_id.clone().unwrap_or_default();
         let registry_is_agent_terminal = self.is_agent_terminal;
         let registry_agent_id = self.agent_id.clone();
+        let registry_agent_alias = self.agent_alias.clone();
         let registry_generation = self.generation;
         let registry_process_id = self.process_id;
 
@@ -512,6 +517,7 @@ impl TerminalSession {
                         workspace_id: registry_workspace_id.clone(),
                         is_agent_terminal: registry_is_agent_terminal,
                         agent_id: registry_agent_id.clone(),
+                        agent_alias: registry_agent_alias.clone(),
                         observed_provider: None,
                         detection_source: "fallback".to_string(),
                         detection_confidence: 0.2,
@@ -558,6 +564,7 @@ impl TerminalSession {
         let registry_workspace_id_watch = self.workspace_id.clone().unwrap_or_default();
         let registry_is_agent_terminal_watch = self.is_agent_terminal;
         let registry_agent_id_watch = self.agent_id.clone();
+        let registry_agent_alias_watch = self.agent_alias.clone();
         let registry_generation_watch = self.generation;
         let registry_process_id_watch = self.process_id;
         tokio::task::spawn_blocking(move || loop {
@@ -589,6 +596,7 @@ impl TerminalSession {
                         workspace_id: registry_workspace_id_watch.clone(),
                         is_agent_terminal: registry_is_agent_terminal_watch,
                         agent_id: registry_agent_id_watch.clone(),
+                        agent_alias: registry_agent_alias_watch.clone(),
                         observed_provider: None,
                         detection_source: "fallback".to_string(),
                         detection_confidence: 0.2,

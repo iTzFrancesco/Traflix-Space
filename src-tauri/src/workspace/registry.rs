@@ -31,7 +31,7 @@ pub struct GridLayout {
     pub cols: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalConfig {
     pub id: String,
@@ -40,6 +40,13 @@ pub struct TerminalConfig {
     pub command: Option<String>,
     pub cwd: String,
     pub title: String,
+    /// Stable internal identity used by Jarvis routing. It is deliberately
+    /// separate from the user-editable navbar title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
+    /// True only after the user explicitly renames the terminal.
+    #[serde(default)]
+    pub title_manual: bool,
     /// Owning workspace. Exposed to the PTY as TRAFLIX_WORKSPACE_ID so the
     /// agent-event bridge can correlate completions with the right workspace.
     /// `default` keeps older persisted workspaces.json files parseable.
@@ -91,6 +98,7 @@ impl WorkspaceRegistry {
         let list: Vec<WorkspaceConfig> =
             serde_json::from_str(&data).map_err(|e| format!("Errore parsing registry: {}", e))?;
         let mut next = HashMap::new();
+        let mut migrated = false;
         for mut workspace in list {
             if next.contains_key(&workspace.id) {
                 return Err("workspace_id_duplicate".to_string());
@@ -98,8 +106,14 @@ impl WorkspaceRegistry {
             for terminal in &mut workspace.terminals {
                 terminal.workspace_id = Some(workspace.id.clone());
             }
+            let before = workspace.terminals.clone();
+            assign_missing_agent_aliases(&mut workspace);
+            migrated |= before != workspace.terminals;
             validate_terminal_identity(&next, &workspace)?;
             next.insert(workspace.id.clone(), workspace);
+        }
+        if migrated {
+            self.save_map(&next)?;
         }
         *self.workspaces.lock().await = next;
         self.loaded.store(true, Ordering::Release);
@@ -141,8 +155,9 @@ impl WorkspaceRegistry {
 
     pub async fn insert_and_save(
         &self,
-        config: WorkspaceConfig,
+        mut config: WorkspaceConfig,
     ) -> Result<WorkspaceConfig, String> {
+        assign_missing_agent_aliases(&mut config);
         self.mutate_and_save(move |map| {
             if map.contains_key(&config.id) {
                 return Err("ID workspace già esistente".to_string());
@@ -162,6 +177,7 @@ impl WorkspaceRegistry {
     ) -> Result<WorkspaceConfig, String> {
         let workspace_id = workspace_id.to_string();
         let expected_updated_at = expected_updated_at.to_string();
+        assign_missing_agent_aliases(&mut config);
         self.mutate_and_save(move |map| {
             let current = map
                 .get(&workspace_id)
@@ -209,7 +225,7 @@ impl WorkspaceRegistry {
     pub async fn append_terminal_and_save(
         &self,
         workspace_id: &str,
-        terminal: TerminalConfig,
+        mut terminal: TerminalConfig,
         max_terminals: usize,
     ) -> Result<WorkspaceConfig, String> {
         let workspace_id = workspace_id.to_string();
@@ -237,6 +253,12 @@ impl WorkspaceRegistry {
                 return Err(format!(
                     "limite di {max_terminals} terminali raggiunto in questa workspace"
                 ));
+            }
+            if terminal.agent_id.is_some() && terminal.agent_alias.is_none() {
+                let mut candidate = workspace.clone();
+                candidate.terminals.push(terminal.clone());
+                assign_missing_agent_aliases(&mut candidate);
+                terminal = candidate.terminals.pop().expect("candidate terminal");
             }
             workspace.terminals.push(terminal);
             workspace.updated_at = next_updated_at(&workspace.updated_at);
@@ -284,6 +306,7 @@ impl WorkspaceRegistry {
                 .find(|terminal| terminal.id == terminal_id)
                 .ok_or_else(|| "Terminale non trovato".to_string())?;
             terminal.title = title;
+            terminal.title_manual = true;
             workspace.updated_at = next_updated_at(&workspace.updated_at);
             Ok(workspace.clone())
         })
@@ -342,9 +365,18 @@ fn validate_terminal_identity(
         return Err("workspace_terminal_limit".to_string());
     }
     let mut candidate_ids = HashSet::new();
+    let mut candidate_aliases = HashSet::new();
     for terminal in &candidate.terminals {
         if terminal.id.trim().is_empty() || !candidate_ids.insert(terminal.id.as_str()) {
             return Err("terminal_id_duplicate".to_string());
+        }
+        if let Some(alias) = terminal.agent_alias.as_deref() {
+            if terminal.agent_id.is_none()
+                || alias.trim().is_empty()
+                || !candidate_aliases.insert(alias.to_ascii_lowercase())
+            {
+                return Err("agent_alias_duplicate_or_invalid".to_string());
+            }
         }
     }
     if workspaces.iter().any(|(workspace_id, workspace)| {
@@ -357,6 +389,67 @@ fn validate_terminal_identity(
         return Err("terminal_id_workspace_collision".to_string());
     }
     Ok(())
+}
+
+fn assign_missing_agent_aliases(workspace: &mut WorkspaceConfig) {
+    let mut used = workspace
+        .terminals
+        .iter()
+        .filter_map(|terminal| terminal.agent_alias.as_deref())
+        .map(str::to_ascii_lowercase)
+        .collect::<HashSet<_>>();
+    let mut counts = HashMap::<String, usize>::new();
+    for terminal in &mut workspace.terminals {
+        if terminal.agent_id.is_none() || terminal.agent_alias.is_some() {
+            continue;
+        }
+        let provider = terminal
+            .agent_id
+            .as_deref()
+            .unwrap_or("agent")
+            .trim()
+            .to_ascii_lowercase();
+        let count = counts.entry(provider.clone()).or_insert(0);
+        let mut alias = if *count == 0 {
+            provider.clone()
+        } else {
+            format!("{provider}-{}", *count + 1)
+        };
+        *count += 1;
+        while used.contains(&alias) {
+            alias = format!("{provider}-{}", *count + 1);
+            *count += 1;
+        }
+        used.insert(alias.clone());
+        terminal.agent_alias = Some(alias);
+        if !terminal.title_manual
+            && !is_builtin_terminal_title(&terminal.title, terminal.agent_id.as_deref())
+        {
+            terminal.title_manual = true;
+        }
+    }
+}
+
+fn is_builtin_terminal_title(title: &str, agent_id: Option<&str>) -> bool {
+    let title = title.trim();
+    if title.is_empty()
+        || title.eq_ignore_ascii_case("terminal")
+        || title.eq_ignore_ascii_case("terminale")
+    {
+        return true;
+    }
+    agent_id.is_some_and(|agent| {
+        let normalized = agent.trim().to_ascii_lowercase();
+        let display = match normalized.as_str() {
+            "codex" => "Codex".to_string(),
+            "opencode" => "OpenCode".to_string(),
+            "claude" => "Claude".to_string(),
+            "pi" => "PI".to_string(),
+            "cline" => "Cline".to_string(),
+            other => other.to_string(),
+        };
+        title.eq_ignore_ascii_case(&display)
+    })
 }
 
 /// Produce a strict monotonic ISO timestamp even if two independent mutations
@@ -379,8 +472,8 @@ fn next_updated_at(current: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        atomic_replace, next_updated_at, validate_terminal_identity, GridLayout, TerminalConfig,
-        WorkspaceConfig,
+        assign_missing_agent_aliases, atomic_replace, next_updated_at, validate_terminal_identity,
+        GridLayout, TerminalConfig, WorkspaceConfig,
     };
     use std::collections::HashMap;
 
@@ -399,6 +492,8 @@ mod tests {
                     command: None,
                     cwd: "C:\\repo".to_string(),
                     title: (*terminal_id).to_string(),
+                    agent_alias: None,
+                    title_manual: false,
                     workspace_id: Some(id.to_string()),
                 })
                 .collect(),
@@ -416,6 +511,30 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(&next).unwrap()
                 > chrono::DateTime::parse_from_rfc3339(current).unwrap()
         );
+    }
+
+    #[test]
+    fn missing_agent_aliases_are_stable_and_titles_keep_manual_state_separate() {
+        let mut workspace = workspace("workspace-a", &["one", "two", "three"]);
+        for (index, terminal) in workspace.terminals.iter_mut().enumerate() {
+            terminal.agent_id = Some("codex".into());
+            terminal.title = if index == 2 {
+                "Voice worker".into()
+            } else {
+                "Codex".into()
+            };
+        }
+        assign_missing_agent_aliases(&mut workspace);
+        assert_eq!(
+            workspace
+                .terminals
+                .iter()
+                .map(|terminal| terminal.agent_alias.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("codex"), Some("codex-2"), Some("codex-3")]
+        );
+        assert!(!workspace.terminals[0].title_manual);
+        assert!(workspace.terminals[2].title_manual);
     }
 
     #[test]

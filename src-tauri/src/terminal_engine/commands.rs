@@ -21,6 +21,14 @@ pub async fn terminal_spawn(
 ) -> Result<crate::terminal_engine::TerminalRuntimeIdentity, String> {
     info!(%terminal_id, "terminal_spawn called");
     let manager = app.state::<TerminalManager>();
+    let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
+    let persisted = registry.get(&workspace_id).await.and_then(|workspace| {
+        workspace
+            .terminals
+            .into_iter()
+            .find(|item| item.id == terminal_id)
+    });
     let config = crate::workspace::registry::TerminalConfig {
         id: terminal_id.clone(),
         shell,
@@ -28,6 +36,8 @@ pub async fn terminal_spawn(
         command: None,
         cwd,
         title: "Terminal".to_string(),
+        agent_alias: persisted.as_ref().and_then(|item| item.agent_alias.clone()),
+        title_manual: persisted.as_ref().is_some_and(|item| item.title_manual),
         workspace_id: Some(workspace_id),
     };
     manager.spawn(app.clone(), config, cols, rows).await?;
@@ -207,6 +217,14 @@ pub async fn terminal_reopen(
     info!(%terminal_id, expected_generation, "Old session killed for reopen");
 
     // Poi creane una nuova
+    let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
+    let persisted = registry.get(&workspace_id).await.and_then(|workspace| {
+        workspace
+            .terminals
+            .into_iter()
+            .find(|item| item.id == terminal_id)
+    });
     let config = crate::workspace::registry::TerminalConfig {
         id: terminal_id.clone(),
         shell,
@@ -214,6 +232,8 @@ pub async fn terminal_reopen(
         command: None,
         cwd,
         title: "Terminal".to_string(),
+        agent_alias: persisted.as_ref().and_then(|item| item.agent_alias.clone()),
+        title_manual: persisted.as_ref().is_some_and(|item| item.title_manual),
         workspace_id: Some(workspace_id),
     };
     manager.spawn(app.clone(), config, cols, rows).await?;

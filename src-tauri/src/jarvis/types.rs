@@ -152,6 +152,9 @@ pub struct TerminalSummary {
     /// User-controlled terminal title. Jarvis may use it as a semantic hint,
     /// but never changes it.
     pub title: String,
+    /// Stable internal agent identity; unlike `title`, it is not user-editable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
     pub shell: String,
     pub cwd: String,
     pub active: bool,
@@ -198,6 +201,9 @@ pub struct AgentSessionRef {
     pub identity_needs_confirmation: bool,
     pub workspace_id: String,
     pub terminal_id: Option<String>,
+    /// Stable assignment identity carried across title edits and follow-ups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_alias: Option<String>,
     /// Effective navbar title at the time of the read. It is a user-controlled
     /// routing hint, never part of session ownership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,6 +218,22 @@ pub struct AgentSessionRef {
     pub current_task: Option<AgentTaskContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<String>,
+}
+
+/// Exact binding between a Jarvis assignment and the runtime that must receive
+/// it. Every field is checked before a follow-up is written to a PTY.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAssignmentBinding {
+    pub assignment_id: String,
+    pub agent_alias: String,
+    pub agent_session_id: String,
+    pub terminal_id: String,
+    pub generation: u64,
+    pub process_id: Option<u32>,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
 }
 
 /// Who originated an agent task or activity. Jarvis-sent prompts are recorded

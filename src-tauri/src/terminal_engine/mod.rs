@@ -193,6 +193,7 @@ impl TerminalManager {
                     session.generation = generation;
                     session.is_agent_terminal = config.agent_id.is_some();
                     session.agent_id = config.agent_id.clone();
+                    session.agent_alias = config.agent_alias.clone();
                     if session.agent_id.is_some() {
                         session.detection_source = "configured-hint".to_string();
                         session.detection_confidence = 0.65;
@@ -1554,6 +1555,7 @@ fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
         workspace_id: session.workspace_id.clone().unwrap_or_default(),
         is_agent_terminal: session.is_agent_terminal,
         agent_id: session.agent_id.clone(),
+        agent_alias: session.agent_alias.clone(),
         observed_provider: session.observed_provider.clone(),
         detection_source: session.detection_source.clone(),
         detection_confidence: session.detection_confidence,

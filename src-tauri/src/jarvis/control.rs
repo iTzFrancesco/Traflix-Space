@@ -22,7 +22,8 @@ fn normalize_plan_provider(value: &str) -> Option<String> {
     }
 }
 use crate::jarvis::types::{
-    AgentSessionContext, AgentState, AgentTail, InvocationBinding, Provenance, TerminalSummary,
+    AgentAssignmentBinding, AgentSessionContext, AgentState, AgentTail, InvocationBinding,
+    Provenance, TerminalSummary,
 };
 use crate::terminal_engine::{
     TerminalAgentSnapshot, TerminalInputOrigin, TerminalManager, TerminalRuntimeIdentity,
@@ -50,6 +51,24 @@ const PENDING_CONVERSATION_TTL: Duration = Duration::from_secs(10 * 60);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_POLL: Duration = Duration::from_millis(120);
 static NEXT_AGENT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ASSIGNMENT_ID: AtomicU64 = AtomicU64::new(1);
+
+const DISPATCH_PTY_WRITE_ACCEPTED: &str = "pty_write_accepted";
+const DISPATCH_PROMPT_SUBMITTED: &str = "prompt_submitted";
+/// Reserved terminal state for a future provider/session-start observation.
+/// Current PTY-only dispatches must remain `submission_unconfirmed`.
+#[allow(dead_code)]
+const DISPATCH_TURN_STARTED: &str = "turn_started";
+const DISPATCH_SUBMISSION_UNCONFIRMED: &str = "submission_unconfirmed";
+const DISPATCH_TURN_FAILED: &str = "turn_failed";
+
+fn new_assignment_id() -> String {
+    format!(
+        "assignment:{}:{}",
+        Utc::now().timestamp_millis(),
+        NEXT_ASSIGNMENT_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 /// JSON input schema of the typed conversational plan tool. Single source of
 /// truth shared by the legacy `conversational_plan` definition (chat.rs) and
@@ -202,6 +221,8 @@ pub struct PendingConversationalIntent {
     pub operation: PlanOperation,
     pub terminal_id: Option<String>,
     pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<AgentAssignmentBinding>,
     pub created_at: String,
     pub expires_at: String,
     pub plan: ConversationalPlan,
@@ -210,6 +231,7 @@ pub struct PendingConversationalIntent {
 #[derive(Default)]
 pub struct ConversationalControlState {
     pending: Mutex<HashMap<String, PendingConversationalIntent>>,
+    last_assignments: Mutex<HashMap<String, AgentAssignmentBinding>>,
 }
 
 impl ConversationalControlState {
@@ -255,6 +277,19 @@ impl ConversationalControlState {
                 intent.plan.operations = operations;
             }
         }
+    }
+
+    pub fn record_assignment(&self, workspace_id: &str, binding: AgentAssignmentBinding) {
+        if let Ok(mut assignments) = self.last_assignments.lock() {
+            assignments.insert(workspace_id.to_string(), binding);
+        }
+    }
+
+    pub fn last_assignment(&self, workspace_id: &str) -> Option<AgentAssignmentBinding> {
+        self.last_assignments
+            .lock()
+            .ok()
+            .and_then(|assignments| assignments.get(workspace_id).cloned())
     }
 }
 
@@ -304,6 +339,59 @@ pub struct StepExecutionReceipt {
     pub status: &'static str,
     pub target: Option<String>,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<AgentRecipientReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRecipientReceipt {
+    pub assignment_id: String,
+    pub agent_alias: String,
+    pub agent_session_id: String,
+    pub terminal_id: String,
+    pub generation: u64,
+    pub process_id: Option<u32>,
+    pub provider: String,
+    pub provider_session_id: Option<String>,
+    pub display_title: String,
+}
+
+#[derive(Debug, Clone)]
+struct StepExecutionOutcome {
+    response: String,
+    status: &'static str,
+    target: Option<String>,
+    recipient: Option<AgentRecipientReceipt>,
+    stages: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentDispatchReceipt {
+    status: &'static str,
+    stages: Vec<&'static str>,
+    binding: AgentAssignmentBinding,
+    recipient: AgentRecipientReceipt,
+}
+
+fn plain_outcome(response: String) -> StepExecutionOutcome {
+    StepExecutionOutcome {
+        response,
+        status: "succeeded",
+        target: None,
+        recipient: None,
+        stages: Vec::new(),
+    }
+}
+
+fn unconfirmed_dispatch_stages() -> Vec<&'static str> {
+    vec![
+        DISPATCH_PTY_WRITE_ACCEPTED,
+        DISPATCH_PROMPT_SUBMITTED,
+        DISPATCH_SUBMISSION_UNCONFIRMED,
+    ]
 }
 
 /// Request-scoped safety net: every running control checkpoint is closed even
@@ -355,6 +443,11 @@ pub struct AgentOpenResult {
     pub terminal_id: String,
     pub generation: u64,
     pub initial_prompt_sent: bool,
+    pub agent_alias: String,
+    pub agent_session_id: String,
+    pub assignment_id: Option<String>,
+    pub dispatch_status: Option<&'static str>,
+    pub dispatch_stages: Vec<&'static str>,
 }
 
 /// Typed command seam for callers that already have an explicit provider.
@@ -373,12 +466,22 @@ pub async fn open_agent_for_invocation(
         sent,
         terminal_id,
         generation,
+        agent_alias,
+        agent_session_id,
+        dispatch,
     } = opened;
     Ok(AgentOpenResult {
         provider,
         terminal_id,
         generation,
         initial_prompt_sent: sent,
+        agent_alias,
+        agent_session_id,
+        assignment_id: dispatch
+            .as_ref()
+            .map(|item| item.binding.assignment_id.clone()),
+        dispatch_status: dispatch.as_ref().map(|item| item.status),
+        dispatch_stages: dispatch.map(|item| item.stages).unwrap_or_default(),
     })
 }
 
@@ -429,31 +532,41 @@ pub async fn execute_plan(
                     .into_iter()
                     .map(|(step, target, prompt)| async move {
                         let label = target_label(&target);
-                        let result = send_to_target(app, invocation, &target, &prompt).await;
+                        let result = send_to_target(app, invocation, &target, &prompt, None).await;
                         (step, label, result)
                     }),
             )
             .await;
             for (step, label, result) in results {
                 match result {
-                    Ok(()) => {
+                    Ok(dispatch) => {
+                        state.control.record_assignment(
+                            &invocation.target_workspace_id,
+                            dispatch.binding.clone(),
+                        );
                         let message = format!("Fatto, l'ho inviato a {label}.");
                         response = append_response(response, &message);
                         receipts.push(StepExecutionReceipt {
                             operation: step.operation,
-                            status: "succeeded",
+                            status: dispatch.status,
                             target: Some(label),
                             message,
+                            recipient: Some(dispatch.recipient),
+                            stages: dispatch.stages,
                         });
                     }
                     Err(error) => {
                         warnings.push("independent_agent_step_failed".to_string());
-                        response = append_response(response, &error);
+                        let brief = brief_control_error(&error);
+                        let stages = dispatch_failure_stages(&error);
+                        response = append_response(response, &brief);
                         receipts.push(StepExecutionReceipt {
                             operation: step.operation,
-                            status: "failed",
+                            status: dispatch_failure_status(&error),
                             target: Some(label),
                             message: error,
+                            recipient: None,
+                            stages,
                         });
                     }
                 }
@@ -495,6 +608,7 @@ pub async fn execute_plan(
                 Ok(context) => context,
                 Err(error) => {
                     let message = format!("Non ho eseguito questo passaggio: {error}.");
+                    let stages = dispatch_failure_stages(&message);
                     response = append_response(response, &message);
                     warnings.push("operational_context_refresh_failed".to_string());
                     receipts.push(StepExecutionReceipt {
@@ -502,6 +616,8 @@ pub async fn execute_plan(
                         status: "failed",
                         target: step.target.clone().or_else(|| step.provider.clone()),
                         message,
+                        recipient: None,
+                        stages,
                     });
                     if matches!(
                         step.operation,
@@ -523,9 +639,9 @@ pub async fn execute_plan(
         )
         .await;
         match result {
-            Ok(step_response) => {
-                if !step_response.is_empty() {
-                    response = append_response(response, &step_response);
+            Ok(outcome) => {
+                if !outcome.response.is_empty() {
+                    response = append_response(response, &outcome.response);
                 }
                 // A clarification/confirmation is a hard conversational
                 // boundary. Never continue later plan operations after asking
@@ -538,8 +654,13 @@ pub async fn execute_plan(
                     receipts.push(StepExecutionReceipt {
                         operation: step.operation.clone(),
                         status: "paused",
-                        target: step.target.clone().or_else(|| step.provider.clone()),
-                        message: step_response,
+                        target: outcome
+                            .target
+                            .clone()
+                            .or_else(|| step.target.clone().or_else(|| step.provider.clone())),
+                        message: outcome.response,
+                        recipient: outcome.recipient,
+                        stages: outcome.stages,
                     });
                     state.control.replace_plan(
                         &invocation.target_workspace_id,
@@ -549,19 +670,28 @@ pub async fn execute_plan(
                 }
                 receipts.push(StepExecutionReceipt {
                     operation: step.operation.clone(),
-                    status: "succeeded",
-                    target: step.target.clone().or_else(|| step.provider.clone()),
-                    message: step_response,
+                    status: outcome.status,
+                    target: outcome
+                        .target
+                        .clone()
+                        .or_else(|| step.target.clone().or_else(|| step.provider.clone())),
+                    message: outcome.response,
+                    recipient: outcome.recipient,
+                    stages: outcome.stages,
                 });
             }
             Err(step_error) => {
-                response = append_response(response, &step_error);
+                let brief = brief_control_error(&step_error);
+                let stages = dispatch_failure_stages(&step_error);
+                response = append_response(response, &brief);
                 warnings.push("plan_step_failed".to_string());
                 receipts.push(StepExecutionReceipt {
                     operation: step.operation.clone(),
-                    status: "failed",
+                    status: dispatch_failure_status(&step_error),
                     target: step.target.clone().or_else(|| step.provider.clone()),
                     message: step_error,
+                    recipient: None,
+                    stages,
                 });
                 if state
                     .control
@@ -630,6 +760,29 @@ fn append_response(current: String, message: &str) -> String {
     }
 }
 
+fn brief_control_error(error: &str) -> String {
+    if error.starts_with("turn_failed:") {
+        return "Invio agente non riuscito; il destinatario non è confermato.".to_string();
+    }
+    compact_response(error)
+}
+
+fn dispatch_failure_status(error: &str) -> &'static str {
+    if error.starts_with("turn_failed:") {
+        DISPATCH_TURN_FAILED
+    } else {
+        "failed"
+    }
+}
+
+fn dispatch_failure_stages(error: &str) -> Vec<&'static str> {
+    if error.starts_with("turn_failed:") {
+        vec![DISPATCH_TURN_FAILED]
+    } else {
+        Vec::new()
+    }
+}
+
 fn should_parallelize_agent_sends(operations: &[ConversationStep]) -> bool {
     operations.len() > 1
         && operations
@@ -684,7 +837,10 @@ fn operations_for_execution(
         return (plan.operations.clone(), false);
     }
 
-    let mut operations = vec![merge_step_with_pending(first, Some(pending))];
+    // Keep the user's fresh step intact here; `execute_step` merges omitted
+    // fields only for execution, while routing safety must still distinguish
+    // an explicit new target from fields restored from the pending intent.
+    let mut operations = vec![first.clone()];
     operations.extend(pending.plan.operations.iter().skip(1).cloned());
     (operations, true)
 }
@@ -721,7 +877,7 @@ async fn execute_step(
     pending: Option<&PendingConversationalIntent>,
     reserved_terminal_ids: &mut HashSet<String>,
     incoming_step: &ConversationStep,
-) -> Result<String, String> {
+) -> Result<StepExecutionOutcome, String> {
     // The current turn carries the new choice (provider, confirmed,
     // allowBusy), while the exact pending state preserves omitted semantic
     // fields from the previous turn. This lets short answers such as “sì”,
@@ -730,11 +886,12 @@ async fn execute_step(
     let step = &step;
 
     match step.operation {
-        PlanOperation::Respond => Ok(step
-            .prompt
-            .clone()
-            .or_else(|| Some("Dimmi pure.".to_string()))
-            .unwrap_or_default()),
+        PlanOperation::Respond => Ok(plain_outcome(
+            step.prompt
+                .clone()
+                .or_else(|| Some("Dimmi pure.".to_string()))
+                .unwrap_or_default(),
+        )),
         PlanOperation::Clarify => {
             let question = step
                 .prompt
@@ -742,10 +899,16 @@ async fn execute_step(
                 .or_else(|| Some("Mi serve un dettaglio in più.".to_string()))
                 .unwrap_or_default();
             put_clarification(app, invocation, step, question.clone());
-            Ok(question)
+            Ok(StepExecutionOutcome {
+                response: question,
+                status: "paused",
+                target: None,
+                recipient: None,
+                stages: Vec::new(),
+            })
         }
-        PlanOperation::DraftPrompt => Ok(step.prompt.clone().unwrap_or_default()),
-        PlanOperation::AgentReport => Ok(build_agent_report(context)),
+        PlanOperation::DraftPrompt => Ok(plain_outcome(step.prompt.clone().unwrap_or_default())),
+        PlanOperation::AgentReport => Ok(plain_outcome(build_agent_report(context))),
         PlanOperation::AgentOpen => {
             let initial_prompt = if step
                 .source
@@ -776,15 +939,45 @@ async fn execute_step(
             let Some(provider) = step.provider.as_deref().and_then(normalize_plan_provider) else {
                 let question = "Quale agente vuoi aprire?".to_string();
                 put_clarification(app, invocation, step, question.clone());
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: None,
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             };
             let opened = open_agent(app, workspace, invocation, &provider, initial_prompt).await?;
             Ok(match opened {
-                OpenResult::Opened { provider, sent, .. } => {
-                    if sent {
-                        format!("Fatto, ho aperto {provider} e gli ho passato la task.")
+                OpenResult::Opened {
+                    provider,
+                    sent,
+                    agent_alias,
+                    dispatch,
+                    ..
+                } => {
+                    if let Some(dispatch) = dispatch {
+                        StepExecutionOutcome {
+                            response: format!(
+                                "Aperto {agent_alias}; task scritta, avvio del turno non confermato."
+                            ),
+                            status: dispatch.status,
+                            target: Some(agent_alias),
+                            recipient: Some(dispatch.recipient),
+                            stages: dispatch.stages,
+                        }
                     } else {
-                        format!("Fatto, ho aperto {provider}.")
+                        StepExecutionOutcome {
+                            response: if sent {
+                                format!("Fatto, ho aperto {provider}.")
+                            } else {
+                                format!("Fatto, ho aperto {provider}.")
+                            },
+                            status: "succeeded",
+                            target: Some(agent_alias),
+                            recipient: None,
+                            stages: Vec::new(),
+                        }
                     }
                 }
             })
@@ -792,9 +985,36 @@ async fn execute_step(
         PlanOperation::AgentSend => {
             let prompt = validate_agent_text(step.prompt.as_deref().unwrap_or_default())
                 .map_err(|_| "Non ho inviato il task: il prompt non è valido.".to_string())?;
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            let no_explicit_target = incoming_step
+                .target
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+                && incoming_step
+                    .provider
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty());
+            let resolution = if let Some(target) =
+                bound_target_from_pending(context, pending, step, incoming_step)?
             {
                 TargetResolution::Selected(target)
+            } else if no_explicit_target {
+                let binding = app
+                    .state::<crate::jarvis::JarvisState>()
+                    .control
+                    .last_assignment(&invocation.target_workspace_id);
+                let Some(binding) = binding else {
+                    let question =
+                        "Non ho un binding attivo per questo follow-up. Indica l'alias dell'agente, per esempio codex-2.".to_string();
+                    put_clarification(app, invocation, step, question.clone());
+                    return Ok(StepExecutionOutcome {
+                        response: question,
+                        status: "paused",
+                        target: None,
+                        recipient: None,
+                        stages: Vec::new(),
+                    });
+                };
+                TargetResolution::Selected(target_from_binding(context, &binding)?)
             } else {
                 resolve_target(
                     app,
@@ -809,11 +1029,11 @@ async fn execute_step(
                     let opened =
                         open_agent(app, workspace, invocation, &provider, Some(prompt.clone()))
                             .await?;
-                    return Ok(match opened {
+                    return Ok(plain_outcome(match opened {
                         OpenResult::Opened { provider, .. } => {
                             format!("Fatto, ho aperto {provider} e gli ho inviato la task.")
                         }
-                    });
+                    }));
                 }
             }
             let target = target_or_clarify(app, invocation, step, resolution, "inviare la task")?;
@@ -830,11 +1050,44 @@ async fn execute_step(
                     &target,
                     question.clone(),
                 );
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: Some(label),
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             }
-            send_to_target(app, invocation, &target, &prompt).await?;
+            let binding = if no_explicit_target {
+                pending
+                    .and_then(|intent| intent.binding.clone())
+                    .or_else(|| {
+                        app.state::<crate::jarvis::JarvisState>()
+                            .control
+                            .last_assignment(&invocation.target_workspace_id)
+                    })
+            } else {
+                None
+            };
+            let dispatch = send_to_target(app, invocation, &target, &prompt, binding).await?;
+            app.state::<crate::jarvis::JarvisState>()
+                .control
+                .record_assignment(&invocation.target_workspace_id, dispatch.binding.clone());
             reserved_terminal_ids.insert(target.terminal.terminal_id.clone());
-            Ok(format!("Fatto, l'ho inviato a {}.", target_label(&target)))
+            Ok(StepExecutionOutcome {
+                response: if dispatch.status == DISPATCH_SUBMISSION_UNCONFIRMED {
+                    format!(
+                        "Scritto a {}; avvio del turno non confermato.",
+                        target_label(&target)
+                    )
+                } else {
+                    format!("Fatto, l'ho inviato a {}.", target_label(&target))
+                },
+                status: dispatch.status,
+                target: Some(target_label(&target)),
+                recipient: Some(dispatch.recipient),
+                stages: dispatch.stages,
+            })
         }
         PlanOperation::AgentHandoff => {
             let source = resolve_target(app, context, step.source.as_deref(), None).await;
@@ -845,18 +1098,19 @@ async fn execute_step(
                 source,
                 "leggere la sorgente dell'handoff",
             )?;
-            let destination =
-                if let Some(target) = bound_target_from_pending(context, pending, step) {
-                    TargetResolution::Selected(target)
-                } else {
-                    resolve_target(
-                        app,
-                        context,
-                        step.destination.as_deref().or(step.target.as_deref()),
-                        step.provider.as_deref(),
-                    )
-                    .await
-                };
+            let destination = if let Some(target) =
+                bound_target_from_pending(context, pending, step, incoming_step)?
+            {
+                TargetResolution::Selected(target)
+            } else {
+                resolve_target(
+                    app,
+                    context,
+                    step.destination.as_deref().or(step.target.as_deref()),
+                    step.provider.as_deref(),
+                )
+                .await
+            };
             let destination =
                 target_or_clarify(app, invocation, step, destination, "inviare l'handoff")?;
             reject_reused_target(&reserved_terminal_ids, &destination)?;
@@ -873,7 +1127,13 @@ async fn execute_step(
                     &destination,
                     question.clone(),
                 );
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: Some(target_label(&destination)),
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             }
             let evidence = source_evidence(app, &source).await?;
             let prompt = build_handoff_prompt(
@@ -881,16 +1141,26 @@ async fn execute_step(
                 &evidence,
                 step.prompt.as_deref().unwrap_or_default(),
             )?;
-            send_to_target(app, invocation, &destination, &prompt).await?;
+            let binding = pending.and_then(|intent| intent.binding.clone());
+            let dispatch = send_to_target(app, invocation, &destination, &prompt, binding).await?;
+            app.state::<crate::jarvis::JarvisState>()
+                .control
+                .record_assignment(&invocation.target_workspace_id, dispatch.binding.clone());
             reserved_terminal_ids.insert(destination.terminal.terminal_id.clone());
-            Ok(format!(
-                "Fatto, ho passato a {} il risultato di {}.",
-                target_label(&destination),
-                target_label(&source)
-            ))
+            Ok(StepExecutionOutcome {
+                response: format!(
+                    "Scritto a {}; avvio del turno non confermato.",
+                    target_label(&destination)
+                ),
+                status: dispatch.status,
+                target: Some(target_label(&destination)),
+                recipient: Some(dispatch.recipient),
+                stages: dispatch.stages,
+            })
         }
         PlanOperation::AgentAbort => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            let resolution = if let Some(target) =
+                bound_target_from_pending(context, pending, step, incoming_step)?
             {
                 TargetResolution::Selected(target)
             } else {
@@ -915,7 +1185,13 @@ async fn execute_step(
                     target_label(&target)
                 );
                 put_confirmation(app, invocation, step, &target, question.clone());
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: Some(target_label(&target)),
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             }
             let snapshot = fresh_snapshot(app, invocation, &target).await?;
             app.state::<TerminalManager>()
@@ -929,10 +1205,14 @@ async fn execute_step(
                 .await
                 .map_err(|_| "Non sono riuscito a interrompere l'agente.".to_string())?;
             let _ = snapshot;
-            Ok(format!("Fatto, ho interrotto {}.", target_label(&target)))
+            Ok(plain_outcome(format!(
+                "Fatto, ho interrotto {}.",
+                target_label(&target)
+            )))
         }
         PlanOperation::TerminalClose => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            let resolution = if let Some(target) =
+                bound_target_from_pending(context, pending, step, incoming_step)?
             {
                 TargetResolution::Selected(target)
             } else {
@@ -952,13 +1232,23 @@ async fn execute_step(
                     target_label(&target)
                 );
                 put_confirmation(app, invocation, step, &target, question.clone());
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: Some(target_label(&target)),
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             }
             close_target(app, workspace, invocation, &target).await?;
-            Ok(format!("Fatto, ho chiuso {}.", target_label(&target)))
+            Ok(plain_outcome(format!(
+                "Fatto, ho chiuso {}.",
+                target_label(&target)
+            )))
         }
         PlanOperation::TerminalRestart => {
-            let resolution = if let Some(target) = bound_target_from_pending(context, pending, step)
+            let resolution = if let Some(target) =
+                bound_target_from_pending(context, pending, step, incoming_step)?
             {
                 TargetResolution::Selected(target)
             } else {
@@ -978,10 +1268,19 @@ async fn execute_step(
                     target_label(&target)
                 );
                 put_confirmation(app, invocation, step, &target, question.clone());
-                return Ok(question);
+                return Ok(StepExecutionOutcome {
+                    response: question,
+                    status: "paused",
+                    target: Some(target_label(&target)),
+                    recipient: None,
+                    stages: Vec::new(),
+                });
             }
             restart_target(app, workspace, invocation, &target).await?;
-            Ok(format!("Fatto, ho riavviato {}.", target_label(&target)))
+            Ok(plain_outcome(format!(
+                "Fatto, ho riavviato {}.",
+                target_label(&target)
+            )))
         }
     }
 }
@@ -1035,48 +1334,115 @@ fn merge_step_with_pending(
     merged
 }
 
+fn binding_for_target(target: &ResolvedAgentTarget) -> AgentAssignmentBinding {
+    let alias = target
+        .terminal
+        .agent_alias
+        .clone()
+        .or_else(|| target.session.reference.agent_alias.clone())
+        .unwrap_or_else(|| format!("terminal-{}", target.terminal.terminal_id));
+    AgentAssignmentBinding {
+        assignment_id: new_assignment_id(),
+        agent_alias: alias,
+        agent_session_id: target.session.reference.agent_session_id.clone(),
+        terminal_id: target.terminal.terminal_id.clone(),
+        generation: target.terminal.generation,
+        process_id: target.terminal.process_id,
+        provider: target.session.resolved_provider.clone(),
+        provider_session_id: target.session.reference.provider_session_id.clone(),
+    }
+}
+
+fn recipient_from_target(
+    binding: &AgentAssignmentBinding,
+    target: &ResolvedAgentTarget,
+) -> AgentRecipientReceipt {
+    AgentRecipientReceipt {
+        assignment_id: binding.assignment_id.clone(),
+        agent_alias: binding.agent_alias.clone(),
+        agent_session_id: binding.agent_session_id.clone(),
+        terminal_id: binding.terminal_id.clone(),
+        generation: binding.generation,
+        process_id: binding.process_id,
+        provider: binding.provider.clone(),
+        provider_session_id: binding.provider_session_id.clone(),
+        display_title: target.terminal.title.clone(),
+    }
+}
+
+fn target_from_binding(
+    context: &crate::jarvis::types::ModelContextViewV1,
+    binding: &AgentAssignmentBinding,
+) -> Result<ResolvedAgentTarget, String> {
+    let terminal = context
+        .terminals
+        .iter()
+        .find(|terminal| {
+            terminal.workspace_id == context.invocation.target_workspace_id
+                && terminal.terminal_id == binding.terminal_id
+                && terminal.generation == binding.generation
+                && binding
+                    .process_id
+                    .is_none_or(|process_id| terminal.process_id == Some(process_id))
+                && terminal.process_alive
+                && terminal.agent_alias.as_deref() == Some(binding.agent_alias.as_str())
+        })
+        .ok_or_else(|| "agent_binding_stale_or_mismatch".to_string())?;
+    let session = context
+        .agent_sessions
+        .iter()
+        .find(|session| {
+            session.reference.agent_session_id == binding.agent_session_id
+                && session.reference.workspace_id == context.invocation.target_workspace_id
+                && session.reference.terminal_id.as_deref() == Some(binding.terminal_id.as_str())
+                && session.reference.generation == binding.generation
+                && session.reference.agent_alias.as_deref() == Some(binding.agent_alias.as_str())
+                && session.reference.resolved_provider == binding.provider
+                && (binding.provider_session_id.is_none()
+                    || session.reference.provider_session_id == binding.provider_session_id)
+                && session.state != AgentState::Exited
+        })
+        .ok_or_else(|| "agent_binding_stale_or_mismatch".to_string())?;
+    Ok(ResolvedAgentTarget {
+        terminal: terminal.clone(),
+        session: session.clone(),
+    })
+}
+
 fn bound_target_from_pending(
     context: &crate::jarvis::types::ModelContextViewV1,
     pending: Option<&PendingConversationalIntent>,
     step: &ConversationStep,
-) -> Option<ResolvedAgentTarget> {
+    incoming_step: &ConversationStep,
+) -> Result<Option<ResolvedAgentTarget>, String> {
     if !step.confirmed && !step.allow_busy {
-        return None;
+        return Ok(None);
     }
     // An explicit provider/target in the new turn is a new routing choice;
     // never let the old confirmation silently override “Codex” with the
     // previously pending PI target.
-    if step
+    if incoming_step
         .provider
         .as_deref()
         .is_some_and(|provider| !provider.trim().is_empty())
-        || step
+        || incoming_step
             .target
             .as_deref()
             .is_some_and(|target| !target.trim().is_empty())
     {
-        return None;
+        return Ok(None);
     }
-    let pending = pending?;
+    let Some(pending) = pending else {
+        return Ok(None);
+    };
     if pending.operation != step.operation {
-        return None;
+        return Ok(None);
     }
-    let terminal_id = pending.terminal_id.as_deref()?;
-    let generation = pending.generation?;
-    let terminal = context.terminals.iter().find(|terminal| {
-        terminal.terminal_id == terminal_id
-            && terminal.generation == generation
-            && terminal.workspace_id == context.invocation.target_workspace_id
-    })?;
-    let session = context.agent_sessions.iter().find(|session| {
-        session.reference.terminal_id.as_deref() == Some(terminal_id)
-            && session.reference.generation == generation
-            && session.reference.workspace_id == context.invocation.target_workspace_id
-    })?;
-    Some(ResolvedAgentTarget {
-        terminal: terminal.clone(),
-        session: session.clone(),
-    })
+    let binding = pending
+        .binding
+        .as_ref()
+        .ok_or_else(|| "agent_binding_missing".to_string())?;
+    target_from_binding(context, binding).map(Some)
 }
 
 fn target_or_clarify(
@@ -1127,6 +1493,41 @@ async fn resolve_target(
     } else {
         normalize_plan_provider(query_text)
     };
+    // The internal alias is the only exact semantic identity. A matching
+    // alias bypasses title/task scoring, while duplicate/corrupt aliases are
+    // surfaced as ambiguous instead of selecting by iteration order.
+    if !query_text.is_empty() {
+        let alias_matches = context
+            .agent_sessions
+            .iter()
+            .filter_map(|session| {
+                let alias = session.reference.agent_alias.as_deref()?;
+                if !alias.eq_ignore_ascii_case(query_text) || session.state == AgentState::Exited {
+                    return None;
+                }
+                let terminal = context.terminals.iter().find(|terminal| {
+                    terminal.terminal_id
+                        == session.reference.terminal_id.as_deref().unwrap_or_default()
+                        && terminal.generation == session.reference.generation
+                        && terminal.workspace_id == context.invocation.target_workspace_id
+                        && terminal.process_alive
+                        && terminal.agent_alias.as_deref() == Some(alias)
+                })?;
+                Some(ResolvedAgentTarget {
+                    terminal: terminal.clone(),
+                    session: session.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return TargetResolution::Selected(alias_matches.into_iter().next().unwrap());
+        }
+        if alias_matches.len() > 1 {
+            return TargetResolution::Ambiguous(
+                alias_matches.iter().map(target_label).take(4).collect(),
+            );
+        }
+    }
     // If the semantic query is only a provider name ("Codex"), constrain to
     // that provider first. With multiple sessions of the same provider this
     // remains ambiguous; availability alone is not enough to guess which pane
@@ -1254,9 +1655,19 @@ fn score_candidate(
         return score;
     }
     let title = terminal.title.to_ascii_lowercase();
+    let alias = terminal
+        .agent_alias
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let provider_name = session.resolved_provider.to_ascii_lowercase();
     if title.contains(&query) {
         score += 80;
+    }
+    if alias == query {
+        score += 1_000;
+    } else if alias.contains(&query) {
+        score += 160;
     }
     if provider_name == query || query.contains(&provider_name) {
         score += 70;
@@ -1279,11 +1690,20 @@ fn token_overlap(left: &str, right: &str) -> i32 {
 }
 
 fn display_candidate(session: &AgentSessionContext, terminal: &TerminalSummary) -> String {
-    if terminal.title.trim().is_empty() || terminal.title.eq_ignore_ascii_case("terminal") {
-        provider_display_name(&session.resolved_provider)
-    } else {
-        terminal.title.clone()
+    let title =
+        if terminal.title.trim().is_empty() || terminal.title.eq_ignore_ascii_case("terminal") {
+            provider_display_name(&session.resolved_provider)
+        } else {
+            terminal.title.clone()
+        };
+    if let Some(alias) = terminal
+        .agent_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return format!("{alias} — {title}");
     }
+    title
 }
 
 fn target_label(target: &ResolvedAgentTarget) -> String {
@@ -1397,8 +1817,19 @@ async fn send_to_target(
     invocation: &InvocationBinding,
     target: &ResolvedAgentTarget,
     prompt: &str,
-) -> Result<(), String> {
+    binding: Option<AgentAssignmentBinding>,
+) -> Result<AgentDispatchReceipt, String> {
+    let state = app.state::<crate::jarvis::JarvisState>();
+    let binding = binding.unwrap_or_else(|| binding_for_target(target));
+    let lock = state.registry.dispatch_lock(&binding.agent_alias);
+    let _dispatch_guard = lock.lock().await;
     let snapshot = fresh_snapshot(app, invocation, target).await?;
+    state.registry.validate_session_binding(
+        &snapshot,
+        &binding.agent_session_id,
+        &binding.agent_alias,
+        &binding.provider,
+    )?;
     emit_checkpoint(
         app,
         &invocation.request_id,
@@ -1427,7 +1858,7 @@ async fn send_to_target(
                 JarvisActivityStatus::Failed,
                 None,
             );
-            return Err("prompt agente non valido".to_string());
+            return Err("turn_failed: prompt agente non valido".to_string());
         }
     };
     info!(
@@ -1437,14 +1868,22 @@ async fn send_to_target(
         generation = snapshot.generation,
         provider = %target.session.resolved_provider,
         prompt_bytes = bytes.len(),
+        assignment_id = %binding.assignment_id,
+        agent_alias = %binding.agent_alias,
         "Jarvis agent PTY write starting"
     );
     if let Err(error) = app
         .state::<TerminalManager>()
-        .write_typed_for_generation(
+        .write_typed_for_runtime(
             app,
             &target.terminal.terminal_id,
+            &invocation.target_workspace_id,
             snapshot.generation,
+            snapshot.process_id,
+            Some(&format!(
+                "jarvis-send-{}-{}",
+                invocation.request_id, binding.assignment_id
+            )),
             &bytes,
             TerminalInputOrigin::JarvisPrompt,
         )
@@ -1468,7 +1907,9 @@ async fn send_to_target(
             JarvisActivityStatus::Failed,
             None,
         );
-        return Err("non sono riuscito a scrivere nella PTY".to_string());
+        return Err(format!(
+            "turn_failed: non sono riuscito a scrivere nella PTY: {error}"
+        ));
     }
     info!(
         request_id = %invocation.request_id,
@@ -1478,19 +1919,27 @@ async fn send_to_target(
         provider = %target.session.resolved_provider,
         "Jarvis agent PTY write succeeded"
     );
-    app.state::<crate::jarvis::JarvisState>()
-        .registry
-        .observe_jarvis_send(&snapshot, prompt, &now());
+    state.registry.observe_jarvis_send_for_session(
+        &snapshot,
+        &binding.agent_session_id,
+        prompt,
+        &now(),
+    )?;
     emit_checkpoint(
         app,
         &invocation.request_id,
         &invocation.target_workspace_id,
         "writing",
-        "Done.",
-        JarvisActivityStatus::Done,
+        "Scritto; avvio turno non confermato.",
+        JarvisActivityStatus::Running,
         None,
     );
-    Ok(())
+    Ok(AgentDispatchReceipt {
+        status: DISPATCH_SUBMISSION_UNCONFIRMED,
+        stages: unconfirmed_dispatch_stages(),
+        recipient: recipient_from_target(&binding, target),
+        binding,
+    })
 }
 
 async fn fresh_snapshot(
@@ -1506,19 +1955,41 @@ async fn fresh_snapshot(
         .ok_or_else(|| "terminale non disponibile".to_string())?;
     if snapshot.workspace_id != invocation.target_workspace_id
         || snapshot.generation != target.terminal.generation
+        || target
+            .terminal
+            .process_id
+            .is_some_and(|process_id| snapshot.process_id != Some(process_id))
     {
-        return Err("la generazione o la workspace del terminale è cambiata".to_string());
+        return Err("agent_binding_stale_or_mismatch".to_string());
     }
     if !snapshot.process_alive || !snapshot.is_agent_terminal {
-        return Err("il processo agente non è più vivo".to_string());
+        return Err("agent_binding_stale_or_mismatch".to_string());
     }
-    if !app
-        .state::<crate::jarvis::JarvisState>()
-        .registry
-        .control_allowed(&snapshot.terminal_id, snapshot.generation)
+    let alias = target
+        .terminal
+        .agent_alias
+        .as_deref()
+        .or(target.session.reference.agent_alias.as_deref())
+        .ok_or_else(|| "agent_alias_missing".to_string())?;
+    if snapshot.agent_alias.as_deref() != Some(alias)
+        || app
+            .state::<crate::jarvis::JarvisState>()
+            .registry
+            .current_session_id(&snapshot)
+            != target.session.reference.agent_session_id
     {
-        return Err("l'identità dell'agente non è sufficientemente verificata".to_string());
+        return Err("agent_binding_stale_or_mismatch".to_string());
     }
+    let registry = &app.state::<crate::jarvis::JarvisState>().registry;
+    if !registry.control_allowed(&snapshot.terminal_id, snapshot.generation) {
+        return Err("agent_identity_unconfirmed".to_string());
+    }
+    registry.validate_session_binding(
+        &snapshot,
+        &target.session.reference.agent_session_id,
+        alias,
+        &target.session.resolved_provider,
+    )?;
     Ok(snapshot)
 }
 
@@ -1537,6 +2008,7 @@ fn put_clarification(
             operation: step.operation.clone(),
             terminal_id: None,
             generation: None,
+            binding: None,
             created_at: now(),
             expires_at: (Utc::now()
                 + chrono::Duration::from_std(PENDING_CONVERSATION_TTL).unwrap_or_default())
@@ -1564,6 +2036,7 @@ fn put_confirmation(
             operation: step.operation.clone(),
             terminal_id: Some(target.terminal.terminal_id.clone()),
             generation: Some(target.terminal.generation),
+            binding: Some(binding_for_target(target)),
             created_at: now(),
             expires_at: (Utc::now()
                 + chrono::Duration::from_std(PENDING_CONVERSATION_TTL).unwrap_or_default())
@@ -1591,6 +2064,7 @@ fn put_confirmation_like_clarification(
             operation: step.operation.clone(),
             terminal_id: Some(target.terminal.terminal_id.clone()),
             generation: Some(target.terminal.generation),
+            binding: Some(binding_for_target(target)),
             created_at: now(),
             expires_at: (Utc::now()
                 + chrono::Duration::from_std(PENDING_CONVERSATION_TTL).unwrap_or_default())
@@ -1611,8 +2085,10 @@ fn confirmation_matches(
         && pending.is_some_and(|intent| {
             intent.kind == PendingConversationKind::Confirmation
                 && intent.operation == step.operation
-                && intent.terminal_id.as_deref() == Some(target.terminal.terminal_id.as_str())
-                && intent.generation == Some(target.terminal.generation)
+                && intent
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding_matches_target(binding, target))
         })
 }
 
@@ -1625,9 +2101,29 @@ fn busy_override_matches(
         && pending.is_some_and(|intent| {
             intent.kind == PendingConversationKind::Clarification
                 && intent.operation == step.operation
-                && intent.terminal_id.as_deref() == Some(target.terminal.terminal_id.as_str())
-                && intent.generation == Some(target.terminal.generation)
+                && intent
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding_matches_target(binding, target))
         })
+}
+
+fn binding_matches_target(binding: &AgentAssignmentBinding, target: &ResolvedAgentTarget) -> bool {
+    let alias = target.terminal.agent_alias.as_deref().or(target
+        .session
+        .reference
+        .agent_alias
+        .as_deref());
+    binding.terminal_id == target.terminal.terminal_id
+        && binding.generation == target.terminal.generation
+        && binding
+            .process_id
+            .is_none_or(|process_id| target.terminal.process_id == Some(process_id))
+        && alias == Some(binding.agent_alias.as_str())
+        && binding.agent_session_id == target.session.reference.agent_session_id
+        && binding.provider == target.session.resolved_provider
+        && (binding.provider_session_id.is_none()
+            || binding.provider_session_id == target.session.reference.provider_session_id)
 }
 
 #[derive(Debug)]
@@ -1637,6 +2133,9 @@ enum OpenResult {
         sent: bool,
         terminal_id: String,
         generation: u64,
+        agent_alias: String,
+        agent_session_id: String,
+        dispatch: Option<AgentDispatchReceipt>,
     },
 }
 
@@ -1688,13 +2187,16 @@ async fn open_agent(
         .map(|terminal| terminal.shell.clone())
         .filter(|shell| !shell.trim().is_empty())
         .unwrap_or_else(|| "powershell.exe".to_string());
+    let agent_alias = allocate_agent_alias(&workspace, &provider);
     let config = TerminalConfig {
         id: terminal_id.clone(),
         shell,
         agent_id: Some(provider.clone()),
         command: Some(definition.command.clone()),
         cwd: workspace.root_path.clone(),
-        title: definition.name.clone(),
+        title: automatic_agent_title(&definition.name, initial_prompt.as_deref()),
+        agent_alias: Some(agent_alias.clone()),
+        title_manual: false,
         workspace_id: Some(workspace.id.clone()),
     };
     let manager = app.state::<TerminalManager>();
@@ -1822,6 +2324,7 @@ async fn open_agent(
         "Agent open: readiness verified"
     );
     let mut sent = false;
+    let mut dispatch_receipt = None;
     if let Some(prompt) = initial_prompt {
         let prompt = match validate_agent_text(&prompt) {
             Ok(prompt) => prompt,
@@ -1841,20 +2344,37 @@ async fn open_agent(
                 return Err("sessione agente non disponibile".to_string());
             }
         };
-        if let Err(error) = send_to_target(
+        let mut target_terminal = terminal_summary_for_config(&config, snapshot.generation);
+        target_terminal.process_id = snapshot.process_id;
+        target_terminal.agent_alias = snapshot.agent_alias.clone();
+        let mut target_session = synthetic_session(&config, snapshot.generation);
+        target_session.reference.agent_session_id = app
+            .state::<crate::jarvis::JarvisState>()
+            .registry
+            .current_session_id(&snapshot);
+        target_session.reference.agent_alias = snapshot.agent_alias.clone();
+        let dispatch = match send_to_target(
             app,
             invocation,
             &ResolvedAgentTarget {
-                terminal: terminal_summary_for_config(&config, snapshot.generation),
-                session: synthetic_session(&config, snapshot.generation),
+                terminal: target_terminal,
+                session: target_session,
             },
             &prompt,
+            None,
         )
         .await
         {
-            rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
-            return Err(error);
-        }
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                rollback_open_agent(app, &workspace, &terminal_id, &runtime).await;
+                return Err(error);
+            }
+        };
+        app.state::<crate::jarvis::JarvisState>()
+            .control
+            .record_assignment(&invocation.target_workspace_id, dispatch.binding.clone());
+        dispatch_receipt = Some(dispatch);
         sent = true;
     }
     manager
@@ -1884,8 +2404,20 @@ async fn open_agent(
     Ok(OpenResult::Opened {
         provider: definition.name,
         sent,
-        terminal_id,
+        terminal_id: terminal_id.clone(),
         generation: runtime.generation,
+        agent_alias,
+        agent_session_id: app
+            .state::<crate::jarvis::JarvisState>()
+            .registry
+            .current_session_id(
+                &manager
+                    .get_agent_snapshot(&terminal_id)
+                    .await
+                    .map_err(|_| "sessione agente non disponibile".to_string())?
+                    .ok_or_else(|| "sessione agente non disponibile".to_string())?,
+            ),
+        dispatch: dispatch_receipt,
     })
 }
 
@@ -1895,6 +2427,44 @@ fn provider_command(definition: &AgentDefinition) -> String {
     } else {
         format!("{} {}\r", definition.command, definition.args.join(" "))
     }
+}
+
+fn allocate_agent_alias(workspace: &WorkspaceConfig, provider: &str) -> String {
+    let base = provider.trim().to_ascii_lowercase();
+    let used = workspace
+        .terminals
+        .iter()
+        .filter_map(|terminal| terminal.agent_alias.as_deref())
+        .map(str::to_ascii_lowercase)
+        .collect::<HashSet<_>>();
+    if !used.contains(&base) {
+        return base;
+    }
+    (2..=99)
+        .map(|index| format!("{base}-{index}"))
+        .find(|alias| !used.contains(alias))
+        .unwrap_or_else(|| format!("{base}-{}", used.len() + 1))
+}
+
+fn automatic_agent_title(provider: &str, prompt: Option<&str>) -> String {
+    let provider = provider.trim();
+    let short = prompt
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if short.is_empty() {
+        return provider.to_string();
+    }
+    let mut short = short;
+    if short.chars().count() > 36 {
+        short = short.chars().take(36).collect::<String>();
+        short.push('…');
+    }
+    format!("{provider} — {short}")
 }
 
 async fn rollback_open_agent(
@@ -2321,6 +2891,7 @@ fn terminal_summary_for_config(config: &TerminalConfig, generation: u64) -> Term
         terminal_id: config.id.clone(),
         workspace_id: config.workspace_id.clone().unwrap_or_default(),
         title: config.title.clone(),
+        agent_alias: config.agent_alias.clone(),
         shell: config.shell.clone(),
         cwd: config.cwd.clone(),
         active: false,
@@ -2359,6 +2930,7 @@ fn synthetic_session(config: &TerminalConfig, generation: u64) -> AgentSessionCo
             identity_needs_confirmation: false,
             workspace_id: config.workspace_id.clone().unwrap_or_default(),
             terminal_id: Some(config.id.clone()),
+            agent_alias: config.agent_alias.clone(),
             terminal_title: Some(config.title.clone()),
             generation,
             provider_session_id: None,
@@ -2589,6 +3161,7 @@ mod tests {
             operation: PlanOperation::AgentSend,
             terminal_id: Some("pi-terminal".into()),
             generation: Some(1),
+            binding: None,
             created_at: "2026-08-07T00:00:00Z".into(),
             expires_at: "2999-08-07T00:00:00Z".into(),
             plan: ConversationalPlan {
@@ -2638,6 +3211,7 @@ mod tests {
             workspace_id: "workspace-a".into(),
             is_agent_terminal: true,
             agent_id: Some("codex".into()),
+            agent_alias: Some("codex-1".into()),
             observed_provider: provider.map(str::to_string),
             detection_source: source.into(),
             detection_confidence: if source == "process-tree" { 0.95 } else { 0.7 },
@@ -2653,6 +3227,7 @@ mod tests {
             terminal_id: "t".into(),
             workspace_id: "w".into(),
             title: "Codex Auth".into(),
+            agent_alias: Some("codex-1".into()),
             shell: "shell".into(),
             cwd: ".".into(),
             active: false,
@@ -2780,6 +3355,7 @@ mod tests {
             operation: PlanOperation::AgentHandoff,
             terminal_id: Some("busy".into()),
             generation: Some(1),
+            binding: None,
             created_at: "2026-08-07T00:00:00Z".into(),
             expires_at: "2999-08-07T00:00:00Z".into(),
             plan: ConversationalPlan {
@@ -2825,6 +3401,8 @@ mod tests {
                 command: None,
                 cwd: ".".into(),
                 title: "Codex Auth".into(),
+                agent_alias: None,
+                title_manual: true,
                 workspace_id: Some("w".into()),
             },
             1,
@@ -2837,5 +3415,284 @@ mod tests {
             score_candidate("auth", &waiting, &terminal, None)
                 > score_candidate("auth", &working, &terminal, None)
         );
+    }
+
+    fn routing_fixture_context(generation: u64) -> crate::jarvis::types::ModelContextViewV1 {
+        use crate::jarvis::types::{DocumentationSummary, RequestedDepth};
+        let mut terminals = Vec::new();
+        let mut agent_sessions = Vec::new();
+        for (index, alias) in ["codex-1", "codex-2", "codex-3"].into_iter().enumerate() {
+            let id = format!("terminal-{}", index + 1);
+            let config = TerminalConfig {
+                id: id.clone(),
+                shell: "powershell.exe".into(),
+                agent_id: Some("codex".into()),
+                command: None,
+                cwd: "C:\\repo".into(),
+                title: "Codex — Traflix-Space".into(),
+                agent_alias: Some(alias.into()),
+                title_manual: false,
+                workspace_id: Some("workspace-a".into()),
+            };
+            let mut terminal = terminal_summary_for_config(&config, generation);
+            terminal.process_id = Some(100 + index as u32);
+            let mut session = synthetic_session(&config, generation);
+            session.reference.agent_session_id = format!("session-{alias}");
+            session.reference.agent_alias = Some(alias.into());
+            session.reference.terminal_id = Some(id);
+            terminals.push(terminal);
+            agent_sessions.push(session);
+        }
+        crate::jarvis::types::ModelContextViewV1 {
+            view_version: "test".into(),
+            invocation: InvocationBinding::new(
+                "request-test",
+                "workspace-a",
+                None,
+                None,
+                "2026-08-12T00:00:00Z",
+            ),
+            documentation_summary: DocumentationSummary {
+                workspace_id: "workspace-a".into(),
+                revision: "test".into(),
+                cache_status: crate::jarvis::types::CacheStatus::Hit,
+                document_count: 0,
+                omitted_count: 0,
+                truncated_count: 0,
+                warning_count: 0,
+            },
+            document_index: Vec::new(),
+            documentation_excerpts: Vec::new(),
+            terminals,
+            agent_sessions,
+            requested_depth: RequestedDepth::Summary,
+            provenance: Provenance::trusted("test", "now"),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn equal_display_titles_select_only_the_stable_alias_binding() {
+        let context = routing_fixture_context(7);
+        let binding = AgentAssignmentBinding {
+            assignment_id: "assignment:test:2".into(),
+            agent_alias: "codex-2".into(),
+            agent_session_id: "session-codex-2".into(),
+            terminal_id: "terminal-2".into(),
+            generation: 7,
+            process_id: Some(101),
+            provider: "codex".into(),
+            provider_session_id: None,
+        };
+        let target = target_from_binding(&context, &binding).expect("exact alias binding");
+        assert_eq!(target.terminal.title, "Codex — Traflix-Space");
+        assert_eq!(target.terminal.terminal_id, "terminal-2");
+        assert_eq!(
+            target.session.reference.agent_alias.as_deref(),
+            Some("codex-2")
+        );
+    }
+
+    #[test]
+    fn generation_change_rejects_follow_up_without_fallback() {
+        let context = routing_fixture_context(8);
+        let binding = AgentAssignmentBinding {
+            assignment_id: "assignment:test:1".into(),
+            agent_alias: "codex-1".into(),
+            agent_session_id: "session-codex-1".into(),
+            terminal_id: "terminal-1".into(),
+            generation: 7,
+            process_id: Some(100),
+            provider: "codex".into(),
+            provider_session_id: None,
+        };
+        assert_eq!(
+            target_from_binding(&context, &binding).unwrap_err(),
+            "agent_binding_stale_or_mismatch"
+        );
+    }
+
+    #[test]
+    fn follow_up_uses_the_pending_binding_with_duplicate_titles() {
+        let context = routing_fixture_context(7);
+        let binding = AgentAssignmentBinding {
+            assignment_id: "assignment:test:2".into(),
+            agent_alias: "codex-2".into(),
+            agent_session_id: "session-codex-2".into(),
+            terminal_id: "terminal-2".into(),
+            generation: 7,
+            process_id: Some(101),
+            provider: "codex".into(),
+            provider_session_id: None,
+        };
+        let pending = PendingConversationalIntent {
+            workspace_id: "workspace-a".into(),
+            kind: PendingConversationKind::Clarification,
+            question: "continua?".into(),
+            operation: PlanOperation::AgentSend,
+            terminal_id: Some("terminal-2".into()),
+            generation: Some(7),
+            binding: Some(binding),
+            created_at: "2026-08-12T00:00:00Z".into(),
+            expires_at: "2999-08-12T00:00:00Z".into(),
+            plan: ConversationalPlan {
+                operations: vec![ConversationStep {
+                    operation: PlanOperation::AgentSend,
+                    provider: None,
+                    target: None,
+                    source: None,
+                    destination: None,
+                    prompt: Some("continua il lavoro".into()),
+                    confirmed: false,
+                    allow_busy: true,
+                }],
+                response: None,
+            },
+        };
+        let incoming = ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: None,
+            target: None,
+            source: None,
+            destination: None,
+            prompt: None,
+            confirmed: false,
+            allow_busy: true,
+        };
+        let merged = merge_step_with_pending(&incoming, Some(&pending));
+        let target = bound_target_from_pending(&context, Some(&pending), &merged, &incoming)
+            .expect("pending binding is valid")
+            .expect("follow-up must use the pending binding");
+        assert_eq!(target.terminal.terminal_id, "terminal-2");
+        assert_eq!(
+            target.session.reference.agent_alias.as_deref(),
+            Some("codex-2")
+        );
+    }
+
+    #[test]
+    fn provider_session_change_rejects_binding_without_title_fallback() {
+        let context = routing_fixture_context(7);
+        let binding = AgentAssignmentBinding {
+            assignment_id: "assignment:test:1".into(),
+            agent_alias: "codex-1".into(),
+            agent_session_id: "session-codex-1".into(),
+            terminal_id: "terminal-1".into(),
+            generation: 7,
+            process_id: Some(100),
+            provider: "codex".into(),
+            provider_session_id: Some("provider-session-before-restart".into()),
+        };
+        assert_eq!(
+            target_from_binding(&context, &binding).unwrap_err(),
+            "agent_binding_stale_or_mismatch"
+        );
+    }
+
+    #[test]
+    fn successful_pty_write_without_observable_turn_is_unconfirmed() {
+        assert_eq!(DISPATCH_TURN_STARTED, "turn_started");
+        assert_eq!(
+            unconfirmed_dispatch_stages(),
+            vec![
+                "pty_write_accepted",
+                "prompt_submitted",
+                "submission_unconfirmed"
+            ]
+        );
+        assert_ne!(DISPATCH_SUBMISSION_UNCONFIRMED, DISPATCH_TURN_STARTED);
+    }
+
+    #[test]
+    fn dispatch_lock_is_shared_per_alias_and_receipt_is_complete() {
+        let registry = crate::jarvis::agent_registry::AgentSessionRegistry::default();
+        let first = registry.dispatch_lock("codex-1");
+        let second = registry.dispatch_lock("codex-1");
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+        let receipt = StepExecutionReceipt {
+            operation: PlanOperation::AgentSend,
+            status: DISPATCH_SUBMISSION_UNCONFIRMED,
+            target: Some("codex-1 — Codex — Traflix-Space".into()),
+            message: "Scritto; avvio non confermato.".into(),
+            recipient: Some(AgentRecipientReceipt {
+                assignment_id: "assignment:test:1".into(),
+                agent_alias: "codex-1".into(),
+                agent_session_id: "session-codex-1".into(),
+                terminal_id: "terminal-1".into(),
+                generation: 7,
+                process_id: Some(100),
+                provider: "codex".into(),
+                provider_session_id: Some("provider-session-1".into()),
+                display_title: "Codex — Traflix-Space".into(),
+            }),
+            stages: unconfirmed_dispatch_stages(),
+        };
+        let json = serde_json::to_value(receipt).expect("receipt serializable");
+        assert_eq!(json["recipient"]["agentAlias"], "codex-1");
+        assert_eq!(json["recipient"]["agentSessionId"], "session-codex-1");
+        assert_eq!(json["recipient"]["terminalId"], "terminal-1");
+        assert_eq!(json["recipient"]["generation"], 7);
+        assert_eq!(json["recipient"]["providerSessionId"], "provider-session-1");
+        assert_eq!(json["status"], "submission_unconfirmed");
+    }
+
+    #[tokio::test]
+    async fn simultaneous_sends_for_one_alias_wait_on_one_lock() {
+        let registry = crate::jarvis::agent_registry::AgentSessionRegistry::default();
+        let first = registry.dispatch_lock("codex-1");
+        let second = registry.dispatch_lock("codex-1");
+        let guard = first.lock().await;
+        let waiter = tokio::spawn(async move {
+            let _guard = second.lock().await;
+            true
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        drop(guard);
+        assert!(waiter.await.expect("lock waiter completed"));
+    }
+
+    #[test]
+    fn automatic_title_is_short_and_aliases_are_not_title_based() {
+        assert!(
+            automatic_agent_title("Codex", Some("fix the voice normalization regression"))
+                .chars()
+                .count()
+                <= 46
+        );
+        let workspace = WorkspaceConfig {
+            id: "workspace-a".into(),
+            name: "Workspace".into(),
+            root_path: "C:\\repo".into(),
+            layout: crate::workspace::registry::GridLayout { rows: 1, cols: 1 },
+            terminals: vec![
+                TerminalConfig {
+                    id: "one".into(),
+                    shell: "powershell.exe".into(),
+                    agent_id: Some("codex".into()),
+                    command: None,
+                    cwd: "C:\\repo".into(),
+                    title: "Codex".into(),
+                    agent_alias: Some("codex".into()),
+                    title_manual: false,
+                    workspace_id: Some("workspace-a".into()),
+                },
+                TerminalConfig {
+                    id: "two".into(),
+                    shell: "powershell.exe".into(),
+                    agent_id: Some("codex".into()),
+                    command: None,
+                    cwd: "C:\\repo".into(),
+                    title: "Codex".into(),
+                    agent_alias: Some("codex-2".into()),
+                    title_manual: false,
+                    workspace_id: Some("workspace-a".into()),
+                },
+            ],
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        assert_eq!(allocate_agent_alias(&workspace, "codex"), "codex-3");
     }
 }
