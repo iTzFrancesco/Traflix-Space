@@ -539,7 +539,13 @@ fn default_vad_preroll_ms() -> u32 {
     250
 }
 fn default_vad_post_speech_ms() -> u32 {
-    650
+    1_800
+}
+fn default_endpoint_grace_ms() -> u32 {
+    1_200
+}
+fn default_min_spoken_ms() -> u32 {
+    350
 }
 fn default_max_armed_seconds() -> u32 {
     120
@@ -728,6 +734,16 @@ mod tests {
         assert!(settings.jarvis.voice_output.stop_on_user_speech);
         assert!(settings.jarvis.voice_output.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
+    }
+
+    #[test]
+    fn voice_endpointing_defaults_allow_natural_pauses() {
+        let settings = AppSettings::default();
+        let input = &settings.jarvis.voice_input;
+        assert!(input.endpointing_enabled);
+        assert_eq!(input.vad_post_speech_ms, 1_800);
+        assert_eq!(input.endpoint_grace_ms, 1_200);
+        assert_eq!(input.min_spoken_ms, 350);
     }
 
     #[test]

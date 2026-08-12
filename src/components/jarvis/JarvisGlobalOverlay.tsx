@@ -356,6 +356,56 @@ export function JarvisGlobalOverlay() {
     voiceSubmitStates,
   ]);
 
+  // Barge-in is a VAD-only capture path. It is allowed while TTS is active,
+  // but it never calls chat/task cancellation; startVoice owns only the
+  // audio/TTS stop token and preserves the running turn.
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !settingsLoaded ||
+      settingsOpen ||
+      !settings.jarvis.enabled ||
+      settings.jarvis.muted ||
+      settings.jarvis.voiceInput.activationMode !== "vad" ||
+      !settings.jarvis.voiceOutput.stopOnUserSpeech ||
+      activeVoiceRequestId ||
+      (ttsStatus.status !== "synthesizing" && ttsStatus.status !== "playing")
+    ) {
+      return;
+    }
+
+    const workspaceId = activeWorkspaceId;
+    const timer = window.setTimeout(() => {
+      const store = useJarvisStore.getState();
+      const ttsBusy =
+        store.ttsStatus.status === "synthesizing" ||
+        store.ttsStatus.status === "playing";
+      if (
+        useWorkspaceStore.getState().activeWorkspaceId === workspaceId &&
+        ttsBusy &&
+        !store.activeVoiceRequestId &&
+        store.settings.jarvis.enabled &&
+        !store.settings.jarvis.muted &&
+        store.settings.jarvis.voiceInput.activationMode === "vad" &&
+        store.settings.jarvis.voiceOutput.stopOnUserSpeech
+      ) {
+        void store.startVoice();
+      }
+    }, AUTO_ARM_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeVoiceRequestId,
+    activeWorkspaceId,
+    settings.jarvis.enabled,
+    settings.jarvis.muted,
+    settings.jarvis.voiceInput.activationMode,
+    settings.jarvis.voiceOutput.stopOnUserSpeech,
+    settingsLoaded,
+    settingsOpen,
+    ttsStatus.status,
+  ]);
+
   // An armed VAD capture is only ambient readiness, so it follows workspace
   // focus. A capture that already heard speech keeps its original immutable
   // workspace binding and is allowed to finish before the new workspace arms.
@@ -466,7 +516,13 @@ export function JarvisGlobalOverlay() {
         && store.wakeWordStatus.state !== "error";
       const liveVadFallbackReady = !liveWakeWordReady
         && store.settings.jarvis.voiceInput.activationMode === "vad";
-      if (!liveChatBusy && !liveTtsBusy && (liveWakeWordReady || liveVadFallbackReady)) {
+      const liveBargeInReady = liveVadFallbackReady
+        && store.settings.jarvis.voiceOutput.stopOnUserSpeech
+        && liveTtsBusy;
+      if (
+        (!liveChatBusy && !liveTtsBusy && (liveWakeWordReady || liveVadFallbackReady)) ||
+        (liveBargeInReady && !liveWakeWordReady)
+      ) {
         console.info("[Jarvis voice] auto-arm after turn", { workspaceId });
         if (liveWakeWordReady) {
           void store.startVoice({ activationMode: "wake_word" });
@@ -736,6 +792,7 @@ export function JarvisGlobalOverlay() {
         muted={settings.jarvis.muted}
         wakeWordStatus={wakeWordStatus}
         voiceRequest={voiceRequest}
+        voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}
         activities={activities}
@@ -744,6 +801,11 @@ export function JarvisGlobalOverlay() {
         onToggleMuted={() => toggleMicrophoneMuted()}
         onVoiceStart={() => startVoice()}
         onVoiceStop={() => void stopVoice()}
+        onVoiceSend={() => {
+          if (voiceRequest?.transcript?.trim()) {
+            void sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript);
+          }
+        }}
       />
       <SettingsModal
         open={settingsOpen}
@@ -761,58 +823,3 @@ export function JarvisGlobalOverlay() {
     </>
   );
 }
-        voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
-        onVoiceSend={() => {
-          if (voiceRequest?.transcript?.trim()) {
-            void sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript);
-          }
-        }}
-  // Barge-in is a VAD-only capture path. It is allowed while TTS is active,
-  // but it never calls chat/task cancellation; startVoice owns only the
-  // audio/TTS stop token and preserves the running turn.
-  useEffect(() => {
-    if (
-      !activeWorkspaceId ||
-      !settingsLoaded ||
-      settingsOpen ||
-      !settings.jarvis.enabled ||
-      settings.jarvis.muted ||
-      settings.jarvis.voiceInput.activationMode !== "vad" ||
-      !settings.jarvis.voiceOutput.stopOnUserSpeech ||
-      activeVoiceRequestId ||
-      (ttsStatus.status !== "synthesizing" && ttsStatus.status !== "playing")
-    ) {
-      return;
-    }
-
-    const workspaceId = activeWorkspaceId;
-    const timer = window.setTimeout(() => {
-      const store = useJarvisStore.getState();
-      const ttsBusy =
-        store.ttsStatus.status === "synthesizing" ||
-        store.ttsStatus.status === "playing";
-      if (
-        useWorkspaceStore.getState().activeWorkspaceId === workspaceId &&
-        ttsBusy &&
-        !store.activeVoiceRequestId &&
-        store.settings.jarvis.enabled &&
-        !store.settings.jarvis.muted &&
-        store.settings.jarvis.voiceInput.activationMode === "vad" &&
-        store.settings.jarvis.voiceOutput.stopOnUserSpeech
-      ) {
-        void store.startVoice();
-      }
-    }, AUTO_ARM_DELAY_MS);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    activeVoiceRequestId,
-    activeWorkspaceId,
-    settings.jarvis.enabled,
-    settings.jarvis.muted,
-    settings.jarvis.voiceInput.activationMode,
-    settings.jarvis.voiceOutput.stopOnUserSpeech,
-    settingsLoaded,
-    settingsOpen,
-    ttsStatus.status,
-  ]);

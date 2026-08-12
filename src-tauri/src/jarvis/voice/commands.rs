@@ -21,6 +21,7 @@ use super::types::{
     VoiceLevelEvent, VoiceRequestStatus, VoiceRequestStatusView, VoiceStartRequest,
     VoiceStopRequest, WakeWordStatusView,
 };
+use super::vad::VadState;
 use super::wake::{self, WakeWordConfig};
 
 const VOICE_STATE_EVENT: &str = "jarvis://voice-state";
@@ -206,8 +207,8 @@ pub async fn jarvis_voice_start(
                         &wake::listening_status(true, &event_wake_config, None),
                     );
                 }
-                stop_tts_on_speech(&event_app, &event_state, &status);
             }
+            stop_tts_on_speech(&event_app, &event_state, &status);
             if !matches!(
                 status.status,
                 VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
@@ -223,11 +224,9 @@ pub async fn jarvis_voice_start(
                     vad_state: status.vad_state,
                 },
             );
-            // VAD is intentionally start-only. Once speech has transitioned
-            // the request to Recording, pauses, breathing and silence never
-            // end the utterance automatically. The user explicitly finishes
-            // with "Invia adesso"; the separate max-duration watchdog below
-            // remains only as a runaway-capture safety cap.
+            // Endpointing is evaluated by the dedicated watchdog below. This
+            // loop only publishes level/VAD telemetry and remains responsive
+            // during pauses and long requests.
         }
     });
     let watchdog_app = app.clone();
@@ -256,8 +255,8 @@ pub async fn jarvis_voice_start(
                         &wake::listening_status(true, &watchdog_wake_config, None),
                     );
                 }
-                stop_tts_on_speech(&watchdog_app, &watchdog_state, &current);
             }
+            stop_tts_on_speech(&watchdog_app, &watchdog_state, &current);
             if current.status == VoiceRequestStatus::Recording {
                 match endpointing.observe(Instant::now(), &current, signal.should_stop) {
                     EndpointingDecision::Stop => {
@@ -1019,7 +1018,7 @@ fn emit_tts_state(app: &AppHandle, status: &TtsStatusView) {
 /// round-trip. This runs once when VAD confirms speech and cancels the active
 /// Edge TTS/playback token before the first spoken frame can pollute STT.
 fn stop_tts_on_speech(app: &AppHandle, state: &VoiceState, status: &VoiceRequestStatusView) {
-    if status.status != VoiceRequestStatus::Recording {
+    if !should_stop_tts_on_speech(status) {
         return;
     }
     let current_tts = state.tts_status();
@@ -1031,14 +1030,19 @@ fn stop_tts_on_speech(app: &AppHandle, state: &VoiceState, status: &VoiceRequest
     }
 }
 
+fn should_stop_tts_on_speech(status: &VoiceRequestStatusView) -> bool {
+    status.status == VoiceRequestStatus::Recording && status.vad_state == VadState::Speech
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_input_allowed, ensure_microphone_unmuted, reconcile_shortcut, validate_shortcut,
-        ShortcutRegistrar,
+        ensure_input_allowed, ensure_microphone_unmuted, reconcile_shortcut,
+        should_stop_tts_on_speech, validate_shortcut, ShortcutRegistrar,
     };
-    use crate::jarvis::voice::types::VoiceErrorCode;
-    use crate::settings::store::VoiceInputSettings;
+    use crate::jarvis::voice::types::{VoiceErrorCode, VoiceRequestStatus, VoiceRequestStatusView};
+    use crate::jarvis::voice::vad::VadState;
+    use crate::settings::store::{VoiceActivationMode, VoiceInputSettings};
 
     struct MockShortcutRegistrar {
         fail_register: bool,
@@ -1090,6 +1094,32 @@ mod tests {
             "microphone_muted"
         );
         assert!(ensure_microphone_unmuted(false).is_ok());
+    }
+
+    #[test]
+    fn barge_in_requires_real_speech_and_never_uses_terminal_voice_states() {
+        let mut status = VoiceRequestStatusView {
+            request_id: "request".into(),
+            workspace_id: "workspace".into(),
+            selected_device_id: None,
+            status: VoiceRequestStatus::Armed,
+            created_at: "now".into(),
+            started_at: Some("now".into()),
+            duration_ms: Some(100),
+            normalized_level: 0.2,
+            transcript: None,
+            error: None,
+            activation_mode: VoiceActivationMode::Vad,
+            vad_state: VadState::Speech,
+        };
+        assert!(!should_stop_tts_on_speech(&status));
+
+        status.status = VoiceRequestStatus::Recording;
+        status.vad_state = VadState::Silence;
+        assert!(!should_stop_tts_on_speech(&status));
+
+        status.vad_state = VadState::Speech;
+        assert!(should_stop_tts_on_speech(&status));
     }
 
     #[test]
