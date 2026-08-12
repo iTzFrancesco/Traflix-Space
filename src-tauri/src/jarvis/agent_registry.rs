@@ -650,6 +650,7 @@ impl AgentSessionRegistry {
                     && record.state != AgentState::Exited
                 {
                     record.state = AgentState::Exited;
+                    record.reference.identity_needs_confirmation = false;
                     record.reference.updated_at = observed_at.to_string();
                     record.last_activity_at = Some(observed_at.to_string());
                     record.push_activity(activity_event(
@@ -940,6 +941,10 @@ impl AgentSessionRegistry {
                 && record.reference.generation == generation
             {
                 record.state = AgentState::Exited;
+                // An exited terminal cannot be controlled. Clear any pending
+                // manual identity gate so stale history never appears as an
+                // actionable confirmation request after the PTY is closed.
+                record.reference.identity_needs_confirmation = false;
                 record.reference.updated_at = observed_at.to_string();
                 record.last_activity_at = Some(observed_at.to_string());
                 record.push_activity(activity_event(
@@ -976,6 +981,7 @@ impl AgentSessionRegistry {
                 let key = (terminal_id.to_string(), record.reference.generation);
                 if !known.contains(&key) && record.state != AgentState::Exited {
                     record.state = AgentState::Exited;
+                    record.reference.identity_needs_confirmation = false;
                     record.reference.updated_at = observed_at.to_string();
                 }
             }
@@ -1234,9 +1240,10 @@ fn normalize_observed_provider(value: &str) -> Option<String> {
     Some(normalize_provider(value).unwrap_or_else(|| value.to_ascii_lowercase()))
 }
 
-fn identity_source_priority(source: &str) -> u8 {
+pub(crate) fn identity_source_priority(source: &str) -> u8 {
     match source {
         "completion-event" => 5,
+        "backend-launch" => 4,
         "process-tree" => 4,
         "command-observed" => 3,
         "configured-hint" => 2,
@@ -1373,6 +1380,7 @@ fn mark_previous_generations_exited(
             && record.reference.generation != terminal.generation
         {
             record.state = AgentState::Exited;
+            record.reference.identity_needs_confirmation = false;
             record.reference.updated_at = observed_at.to_string();
             record.last_activity_at = Some(observed_at.to_string());
             record.push_activity(activity_event(
@@ -1562,6 +1570,20 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].provider, "codex");
         assert_eq!(sessions[0].generation, 1);
+    }
+
+    #[test]
+    fn backend_owned_launch_is_control_ready_without_human_confirmation() {
+        let registry = AgentSessionRegistry::default();
+        let mut agent = terminal(1, true);
+        agent.observed_provider = Some("codex".to_string());
+        agent.detection_source = "backend-launch".to_string();
+        agent.detection_confidence = 1.0;
+        registry.observe_terminal_started(&agent, "2026-08-12T00:00:00Z");
+
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert!(!session.identity_needs_confirmation);
+        assert!(registry.control_allowed("terminal-1", 1));
     }
 
     #[test]
@@ -2417,6 +2439,56 @@ mod tests {
             .iter()
             .any(|event| event.kind == AgentActivityKind::Exited));
         assert!(task_of(&status).completed_at.is_none());
+    }
+
+    #[test]
+    fn session_exit_clears_stale_identity_confirmation() {
+        let registry = AgentSessionRegistry::default();
+        let mut terminal = terminal(1, true);
+        terminal.observed_provider = Some("pi".to_string());
+        terminal.agent_id = Some("pi".to_string());
+        terminal.detection_source = "command-observed".to_string();
+        terminal.detection_confidence = 0.7;
+        registry.observe_terminal_started(&terminal, "2026-08-12T00:00:00Z");
+        assert!(
+            registry
+                .list_sessions("workspace-a")
+                .unwrap()
+                .remove(0)
+                .identity_needs_confirmation
+        );
+
+        registry.observe_terminal_exit("terminal-1", 1, "2026-08-12T00:01:00Z");
+        let session = registry.list_sessions("workspace-a").unwrap().remove(0);
+        assert_eq!(registry.status(&session).unwrap().state, AgentState::Exited);
+        assert!(!session.identity_needs_confirmation);
+    }
+
+    #[test]
+    fn reset_and_reconcile_exit_paths_clear_identity_confirmation() {
+        let registry = AgentSessionRegistry::default();
+        let mut terminal = terminal(1, true);
+        terminal.agent_id = Some("pi".to_string());
+        terminal.observed_provider = Some("pi".to_string());
+        terminal.detection_source = "command-observed".to_string();
+        terminal.detection_confidence = 0.7;
+        registry.observe_terminal_started(&terminal, "2026-08-12T00:00:00Z");
+        registry.observe_user_input(&terminal, b"/clear\r", "2026-08-12T00:00:01Z");
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert!(sessions.iter().all(|session| {
+            !session.identity_needs_confirmation
+                || registry.status(session).unwrap().state != AgentState::Exited
+        }));
+
+        let mut missing_terminal = terminal.clone();
+        missing_terminal.is_agent_terminal = false;
+        missing_terminal.observed_provider = None;
+        registry.reconcile(&[missing_terminal], "2026-08-12T00:00:02Z");
+        let sessions = registry.list_sessions("workspace-a").unwrap();
+        assert!(sessions.iter().all(|session| {
+            registry.status(session).unwrap().state != AgentState::Exited
+                || !session.identity_needs_confirmation
+        }));
     }
 
     #[test]

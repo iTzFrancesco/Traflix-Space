@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use crate::jarvis::agent_registry::identity_source_priority;
 #[cfg(windows)]
 use crate::jarvis::runtime_detector::scan_process_tree_async;
 use crate::jarvis::runtime_detector::{normalize_provider, AgentDetection};
@@ -524,8 +525,20 @@ impl TerminalManager {
             session.record_input_operation(operation_id.to_string(), data, Ok(()));
         }
         let command_detections = session.observe_agent_commands(data);
+        let mut backend_identity_promoted = false;
         for detection in command_detections {
-            apply_runtime_identity(&mut session, &detection);
+            let detection = promote_backend_launch_detection(
+                origin,
+                session.backend_agent_launch_state.as_deref(),
+                session.agent_id.as_deref(),
+                detection,
+            );
+            backend_identity_promoted |= detection.source == "backend-launch";
+            if detection.source == "backend-launch" {
+                apply_backend_launch_identity(&mut session, &detection);
+            } else {
+                apply_runtime_identity(&mut session, &detection);
+            }
         }
         let agent_snapshot = snapshot_from_session(&session);
 
@@ -554,6 +567,12 @@ impl TerminalManager {
                 TerminalInputOrigin::User => notify_agent_user_input(&app, &agent_snapshot, data),
                 TerminalInputOrigin::JarvisAbort => {
                     notify_agent_abort(&app, &agent_snapshot);
+                }
+                TerminalInputOrigin::Internal if backend_identity_promoted => {
+                    // Backend-owned launches are authoritative: publish the
+                    // trusted identity immediately so a concurrent reconcile
+                    // cannot block Jarvis' first prompt on manual confirmation.
+                    notify_agent_started(&app, &agent_snapshot);
                 }
                 TerminalInputOrigin::JarvisPrompt | TerminalInputOrigin::Internal => {
                     // Jarvis tasks are registered by chat.rs only after this
@@ -1476,13 +1495,9 @@ impl TerminalManager {
                         notify_agent_started(app, &snapshot);
                     }
                 } else if scan.roots_with_candidate_descendants.contains(&pid) {
-                    let transition = session.agent_runtime_presence.observed();
-                    if transition == AgentPresenceTransition::BecameActive {
-                        let provider = session
-                            .observed_provider
-                            .clone()
-                            .or_else(|| session.agent_id.as_deref().and_then(normalize_provider));
-                        if let Some(provider) = provider {
+                    if let Some(provider) = candidate_descendant_provider(&session) {
+                        let transition = session.agent_runtime_presence.observed();
+                        if transition == AgentPresenceTransition::BecameActive {
                             apply_runtime_identity(
                                 &mut session,
                                 &AgentDetection {
@@ -1501,6 +1516,7 @@ impl TerminalManager {
                 {
                     session.is_agent_terminal = false;
                     session.observed_provider = None;
+                    session.backend_agent_launch_state = None;
                     session.detection_source = "agent-process-exited".to_string();
                     session.detection_confidence = 0.9;
                     let snapshot = snapshot_from_session(&session);
@@ -1548,7 +1564,48 @@ fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
     }
 }
 
+fn promote_backend_launch_detection(
+    origin: TerminalInputOrigin,
+    launch_state: Option<&str>,
+    configured_agent: Option<&str>,
+    mut detection: AgentDetection,
+) -> AgentDetection {
+    let backend_launch_in_progress = origin == TerminalInputOrigin::Internal
+        && matches!(launch_state, Some("starting" | "ready"));
+    let configured_provider = configured_agent.map(|value| value.trim().to_ascii_lowercase());
+    if backend_launch_in_progress
+        && configured_provider.as_deref() == Some(detection.provider.as_str())
+    {
+        detection.source = "backend-launch".to_string();
+        detection.confidence = 1.0;
+    }
+    detection
+}
+
+fn candidate_descendant_provider(session: &TerminalSession) -> Option<String> {
+    session.observed_provider.clone().or_else(|| {
+        matches!(
+            session.backend_agent_launch_state.as_deref(),
+            Some("starting" | "ready")
+        )
+        .then(|| session.agent_id.as_deref().and_then(normalize_provider))
+        .flatten()
+    })
+}
+
+fn apply_backend_launch_identity(session: &mut TerminalSession, detection: &AgentDetection) {
+    apply_runtime_identity_with_presence(session, detection, false);
+}
+
 fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetection) {
+    apply_runtime_identity_with_presence(session, detection, true);
+}
+
+fn apply_runtime_identity_with_presence(
+    session: &mut TerminalSession,
+    detection: &AgentDetection,
+    observe_presence: bool,
+) {
     let current_priority = identity_source_priority(&session.detection_source);
     let incoming_priority = identity_source_priority(&detection.source);
     if session.observed_provider.is_some() && incoming_priority < current_priority {
@@ -1558,7 +1615,9 @@ fn apply_runtime_identity(session: &mut TerminalSession, detection: &AgentDetect
     session.detection_source = detection.source.clone();
     session.detection_confidence = detection.confidence;
     session.is_agent_terminal = true;
-    session.agent_runtime_presence.observed();
+    if observe_presence {
+        session.agent_runtime_presence.observed();
+    }
     if let Some(configured) = session.agent_id.as_deref().and_then(normalize_provider) {
         if configured != detection.provider {
             push_identity_warning(
@@ -1622,16 +1681,6 @@ fn bounded_terminal_text(text: &str, max_bytes: usize) -> Result<NormalizedTermi
     })
 }
 
-fn identity_source_priority(source: &str) -> u8 {
-    match source {
-        "completion-event" => 5,
-        "process-tree" => 4,
-        "command-observed" => 3,
-        "configured-hint" => 2,
-        _ => 1,
-    }
-}
-
 fn push_identity_warning(warnings: &mut Vec<String>, warning: &str) {
     if !warnings.iter().any(|existing| existing == warning) {
         warnings.push(warning.to_string());
@@ -1652,7 +1701,12 @@ fn ensure_spawn_workspace_matches(
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::{ensure_spawn_workspace_matches, TerminalManager};
+    use super::{
+        apply_backend_launch_identity, candidate_descendant_provider,
+        ensure_spawn_workspace_matches, promote_backend_launch_detection, TerminalInputOrigin,
+        TerminalManager, TerminalSession,
+    };
+    use crate::jarvis::runtime_detector::AgentDetection;
 
     #[test]
     fn workspace_shutdown_gate_rejects_stale_spawns_until_explicitly_reopened() {
@@ -1684,6 +1738,79 @@ mod lifecycle_tests {
         assert_eq!(
             ensure_spawn_workspace_matches(Some("workspace-b"), "workspace-a").unwrap_err(),
             "terminal-workspace-mismatch: existing PTY belongs to another workspace",
+        );
+    }
+
+    #[test]
+    fn backend_owned_launch_is_trusted_but_manual_command_is_not() {
+        let detection = AgentDetection {
+            provider: "codex".to_string(),
+            source: "command-observed".to_string(),
+            confidence: 0.7,
+        };
+
+        let trusted = promote_backend_launch_detection(
+            TerminalInputOrigin::Internal,
+            Some("starting"),
+            Some("codex"),
+            detection.clone(),
+        );
+        assert_eq!(trusted.source, "backend-launch");
+        assert_eq!(trusted.confidence, 1.0);
+
+        let mut session = TerminalSession::new(
+            "terminal-1".to_string(),
+            "Codex".to_string(),
+            "powershell.exe".to_string(),
+            "C:\\workspace".to_string(),
+            80,
+            24,
+        );
+        apply_backend_launch_identity(&mut session, &trusted);
+        assert_eq!(session.agent_runtime_presence.alive(), None);
+
+        let manual = promote_backend_launch_detection(
+            TerminalInputOrigin::User,
+            Some("starting"),
+            Some("codex"),
+            detection.clone(),
+        );
+        assert_eq!(manual, detection);
+
+        let mismatched = promote_backend_launch_detection(
+            TerminalInputOrigin::Internal,
+            Some("starting"),
+            Some("pi"),
+            detection,
+        );
+        assert_eq!(mismatched.source, "command-observed");
+        assert_eq!(mismatched.confidence, 0.7);
+    }
+
+    #[test]
+    fn exited_manual_agent_is_not_repromoted_by_an_unknown_launcher() {
+        let mut session = TerminalSession::new(
+            "terminal-1".to_string(),
+            "Codex".to_string(),
+            "powershell.exe".to_string(),
+            "C:\\workspace".to_string(),
+            80,
+            24,
+        );
+        session.agent_id = Some("codex".to_string());
+        assert!(candidate_descendant_provider(&session).is_none());
+
+        session.backend_agent_launch_state = Some("ready".to_string());
+        assert_eq!(
+            candidate_descendant_provider(&session).as_deref(),
+            Some("codex")
+        );
+
+        session.backend_agent_launch_state = None;
+        session.observed_provider = Some("codex".to_string());
+        assert_eq!(
+            candidate_descendant_provider(&session).as_deref(),
+            Some("codex")
         );
     }
 }

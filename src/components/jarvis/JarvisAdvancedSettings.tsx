@@ -659,7 +659,7 @@ export function JarvisAdvancedSettings({
               <p className="mt-0.5 truncate font-mono text-[9px] text-neutral-text-muted">
                 {session.ref.terminalId ?? "unbound"} · confidence {session.ref.detectionConfidence.toFixed(2)}
               </p>
-              {session.identityNeedsConfirmation && (
+              {session.identityNeedsConfirmation && session.state !== "exited" && (
                 <div className="mt-1">
                   <p className="text-warning">Identity confirmation required</p>
                   <p className="mt-0.5 text-neutral-text-muted">
