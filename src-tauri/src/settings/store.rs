@@ -42,6 +42,10 @@ pub struct JarvisSettings {
     pub muted: bool,
     #[serde(default)]
     pub wake_word_enabled: bool,
+    #[serde(default = "default_wake_word_phrase")]
+    pub wake_word_phrase: String,
+    #[serde(default = "default_wake_word_sensitivity")]
+    pub wake_word_sensitivity: f32,
     #[serde(default)]
     pub widget_position: WidgetPosition,
     #[serde(default)]
@@ -148,6 +152,7 @@ pub enum VoiceActivationMode {
     ClickToggle,
     HoldToTalk,
     Vad,
+    WakeWord,
 }
 
 impl Default for VoiceActivationMode {
@@ -288,6 +293,8 @@ struct LegacyJarvisSettings {
     voice_engine: Option<VoiceEngine>,
     muted: Option<bool>,
     wake_word_enabled: Option<bool>,
+    wake_word_phrase: Option<String>,
+    wake_word_sensitivity: Option<f32>,
     widget_position: Option<WidgetPosition>,
     standard_pipeline: Option<StandardPipelineSettings>,
     gemini_live: Option<GeminiLiveSettings>,
@@ -339,6 +346,12 @@ impl<'de> Deserialize<'de> for JarvisSettings {
             voice_engine: raw.voice_engine.unwrap_or_default(),
             muted: raw.muted.unwrap_or(false),
             wake_word_enabled: raw.wake_word_enabled.unwrap_or(false),
+            wake_word_phrase: raw
+                .wake_word_phrase
+                .unwrap_or_else(default_wake_word_phrase),
+            wake_word_sensitivity: raw
+                .wake_word_sensitivity
+                .unwrap_or_else(default_wake_word_sensitivity),
             widget_position: raw.widget_position.unwrap_or_default(),
             standard_pipeline: raw.standard_pipeline.unwrap_or_default(),
             gemini_live: raw.gemini_live.unwrap_or_default(),
@@ -433,6 +446,8 @@ impl Default for JarvisSettings {
             voice_engine: VoiceEngine::Standard,
             muted: false,
             wake_word_enabled: false,
+            wake_word_phrase: default_wake_word_phrase(),
+            wake_word_sensitivity: default_wake_word_sensitivity(),
             widget_position: WidgetPosition::default(),
             standard_pipeline: StandardPipelineSettings::default(),
             gemini_live: GeminiLiveSettings::default(),
@@ -528,6 +543,12 @@ fn default_vad_post_speech_ms() -> u32 {
 }
 fn default_max_armed_seconds() -> u32 {
     120
+}
+fn default_wake_word_phrase() -> String {
+    "Hey Traflix".to_string()
+}
+fn default_wake_word_sensitivity() -> f32 {
+    0.65
 }
 fn default_edge_provider() -> String {
     "edge_tts".to_string()

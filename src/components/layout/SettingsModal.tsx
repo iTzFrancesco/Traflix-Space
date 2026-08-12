@@ -34,6 +34,7 @@ import type {
   AppSettings,
   TtsVoice,
   VoiceInputDevice,
+  WakeWordStatusView,
 } from "../../lib/jarvis/types";
 import {
   JarvisAdvancedSettings,
@@ -62,6 +63,7 @@ type VoiceOutputSettings = AppSettings["jarvis"]["voiceOutput"];
 
 export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
+  const wakeWordStatus = useJarvisStore((state) => state.wakeWordStatus);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
   const settingsError = useJarvisStore((state) => state.settingsError);
@@ -278,6 +280,13 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         <VoiceOptions
           input={jarvis.voiceInput}
           output={jarvis.voiceOutput}
+          wakeWordEnabled={jarvis.wakeWordEnabled}
+          wakeWordPhrase={jarvis.wakeWordPhrase}
+          wakeWordSensitivity={jarvis.wakeWordSensitivity}
+          wakeWordStatus={wakeWordStatus}
+          onWakeWordChange={(patch) =>
+            updateJarvis((current) => ({ ...current, ...patch }))
+          }
           onInputChange={(voiceInput) =>
             updateJarvis((current) => ({ ...current, voiceInput }))
           }
@@ -445,11 +454,25 @@ function CredentialField({
 function VoiceOptions({
   input,
   output,
+  wakeWordEnabled,
+  wakeWordPhrase,
+  wakeWordSensitivity,
+  wakeWordStatus,
+  onWakeWordChange,
   onInputChange,
   onOutputChange,
 }: {
   input: VoiceInputSettings;
   output: VoiceOutputSettings;
+  wakeWordEnabled: boolean;
+  wakeWordPhrase: string;
+  wakeWordSensitivity: number;
+  wakeWordStatus: WakeWordStatusView | null;
+  onWakeWordChange: (patch: {
+    wakeWordEnabled?: boolean;
+    wakeWordPhrase?: string;
+    wakeWordSensitivity?: number;
+  }) => void;
   onInputChange: (value: VoiceInputSettings) => void;
   onOutputChange: (value: VoiceOutputSettings) => void;
 }) {
@@ -578,6 +601,72 @@ function VoiceOptions({
             </button>
           </div>
         </label>
+      </div>
+
+      <div className="mt-4 space-y-3 border-y border-neutral-border py-3">
+        <label className="flex items-start gap-2.5 text-xs text-neutral-text">
+          <input
+            type="checkbox"
+            checked={wakeWordEnabled}
+            onChange={(event) =>
+              onWakeWordChange({ wakeWordEnabled: event.target.checked })
+            }
+            className="mt-0.5 accent-[var(--color-accent)]"
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">Standby wake word locale</span>
+            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
+              Mantiene soltanto il detector locale pronto; il mute del widget
+              continua a chiudere completamente il microfono.
+            </span>
+          </span>
+        </label>
+
+        <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
+          <label className="space-y-1.5 text-xs text-neutral-text-muted">
+            <span>Parola di attivazione</span>
+            <input
+              value={wakeWordPhrase}
+              onChange={(event) =>
+                onWakeWordChange({ wakeWordPhrase: event.target.value })
+              }
+              className="field-input w-full"
+              maxLength={80}
+              disabled={!wakeWordEnabled}
+            />
+          </label>
+          <label className="space-y-1.5 text-xs text-neutral-text-muted">
+            <span className="flex items-center justify-between">
+              <span>Sensibilità</span>
+              <span>{wakeWordSensitivity.toFixed(2)}</span>
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={wakeWordSensitivity}
+              onChange={(event) =>
+                onWakeWordChange({
+                  wakeWordSensitivity: Number(event.target.value),
+                })
+              }
+              className="w-full accent-[var(--color-accent)]"
+              disabled={!wakeWordEnabled}
+              aria-label="Sensibilità wake word"
+            />
+          </label>
+        </div>
+
+        {wakeWordEnabled && wakeWordStatus?.state === "unavailable" && (
+          <p
+            role="status"
+            className="border-l-2 border-warning px-3 py-2 text-[11px] leading-relaxed text-neutral-text-muted"
+          >
+            Il detector locale non è incluso in questa build. Jarvis usa il
+            fallback VAD/manuale e non apre un secondo microfono.
+          </p>
+        )}
       </div>
 
       <div className="mt-4 grid gap-3 border-y border-neutral-border py-3 sm:grid-cols-3">

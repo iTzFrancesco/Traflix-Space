@@ -37,6 +37,8 @@ import type {
   TtsVoice,
   VoiceInputDevice,
   VoiceRequestStatusView,
+  VoiceActivationMode,
+  WakeWordStatusView,
 } from "./types";
 
 const READ_TIMEOUT_MS = 15_000;
@@ -446,11 +448,18 @@ export function voiceListInputDevices(): Promise<VoiceInputDevice[]> {
   return invokeWithTimeout(() => invoke<VoiceInputDevice[]>("jarvis_voice_list_input_devices"), READ_TIMEOUT_MS);
 }
 
+export function getWakeWordStatus(): Promise<WakeWordStatusView> {
+  return invokeWithTimeout(
+    () => invoke<WakeWordStatusView>("jarvis_wake_word_status"),
+    READ_TIMEOUT_MS,
+  );
+}
+
 export function voiceSyncShortcut(): Promise<void> {
   return invokeWithTimeout(() => invoke<void>("jarvis_voice_sync_shortcut"), READ_TIMEOUT_MS);
 }
 
-export function voiceStart(request: { requestId: string; workspaceId: string; selectedDeviceId?: string | null }): Promise<VoiceRequestStatusView> {
+export function voiceStart(request: { requestId: string; workspaceId: string; selectedDeviceId?: string | null; activationMode?: VoiceActivationMode }): Promise<VoiceRequestStatusView> {
   return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_start", { request }), READ_TIMEOUT_MS);
 }
 

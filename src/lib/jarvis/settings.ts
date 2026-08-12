@@ -74,6 +74,8 @@ export function defaultJarvisSettings(): JarvisSettings {
     voiceEngine: "standard",
     muted: false,
     wakeWordEnabled: false,
+    wakeWordPhrase: "Hey Traflix",
+    wakeWordSensitivity: 0.65,
     widgetPosition: { x: 0.5, y: 0.9 },
     standardPipeline: {
       stt: "Traflix Voice / Whisper-compatible",

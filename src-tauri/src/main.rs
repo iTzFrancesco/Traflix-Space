@@ -340,6 +340,7 @@ fn main() {
             jarvis::codex::threads::jarvis_codex_turn_interrupt,
             jarvis::codex::threads::jarvis_codex_turn_steer,
             jarvis::voice::commands::jarvis_voice_list_input_devices,
+            jarvis::voice::commands::jarvis_wake_word_status,
             jarvis::voice::commands::jarvis_voice_sync_shortcut,
             jarvis::voice::commands::jarvis_voice_start,
             jarvis::voice::commands::jarvis_voice_stop,

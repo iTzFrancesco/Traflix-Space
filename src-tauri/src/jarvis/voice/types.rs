@@ -32,6 +32,27 @@ pub enum VoiceRequestStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeWordState {
+    Off,
+    Standby,
+    Listening,
+    Unavailable,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WakeWordStatusView {
+    pub state: WakeWordState,
+    pub enabled: bool,
+    pub keyword: String,
+    pub engine: String,
+    pub score: Option<f32>,
+    pub error: Option<VoiceErrorView>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceRequestStatusView {
@@ -58,7 +79,7 @@ pub struct VoiceLevelEvent {
     pub vad_state: VadState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceErrorView {
     pub code: String,
@@ -103,6 +124,8 @@ pub struct VoiceStartRequest {
     pub request_id: String,
     pub workspace_id: String,
     pub selected_device_id: Option<String>,
+    #[serde(default)]
+    pub activation_mode: Option<VoiceActivationMode>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,6 +208,9 @@ pub enum VoiceErrorCode {
     PlaybackDeviceUnavailable,
     PlaybackFailed,
     TtsTimeout,
+    WakeWordUnavailable,
+    WakeWordDisabled,
+    MicrophoneMuted,
 }
 
 pub fn normalize_max_duration_seconds(value: u32) -> u32 {
@@ -257,6 +283,9 @@ impl VoiceErrorCode {
             Self::PlaybackDeviceUnavailable => "tts_output_device_unavailable",
             Self::PlaybackFailed => "tts_playback_failed",
             Self::TtsTimeout => "tts_timeout",
+            Self::WakeWordUnavailable => "wake_word_unavailable",
+            Self::WakeWordDisabled => "wake_word_disabled",
+            Self::MicrophoneMuted => "microphone_muted",
         }
     }
 }

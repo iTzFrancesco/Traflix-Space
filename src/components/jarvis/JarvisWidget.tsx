@@ -25,6 +25,7 @@ import type {
   VoiceActivationMode,
   VoiceRequestStatusView,
   VoiceSubmitState,
+  WakeWordStatusView,
   WidgetPosition,
 } from "../../lib/jarvis/types";
 
@@ -36,6 +37,7 @@ interface JarvisWidgetProps {
   chatError: string | null;
   voiceError: string | null;
   muted: boolean;
+  wakeWordStatus: WakeWordStatusView | null;
   onOpenSettings: () => void;
   onHide: () => void;
   onToggleMuted: () => Promise<void> | void;
@@ -353,6 +355,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     ? props.voiceError
     : props.muted
       ? "Microfono disattivato"
+      : props.wakeWordStatus?.state === "unavailable" && props.wakeWordStatus.enabled
+        ? `Wake word non disponibile · ${
+            props.activationMode === "vad" ? "VAD attivo" : "attivazione manuale"
+          }`
       : voiceStatusLabel ?? collapsedJarvisStatus({
         workspaceId: props.workspaceId,
         workspaceName: props.workspaceName,

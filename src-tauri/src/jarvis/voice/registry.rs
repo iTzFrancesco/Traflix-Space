@@ -12,6 +12,7 @@ use super::types::{
     VoiceRequestStatusView, MAX_VOICE_REQUESTS,
 };
 use super::vad::VadState;
+use super::wake::WakeWordEngine;
 
 struct ActiveVoiceRequest {
     view: VoiceRequestStatusView,
@@ -81,6 +82,17 @@ impl VoiceState {
         selected_device_id: Option<String>,
         options: VoiceCaptureOptions,
     ) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
+        self.start_with_wake_engine(request_id, workspace_id, selected_device_id, options, None)
+    }
+
+    pub fn start_with_wake_engine(
+        &self,
+        request_id: String,
+        workspace_id: String,
+        selected_device_id: Option<String>,
+        options: VoiceCaptureOptions,
+        wake_engine: Option<Box<dyn WakeWordEngine>>,
+    ) -> Result<VoiceRequestStatusView, VoiceErrorCode> {
         let mut inner = self.inner.lock();
         if inner.requests.values().any(|request| {
             matches!(
@@ -93,15 +105,22 @@ impl VoiceState {
         }) {
             return Err(VoiceErrorCode::AlreadyActive);
         }
-        let capture = self
-            .capture
-            .start(selected_device_id.as_deref(), options.bounded())?;
+        let capture = self.capture.start(
+            selected_device_id.as_deref(),
+            options.bounded(),
+            wake_engine,
+        )?;
         let now = chrono::Utc::now().to_rfc3339();
+        let armed_activation = matches!(
+            options.activation_mode,
+            crate::settings::store::VoiceActivationMode::Vad
+                | crate::settings::store::VoiceActivationMode::WakeWord
+        );
         let view = VoiceRequestStatusView {
             request_id: request_id.clone(),
             workspace_id,
             selected_device_id,
-            status: if options.activation_mode == crate::settings::store::VoiceActivationMode::Vad {
+            status: if armed_activation {
                 VoiceRequestStatus::Armed
             } else {
                 VoiceRequestStatus::Recording
@@ -113,9 +132,7 @@ impl VoiceState {
             transcript: None,
             error: None,
             activation_mode: options.activation_mode,
-            vad_state: if options.activation_mode
-                == crate::settings::store::VoiceActivationMode::Vad
-            {
+            vad_state: if armed_activation {
                 VadState::Silence
             } else {
                 VadState::Speech
@@ -612,6 +629,9 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
         VoiceErrorCode::PlaybackDeviceUnavailable => "Nessun dispositivo di uscita audio predefinito è disponibile.",
         VoiceErrorCode::PlaybackFailed => "Il worker di riproduzione audio non è disponibile.",
         VoiceErrorCode::TtsTimeout => "La sintesi o la riproduzione vocale ha superato il tempo massimo.",
+        VoiceErrorCode::WakeWordUnavailable => "La wake word locale non è disponibile in questa build: continua con il microfono manuale o il VAD.",
+        VoiceErrorCode::WakeWordDisabled => "La wake word locale è disattivata nelle impostazioni.",
+        VoiceErrorCode::MicrophoneMuted => "Il microfono di Jarvis è disattivato: riattivalo per ascoltare.",
     }
 }
 
@@ -624,7 +644,8 @@ fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
     let elapsed_ms = capture.elapsed_ms();
     let level = capture.normalized_level().clamp(0.0, 1.0);
     let vad_state = capture.vad_state();
-    if request.view.status == VoiceRequestStatus::Armed && speech_started {
+    let wake_word_activated = capture.wake_word_activated();
+    if request.view.status == VoiceRequestStatus::Armed && (speech_started || wake_word_activated) {
         request.view.status = VoiceRequestStatus::Recording;
     }
     if matches!(

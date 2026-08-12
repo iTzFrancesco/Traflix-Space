@@ -43,3 +43,7 @@ rodio = "0.19"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# Reserved seam for the approved local keyword-spotting adapter. The MVP keeps
+# this disabled until the sherpa-onnx dependency, model and redistribution
+# terms are verified and bundled explicitly.
+wake-word-sherpa = []

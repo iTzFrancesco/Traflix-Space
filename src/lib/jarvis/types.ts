@@ -70,6 +70,8 @@ export interface JarvisSettings {
   voiceEngine: VoiceEngine;
   muted: boolean;
   wakeWordEnabled: boolean;
+  wakeWordPhrase: string;
+  wakeWordSensitivity: number;
   widgetPosition: WidgetPosition;
   standardPipeline: StandardPipelineSettings;
   geminiLive: GeminiLiveSettings;
@@ -187,7 +189,7 @@ export interface CodexSpeechItem {
   text: string;
 }
 
-export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad";
+export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad" | "wake_word";
 export type ShortcutBehavior = "toggle" | "hold";
 
 export interface VoiceInputSettings {
@@ -250,6 +252,15 @@ export interface AppSettings {
 export type VoiceRequestStatus = "idle" | "armed" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
 export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
 export interface VoiceErrorView { code: string; message: string; }
+export type WakeWordState = "off" | "standby" | "listening" | "unavailable" | "error";
+export interface WakeWordStatusView {
+  state: WakeWordState;
+  enabled: boolean;
+  keyword: string;
+  engine: string;
+  score?: number;
+  error?: VoiceErrorView;
+}
 export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; activationMode: VoiceActivationMode; vadState: VadState; }
 export type VoiceSubmitState = "manual" | "queued" | "submitting" | "sent";
 export type VadState = "silence" | "maybe_speech" | "speech";

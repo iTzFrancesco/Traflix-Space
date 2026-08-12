@@ -14,6 +14,7 @@ use super::types::{
     CapturedAudio, VoiceCaptureOptions, VoiceErrorCode, VoiceInputDevice, MAX_RECORDING_MS,
 };
 use super::vad::{EnergyVad, EnergyVadConfig, VadState};
+use super::wake::WakeWordEngine;
 
 pub trait AudioCaptureSession: Send {
     fn stop(self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode>;
@@ -31,6 +32,9 @@ pub trait AudioCaptureSession: Send {
     fn should_auto_stop(&self) -> bool {
         false
     }
+    fn wake_word_activated(&self) -> bool {
+        false
+    }
 }
 
 pub trait AudioCaptureSource: Send + Sync {
@@ -39,6 +43,7 @@ pub trait AudioCaptureSource: Send + Sync {
         &self,
         selected_device_id: Option<&str>,
         options: VoiceCaptureOptions,
+        _wake_engine: Option<Box<dyn WakeWordEngine>>,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode>;
 }
 
@@ -54,6 +59,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
         &self,
         _selected_device_id: Option<&str>,
         _options: VoiceCaptureOptions,
+        _wake_engine: Option<Box<dyn WakeWordEngine>>,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         Err(VoiceErrorCode::DeviceUnavailable)
     }
@@ -87,6 +93,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
         &self,
         selected_device_id: Option<&str>,
         options: VoiceCaptureOptions,
+        wake_engine: Option<Box<dyn WakeWordEngine>>,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (stop_tx, stop_rx) = mpsc::channel();
@@ -94,7 +101,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
         let capture_thread = thread::Builder::new()
             .name("traflix-audio-capture".into())
             .spawn(move || {
-                run_cpal_capture(selected_device_id, options, ready_tx, stop_rx);
+                run_cpal_capture(selected_device_id, options, wake_engine, ready_tx, stop_rx);
             })
             .map_err(|_| VoiceErrorCode::DeviceUnavailable)?;
         let buffer = match ready_rx
@@ -120,6 +127,7 @@ impl AudioCaptureSource for PlatformAudioCapture {
 fn run_cpal_capture(
     selected_device_id: Option<String>,
     options: VoiceCaptureOptions,
+    wake_engine: Option<Box<dyn WakeWordEngine>>,
     ready_tx: SyncSender<Result<Arc<Mutex<CaptureBuffer>>, VoiceErrorCode>>,
     stop_rx: Receiver<()>,
 ) {
@@ -145,6 +153,7 @@ fn run_cpal_capture(
             channels,
             sample_rate,
             options,
+            wake_engine,
         )));
         let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(32);
         let callback_failed = Arc::new(AtomicBool::new(false));
@@ -308,6 +317,12 @@ impl AudioCaptureSession for CpalCaptureSession {
     fn failure(&self) -> Option<VoiceErrorCode> {
         self.buffer.lock().ok().and_then(|buffer| buffer.failure)
     }
+    fn wake_word_activated(&self) -> bool {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.wake_word_activated)
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(windows)]
@@ -338,11 +353,18 @@ struct CaptureBuffer {
     pre_roll: VecDeque<f32>,
     max_pre_roll_samples: usize,
     vad: Option<EnergyVad>,
+    wake_engine: Option<Box<dyn WakeWordEngine>>,
+    wake_word_activated: bool,
     failure: Option<VoiceErrorCode>,
 }
 
 impl CaptureBuffer {
-    fn new(channels: u16, sample_rate: u32, options: VoiceCaptureOptions) -> Self {
+    fn new(
+        channels: u16,
+        sample_rate: u32,
+        options: VoiceCaptureOptions,
+        wake_engine: Option<Box<dyn WakeWordEngine>>,
+    ) -> Self {
         let options = options.bounded();
         let max_seconds = (options.max_duration_seconds as u64).clamp(1, MAX_RECORDING_MS / 1000);
         let max_pre_roll_samples =
@@ -372,6 +394,8 @@ impl CaptureBuffer {
             pre_roll: VecDeque::with_capacity(max_pre_roll_samples),
             max_pre_roll_samples,
             vad,
+            wake_engine,
+            wake_word_activated: false,
             failure: None,
         }
     }
@@ -430,6 +454,23 @@ fn push_samples<I: IntoIterator<Item = f32>>(
 fn process_samples(buffer: &Arc<Mutex<CaptureBuffer>>, incoming: Vec<f32>) {
     if let Ok(mut buffer) = buffer.lock() {
         buffer.level = super::audio::perceptual_level(&incoming);
+
+        // Wake-only capture shares this CPAL stream with the later recording
+        // phase. Until the engine confirms a keyword, no raw samples are kept
+        // in the transcript buffer and no VAD recording is started.
+        if let Some(mut engine) = buffer.wake_engine.take() {
+            let detected = engine
+                .process(&incoming, buffer.sample_rate, buffer.channels)
+                .is_some();
+            if detected {
+                engine.reset();
+                buffer.wake_word_activated = true;
+            } else {
+                buffer.wake_engine = Some(engine);
+            }
+            return;
+        }
+
         let speech_started = if let Some(vad) = buffer.vad.as_mut() {
             vad.process(&incoming);
             vad.speech_started()
@@ -477,6 +518,7 @@ impl AudioCaptureSource for FailingCaptureSource {
         &self,
         _selected_device_id: Option<&str>,
         _options: VoiceCaptureOptions,
+        _wake_engine: Option<Box<dyn WakeWordEngine>>,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         Ok(Box::new(FailingCaptureSession { error: self.error }))
     }
@@ -496,6 +538,7 @@ impl AudioCaptureSource for FakeCaptureSource {
         &self,
         _selected_device_id: Option<&str>,
         _options: VoiceCaptureOptions,
+        _wake_engine: Option<Box<dyn WakeWordEngine>>,
     ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
         Ok(Box::new(FakeCaptureSession {
             audio: self.audio.clone(),
@@ -541,5 +584,71 @@ impl AudioCaptureSession for FakeCaptureSession {
     }
     fn normalized_level(&self) -> f32 {
         0.5
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::jarvis::voice::wake::{WakeWordDetection, WakeWordEngine};
+    use crate::settings::store::VoiceActivationMode;
+
+    struct TriggerOnFirstFrame {
+        triggered: bool,
+    }
+
+    impl WakeWordEngine for TriggerOnFirstFrame {
+        fn backend_name(&self) -> &'static str {
+            "test"
+        }
+
+        fn process(
+            &mut self,
+            _samples: &[f32],
+            _sample_rate: u32,
+            _channels: u16,
+        ) -> Option<WakeWordDetection> {
+            if self.triggered {
+                None
+            } else {
+                self.triggered = true;
+                Some(WakeWordDetection { score: 0.9 })
+            }
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    fn wake_options() -> VoiceCaptureOptions {
+        VoiceCaptureOptions {
+            activation_mode: VoiceActivationMode::WakeWord,
+            max_duration_seconds: 45,
+            max_armed_seconds: 120,
+            vad_enabled: false,
+            vad_speech_threshold: 0.018,
+            vad_start_frames: 3,
+            vad_silence_frames: 16,
+            vad_pre_roll_ms: 250,
+            vad_post_speech_ms: 650,
+        }
+    }
+
+    #[test]
+    fn wake_only_does_not_retain_audio_before_activation_and_reuses_buffer_afterwards() {
+        let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
+            1,
+            16_000,
+            wake_options(),
+            Some(Box::new(TriggerOnFirstFrame { triggered: false })),
+        )));
+
+        process_samples(&buffer, vec![0.4; 160]);
+        let snapshot = buffer.lock().unwrap();
+        assert!(snapshot.wake_word_activated);
+        assert!(snapshot.samples.is_empty());
+        drop(snapshot);
+
+        process_samples(&buffer, vec![0.4; 160]);
+        assert_eq!(buffer.lock().unwrap().samples.len(), 160);
     }
 }

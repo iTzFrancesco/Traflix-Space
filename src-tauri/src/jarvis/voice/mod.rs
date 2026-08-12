@@ -8,5 +8,6 @@ pub mod stt;
 pub mod tts;
 pub mod types;
 pub mod vad;
+pub mod wake;
 
 pub use registry::VoiceState;

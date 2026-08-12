@@ -6,6 +6,7 @@ import type {
   TtsStatusView,
   VoiceLevelEvent,
   VoiceRequestStatusView,
+  WakeWordStatusView,
 } from "../../lib/jarvis/types";
 import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import { SettingsModal } from "../layout/SettingsModal";
@@ -55,6 +56,7 @@ export function JarvisGlobalOverlay() {
     : null;
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
+  const wakeWordStatus = useJarvisStore((state) => state.wakeWordStatus);
   const voiceError = useJarvisStore((state) => state.voiceError);
   const codexSpeechQueue = useJarvisStore((state) => state.codexSpeechQueue);
   const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
@@ -84,6 +86,7 @@ export function JarvisGlobalOverlay() {
   );
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
   const setTtsStatus = useJarvisStore((state) => state.setTtsStatus);
+  const setWakeWordStatus = useJarvisStore((state) => state.setWakeWordStatus);
   const shortcutPressedRef = useRef<VoicePress | null>(null);
   const shortcutGenerationRef = useRef(0);
   const registryRequestRef = useRef(0);
@@ -378,17 +381,25 @@ export function JarvisGlobalOverlay() {
       .catch(() => undefined);
   }, [activeVoiceRequestId, activeWorkspaceId, voiceRequests]);
 
-  // Hands-free mode: while unmuted, keep a VAD capture armed in the focused
-  // workspace. Armed is intentionally visually neutral; only actual detected
-  // speech changes the request to Recording and turns the widget green.
+  // Hands-free mode: while unmuted, keep either a local wake-word capture or
+  // the existing VAD capture armed in the focused workspace. If the local
+  // engine is unavailable, fall back to VAD instead of opening a microphone
+  // session that cannot ever trigger.
   useEffect(() => {
     if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
+    if (settings.jarvis.wakeWordEnabled && !wakeWordStatus) return;
+    const wakeWordReady = settings.jarvis.wakeWordEnabled
+      && wakeWordStatus?.enabled === true
+      && wakeWordStatus.state !== "unavailable"
+      && wakeWordStatus.state !== "error";
+    const vadFallbackReady = !wakeWordReady
+      && settings.jarvis.voiceInput.activationMode === "vad";
     if (
       !settingsLoaded ||
       voiceError ||
       !isJarvisOwnerModeReady(settings.jarvis) ||
       settings.jarvis.muted ||
-      settings.jarvis.voiceInput.activationMode !== "vad" ||
+      (!wakeWordReady && !vadFallbackReady) ||
       activeVoiceRequestId
     ) {
       return;
@@ -426,7 +437,15 @@ export function JarvisGlobalOverlay() {
         useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
         !store.settings.jarvis.enabled ||
         store.settings.jarvis.muted ||
-        store.settings.jarvis.voiceInput.activationMode !== "vad" ||
+        (
+          !(
+            store.settings.jarvis.wakeWordEnabled
+            && store.wakeWordStatus?.enabled === true
+            && store.wakeWordStatus.state !== "unavailable"
+            && store.wakeWordStatus.state !== "error"
+          )
+          && store.settings.jarvis.voiceInput.activationMode !== "vad"
+        ) ||
         store.settingsOpen ||
         store.activeVoiceRequestId
       ) {
@@ -441,9 +460,19 @@ export function JarvisGlobalOverlay() {
       const liveTtsBusy =
         store.ttsStatus.status === "synthesizing" ||
         store.ttsStatus.status === "playing";
-      if (!liveChatBusy && !liveTtsBusy) {
+      const liveWakeWordReady = store.settings.jarvis.wakeWordEnabled
+        && store.wakeWordStatus?.enabled === true
+        && store.wakeWordStatus.state !== "unavailable"
+        && store.wakeWordStatus.state !== "error";
+      const liveVadFallbackReady = !liveWakeWordReady
+        && store.settings.jarvis.voiceInput.activationMode === "vad";
+      if (!liveChatBusy && !liveTtsBusy && (liveWakeWordReady || liveVadFallbackReady)) {
         console.info("[Jarvis voice] auto-arm after turn", { workspaceId });
-        void store.startVoice();
+        if (liveWakeWordReady) {
+          void store.startVoice({ activationMode: "wake_word" });
+        } else {
+          void store.startVoice();
+        }
       }
     }, AUTO_ARM_DELAY_MS);
 
@@ -455,6 +484,8 @@ export function JarvisGlobalOverlay() {
     settings,
     settingsLoaded,
     settingsOpen,
+    wakeWordStatus,
+    settings.jarvis.wakeWordEnabled,
     ttsStatus.status,
     voiceError,
     voiceRequest?.requestId,
@@ -518,6 +549,9 @@ export function JarvisGlobalOverlay() {
   useEffect(() => {
     let disposed = false;
     const listeners = Promise.allSettled([
+      listen<WakeWordStatusView>("jarvis://wake-state", (event) => {
+        if (!disposed) setWakeWordStatus(event.payload);
+      }),
       listen<VoiceRequestStatusView>("jarvis://voice-state", (event) => {
         if (disposed) return;
         console.info("[Jarvis voice] frontend state event", {
@@ -662,6 +696,7 @@ export function JarvisGlobalOverlay() {
   }, [
     applyActivityEvents,
     setTtsStatus,
+    setWakeWordStatus,
     setVoiceLevel,
     setVoiceRequest,
     startVoice,
@@ -699,6 +734,7 @@ export function JarvisGlobalOverlay() {
         chatError={chatError}
         voiceError={voiceError}
         muted={settings.jarvis.muted}
+        wakeWordStatus={wakeWordStatus}
         voiceRequest={voiceRequest}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}

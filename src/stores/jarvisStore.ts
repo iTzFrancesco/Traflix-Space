@@ -24,6 +24,7 @@ import {
   confirmAction,
   conversationHistory,
   getSettings,
+  getWakeWordStatus,
   jarvisChat,
   pendingActions,
   providerStatus,
@@ -77,6 +78,8 @@ import type {
   VoiceLevelEvent,
   VoiceRequestStatusView,
   VoiceSubmitState,
+  VoiceActivationMode,
+  WakeWordStatusView,
 } from "../lib/jarvis/types";
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
@@ -138,6 +141,7 @@ interface JarvisStore {
   activities: ActivityCheckpoint[];
   voiceRequests: Record<string, VoiceRequestStatusView>;
   voiceSubmitStates: Record<string, VoiceSubmitState>;
+  wakeWordStatus: WakeWordStatusView | null;
   activeVoiceRequestId: string | null;
   voiceStopRequested: boolean;
   voiceCancelRequested: boolean;
@@ -147,6 +151,7 @@ interface JarvisStore {
   voiceError: string | null;
 
   loadSettings: () => Promise<void>;
+  loadWakeWordStatus: () => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
   updateJarvisSettings: (updater: (settings: AppSettings["jarvis"]) => AppSettings["jarvis"]) => Promise<void>;
   showJarvis: () => Promise<void>;
@@ -189,7 +194,7 @@ interface JarvisStore {
   cancelCodexLogin: (loginId: string) => Promise<void>;
   logoutCodex: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
-  startVoice: (options?: { interruptTts?: boolean }) => Promise<void>;
+  startVoice: (options?: { interruptTts?: boolean; activationMode?: VoiceActivationMode }) => Promise<void>;
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
@@ -197,6 +202,7 @@ interface JarvisStore {
   loadVoiceDraft: (workspaceId: string) => Promise<void>;
   setVoiceRequest: (status: VoiceRequestStatusView) => void;
   setVoiceSubmitState: (requestId: string, state: VoiceSubmitState) => void;
+  setWakeWordStatus: (status: WakeWordStatusView) => void;
   applyActivityEvents: (events: ActivityCheckpoint[]) => void;
   clearWorkspaceActivities: (workspaceId: string) => void;
   setVoiceLevel: (event: VoiceLevelEvent) => void;
@@ -274,7 +280,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   codexSpokenItemIds: [],
   codexStreamFinal: {},
   uiIntents: [], followUps: {},
-  activities: [], voiceRequests: {}, voiceSubmitStates: {}, voiceLevel: null, ttsStatus: { status: "idle", sequence: 0 },
+  activities: [], voiceRequests: {}, voiceSubmitStates: {}, voiceLevel: null, wakeWordStatus: null, ttsStatus: { status: "idle", sequence: 0 },
   pendingTtsRequestId: null,
   activeVoiceRequestId: null,
   voiceStopRequested: false,
@@ -286,9 +292,29 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     try {
       const loaded = await getSettings();
       set({ settings: loaded, settingsLoaded: true, settingsLoading: false, voiceError: null });
+      await get().loadWakeWordStatus();
       await voiceSyncShortcut();
     }
     catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error), voiceError: null }); }
+  },
+  loadWakeWordStatus: async () => {
+    try {
+      set({ wakeWordStatus: await getWakeWordStatus() });
+    } catch (error) {
+      set((state) => ({
+        wakeWordStatus: {
+          state: state.settings.jarvis.muted
+            ? "off"
+            : state.settings.jarvis.wakeWordEnabled
+              ? "unavailable"
+              : "off",
+          enabled: state.settings.jarvis.wakeWordEnabled && !state.settings.jarvis.muted,
+          keyword: state.settings.jarvis.wakeWordPhrase,
+          engine: "unknown",
+          error: { code: "wake_word_status_failed", message: sanitizedVoiceError(error) },
+        },
+      }));
+    }
   },
   saveSettings: async (settings) => {
     if (!settings.jarvis.enabled) {
@@ -304,6 +330,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     settingsSaveQueue = settingsSaveQueue.catch(() => undefined).then(() => persistSettings(settings));
     try {
       await settingsSaveQueue;
+      await get().loadWakeWordStatus();
       await voiceSyncShortcut();
     } catch (error) { set({ settingsError: errorMessage(error) }); throw error; }
   },
@@ -617,7 +644,12 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         // VAD confirms speech, so this fast path cannot cancel the chat/task.
         void get().stopTts();
       }
-      const status = await voiceStart({ requestId, workspaceId, selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId });
+      const status = await voiceStart({
+        requestId,
+        workspaceId,
+        selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId,
+        activationMode: options.activationMode,
+      });
       voiceLog("start completed", { requestId, workspaceId, status: status.status, vadState: status.vadState });
       const stopAfterStart = get().voiceStopRequested;
       const cancelAfterStart = get().voiceCancelRequested;
@@ -632,8 +664,25 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       }
     } catch (error) {
       voiceWarn("start failed", { requestId, error: sanitizedVoiceError(error) });
+      const errorView = sanitizedVoiceErrorView(error, "voice_start_failed");
+      const wakeUnavailable = options.activationMode === "wake_word"
+        && ["wake_word_unavailable", "wake_word_disabled"].includes(errorView.code);
       set((state) => state.activeVoiceRequestId === requestId
-        ? { activeVoiceRequestId: null, voiceStopRequested: false, voiceCancelRequested: false, voiceError: sanitizedVoiceError(error) }
+        ? {
+            activeVoiceRequestId: null,
+            voiceStopRequested: false,
+            voiceCancelRequested: false,
+            voiceError: wakeUnavailable ? null : sanitizedVoiceError(error),
+            wakeWordStatus: wakeUnavailable
+              ? {
+                  state: "unavailable",
+                  enabled: true,
+                  keyword: state.settings.jarvis.wakeWordPhrase,
+                  engine: "disabled",
+                  error: errorView,
+                }
+              : state.wakeWordStatus,
+          }
         : { voiceError: sanitizedVoiceError(error) });
     }
   },
@@ -962,6 +1011,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   setVoiceSubmitState: (requestId, submitState) => set((state) => ({
     voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: submitState },
   })),
+  setWakeWordStatus: (wakeWordStatus) => set({ wakeWordStatus }),
   setTtsStatus: (ttsStatus) => set((state) => {
     const transition = applyTtsStatusTransition(state, ttsStatus);
     if (!transition.accepted) {
