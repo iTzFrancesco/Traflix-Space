@@ -46,11 +46,10 @@ static RUNTIME_PROVIDER: OnceLock<Mutex<Option<CachedGroqProvider>>> = OnceLock:
 
 impl GroqSpeechToTextProvider {
     pub fn from_environment() -> Result<Self, VoiceErrorCode> {
-        // Use the same process/user/.env resolver as Settings. This matters
-        // on Windows, where the user environment is not injected into an
-        // already-running Tauri process automatically.
-        let api_key =
-            crate::settings::secrets::read_secret_env(crate::settings::secrets::GROQ_API_KEY_ENV);
+        let api_key = std::env::var("GROQ_API_KEY")
+            .ok()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
         let Some(api_key) = api_key else {
             return Self::new(GROQ_ENDPOINT, None);
         };
