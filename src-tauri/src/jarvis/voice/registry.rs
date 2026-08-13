@@ -689,7 +689,8 @@ mod tests {
     use super::*;
     use crate::jarvis::voice::capture::{FailingCaptureSource, FakeCaptureSource};
     use crate::jarvis::voice::playback::FakePlayback;
-    use crate::jarvis::voice::types::CapturedAudio;
+    use crate::jarvis::voice::types::{CapturedAudio, VoiceInputDevice};
+    use crate::jarvis::voice::wake::{DisabledWakeWordEngine, WakeWordEngine};
     use crate::settings::store::VoiceActivationMode;
 
     fn test_options() -> VoiceCaptureOptions {
@@ -703,6 +704,55 @@ mod tests {
             vad_silence_frames: 16,
             vad_pre_roll_ms: 250,
             vad_post_speech_ms: 650,
+        }
+    }
+
+    struct WakeAwareCaptureSource {
+        received_engine: Arc<Mutex<bool>>,
+    }
+
+    impl AudioCaptureSource for WakeAwareCaptureSource {
+        fn list_input_devices(&self) -> Result<Vec<VoiceInputDevice>, VoiceErrorCode> {
+            Ok(Vec::new())
+        }
+
+        fn start(
+            &self,
+            _selected_device_id: Option<&str>,
+            options: VoiceCaptureOptions,
+            wake_engine: Option<Box<dyn WakeWordEngine>>,
+        ) -> Result<Box<dyn AudioCaptureSession>, VoiceErrorCode> {
+            assert_eq!(options.activation_mode, VoiceActivationMode::WakeWord);
+            *self.received_engine.lock() = wake_engine.is_some();
+            Ok(Box::new(WakeTriggeredCaptureSession))
+        }
+    }
+
+    struct WakeTriggeredCaptureSession;
+
+    impl AudioCaptureSession for WakeTriggeredCaptureSession {
+        fn stop(self: Box<Self>) -> Result<CapturedAudio, VoiceErrorCode> {
+            Ok(CapturedAudio {
+                samples: vec![0.4; 160],
+                channels: 1,
+                sample_rate: 16_000,
+            })
+        }
+
+        fn elapsed_ms(&self) -> u64 {
+            10
+        }
+
+        fn normalized_level(&self) -> f32 {
+            0.4
+        }
+
+        fn speech_started(&self) -> bool {
+            false
+        }
+
+        fn wake_word_activated(&self) -> bool {
+            true
         }
     }
 
@@ -727,6 +777,36 @@ mod tests {
             state.snapshot(Some("req")).unwrap().status,
             VoiceRequestStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn wake_word_is_armed_separately_and_transitions_only_after_detection() {
+        let received_engine = Arc::new(Mutex::new(false));
+        let state = VoiceState::new(
+            Arc::new(WakeAwareCaptureSource {
+                received_engine: Arc::clone(&received_engine),
+            }),
+            Arc::new(FakePlayback),
+        );
+        let mut options = test_options();
+        options.activation_mode = VoiceActivationMode::WakeWord;
+
+        let armed = state
+            .start_with_wake_engine(
+                "wake-request".into(),
+                "workspace-a".into(),
+                None,
+                options,
+                Some(Box::new(DisabledWakeWordEngine)),
+            )
+            .unwrap();
+        assert_eq!(armed.activation_mode, VoiceActivationMode::WakeWord);
+        assert_eq!(armed.status, VoiceRequestStatus::Armed);
+        assert!(*received_engine.lock());
+
+        let signal = state.signal("wake-request").unwrap();
+        assert!(signal.status_changed);
+        assert_eq!(signal.status.status, VoiceRequestStatus::Recording);
     }
 
     #[tokio::test]

@@ -355,6 +355,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     ? props.voiceError
     : props.muted
       ? "Microfono disattivato"
+      : props.wakeWordStatus?.state === "fallback" && props.wakeWordStatus.enabled
+        ? "Wake word · fallback VAD locale"
       : props.wakeWordStatus?.state === "unavailable" && props.wakeWordStatus.enabled
         ? `Wake word non disponibile · ${
             props.activationMode === "vad" ? "VAD attivo" : "attivazione manuale"

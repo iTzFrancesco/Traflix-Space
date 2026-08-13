@@ -252,7 +252,7 @@ export interface AppSettings {
 export type VoiceRequestStatus = "idle" | "armed" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
 export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
 export interface VoiceErrorView { code: string; message: string; }
-export type WakeWordState = "off" | "standby" | "listening" | "unavailable" | "error";
+export type WakeWordState = "off" | "standby" | "listening" | "fallback" | "unavailable" | "error";
 export interface WakeWordStatusView {
   state: WakeWordState;
   enabled: boolean;

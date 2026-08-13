@@ -1,7 +1,10 @@
-use super::types::{error_view, VoiceErrorCode, WakeWordState, WakeWordStatusView};
+use super::types::{VoiceErrorCode, WakeWordState, WakeWordStatusView};
+use super::vad::{EnergyVad, EnergyVadConfig, VadState};
 
 pub const DEFAULT_WAKE_WORD: &str = "Hey Traflix";
 pub const DEFAULT_WAKE_WORD_SENSITIVITY: f32 = 0.65;
+const FALLBACK_START_FRAMES: u16 = 3;
+const FALLBACK_POST_SPEECH_MS: u32 = 100;
 
 /// Runtime configuration passed to a local keyword-spotting adapter.
 ///
@@ -49,9 +52,7 @@ pub trait WakeWordEngine: Send {
     fn reset(&mut self);
 }
 
-/// Safe fallback while the actual local engine and its model are not bundled.
-/// It intentionally never reports a match and is useful in unit tests and
-/// capability diagnostics.
+/// Test/capability-only engine that intentionally never reports a match.
 #[derive(Debug, Default)]
 pub struct DisabledWakeWordEngine;
 
@@ -72,19 +73,80 @@ impl WakeWordEngine for DisabledWakeWordEngine {
     fn reset(&mut self) {}
 }
 
-/// The feature is intentionally declared before the dependency/model is
-/// approved. Enabling it currently changes diagnostics only; it does not
-/// pretend that a sherpa-onnx asset is available.
-pub fn configured_backend_name() -> &'static str {
-    if cfg!(feature = "wake-word-sherpa") {
-        "sherpa-onnx (asset non configurato)"
-    } else {
-        "disabled"
+/// Local fallback used when the model-backed keyword detector is not bundled.
+///
+/// This is deliberately a VAD fallback, not acoustic recognition of the
+/// configured phrase. It keeps standby local and bounded, while the
+/// `WakeWordEngine` seam remains ready for an approved model adapter later.
+#[derive(Debug)]
+pub struct LocalVadFallbackWakeEngine {
+    sensitivity: f32,
+    vad: Option<EnergyVad>,
+}
+
+impl LocalVadFallbackWakeEngine {
+    pub fn new(config: &WakeWordConfig) -> Self {
+        Self {
+            sensitivity: config.sensitivity,
+            vad: None,
+        }
+    }
+
+    fn threshold(&self) -> f32 {
+        // Keep the fallback threshold bounded even if settings are migrated
+        // from an older or corrupted profile.
+        (0.04 - self.sensitivity * 0.02).clamp(0.018, 0.04)
     }
 }
 
-pub fn create_engine(_config: &WakeWordConfig) -> Result<Box<dyn WakeWordEngine>, VoiceErrorCode> {
-    Err(VoiceErrorCode::WakeWordUnavailable)
+impl WakeWordEngine for LocalVadFallbackWakeEngine {
+    fn backend_name(&self) -> &'static str {
+        "vad-fallback"
+    }
+
+    fn process(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+        channels: u16,
+    ) -> Option<WakeWordDetection> {
+        if samples.is_empty() {
+            return None;
+        }
+        let threshold = self.threshold();
+        let vad = self.vad.get_or_insert_with(|| {
+            EnergyVad::new(EnergyVadConfig {
+                threshold,
+                start_frames: FALLBACK_START_FRAMES,
+                silence_frames: 1,
+                post_speech_ms: FALLBACK_POST_SPEECH_MS,
+                sample_rate,
+                channels,
+            })
+        });
+        (vad.process(samples) == VadState::Speech).then_some(WakeWordDetection {
+            score: 0.5 + self.sensitivity * 0.5,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.vad = None;
+    }
+}
+
+/// The model-backed feature remains reserved until its dependency, model and
+/// redistribution licence are present. Normal builds therefore use the local
+/// VAD fallback instead of reporting an unusable wake-only session.
+pub fn configured_backend_name() -> &'static str {
+    if cfg!(feature = "wake-word-sherpa") {
+        "vad-fallback (sherpa asset non configurato)"
+    } else {
+        "vad-fallback"
+    }
+}
+
+pub fn create_engine(config: &WakeWordConfig) -> Result<Box<dyn WakeWordEngine>, VoiceErrorCode> {
+    Ok(Box::new(LocalVadFallbackWakeEngine::new(config)))
 }
 
 pub fn status(enabled: bool, config: &WakeWordConfig) -> WakeWordStatusView {
@@ -100,15 +162,12 @@ pub fn status(enabled: bool, config: &WakeWordConfig) -> WakeWordStatusView {
     }
 
     WakeWordStatusView {
-        state: WakeWordState::Unavailable,
+        state: WakeWordState::Fallback,
         enabled: true,
         keyword: config.keyword.clone(),
         engine: configured_backend_name().to_string(),
         score: None,
-        error: Some(error_view(
-            VoiceErrorCode::WakeWordUnavailable,
-            "Il detector locale e il relativo modello non sono inclusi in questa build.",
-        )),
+        error: None,
     }
 }
 
@@ -146,6 +205,33 @@ pub fn listening_status(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingWakeEngine {
+        frames: Vec<(usize, u32, u16)>,
+        reset_count: usize,
+    }
+
+    impl WakeWordEngine for RecordingWakeEngine {
+        fn backend_name(&self) -> &'static str {
+            "test-local"
+        }
+
+        fn process(
+            &mut self,
+            samples: &[f32],
+            sample_rate: u32,
+            channels: u16,
+        ) -> Option<WakeWordDetection> {
+            self.frames.push((samples.len(), sample_rate, channels));
+            (samples.iter().copied().fold(0.0_f32, f32::max) >= 0.8)
+                .then_some(WakeWordDetection { score: 0.91 })
+        }
+
+        fn reset(&mut self) {
+            self.reset_count += 1;
+        }
+    }
+
     #[test]
     fn config_uses_safe_defaults_and_bounded_sensitivity() {
         let config = WakeWordConfig::new("  ", 2.0);
@@ -161,14 +247,35 @@ mod tests {
     }
 
     #[test]
-    fn enabled_status_exposes_unavailable_engine_without_claiming_standby() {
+    fn enabled_status_exposes_vad_fallback_without_claiming_keyword_detection() {
         let config = WakeWordConfig::new(DEFAULT_WAKE_WORD, DEFAULT_WAKE_WORD_SENSITIVITY);
         let status = status(true, &config);
-        assert_eq!(status.state, WakeWordState::Unavailable);
-        assert_eq!(
-            status.error.as_ref().map(|error| error.code.as_str()),
-            Some("wake_word_unavailable")
-        );
+        assert_eq!(status.state, WakeWordState::Fallback);
+        assert_eq!(status.engine, "vad-fallback");
+        assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn fallback_engine_requires_sustained_local_speech_before_activation() {
+        let config = WakeWordConfig::new(DEFAULT_WAKE_WORD, DEFAULT_WAKE_WORD_SENSITIVITY);
+        let mut engine = LocalVadFallbackWakeEngine::new(&config);
+
+        assert!(engine.process(&[0.0; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.1; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.1; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.1; 160], 16_000, 1).is_some());
+        engine.reset();
+        assert!(engine.process(&[0.0; 160], 16_000, 1).is_none());
+    }
+
+    #[test]
+    fn fallback_engine_rejects_a_quiet_room_frame_as_wake_activation() {
+        let config = WakeWordConfig::new(DEFAULT_WAKE_WORD, DEFAULT_WAKE_WORD_SENSITIVITY);
+        let mut engine = LocalVadFallbackWakeEngine::new(&config);
+
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
     }
 
     #[test]
@@ -178,5 +285,35 @@ mod tests {
         assert_eq!(status.state, WakeWordState::Off);
         assert!(!status.enabled);
         assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn local_engine_receives_bounded_frames_and_resets_after_detection() {
+        let mut engine = RecordingWakeEngine::default();
+
+        assert!(engine.process(&[0.2; 160], 16_000, 1).is_none());
+        let detection = engine.process(&[0.9; 160], 16_000, 1);
+
+        assert_eq!(engine.backend_name(), "test-local");
+        assert_eq!(engine.frames, vec![(160, 16_000, 1), (160, 16_000, 1)]);
+        assert_eq!(detection, Some(WakeWordDetection { score: 0.91 }));
+        engine.reset();
+        assert_eq!(engine.reset_count, 1);
+    }
+
+    #[test]
+    fn wake_status_transitions_preserve_local_keyword_and_engine_identity() {
+        let config = WakeWordConfig::new("Hey Jarvis", 0.7);
+        let standby = standby_status(true, &config);
+        let listening = listening_status(true, &config, Some(0.88));
+
+        assert_eq!(standby.state, WakeWordState::Standby);
+        assert_eq!(listening.state, WakeWordState::Listening);
+        assert_eq!(standby.keyword, "Hey Jarvis");
+        assert_eq!(listening.keyword, "Hey Jarvis");
+        assert_eq!(standby.engine, listening.engine);
+        assert_eq!(listening.score, Some(0.88));
+        assert!(standby.error.is_none());
+        assert!(listening.error.is_none());
     }
 }
