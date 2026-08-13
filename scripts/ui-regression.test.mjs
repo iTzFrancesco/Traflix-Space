@@ -222,20 +222,30 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings stay compact, localized and expose voice devices", () => {
+test("normal Jarvis settings stay compact, localized and keep automatic voice controls", () => {
   assert.match(settingsSource, /La voce è l'interfaccia principale/);
   assert.match(settingsSource, /title="Voce"/);
   assert.match(settingsSource, /description="Microfono e voce di Jarvis\."/);
   assert.match(settingsSource, />Microfono<\/span>/);
   assert.match(settingsSource, />Voce di Jarvis<\/span>/);
-  assert.match(settingsSource, /inputDeviceOptions\(devices\)/);
+  assert.match(settingsSource, /Microfono automatico/);
   assert.match(settingsSource, /italianVoices\(await ttsListVoices\(\)\)/);
+  assert.match(settingsSource, /Invio automatico dopo pausa naturale/);
+  assert.match(settingsSource, /Standby wake word locale/);
+  assert.match(settingsSource, /Parola di attivazione/);
+  assert.doesNotMatch(settingsSource, /inputDeviceOptions\(devices\)|Aggiorna microfoni/);
+  assert.doesNotMatch(settingsSource, /Sensibilità/);
+  assert.doesNotMatch(settingsSource, /Silenzio di fine frase|Grace period|Parlato minimo/);
   assert.doesNotMatch(settingsSource, /Modalità di interazione|Comportamento scorciatoia/);
   assert.doesNotMatch(settingsSource, /value: "click_toggle"/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
   );
+});
+
+test("voice settings force the microphone back to automatic mode when saved", () => {
+  assert.match(jarvisSettingsSource, /selectedInputDeviceId:\s*null/);
 });
 
 test("owner mode is enforced without deleting hold-to-talk", () => {

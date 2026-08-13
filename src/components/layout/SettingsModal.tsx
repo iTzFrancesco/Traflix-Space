@@ -16,7 +16,6 @@ import {
 } from "../../lib/jarvis/settings";
 import {
   ttsListVoices,
-  voiceListInputDevices,
 } from "../../lib/jarvis/client";
 import {
   jarvisClearSecret,
@@ -26,14 +25,12 @@ import {
   type JarvisSecretStatus,
 } from "../../lib/jarvis/secrets";
 import {
-  inputDeviceOptions,
   italianVoices,
   sanitizedVoiceError,
 } from "../../lib/jarvis/voiceSettings";
 import type {
   AppSettings,
   TtsVoice,
-  VoiceInputDevice,
   WakeWordStatusView,
 } from "../../lib/jarvis/types";
 import {
@@ -282,7 +279,6 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
           output={jarvis.voiceOutput}
           wakeWordEnabled={jarvis.wakeWordEnabled}
           wakeWordPhrase={jarvis.wakeWordPhrase}
-          wakeWordSensitivity={jarvis.wakeWordSensitivity}
           wakeWordStatus={wakeWordStatus}
           onWakeWordChange={(patch) =>
             updateJarvis((current) => ({ ...current, ...patch }))
@@ -456,7 +452,6 @@ function VoiceOptions({
   output,
   wakeWordEnabled,
   wakeWordPhrase,
-  wakeWordSensitivity,
   wakeWordStatus,
   onWakeWordChange,
   onInputChange,
@@ -466,19 +461,15 @@ function VoiceOptions({
   output: VoiceOutputSettings;
   wakeWordEnabled: boolean;
   wakeWordPhrase: string;
-  wakeWordSensitivity: number;
   wakeWordStatus: WakeWordStatusView | null;
   onWakeWordChange: (patch: {
     wakeWordEnabled?: boolean;
     wakeWordPhrase?: string;
-    wakeWordSensitivity?: number;
   }) => void;
   onInputChange: (value: VoiceInputSettings) => void;
   onOutputChange: (value: VoiceOutputSettings) => void;
 }) {
-  const [devices, setDevices] = useState<VoiceInputDevice[]>([]);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
-  const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
 
@@ -499,18 +490,6 @@ function VoiceOptions({
     stopOnUserSpeech: true,
   };
 
-  const loadDevices = async () => {
-    setLoadingDevices(true);
-    setVoiceSettingsError(null);
-    try {
-      setDevices(await voiceListInputDevices());
-    } catch (reason) {
-      setVoiceSettingsError(sanitizedVoiceError(reason));
-    } finally {
-      setLoadingDevices(false);
-    }
-  };
-
   const loadVoices = async () => {
     setLoadingVoices(true);
     setVoiceSettingsError(null);
@@ -528,42 +507,64 @@ function VoiceOptions({
       title="Voce"
       description="Microfono e voce di Jarvis."
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Microfono</span>
-          <div className="flex gap-2">
-            <select
-              value={normalizedInput.selectedInputDeviceId ?? ""}
-              onChange={(event) =>
-                onInputChange({
-                  ...normalizedInput,
-                  selectedInputDeviceId: event.target.value || null,
-                })
-              }
-              className="field-input min-w-0 flex-1"
-            >
-              <option value="">Predefinito di Windows</option>
-              {inputDeviceOptions(devices).map((device) => (
-                <option key={device.id} value={device.id}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={() => void loadDevices()}
-              disabled={loadingDevices}
-              className="ui-icon-button h-9 w-9"
-              title="Aggiorna microfoni"
-              aria-label="Aggiorna microfoni"
-            >
-              <RefreshCw
-                size={14}
-                className={loadingDevices ? "status-icon--spin" : ""}
-              />
-            </button>
-          </div>
+      <div className="mb-4 space-y-3 border-y border-neutral-border py-3">
+        <label className="flex items-start gap-2.5 text-xs text-neutral-text">
+          <input
+            type="checkbox"
+            checked={wakeWordEnabled}
+            onChange={(event) =>
+              onWakeWordChange({ wakeWordEnabled: event.target.checked })
+            }
+            className="mt-0.5 accent-[var(--color-accent)]"
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">Standby wake word locale</span>
+            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
+              Mantiene soltanto il detector locale pronto; il mute del widget
+              continua a chiudere completamente il microfono.
+            </span>
+          </span>
         </label>
+
+        <div className="max-w-xl">
+          <label className="space-y-1.5 text-xs text-neutral-text-muted">
+            <span>Parola di attivazione</span>
+            <input
+              value={wakeWordPhrase}
+              onChange={(event) =>
+                onWakeWordChange({ wakeWordPhrase: event.target.value })
+              }
+              className="field-input w-full"
+              maxLength={80}
+              disabled={!wakeWordEnabled}
+            />
+          </label>
+        </div>
+
+        {wakeWordEnabled &&
+          (wakeWordStatus?.state === "fallback" ||
+            wakeWordStatus?.state === "unavailable") && (
+          <p
+            role="status"
+            className="border-l-2 border-warning px-3 py-2 text-[11px] leading-relaxed text-neutral-text-muted"
+          >
+            Il modello wake word non è incluso in questa build. Jarvis usa un
+            fallback VAD locale, senza inviare audio in standby e senza aprire
+            un secondo microfono.
+          </p>
+        )}
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5 text-xs text-neutral-text-muted">
+          <span className="block">Microfono</span>
+          <p className="flex min-h-9 items-center rounded-md border border-neutral-border bg-neutral-darkest px-3 text-neutral-text">
+            Microfono automatico
+          </p>
+          <p className="text-[11px] leading-relaxed">
+            Jarvis usa il microfono predefinito di Windows.
+          </p>
+        </div>
 
         <label className="space-y-1.5 text-xs text-neutral-text-muted">
           <span>Voce di Jarvis</span>
@@ -603,74 +604,8 @@ function VoiceOptions({
         </label>
       </div>
 
-      <div className="mt-4 space-y-3 border-y border-neutral-border py-3">
-        <label className="flex items-start gap-2.5 text-xs text-neutral-text">
-          <input
-            type="checkbox"
-            checked={wakeWordEnabled}
-            onChange={(event) =>
-              onWakeWordChange({ wakeWordEnabled: event.target.checked })
-            }
-            className="mt-0.5 accent-[var(--color-accent)]"
-          />
-          <span className="min-w-0">
-            <span className="block font-medium">Standby wake word locale</span>
-            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              Mantiene soltanto il detector locale pronto; il mute del widget
-              continua a chiudere completamente il microfono.
-            </span>
-          </span>
-        </label>
-
-        <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
-          <label className="space-y-1.5 text-xs text-neutral-text-muted">
-            <span>Parola di attivazione</span>
-            <input
-              value={wakeWordPhrase}
-              onChange={(event) =>
-                onWakeWordChange({ wakeWordPhrase: event.target.value })
-              }
-              className="field-input w-full"
-              maxLength={80}
-              disabled={!wakeWordEnabled}
-            />
-          </label>
-          <label className="space-y-1.5 text-xs text-neutral-text-muted">
-            <span className="flex items-center justify-between">
-              <span>Sensibilità</span>
-              <span>{wakeWordSensitivity.toFixed(2)}</span>
-            </span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={wakeWordSensitivity}
-              onChange={(event) =>
-                onWakeWordChange({
-                  wakeWordSensitivity: Number(event.target.value),
-                })
-              }
-              className="w-full accent-[var(--color-accent)]"
-              disabled={!wakeWordEnabled}
-              aria-label="Sensibilità wake word"
-            />
-          </label>
-        </div>
-
-        {wakeWordEnabled && wakeWordStatus?.state === "unavailable" && (
-          <p
-            role="status"
-            className="border-l-2 border-warning px-3 py-2 text-[11px] leading-relaxed text-neutral-text-muted"
-          >
-            Il detector locale non è incluso in questa build. Jarvis usa il
-            fallback VAD/manuale e non apre un secondo microfono.
-          </p>
-        )}
-      </div>
-
-      <div className="mt-4 grid gap-3 border-y border-neutral-border py-3 sm:grid-cols-3">
-        <label className="flex items-start gap-2 text-xs text-neutral-text sm:col-span-3">
+      <div className="mt-4 border-y border-neutral-border py-3">
+        <label className="flex items-start gap-2 text-xs text-neutral-text">
           <input
             type="checkbox"
             checked={normalizedInput.endpointingEnabled}
@@ -688,57 +623,6 @@ function VoiceOptions({
               VAD ed endpointing attendono la fine della frase; il pulsante “Invia adesso” resta sempre disponibile.
             </span>
           </span>
-        </label>
-        <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Silenzio di fine frase (ms)</span>
-          <input
-            type="number"
-            min="1000"
-            max="5000"
-            step="100"
-            value={normalizedInput.vadPostSpeechMs}
-            onChange={(event) =>
-              onInputChange({
-                ...normalizedInput,
-                vadPostSpeechMs: Number(event.target.value),
-              })
-            }
-            className="field-input w-full"
-          />
-        </label>
-        <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Grace period (ms)</span>
-          <input
-            type="number"
-            min="250"
-            max="5000"
-            step="100"
-            value={normalizedInput.endpointGraceMs}
-            onChange={(event) =>
-              onInputChange({
-                ...normalizedInput,
-                endpointGraceMs: Number(event.target.value),
-              })
-            }
-            className="field-input w-full"
-          />
-        </label>
-        <label className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span>Parlato minimo (ms)</span>
-          <input
-            type="number"
-            min="100"
-            max="10000"
-            step="50"
-            value={normalizedInput.minSpokenMs}
-            onChange={(event) =>
-              onInputChange({
-                ...normalizedInput,
-                minSpokenMs: Number(event.target.value),
-              })
-            }
-            className="field-input w-full"
-          />
         </label>
       </div>
 

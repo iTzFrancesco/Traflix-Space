@@ -75,10 +75,10 @@ import type {
   PendingAction,
   WidgetPosition,
   TtsStatusView,
+  VoiceActivationMode,
   VoiceLevelEvent,
   VoiceRequestStatusView,
   VoiceSubmitState,
-  VoiceActivationMode,
   WakeWordStatusView,
 } from "../lib/jarvis/types";
 
@@ -141,11 +141,11 @@ interface JarvisStore {
   activities: ActivityCheckpoint[];
   voiceRequests: Record<string, VoiceRequestStatusView>;
   voiceSubmitStates: Record<string, VoiceSubmitState>;
-  wakeWordStatus: WakeWordStatusView | null;
   activeVoiceRequestId: string | null;
   voiceStopRequested: boolean;
   voiceCancelRequested: boolean;
   voiceLevel: VoiceLevelEvent | null;
+  wakeWordStatus: WakeWordStatusView | null;
   ttsStatus: TtsStatusView;
   pendingTtsRequestId: string | null;
   voiceError: string | null;
@@ -202,10 +202,10 @@ interface JarvisStore {
   loadVoiceDraft: (workspaceId: string) => Promise<void>;
   setVoiceRequest: (status: VoiceRequestStatusView) => void;
   setVoiceSubmitState: (requestId: string, state: VoiceSubmitState) => void;
-  setWakeWordStatus: (status: WakeWordStatusView) => void;
   applyActivityEvents: (events: ActivityCheckpoint[]) => void;
   clearWorkspaceActivities: (workspaceId: string) => void;
   setVoiceLevel: (event: VoiceLevelEvent) => void;
+  setWakeWordStatus: (status: WakeWordStatusView) => void;
   setTtsStatus: (status: TtsStatusView) => void;
   stopTts: () => Promise<void>;
   clearVoiceError: () => void;
@@ -294,8 +294,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
       set({ settings: loaded, settingsLoaded: true, settingsLoading: false, voiceError: null });
       await get().loadWakeWordStatus();
       await voiceSyncShortcut();
-    }
-    catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error), voiceError: null }); }
+  }
+  catch (error) { set({ settingsLoaded: true, settingsLoading: false, settingsError: errorMessage(error), voiceError: null }); }
   },
   loadWakeWordStatus: async () => {
     try {
@@ -1008,10 +1008,10 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   applyActivityEvents: (activities) => set((state) => ({ activities: mergeActivityEvents(state.activities, activities) })),
   clearWorkspaceActivities: (workspaceId) => set((state) => ({ activities: state.activities.filter((event) => event.workspaceId !== workspaceId) })),
   setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),
+  setWakeWordStatus: (wakeWordStatus) => set({ wakeWordStatus }),
   setVoiceSubmitState: (requestId, submitState) => set((state) => ({
     voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: submitState },
   })),
-  setWakeWordStatus: (wakeWordStatus) => set({ wakeWordStatus }),
   setTtsStatus: (ttsStatus) => set((state) => {
     const transition = applyTtsStatusTransition(state, ttsStatus);
     if (!transition.accepted) {
