@@ -429,15 +429,21 @@ pub async fn list_terminals_for_workspace(
             .lock()
             .map(|cwd| cwd.clone())
             .unwrap_or_default();
+        let configured_agent_id = workspace
+            .terminals
+            .iter()
+            .find(|config| config.id == session.id && !config.title_manual)
+            .and_then(|config| config.agent_id.as_deref());
         terminals.push(TerminalSummary {
             terminal_id: session.id.clone(),
             workspace_id: workspace.id.clone(),
-            title: effective_terminal_title(
+            title: effective_terminal_title_with_configured_agent(
                 &session.title,
                 session
                     .is_agent_terminal
                     .then_some(session.agent_id.as_deref())
                     .flatten(),
+                configured_agent_id,
                 &session.shell,
                 &cwd,
             ),
@@ -496,9 +502,15 @@ pub fn canonicalize_terminal_order(
             } else {
                 &config.title
             };
-            terminal.title = effective_terminal_title(
+            let configured_agent_id = if config.title_manual {
+                None
+            } else {
+                config.agent_id.as_deref()
+            };
+            terminal.title = effective_terminal_title_with_configured_agent(
                 configured_title,
                 terminal.agent_id.as_deref(),
+                configured_agent_id,
                 &terminal.shell,
                 &terminal.cwd,
             );
@@ -517,9 +529,24 @@ pub fn effective_terminal_title(
     shell: &str,
     cwd: &str,
 ) -> String {
+    effective_terminal_title_with_configured_agent(configured_title, agent_id, None, shell, cwd)
+}
+
+fn effective_terminal_title_with_configured_agent(
+    configured_title: &str,
+    agent_id: Option<&str>,
+    configured_agent_id: Option<&str>,
+    shell: &str,
+    cwd: &str,
+) -> String {
     let agent_name = agent_id.map(agent_display_name);
     let configured = configured_title.trim();
-    let is_default = is_default_terminal_title(configured, agent_id);
+    let is_default = is_default_terminal_title(configured, agent_id)
+        || (agent_id.is_none()
+            && configured_agent_id.is_some_and(|configured_agent| {
+                configured.eq_ignore_ascii_case(configured_agent)
+                    || configured.eq_ignore_ascii_case(&agent_display_name(configured_agent))
+            }));
     if !is_default {
         return configured.to_string();
     }
