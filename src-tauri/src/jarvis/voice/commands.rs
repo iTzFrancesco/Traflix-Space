@@ -153,6 +153,7 @@ pub async fn jarvis_voice_start(
     } else {
         None
     };
+    let force_endpointing = request.force_endpointing;
     let request_id_for_log = request.request_id.clone();
     let status = state
         .start_with_wake_engine(
@@ -179,6 +180,7 @@ pub async fn jarvis_voice_start(
     let mut watchdog_config = configured.jarvis.voice_input.clone();
     watchdog_config.max_duration_seconds = max_duration_seconds;
     watchdog_config.max_armed_seconds = options.max_armed_seconds;
+    watchdog_config.endpointing_enabled |= force_endpointing;
     let event_app = app.clone();
     let event_state = (*state).clone();
     let request_id = status.request_id.clone();

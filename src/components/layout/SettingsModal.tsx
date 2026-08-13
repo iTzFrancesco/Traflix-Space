@@ -13,6 +13,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   defaultJarvisSettings,
   ownerModeJarvisSettings,
+  VOICE_ENDPOINT_WAIT_MS,
 } from "../../lib/jarvis/settings";
 import {
   ttsListVoices,
@@ -481,7 +482,10 @@ function VoiceOptions({
     endpointingEnabled: input.endpointingEnabled ?? true,
     endpointGraceMs: input.endpointGraceMs ?? 1200,
     minSpokenMs: input.minSpokenMs ?? 350,
-    vadPostSpeechMs: input.vadPostSpeechMs ?? 1800,
+    vadPostSpeechMs: Math.max(
+      input.vadPostSpeechMs ?? VOICE_ENDPOINT_WAIT_MS,
+      VOICE_ENDPOINT_WAIT_MS,
+    ),
   };
   const normalizedOutput: VoiceOutputSettings = {
     ...output,
@@ -620,7 +624,7 @@ function VoiceOptions({
           <span>
             <span className="block font-medium">Invio automatico dopo pausa naturale</span>
             <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              VAD ed endpointing attendono la fine della frase; il pulsante “Invia adesso” resta sempre disponibile.
+              Dopo circa 3 secondi di silenzio Jarvis termina l&apos;ascolto e invia la trascrizione. Il primo attacco della frase viene conservato anche con VAD e calibrazione.
             </span>
           </span>
         </label>

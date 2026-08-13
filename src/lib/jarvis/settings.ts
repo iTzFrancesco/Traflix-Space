@@ -2,6 +2,8 @@ import type { AppSettings, JarvisSettings, VoiceActivationMode } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
 const ALWAYS_READY_ARM_SECONDS = 120;
+export const VOICE_ENDPOINT_WAIT_MS = 3_000;
+export const VOICE_ENDPOINT_WAIT_SECONDS = VOICE_ENDPOINT_WAIT_MS / 1_000;
 
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
@@ -17,6 +19,10 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
     enabled: true,
     autoSubmitTranscript: true,
     selectedInputDeviceId: null,
+    vadPostSpeechMs: Math.max(
+      settings.voiceInput.vadPostSpeechMs,
+      VOICE_ENDPOINT_WAIT_MS,
+    ),
     activationMode,
     vadEnabled: activationMode !== "hold_to_talk",
     maxArmedSeconds:
@@ -119,8 +125,8 @@ export function defaultJarvisSettings(): JarvisSettings {
       vadSpeechThreshold: 0.018,
       vadStartFrames: 3,
       vadSilenceFrames: 16,
-      vadPreRollMs: 250,
-      vadPostSpeechMs: 1800,
+      vadPreRollMs: 500,
+      vadPostSpeechMs: VOICE_ENDPOINT_WAIT_MS,
       endpointingEnabled: true,
       endpointGraceMs: 1200,
       minSpokenMs: 350,

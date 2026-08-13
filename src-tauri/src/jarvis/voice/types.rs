@@ -127,6 +127,11 @@ pub struct VoiceStartRequest {
     pub selected_device_id: Option<String>,
     #[serde(default)]
     pub activation_mode: Option<VoiceActivationMode>,
+    /// Barge-in must remain automatic even if the normal manual fallback is
+    /// selected in settings; this only overrides endpointing for this audio
+    /// request and never affects task/LLM cancellation.
+    #[serde(default)]
+    pub force_endpointing: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -220,7 +225,9 @@ pub fn normalize_max_duration_seconds(value: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_max_duration_seconds, VoiceCaptureOptions, MAX_RECORDING_MS};
+    use super::{
+        normalize_max_duration_seconds, VoiceCaptureOptions, VoiceStartRequest, MAX_RECORDING_MS,
+    };
     use crate::settings::store::VoiceActivationMode;
 
     #[test]
@@ -248,6 +255,17 @@ mod tests {
         }
         .bounded();
         assert_eq!(options.max_armed_seconds, 120);
+    }
+
+    #[test]
+    fn legacy_voice_start_requests_default_to_normal_endpointing_policy() {
+        let request: VoiceStartRequest = serde_json::from_value(serde_json::json!({
+            "requestId": "request",
+            "workspaceId": "workspace",
+            "selectedDeviceId": null,
+        }))
+        .expect("legacy voice start request should remain readable");
+        assert!(!request.force_endpointing);
     }
 }
 

@@ -194,7 +194,7 @@ interface JarvisStore {
   cancelCodexLogin: (loginId: string) => Promise<void>;
   logoutCodex: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
-  startVoice: (options?: { interruptTts?: boolean; activationMode?: VoiceActivationMode }) => Promise<void>;
+  startVoice: (options?: { interruptTts?: boolean; activationMode?: VoiceActivationMode; forceEndpointing?: boolean }) => Promise<void>;
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
@@ -649,6 +649,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
         workspaceId,
         selectedDeviceId: get().settings.jarvis.voiceInput.selectedInputDeviceId,
         activationMode: options.activationMode,
+        forceEndpointing: options.forceEndpointing,
       });
       voiceLog("start completed", { requestId, workspaceId, status: status.status, vadState: status.vadState });
       const stopAfterStart = get().voiceStopRequested;

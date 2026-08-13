@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 /// constant noise floor that is louder than the base threshold still counts
 /// as trailing silence once a real phrase (much louder) has been heard.
 const RELEASE_RATIO: f32 = 0.375;
+const NOISE_GATE_RATIO: f32 = 1.35;
+const NOISE_FLOOR_UPDATE_ALPHA: f32 = 0.75;
+const NOISE_FLOOR_MAX_RATIO: f32 = 2.0;
+const NOISE_CALIBRATION_MS: u64 = 300;
+const STRONG_SPEECH_RATIO: f32 = 2.0;
 
 /// A new RMS peak within this factor is considered a normal change in speaking
 /// level and is accepted immediately. Larger jumps are accepted only after
@@ -61,6 +66,10 @@ pub struct EnergyVad {
     /// Candidate for a large sustained jump in speaking level.
     peak_jump_candidate_rms: f32,
     peak_jump_candidate_frames: u16,
+    /// Smoothed ambient RMS collected before speech starts. This is a noise
+    /// gate, not a replacement for the configured initial threshold.
+    noise_floor_rms: f32,
+    calibration_audio_ms: u64,
     /// End-of-speech threshold, recomputed when a representative new speech
     /// peak is accepted. Only levels below this count as trailing silence once
     /// speech has started.
@@ -82,6 +91,8 @@ impl EnergyVad {
             speech_peak_rms: 0.0,
             peak_jump_candidate_rms: 0.0,
             peak_jump_candidate_frames: 0,
+            noise_floor_rms: config.threshold * 0.5,
+            calibration_audio_ms: 0,
         }
     }
 
@@ -95,18 +106,30 @@ impl EnergyVad {
             .sum::<f32>()
             / samples.len() as f32)
             .sqrt();
+        let audio_ms = (samples.len() as u64)
+            .div_ceil(self.config.channels as u64)
+            .saturating_mul(1_000)
+            .div_ceil(self.config.sample_rate as u64);
+        self.update_noise_floor(rms, audio_ms);
 
         if !self.speech_started {
-            // The absolute threshold still gates speech START; hysteresis
-            // only shapes the release side.
-            if rms >= self.config.threshold {
+            // The configured threshold is the initial floor. After a short
+            // calibration window, a dynamic noise gate prevents a constant
+            // room tone from arming the microphone. Clearly strong speech can
+            // bypass calibration so the first word is not held back.
+            let start_threshold = self.start_threshold();
+            let strong_speech = rms >= self.config.threshold * STRONG_SPEECH_RATIO;
+            if rms >= start_threshold
+                && (self.calibration_audio_ms >= NOISE_CALIBRATION_MS || strong_speech)
+            {
                 self.speech_frames = self.speech_frames.saturating_add(1);
                 self.silence_frames = 0;
                 self.silence_audio_frames = 0;
                 self.state = if self.speech_frames >= self.config.start_frames {
                     self.speech_started = true;
                     self.speech_peak_rms = rms;
-                    self.release_threshold = release_threshold(self.config.threshold, rms);
+                    self.release_threshold =
+                        release_threshold(self.config.threshold, rms, self.noise_floor_rms);
                     VadState::Speech
                 } else {
                     VadState::MaybeSpeech
@@ -182,9 +205,31 @@ impl EnergyVad {
 
     fn accept_peak(&mut self, rms: f32) {
         self.speech_peak_rms = rms;
-        self.release_threshold = release_threshold(self.config.threshold, rms);
+        self.release_threshold =
+            release_threshold(self.config.threshold, rms, self.noise_floor_rms);
         self.peak_jump_candidate_rms = 0.0;
         self.peak_jump_candidate_frames = 0;
+    }
+
+    fn update_noise_floor(&mut self, rms: f32, audio_ms: u64) {
+        self.calibration_audio_ms = self
+            .calibration_audio_ms
+            .saturating_add(audio_ms)
+            .min(NOISE_CALIBRATION_MS);
+        if self.speech_started()
+            || self.calibration_audio_ms >= NOISE_CALIBRATION_MS
+            || rms > self.config.threshold * NOISE_FLOOR_MAX_RATIO
+        {
+            return;
+        }
+        self.noise_floor_rms += (rms - self.noise_floor_rms) * NOISE_FLOOR_UPDATE_ALPHA;
+    }
+
+    fn start_threshold(&self) -> f32 {
+        self.config
+            .threshold
+            .max(self.noise_floor_rms * NOISE_GATE_RATIO)
+            .min(1.0)
     }
 
     pub fn state(&self) -> VadState {
@@ -203,8 +248,11 @@ impl EnergyVad {
 /// Release threshold with relative hysteresis: the quieter the speech, the
 /// closer the release sits to the base threshold; the louder the speech
 /// peak, the higher the release climbs above any noise floor.
-fn release_threshold(base: f32, peak: f32) -> f32 {
-    (base + (peak - base) * RELEASE_RATIO).clamp(base, 1.0)
+fn release_threshold(base: f32, peak: f32, noise_floor: f32) -> f32 {
+    (base + (peak - base) * RELEASE_RATIO)
+        .max(noise_floor * NOISE_GATE_RATIO)
+        .min(peak)
+        .clamp(base, 1.0)
 }
 
 #[cfg(test)]
@@ -298,18 +346,19 @@ mod tests {
 
     #[test]
     fn fixed_noise_above_base_threshold_does_not_keep_recording_after_a_phrase() {
-        // Room noise sits ABOVE the absolute start threshold (0.018) the
-        // whole time. The absolute threshold may start speech, but once a
-        // much louder phrase is sustained for two frames, the same noise
-        // floor must count as trailing silence instead of keeping recording.
+        // Room noise sits ABOVE the configured start threshold (0.018), so a
+        // fixed-threshold detector would falsely arm. Calibration must gate it
+        // out, while a later, clearly louder phrase must still start speech.
         let mut detector = vad();
         for _ in 0..3 {
             detector.process(&[0.03; 100]);
         }
-        assert!(detector.speech_started());
+        assert!(!detector.speech_started());
+
         for _ in 0..5 {
             detector.process(&[0.2; 100]);
         }
+        assert!(detector.speech_started());
         assert_eq!(detector.state(), VadState::Speech);
         for _ in 0..2 {
             detector.process(&[0.03; 100]);
@@ -341,6 +390,55 @@ mod tests {
         assert!(!detector.should_stop());
         detector.process(&[0.03; 100]);
         assert!(detector.should_stop());
+    }
+
+    #[test]
+    fn calibrated_noise_gate_allows_voice_above_room_noise() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.03; 100]);
+        }
+        assert!(!detector.speech_started());
+
+        for _ in 0..3 {
+            detector.process(&[0.06; 100]);
+        }
+        assert!(detector.speech_started());
+        assert_eq!(detector.state(), VadState::Speech);
+    }
+
+    #[test]
+    fn strong_speech_at_capture_start_bypasses_calibration_without_losing_start() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.10; 100]);
+        }
+        assert!(detector.speech_started());
+        assert_eq!(detector.state(), VadState::Speech);
+    }
+
+    #[test]
+    fn quiet_speech_at_capture_start_is_not_absorbed_into_noise_calibration() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.04; 100]);
+        }
+        assert!(detector.speech_started());
+        assert_eq!(detector.state(), VadState::Speech);
+    }
+
+    #[test]
+    fn noise_gate_release_never_exceeds_a_quiet_voice_peak() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.03; 100]);
+        }
+        for _ in 0..3 {
+            detector.process(&[0.04; 100]);
+        }
+        assert!(detector.speech_started());
+        assert_eq!(detector.process(&[0.04; 100]), VadState::Speech);
+        assert!(!detector.should_stop());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 const OWNER_MODE_MARKER: &str = "owner-mode";
+const MIN_SAFE_VAD_POST_SPEECH_MS: u32 = 3_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -313,6 +314,10 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
 
     settings.voice_input.enabled = true;
     settings.voice_input.auto_submit_transcript = true;
+    settings.voice_input.vad_post_speech_ms = settings
+        .voice_input
+        .vad_post_speech_ms
+        .max(MIN_SAFE_VAD_POST_SPEECH_MS);
     if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
         settings.voice_input.activation_mode = VoiceActivationMode::Vad;
     }
@@ -536,10 +541,10 @@ fn default_vad_silence_frames() -> u16 {
     16
 }
 fn default_vad_preroll_ms() -> u32 {
-    250
+    500
 }
 fn default_vad_post_speech_ms() -> u32 {
-    1_800
+    MIN_SAFE_VAD_POST_SPEECH_MS
 }
 fn default_endpoint_grace_ms() -> u32 {
     1_200
@@ -628,7 +633,9 @@ impl SettingsManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ShortcutBehavior, VoiceActivationMode, VoiceEngine};
+    use super::{
+        enforce_owner_mode, AppSettings, ShortcutBehavior, VoiceActivationMode, VoiceEngine,
+    };
 
     #[test]
     fn legacy_settings_migrate_to_codex_defaults() {
@@ -741,9 +748,22 @@ mod tests {
         let settings = AppSettings::default();
         let input = &settings.jarvis.voice_input;
         assert!(input.endpointing_enabled);
-        assert_eq!(input.vad_post_speech_ms, 1_800);
+        assert_eq!(input.vad_pre_roll_ms, 500);
+        assert_eq!(input.vad_post_speech_ms, 3_000);
         assert_eq!(input.endpoint_grace_ms, 1_200);
         assert_eq!(input.min_spoken_ms, 350);
+    }
+
+    #[test]
+    fn owner_mode_raises_legacy_short_endpoint_timeout_without_shortening_longer_values() {
+        let mut settings = AppSettings::default();
+        settings.jarvis.voice_input.vad_post_speech_ms = 1_800;
+        enforce_owner_mode(&mut settings.jarvis);
+        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 3_000);
+
+        settings.jarvis.voice_input.vad_post_speech_ms = 4_000;
+        enforce_owner_mode(&mut settings.jarvis);
+        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 4_000);
     }
 
     #[test]

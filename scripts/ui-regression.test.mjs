@@ -76,7 +76,8 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(voiceTypesSource, /max_armed_seconds: self\.max_armed_seconds\.clamp\(1, 120\)/);
   assert.match(overlaySource, /const AUTO_ARM_DELAY_MS = 180/);
   assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
-  assert.match(overlaySource, /store\.startVoice\(\)/);
+  assert.match(overlaySource, /const startBargeIn = useCallback/);
+  assert.match(overlaySource, /void startBargeIn\(\)/);
   assert.match(overlaySource, /toggleMicrophoneMuted/);
   assert.match(overlaySource, /voiceError \|\|/);
   assert.match(overlaySource, /store\.voiceError \|\|/);
@@ -86,7 +87,8 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /workspaceName: string \| null/);
   assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
-  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{stepLabel \?\? statusLabel\}`\}/);
+  assert.match(widgetSource, /const displayedStepLabel = voiceStatusLabel \?\? stepLabel/);
+  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{displayedStepLabel \?\? statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
   assert.match(widgetSource, /aria-live=\{props\.voiceError \? "assertive" : "polite"\}/);
   assert.match(widgetSource, /const statusLabel = props\.voiceError/);
@@ -226,9 +228,9 @@ test("normal Jarvis settings stay compact, localized and keep automatic voice co
   assert.match(settingsSource, /La voce è l'interfaccia principale/);
   assert.match(settingsSource, /title="Voce"/);
   assert.match(settingsSource, /description="Microfono e voce di Jarvis\."/);
-  assert.match(settingsSource, />Microfono<\/span>/);
-  assert.match(settingsSource, />Voce di Jarvis<\/span>/);
+  assert.match(settingsSource, /<span className="block">Microfono<\/span>/);
   assert.match(settingsSource, /Microfono automatico/);
+  assert.match(settingsSource, />Voce di Jarvis<\/span>/);
   assert.match(settingsSource, /italianVoices\(await ttsListVoices\(\)\)/);
   assert.match(settingsSource, /Invio automatico dopo pausa naturale/);
   assert.match(settingsSource, /Standby wake word locale/);
@@ -236,6 +238,7 @@ test("normal Jarvis settings stay compact, localized and keep automatic voice co
   assert.doesNotMatch(settingsSource, /inputDeviceOptions\(devices\)|Aggiorna microfoni/);
   assert.doesNotMatch(settingsSource, /Sensibilità/);
   assert.doesNotMatch(settingsSource, /Silenzio di fine frase|Grace period|Parlato minimo/);
+  assert.doesNotMatch(settingsSource, /selectedInputDeviceId/);
   assert.doesNotMatch(settingsSource, /Modalità di interazione|Comportamento scorciatoia/);
   assert.doesNotMatch(settingsSource, /value: "click_toggle"/);
   assert.doesNotMatch(

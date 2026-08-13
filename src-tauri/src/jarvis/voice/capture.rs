@@ -634,6 +634,20 @@ mod tests {
         }
     }
 
+    fn vad_options() -> VoiceCaptureOptions {
+        VoiceCaptureOptions {
+            activation_mode: VoiceActivationMode::Vad,
+            max_duration_seconds: 45,
+            max_armed_seconds: 120,
+            vad_enabled: true,
+            vad_speech_threshold: 0.018,
+            vad_start_frames: 3,
+            vad_silence_frames: 16,
+            vad_pre_roll_ms: 500,
+            vad_post_speech_ms: 650,
+        }
+    }
+
     #[test]
     fn wake_only_does_not_retain_audio_before_activation_and_reuses_buffer_afterwards() {
         let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
@@ -708,5 +722,25 @@ mod tests {
         process_samples(&buffer, vec![0.8; 160]);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(buffer.lock().unwrap().samples.len(), 160);
+    }
+
+    #[test]
+    fn vad_pre_roll_keeps_audio_before_calibrated_speech_start() {
+        let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
+            1,
+            16_000,
+            vad_options(),
+            None,
+        )));
+
+        process_samples(&buffer, vec![0.002; 160]);
+        process_samples(&buffer, vec![0.10; 160]);
+        process_samples(&buffer, vec![0.10; 160]);
+        process_samples(&buffer, vec![0.10; 160]);
+
+        let snapshot = buffer.lock().unwrap();
+        assert!(snapshot.speech_started());
+        assert_eq!(snapshot.samples.first().copied(), Some(0.002));
+        assert!(snapshot.samples.len() >= 4 * 160);
     }
 }
