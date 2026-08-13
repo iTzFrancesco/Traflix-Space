@@ -1,9 +1,11 @@
 ﻿import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useState } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import { agentSnapshot, buildModelContext, ttsSpeak } from "../../lib/jarvis/client";
 import type {
   TtsStatusView,
+  VoiceActivationMode,
   VoiceLevelEvent,
   VoiceRequestStatusView,
   WakeWordStatusView,
@@ -93,9 +95,36 @@ export function JarvisGlobalOverlay() {
   const resumeVoiceDraftRef = useRef<Set<string>>(new Set());
   const settingsRecoveryDraftRef = useRef<Set<string>>(new Set());
   const settingsWasOpenRef = useRef(settingsOpen);
+  const [bargeInRequestId, setBargeInRequestId] = useState<string | null>(null);
   const chatError = activeWorkspaceId
     ? chatErrors[activeWorkspaceId] ?? null
     : null;
+
+  const startBargeIn = useCallback((activationMode: VoiceActivationMode = "vad") => {
+    const currentTtsStatus = useJarvisStore.getState().ttsStatus.status;
+    const ttsActive = currentTtsStatus === "synthesizing" || currentTtsStatus === "playing";
+    void startVoice({
+      interruptTts: ttsActive,
+      activationMode,
+      forceEndpointing: activationMode === "vad" && ttsActive,
+    }).then(() => {
+      const requestId = useJarvisStore.getState().activeVoiceRequestId;
+      if (ttsActive && requestId) setBargeInRequestId(requestId);
+    });
+  }, [startVoice]);
+
+  useEffect(() => {
+    if (!bargeInRequestId) return;
+    if (activeVoiceRequestId === bargeInRequestId) return;
+    if (
+      voiceRequest?.requestId === bargeInRequestId &&
+      voiceRequest.status !== "cancelled" &&
+      voiceRequest.status !== "failed"
+    ) {
+      return;
+    }
+    setBargeInRequestId(null);
+  }, [activeVoiceRequestId, bargeInRequestId, voiceRequest]);
 
   const refreshRegistry = useCallback(
     async (
@@ -389,7 +418,7 @@ export function JarvisGlobalOverlay() {
         store.settings.jarvis.voiceInput.activationMode === "vad" &&
         store.settings.jarvis.voiceOutput.stopOnUserSpeech
       ) {
-        void store.startVoice();
+        void startBargeIn();
       }
     }, AUTO_ARM_DELAY_MS);
 
@@ -403,6 +432,7 @@ export function JarvisGlobalOverlay() {
     settings.jarvis.voiceOutput.stopOnUserSpeech,
     settingsLoaded,
     settingsOpen,
+    startBargeIn,
     ttsStatus.status,
   ]);
 
@@ -706,7 +736,7 @@ export function JarvisGlobalOverlay() {
                   current.status,
                 )
               ) {
-                void startVoice({ interruptTts: true });
+                void startBargeIn(currentSettings.activationMode);
               }
             } else if (
               current?.status === "recording" ||
@@ -717,7 +747,7 @@ export function JarvisGlobalOverlay() {
               !current ||
               !["transcribing", "stopping"].includes(current.status)
             ) {
-              void startVoice({ interruptTts: true });
+              void startBargeIn(currentSettings.activationMode);
             }
           } else {
             const press = releaseVoicePress(shortcutPressedRef.current);
@@ -755,6 +785,7 @@ export function JarvisGlobalOverlay() {
     setWakeWordStatus,
     setVoiceLevel,
     setVoiceRequest,
+    startBargeIn,
     startVoice,
     stopVoice,
     toggleMicrophoneMuted,
@@ -793,6 +824,7 @@ export function JarvisGlobalOverlay() {
         wakeWordStatus={wakeWordStatus}
         voiceRequest={voiceRequest}
         voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
+        bargeIn={bargeInRequestId === voiceRequest?.requestId}
         endpointingEnabled={settings.jarvis.voiceInput.endpointingEnabled}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}

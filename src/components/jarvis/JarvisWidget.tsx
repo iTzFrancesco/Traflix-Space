@@ -9,6 +9,7 @@ import {
   jarvisStepLabel,
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
+import { shouldShowVoiceSendControl } from "../../lib/jarvis/voiceState";
 import {
   currentCodexTool,
   isCodexTurnActive,
@@ -44,6 +45,7 @@ interface JarvisWidgetProps {
   onToggleMuted: () => Promise<void> | void;
   voiceRequest: VoiceRequestStatusView | null;
   voiceSubmitState?: VoiceSubmitState;
+  bargeIn: boolean;
   endpointingEnabled: boolean;
   activationMode: VoiceActivationMode;
   onVoiceStart: () => Promise<void> | void;
@@ -418,7 +420,11 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           {(voiceArmed || voiceListening) && (
             <VoiceMeter level={level} listening={voiceListening} />
           )}
-          {(voiceListening || props.voiceRequest?.status === "transcript_ready") && (
+          {shouldShowVoiceSendControl({
+            voiceListening,
+            transcriptReady: props.voiceRequest?.status === "transcript_ready",
+            bargeIn: props.bargeIn,
+          }) && (
             <button
               type="button"
               data-jarvis-control

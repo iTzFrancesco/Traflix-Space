@@ -621,7 +621,7 @@ function VoiceOptions({
           <span>
             <span className="block font-medium">Invio automatico dopo pausa naturale</span>
             <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              Dopo circa 3 secondi di silenzio Jarvis termina l&apos;ascolto e invia la trascrizione. Il pulsante “Termina e invia” resta sempre disponibile.
+              Dopo circa 3 secondi di silenzio Jarvis termina l&apos;ascolto e invia la trascrizione. Il primo attacco della frase viene conservato anche con VAD e calibrazione.
             </span>
           </span>
         </label>

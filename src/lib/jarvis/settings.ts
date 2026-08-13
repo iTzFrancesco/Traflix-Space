@@ -125,7 +125,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       vadSpeechThreshold: 0.018,
       vadStartFrames: 3,
       vadSilenceFrames: 16,
-      vadPreRollMs: 250,
+      vadPreRollMs: 500,
       vadPostSpeechMs: VOICE_ENDPOINT_WAIT_MS,
       endpointingEnabled: true,
       endpointGraceMs: 1200,

@@ -541,7 +541,7 @@ fn default_vad_silence_frames() -> u16 {
     16
 }
 fn default_vad_preroll_ms() -> u32 {
-    250
+    500
 }
 fn default_vad_post_speech_ms() -> u32 {
     MIN_SAFE_VAD_POST_SPEECH_MS
@@ -748,6 +748,7 @@ mod tests {
         let settings = AppSettings::default();
         let input = &settings.jarvis.voice_input;
         assert!(input.endpointing_enabled);
+        assert_eq!(input.vad_pre_roll_ms, 500);
         assert_eq!(input.vad_post_speech_ms, 3_000);
         assert_eq!(input.endpoint_grace_ms, 1_200);
         assert_eq!(input.min_spoken_ms, 350);

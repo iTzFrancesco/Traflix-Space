@@ -14,6 +14,14 @@ export function canSendTranscript(request: VoiceRequestStatusView | null, worksp
   return Boolean(request && request.status === "transcript_ready" && request.workspaceId === workspaceId && text.trim());
 }
 
+export function shouldShowVoiceSendControl(input: {
+  voiceListening: boolean;
+  transcriptReady: boolean;
+  bargeIn: boolean;
+}): boolean {
+  return !input.bargeIn && (input.voiceListening || input.transcriptReady);
+}
+
 /** Submit policy is intentionally independent from microphone VAD/endpointing. */
 export function decideVoiceSubmit(input: {
   status: VoiceRequestStatusView["status"];
