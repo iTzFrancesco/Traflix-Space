@@ -16,6 +16,7 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
     ...settings.voiceInput,
     enabled: true,
     autoSubmitTranscript: true,
+    selectedInputDeviceId: null,
     activationMode,
     vadEnabled: activationMode !== "hold_to_talk",
     maxArmedSeconds:
