@@ -494,16 +494,20 @@ mod tests {
     #[test]
     fn sustained_large_level_jump_is_accepted_as_real_speech() {
         let mut detector = vad();
-        // A noisy room can satisfy the absolute start threshold first.
+        // A noisy room can exceed the absolute start threshold without
+        // arming the calibrated detector.
         for _ in 0..3 {
             detector.process(&[0.03; 100]);
         }
-        assert!(detector.speech_started());
+        assert!(!detector.speech_started());
 
-        // A true phrase is much louder but sustained, so it must update the
-        // representative peak rather than being rejected as a transient.
-        detector.process(&[0.20; 100]);
-        detector.process(&[0.20; 100]);
+        // A true phrase is much louder but sustained, so it must start speech
+        // and update the representative peak rather than being rejected as a
+        // transient.
+        for _ in 0..3 {
+            detector.process(&[0.20; 100]);
+        }
+        assert!(detector.speech_started());
         assert_eq!(detector.state(), VadState::Speech);
 
         detector.process(&[0.03; 100]);
