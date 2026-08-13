@@ -16,6 +16,7 @@ import {
 import {
   isJarvisOwnerModeReady,
   ownerModeJarvisSettings,
+  VOICE_ENDPOINT_WAIT_SECONDS,
 } from "../../lib/jarvis/settings";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
@@ -43,6 +44,7 @@ interface JarvisWidgetProps {
   onToggleMuted: () => Promise<void> | void;
   voiceRequest: VoiceRequestStatusView | null;
   voiceSubmitState?: VoiceSubmitState;
+  endpointingEnabled: boolean;
   activationMode: VoiceActivationMode;
   onVoiceStart: () => Promise<void> | void;
   onVoiceStop: () => void;
@@ -295,15 +297,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.voiceRequest?.status === "transcript_ready";
   const voiceStatusLabel =
     props.voiceRequest?.status === "recording" && props.voiceRequest.vadState === "silence"
-      ? "Pausa — puoi continuare"
+      ? props.endpointingEnabled
+        ? `Pausa · invio automatico tra circa ${VOICE_ENDPOINT_WAIT_SECONDS} s`
+        : "Pausa · premi Invia per terminare"
       : props.voiceRequest?.status === "stopping"
         ? "Preparazione invio…"
         : props.voiceRequest?.status === "transcribing"
           ? "Trascrizione…"
           : props.voiceRequest?.status === "transcript_ready" && props.voiceSubmitState === "queued"
-            ? "In coda…"
+            ? "In coda · invio appena libero"
+            : props.voiceRequest?.status === "transcript_ready" && props.voiceSubmitState === "submitting"
+              ? "Invio a Jarvis…"
             : props.voiceRequest?.status === "transcript_ready"
-              ? "Pronto — Invia adesso"
+              ? "Pronto · premi Invia"
               : null;
   const level = Math.max(
     0,
@@ -330,6 +336,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     codexTool,
     codexTurnActive,
   });
+  const displayedStepLabel = voiceStatusLabel ?? stepLabel;
 
   // Manual submission remains a dedicated action. The mute button never
   // doubles as stop/send, start capture, or hold-to-talk.
@@ -388,15 +395,15 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Premi e trascina per spostare Jarvis"
-        aria-label={`Jarvis · ${stepLabel ?? statusLabel}`}
+        aria-label={`Jarvis · ${displayedStepLabel ?? statusLabel}`}
         role="status"
         aria-live={props.voiceError ? "assertive" : "polite"}
       >
         <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
 
         <div className="min-w-0 flex-1">
-          {stepLabel ? (
-            <JarvisActivityLoader label={stepLabel} />
+          {displayedStepLabel ? (
+            <JarvisActivityLoader label={displayedStepLabel} />
           ) : (
             <p
               className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text"
@@ -416,11 +423,12 @@ export function JarvisWidget(props: JarvisWidgetProps) {
               type="button"
               data-jarvis-control
               onClick={handleSendNow}
-              className="jarvis-control jarvis-control--listening"
-              title="Invia adesso"
-              aria-label="Invia adesso"
+              className="jarvis-control jarvis-control--send jarvis-control--listening"
+              title={voiceListening ? "Termina ascolto e invia ora" : "Invia ora"}
+              aria-label={voiceListening ? "Termina ascolto e invia ora" : "Invia ora"}
             >
               <SendHorizontal size={15} />
+              <span>{voiceListening ? "Termina e invia" : "Invia ora"}</span>
             </button>
           )}
           <button

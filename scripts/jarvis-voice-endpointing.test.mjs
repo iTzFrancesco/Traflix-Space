@@ -11,6 +11,7 @@ const overlaySource = readFileSync(new URL("../src/components/jarvis/JarvisGloba
 const widgetSource = readFileSync(new URL("../src/components/jarvis/JarvisWidget.tsx", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/commands.rs", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../src-tauri/src/settings/store.rs", import.meta.url), "utf8");
+const frontendSettingsSource = readFileSync(new URL("../src/lib/jarvis/settings.ts", import.meta.url), "utf8");
 const ttsSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/tts.rs", import.meta.url), "utf8");
 
 test("submit policy queues a complete transcript while chat is busy", () => {
@@ -47,11 +48,15 @@ test("voice UI keeps the transcript draft while queued and exposes manual send",
   assert.match(storeSource, /voiceSubmitStates/);
   assert.match(storeSource, /voiceSubmissionInFlight/);
   assert.match(overlaySource, /sendVoiceTranscript\(draft\.requestId, draft\.transcript, \{ automatic: true \}\)/);
-  assert.match(widgetSource, /Pausa — puoi continuare/);
+  assert.match(widgetSource, /Pausa · invio automatico tra circa \$\{VOICE_ENDPOINT_WAIT_SECONDS\} s/);
+  assert.match(widgetSource, /Pausa · premi Invia per terminare/);
   assert.match(widgetSource, /Preparazione invio…/);
   assert.match(widgetSource, /Trascrizione…/);
-  assert.match(widgetSource, /In coda…/);
-  assert.match(widgetSource, /Pronto — Invia adesso/);
+  assert.match(widgetSource, /In coda · invio appena libero/);
+  assert.match(widgetSource, /Pronto · premi Invia/);
+  assert.match(widgetSource, /Termina e invia/);
+  assert.match(widgetSource, /Invia ora/);
+  assert.match(widgetSource, /endpointingEnabled/);
 });
 
 test("barge-in auto-arm is restricted to VAD and does not call chat cancellation", () => {
@@ -68,6 +73,10 @@ test("Edge TTS normalizes at the single speak boundary", () => {
 test("endpointing is configurable and wired to automatic voice stop", () => {
   assert.match(settingsSource, /endpoint_grace_ms/);
   assert.match(settingsSource, /min_spoken_ms/);
+  assert.match(settingsSource, /fn default_vad_post_speech_ms\(\)[\s\S]*MIN_SAFE_VAD_POST_SPEECH_MS/);
+  assert.match(settingsSource, /vad_post_speech_ms = settings[\s\S]*\.max\(MIN_SAFE_VAD_POST_SPEECH_MS\)/);
+  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_WAIT_MS = 3_000/);
+  assert.match(frontendSettingsSource, /vadPostSpeechMs: Math\.max\([\s\S]*VOICE_ENDPOINT_WAIT_MS/);
   assert.match(commandsSource, /EndpointingConfig/);
   assert.match(commandsSource, /finish_voice_stop\(/);
 });

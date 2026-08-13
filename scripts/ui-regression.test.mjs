@@ -86,7 +86,8 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /workspaceName: string \| null/);
   assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
-  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{stepLabel \?\? statusLabel\}`\}/);
+  assert.match(widgetSource, /const displayedStepLabel = voiceStatusLabel \?\? stepLabel/);
+  assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{displayedStepLabel \?\? statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
   assert.match(widgetSource, /aria-live=\{props\.voiceError \? "assertive" : "polite"\}/);
   assert.match(widgetSource, /const statusLabel = props\.voiceError/);

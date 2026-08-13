@@ -793,6 +793,7 @@ export function JarvisGlobalOverlay() {
         wakeWordStatus={wakeWordStatus}
         voiceRequest={voiceRequest}
         voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
+        endpointingEnabled={settings.jarvis.voiceInput.endpointingEnabled}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}
         activities={activities}

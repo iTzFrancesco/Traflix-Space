@@ -459,6 +459,16 @@ a:not(:disabled),
   transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
 }
 
+.jarvis-control--send {
+  width: auto;
+  min-width: 31px;
+  gap: 5px;
+  padding-inline: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .jarvis-control:hover:not(:disabled) {
   color: var(--color-neutral-text);
   background: oklch(0.94 0.008 85 / 0.065);
