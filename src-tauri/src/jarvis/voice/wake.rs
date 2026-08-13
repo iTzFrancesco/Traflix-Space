@@ -52,7 +52,7 @@ pub trait WakeWordEngine: Send {
     fn reset(&mut self);
 }
 
-/// Test/capability-only detector that intentionally never reports a match.
+/// Test/capability-only engine/detector that intentionally never reports a match.
 #[derive(Debug, Default)]
 pub struct DisabledWakeWordEngine;
 
@@ -73,12 +73,12 @@ impl WakeWordEngine for DisabledWakeWordEngine {
     fn reset(&mut self) {}
 }
 
-/// Local fallback used until a model-backed keyword spotter is bundled.
+/// Local fallback used when the model-backed keyword detector is not bundled.
 ///
-/// This is deliberately voice-activity based, not a claim that the configured
-/// phrase was recognized. It lets the user keep hands-free local activation
-/// without sending standby audio to STT, while the status/UI make the reduced
-/// capability explicit.
+/// This is deliberately a bounded VAD fallback, not acoustic recognition of
+/// the configured phrase. It keeps standby local without sending audio to
+/// STT, while the WakeWordEngine seam remains ready for an approved model
+/// adapter later and the status/UI make the reduced capability explicit.
 #[derive(Debug)]
 pub struct LocalVadFallbackWakeEngine {
     sensitivity: f32,
@@ -94,9 +94,9 @@ impl LocalVadFallbackWakeEngine {
     }
 
     fn threshold(&self) -> f32 {
-        // Keep the fallback above a quiet-room floor. Sensitivity lowers the
-        // threshold only within a bounded range; three consecutive frames are
-        // still required by EnergyVad before activation.
+        // Keep the fallback threshold above a quiet-room floor and bounded
+        // even if sensitivity comes from an older or corrupted profile;
+        // EnergyVad still requires sustained frames before activation.
         (0.04 - self.sensitivity * 0.02).clamp(0.018, 0.04)
     }
 }

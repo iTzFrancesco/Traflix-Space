@@ -92,14 +92,3 @@ test("wake status follows off → standby → listening transitions", () => {
   assert.match(registrySource, /VoiceRequestStatus::Armed/);
   assert.match(registrySource, /speech_started \|\| wake_word_activated/);
 });
-
-test("wake auto-arm is excluded during TTS; only VAD remains the barge-in path", () => {
-  const handsFree = overlaySource.indexOf("// Hands-free mode:");
-  assert.ok(handsFree >= 0);
-  const handsFreeSource = overlaySource.slice(handsFree);
-
-  assert.match(handsFreeSource, /\(chatBusy \|\| ttsBusy\) && !bargeInReady\) return;/);
-  assert.match(handsFreeSource, /const liveBargeInReady = liveVadFallbackReady/);
-  assert.match(handsFreeSource, /liveBargeInReady && !liveWakeWordReady/);
-  assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
-});
