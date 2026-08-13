@@ -757,7 +757,39 @@ pub async fn jarvis_codex_runtime_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::fs;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static PATH_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct PathEnvGuard {
+        original: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for PathEnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+
+    fn test_path(paths: Vec<std::path::PathBuf>) -> PathEnvGuard {
+        let lock = PATH_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("PATH test lock should not be poisoned");
+        let original = std::env::var_os("PATH");
+        let joined = std::env::join_paths(paths).expect("test paths should be joinable");
+        std::env::set_var("PATH", joined);
+        PathEnvGuard {
+            original,
+            _lock: lock,
+        }
+    }
 
     #[test]
     fn finds_executable_on_path() {
@@ -767,8 +799,7 @@ mod tests {
         // The second entry is a plain missing directory (platform-neutral;
         // Windows drive-letter paths cannot be joined on non-Windows hosts).
         let paths = vec![dir.path().to_path_buf(), dir.path().join("nonexistent")];
-        let joined = std::env::join_paths(paths).unwrap();
-        std::env::set_var("PATH", joined);
+        let _path_guard = test_path(paths);
         assert_eq!(find_on_path("codex.exe"), Some(exe));
     }
 
@@ -776,8 +807,7 @@ mod tests {
     fn path_scan_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
         let paths = vec![dir.path().to_path_buf(), dir.path().join("nonexistent")];
-        let joined = std::env::join_paths(paths).unwrap();
-        std::env::set_var("PATH", joined);
+        let _path_guard = test_path(paths);
         assert!(find_on_path("codex.exe").is_none());
         assert!(find_on_path("codex.cmd").is_none());
     }
