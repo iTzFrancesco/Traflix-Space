@@ -271,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn fallback_engine_rejects_a_quiet_room_frame_as_wake_activation() {
+        let config = WakeWordConfig::new(DEFAULT_WAKE_WORD, DEFAULT_WAKE_WORD_SENSITIVITY);
+        let mut engine = LocalVadFallbackWakeEngine::new(&config);
+
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+        assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+    }
+
+    #[test]
     fn off_status_is_disabled_even_when_a_keyword_is_configured() {
         let config = WakeWordConfig::new(DEFAULT_WAKE_WORD, DEFAULT_WAKE_WORD_SENSITIVITY);
         let status = off_status(&config);
