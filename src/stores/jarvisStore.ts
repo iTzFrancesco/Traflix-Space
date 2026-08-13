@@ -51,7 +51,10 @@ import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
 import { useWorkspaceStore } from "./workspaceStore";
 import { sanitizedVoiceError, sanitizedVoiceErrorView } from "../lib/jarvis/voiceSettings";
 import { decideVoiceSubmit } from "../lib/jarvis/voiceState";
-import { bootstrapCodexData } from "../lib/jarvis/codexBootstrap";
+import {
+  bootstrapCodexData,
+  createCodexBootstrapQueue,
+} from "../lib/jarvis/codexBootstrap";
 import type {
   AgentResult,
   AgentSessionContext,
@@ -220,7 +223,6 @@ let settingsSaveQueue = Promise.resolve();
 const autoSubmittedVoiceRequests = new Set<string>();
 const voiceSubmissionInFlight = new Set<string>();
 const acceptedVoiceRequestIds = new Set<string>();
-let codexBootstrapInFlight: Promise<void> | null = null;
 const ACCEPTED_VOICE_REQUESTS_STORAGE_KEY = "traflix.jarvis.accepted-voice-requests";
 const MAX_ACCEPTED_VOICE_REQUESTS = 128;
 
@@ -272,7 +274,25 @@ function voiceWarn(message: string, details: Record<string, unknown> = {}) {
   console.warn("[Jarvis voice]", message, details);
 }
 
-export const useJarvisStore = create<JarvisStore>((set, get) => ({
+export const useJarvisStore = create<JarvisStore>((set, get) => {
+  const requestCodexBootstrap = createCodexBootstrapQueue(async () => {
+    if (!get().settingsLoaded || !get().settings.jarvis.enabled) return;
+
+    set({ codexError: null });
+    const result = await bootstrapCodexData({
+      enabled: true,
+      startRuntime: () => get().startCodex(),
+      loadAccount: () => get().loadCodexAccount(),
+      loadModels: () => get().loadCodexModels(),
+      loadUsage: () => get().loadCodexUsage(),
+      loadRateLimits: () => get().loadCodexRateLimits(),
+    });
+    if (result.status === "error") {
+      set((state) => ({ codexError: state.codexError ?? result.error }));
+    }
+  });
+
+  return {
   settings: defaultAppSettings(), settingsLoaded: false, settingsLoading: false, settingsError: null,
   expanded: false, dragging: false, settingsOpen: false, selectedAgentSessionId: null,
   context: null, contextStatus: "idle", contextError: null, registrySessions: [], isRefreshing: false,
@@ -558,26 +578,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
     // Never start with the in-memory defaults. Persisted settings are loaded
     // asynchronously on the root overlay and may disable Jarvis entirely.
     if (!get().settingsLoaded || !get().settings.jarvis.enabled) return;
-    if (codexBootstrapInFlight) return codexBootstrapInFlight;
-
-    set({ codexError: null });
-    const request = bootstrapCodexData({
-      enabled: true,
-      startRuntime: () => get().startCodex(),
-      loadAccount: () => get().loadCodexAccount(),
-      loadModels: () => get().loadCodexModels(),
-      loadUsage: () => get().loadCodexUsage(),
-      loadRateLimits: () => get().loadCodexRateLimits(),
-    }).then((result) => {
-      if (result.status === "error") {
-        set((state) => ({ codexError: state.codexError ?? result.error }));
-      }
-    });
-    const inFlight = request.finally(() => {
-      if (codexBootstrapInFlight === inFlight) codexBootstrapInFlight = null;
-    });
-    codexBootstrapInFlight = inFlight;
-    return inFlight;
+    await requestCodexBootstrap();
   },
   refreshCodex: async () => {
     await get().bootstrapCodex();
@@ -1102,7 +1103,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   }),
   stopTts: async () => { try { const status = await ttsStop(); get().setTtsStatus(status); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
   clearVoiceError: () => set({ voiceError: null }),
-}));
+  };
+});
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {
   const byId = new Map(current.map((action) => [action.id, action]));

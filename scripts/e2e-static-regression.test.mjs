@@ -148,14 +148,14 @@ test("workspace registry saves through a flushed same-directory atomic replaceme
 test("dotenv credentials are refreshed without exposing secret values to the frontend", () => {
   assert.match(secretLoader, /pub fn hydrate_process_environment/);
   assert.match(secretLoader, /pub fn refresh_dotenv_environment/);
-  assert.match(secretLoader, /let _ = read_secret_env\(GROQ_API_KEY_ENV\);[\s\S]*load_dotenv_environment/);
+  assert.match(secretLoader, /load_dotenv_environment\(dotenv_candidates\(app\), cfg!\(debug_assertions\)\)/);
+  assert.match(secretLoader, /load_dotenv_environment\(dotenv_candidates\(app\), false\)/);
   assert.match(secretLoader, /push_ancestor_candidates/);
   assert.match(secretLoader, /if !matches!\(name, GROQ_API_KEY_ENV\)/);
   assert.match(secretLoader, /fn parse_dotenv_assignment/);
   assert.match(secretLoader, /GROQ_API_KEY=\\\"groq # demo\\\"/);
-  assert.match(secretLoader, /fn dotenv_may_fill/);
-  assert.match(secretLoader, /if !dotenv_may_fill\(env::var\(name\)\.ok\(\)\.as_deref\(\)\)/);
-  assert.doesNotMatch(secretLoader, /load_dotenv_environment\([^,]+,\s*true\)/);
+  assert.match(secretLoader, /fn dotenv_should_load/);
+  assert.match(secretLoader, /if !dotenv_should_load\(env::var\(name\)\.ok\(\)\.as_deref\(\), overwrite_existing\)/);
   assert.doesNotMatch(secretLoader, /println!/i);
   assert.match(voiceCommandsSource, /refresh_dotenv_environment/);
   assert.match(voiceCommandsSource, /from_environment\(\)/);

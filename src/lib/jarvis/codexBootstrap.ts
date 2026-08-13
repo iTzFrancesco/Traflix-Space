@@ -14,6 +14,50 @@ export interface CodexBootstrapOptions {
   loadRateLimits: CodexBootstrapTask;
 }
 
+/**
+ * Coalesces concurrent bootstrap requests while retaining a refresh request
+ * that arrives during an active run (for example, account/login completion).
+ * The queued request is executed immediately after the current run settles.
+ */
+export function createCodexBootstrapQueue(
+  run: () => Promise<void>,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  let queued = false;
+
+  return () => {
+    if (inFlight) {
+      queued = true;
+      return inFlight;
+    }
+
+    const execute = async () => {
+      let failed = false;
+      let failure: unknown;
+      do {
+        queued = false;
+        failed = false;
+        failure = undefined;
+        try {
+          await run();
+        } catch (error) {
+          failed = true;
+          failure = error;
+        }
+      } while (queued);
+
+      if (failed) throw failure;
+    };
+
+    const request = execute();
+    const tracked = request.finally(() => {
+      if (inFlight === tracked) inFlight = null;
+    });
+    inFlight = tracked;
+    return tracked;
+  };
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) {

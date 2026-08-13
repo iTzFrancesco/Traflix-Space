@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { bootstrapCodexData } from "../src/lib/jarvis/codexBootstrap.ts";
+import {
+  bootstrapCodexData,
+  createCodexBootstrapQueue,
+} from "../src/lib/jarvis/codexBootstrap.ts";
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
@@ -120,4 +123,23 @@ test("manual refresh runs the same bootstrap path again", async () => {
   assert.equal(log.filter((entry) => entry === "account").length, 2);
   assert.equal(log.filter((entry) => entry === "usage").length, 2);
   assert.equal(log.filter((entry) => entry === "rateLimits").length, 2);
+});
+
+test("a login completion during bootstrap queues one follow-up refresh", async () => {
+  let releaseFirstRun;
+  const firstRun = new Promise((resolve) => {
+    releaseFirstRun = resolve;
+  });
+  let runs = 0;
+  const queue = createCodexBootstrapQueue(async () => {
+    runs += 1;
+    if (runs === 1) await firstRun;
+  });
+
+  const initial = queue();
+  const loginRefresh = queue();
+  releaseFirstRun();
+  await Promise.all([initial, loginRefresh]);
+
+  assert.equal(runs, 2);
 });
