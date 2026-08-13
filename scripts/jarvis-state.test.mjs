@@ -480,6 +480,9 @@ test("agent routing binds alias separately from duplicate display titles", () =>
   assert.match(controlSource, /agent_binding_stale_or_mismatch/);
   assert.match(controlSource, /Non ho un binding attivo per questo follow-up/);
   assert.match(controlSource, /TargetResolution::Selected\(target_from_binding\(context, &binding\)\?\)/);
+  assert.match(controlSource, /follow_up/);
+  assert.match(controlSource, /automatic_follow_up_requested/);
+  assert.match(controlSource, /followUp/);
   assert.match(registrySource, /dispatch_lock/);
   assert.match(registrySource, /current_session_id/);
 });

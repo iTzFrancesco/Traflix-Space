@@ -39,24 +39,27 @@ pub fn status() -> JarvisSecretStatus {
 }
 
 pub fn hydrate_process_environment(app: &AppHandle) {
-    // Existing process/user environment variables always win over `.env`.
+    // In the dev app the project `.env` is the authoritative local source.
+    // Vite and the Tauri process can inherit a stale user/process value, so
+    // resolving that value first would make the visible app look disconnected
+    // even though the repository environment is configured.
+    load_dotenv_environment(dotenv_candidates(app), cfg!(debug_assertions));
     let _ = read_secret_env(GROQ_API_KEY_ENV);
-    load_dotenv_environment(dotenv_candidates(app));
 }
 
 /// Re-check the supported `.env` locations before a voice request. This keeps
 /// development runs plug-and-play when the file was created after the app
 /// process started, without ever exposing the values to the frontend.
 pub fn refresh_dotenv_environment(app: &AppHandle) {
-    // `.env` is only a fallback. A key saved from Settings is loaded into the
-    // current process and Windows user environment; refreshing `.env` must not
-    // replace it with a stale or invalid development value.
-    load_dotenv_environment(dotenv_candidates(app));
+    // After startup, preserve an explicit Settings/user-environment value.
+    // The dev startup path above has already loaded the project `.env`; this
+    // refresh remains a safe fallback for a file created after process start.
+    load_dotenv_environment(dotenv_candidates(app), false);
 
     let _ = read_secret_env(GROQ_API_KEY_ENV);
 }
 
-fn load_dotenv_environment(candidates: Vec<PathBuf>) {
+fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
     let mut loaded = HashSet::new();
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -72,7 +75,7 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>) {
             if loaded.contains(name) {
                 continue;
             }
-            if !dotenv_may_fill(env::var(name).ok().as_deref()) {
+            if !dotenv_should_load(env::var(name).ok().as_deref(), overwrite_existing) {
                 continue;
             }
             if let Ok(value) = normalize_secret(&value) {
@@ -83,8 +86,8 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>) {
     }
 }
 
-fn dotenv_may_fill(current: Option<&str>) -> bool {
-    current.is_none_or(|value| value.trim().is_empty())
+fn dotenv_should_load(current: Option<&str>, overwrite_existing: bool) -> bool {
+    overwrite_existing || current.is_none_or(|value| value.trim().is_empty())
 }
 
 fn dotenv_candidates(app: &AppHandle) -> Vec<PathBuf> {
@@ -282,7 +285,7 @@ fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{dotenv_may_fill, normalize_secret, parse_dotenv_assignment};
+    use super::{dotenv_should_load, normalize_secret, parse_dotenv_assignment};
 
     #[test]
     fn secret_normalization_trims_copy_paste_whitespace() {
@@ -320,9 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn dotenv_is_fallback_and_never_overwrites_a_configured_secret() {
-        assert!(dotenv_may_fill(None));
-        assert!(dotenv_may_fill(Some("   ")));
-        assert!(!dotenv_may_fill(Some("settings-secret")));
+    fn dotenv_precedence_is_explicit_for_startup_and_refresh() {
+        assert!(dotenv_should_load(None, false));
+        assert!(dotenv_should_load(Some("   "), false));
+        assert!(!dotenv_should_load(Some("settings-secret"), false));
+        assert!(dotenv_should_load(Some("stale-process-secret"), true));
     }
 }

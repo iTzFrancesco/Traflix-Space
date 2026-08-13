@@ -6,6 +6,7 @@ import type {
   CodexModelSettings,
   CodexRateLimitsView,
   CodexRuntimeStatus,
+  CodexUsageView,
 } from "../../lib/jarvis/types";
 
 interface RateLimitBucket {
@@ -122,8 +123,16 @@ function accountConnected(account: CodexAccountView | null): boolean {
   return account?.account.kind === "chatgpt";
 }
 
+function formatTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
+  return String(value);
+}
+
 export function CodexConnectionRow({
   account,
+  accountLoading,
   loginBusy,
   error,
   running,
@@ -131,6 +140,7 @@ export function CodexConnectionRow({
   onLogout,
 }: {
   account: CodexAccountView | null;
+  accountLoading: boolean;
   loginBusy: boolean;
   error: string | null;
   running: boolean;
@@ -151,7 +161,11 @@ export function CodexConnectionRow({
               ChatGPT / Codex
             </p>
             <p className="truncate text-[10px] text-neutral-text-muted">
-              ChatGPT subscription
+              {accountLoading
+                ? "Caricamento account…"
+                : connected
+                  ? "ChatGPT subscription"
+                  : "Non connesso"}
             </p>
           </div>
         </div>
@@ -159,7 +173,7 @@ export function CodexConnectionRow({
           <button
             type="button"
             onClick={onLogout}
-            disabled={loginBusy || !running}
+            disabled={loginBusy || accountLoading || !running}
             className="ui-button h-8 gap-1.5 px-3 text-xs"
           >
             <LogOut size={12} />
@@ -169,7 +183,7 @@ export function CodexConnectionRow({
           <button
             type="button"
             onClick={onLogin}
-            disabled={loginBusy || !running}
+            disabled={loginBusy || accountLoading || !running}
             className="ui-button h-8 gap-1.5 px-3 text-xs"
           >
             <LogIn size={12} />
@@ -234,13 +248,21 @@ function StatusLimitRow({
 
 export function CodexStatusSettings({
   account,
+  accountLoading,
   runtime,
   rateLimits,
+  rateLimitsLoading,
+  usage,
+  usageLoading,
   onRefresh,
 }: {
   account: CodexAccountView | null;
+  accountLoading: boolean;
   runtime: CodexRuntimeStatus | null;
   rateLimits: CodexRateLimitsView | null;
+  rateLimitsLoading: boolean;
+  usage: CodexUsageView | null;
+  usageLoading: boolean;
   onRefresh: () => Promise<void>;
 }) {
   const [refreshing, setRefreshing] = useState(false);
@@ -268,9 +290,11 @@ export function CodexStatusSettings({
         <div className="min-w-0">
           <p className="truncate text-xs font-medium text-neutral-text">{accountLabel}</p>
           <p className="mt-0.5 text-[10px] text-neutral-text-muted">
-            {runtime?.state === "running"
-              ? `${runtime.version ?? "Codex"} · runtime attivo`
-              : `runtime ${runtime?.state ?? "non disponibile"}`}
+            {accountLoading || rateLimitsLoading || usageLoading
+              ? "Caricamento account e statistiche…"
+              : runtime?.state === "running"
+                ? `${runtime.version ?? "Codex"} · runtime attivo`
+                : `runtime ${runtime?.state ?? "non disponibile"}`}
           </p>
         </div>
         <button
@@ -293,7 +317,11 @@ export function CodexStatusSettings({
           <span className="text-[10px] text-neutral-text-muted">quota</span>
         </div>
 
-        {!connected ? (
+        {(accountLoading || rateLimitsLoading) && !rateLimits ? (
+          <p className="mt-2 text-[10px] text-neutral-text-muted">
+            Caricamento limiti Codex…
+          </p>
+        ) : !connected ? (
           <p className="mt-2 text-[10px] text-neutral-text-muted">
             Accedi con ChatGPT per leggere i limiti Codex.
           </p>
@@ -314,6 +342,23 @@ export function CodexStatusSettings({
                 Codex non ha restituito finestre attive. Aggiorna lo status dopo il prossimo turno.
               </p>
             )}
+          </div>
+        )}
+
+        {connected && (
+          <div className="mt-4 border-t border-neutral-border pt-3 text-[10px] text-neutral-text-muted">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-semibold uppercase tracking-wide">Statistiche</span>
+              {usageLoading ? (
+                <span>Caricamento…</span>
+              ) : usage ? (
+                <span className="font-mono text-neutral-text">
+                  lifetime {formatTokens(usage.lifetimeTokens)} · daily {formatTokens(usage.peakDailyTokens)} · streak {usage.currentStreakDays ?? 0}d
+                </span>
+              ) : (
+                <span>Non disponibili</span>
+              )}
+            </div>
           </div>
         )}
       </div>

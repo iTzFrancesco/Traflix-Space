@@ -92,7 +92,8 @@ pub(crate) fn conversational_plan_schema() -> serde_json::Value {
                         "destination": {"type":"string","maxLength":4096},
                         "prompt": {"type":"string","maxLength":16384},
                         "confirmed": {"type":"boolean"},
-                        "allowBusy": {"type":"boolean"}
+                        "allowBusy": {"type":"boolean"},
+                        "followUp": {"type":"boolean","description":"True only when the user explicitly asks to continue or check an existing assignment; reuse its exact binding and do not ask again just because the agent is busy."}
                     },
                     "required":["operation"],
                     "additionalProperties":false
@@ -143,6 +144,11 @@ pub struct ConversationStep {
     /// current terminal generation must also match.
     #[serde(default)]
     pub allow_busy: bool,
+    /// Explicitly continues an existing assignment. The backend accepts this
+    /// only with the exact previous assignment binding; it is not a shortcut
+    /// for sending a new task to an arbitrary busy agent.
+    #[serde(default)]
+    pub follow_up: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1038,7 +1044,25 @@ async fn execute_step(
             }
             let target = target_or_clarify(app, invocation, step, resolution, "inviare la task")?;
             reject_reused_target(&reserved_terminal_ids, &target)?;
-            if is_busy(&target.session) && !busy_override_matches(pending, step, &target) {
+            let follow_up_binding = if no_explicit_target || step.follow_up {
+                pending
+                    .and_then(|intent| intent.binding.clone())
+                    .or_else(|| {
+                        app.state::<crate::jarvis::JarvisState>()
+                            .control
+                            .last_assignment(&invocation.target_workspace_id)
+                    })
+            } else {
+                None
+            };
+            let automatic_follow_up = automatic_follow_up_requested(pending, step, incoming_step)
+                && follow_up_binding
+                    .as_ref()
+                    .is_some_and(|binding| binding_matches_target(binding, &target));
+            if is_busy(&target.session)
+                && !automatic_follow_up
+                && !busy_override_matches(pending, step, &target)
+            {
                 let label = target_label(&target);
                 let question = format!(
                     "{label} sta ancora lavorando. Vuoi che gli aggiunga questa task o preferisci aprire un nuovo agente?"
@@ -1058,18 +1082,8 @@ async fn execute_step(
                     stages: Vec::new(),
                 });
             }
-            let binding = if no_explicit_target {
-                pending
-                    .and_then(|intent| intent.binding.clone())
-                    .or_else(|| {
-                        app.state::<crate::jarvis::JarvisState>()
-                            .control
-                            .last_assignment(&invocation.target_workspace_id)
-                    })
-            } else {
-                None
-            };
-            let dispatch = send_to_target(app, invocation, &target, &prompt, binding).await?;
+            let dispatch =
+                send_to_target(app, invocation, &target, &prompt, follow_up_binding).await?;
             app.state::<crate::jarvis::JarvisState>()
                 .control
                 .record_assignment(&invocation.target_workspace_id, dispatch.binding.clone());
@@ -1415,7 +1429,10 @@ fn bound_target_from_pending(
     step: &ConversationStep,
     incoming_step: &ConversationStep,
 ) -> Result<Option<ResolvedAgentTarget>, String> {
-    if !step.confirmed && !step.allow_busy {
+    if !step.confirmed
+        && !step.allow_busy
+        && !automatic_follow_up_requested(pending, step, incoming_step)
+    {
         return Ok(None);
     }
     // An explicit provider/target in the new turn is a new routing choice;
@@ -1443,6 +1460,35 @@ fn bound_target_from_pending(
         .as_ref()
         .ok_or_else(|| "agent_binding_missing".to_string())?;
     target_from_binding(context, binding).map(Some)
+}
+
+fn automatic_follow_up_requested(
+    pending: Option<&PendingConversationalIntent>,
+    step: &ConversationStep,
+    incoming_step: &ConversationStep,
+) -> bool {
+    // A typed follow-up may name the stable alias explicitly. A continuation
+    // of a pending busy clarification must omit a new target so its stored
+    // binding remains authoritative.
+    if step.follow_up {
+        return true;
+    }
+    let no_explicit_target = incoming_step
+        .target
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        && incoming_step
+            .provider
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty());
+    if !no_explicit_target {
+        return false;
+    }
+    pending.is_some_and(|intent| {
+        intent.kind == PendingConversationKind::Clarification
+            && intent.operation == PlanOperation::AgentSend
+            && intent.binding.is_some()
+    })
 }
 
 fn target_or_clarify(
@@ -3082,6 +3128,7 @@ mod tests {
                 prompt: Some("fai una task".to_string()),
                 confirmed: false,
                 allow_busy: false,
+                follow_up: false,
             }],
         };
         assert!(plan.validate().is_ok());
@@ -3099,6 +3146,7 @@ mod tests {
                 prompt: Some("controlla il frontend".into()),
                 confirmed: false,
                 allow_busy: false,
+                follow_up: false,
             },
             ConversationStep {
                 operation: PlanOperation::AgentSend,
@@ -3109,6 +3157,7 @@ mod tests {
                 prompt: Some("controlla i test".into()),
                 confirmed: false,
                 allow_busy: false,
+                follow_up: false,
             },
         ];
         assert!(validate_agent_dispatches(&operations).is_err());
@@ -3125,6 +3174,7 @@ mod tests {
             prompt: Some(format!("task for {provider}")),
             confirmed: false,
             allow_busy: false,
+            follow_up: false,
         };
         assert!(should_parallelize_agent_sends(&[send("codex"), send("pi")]));
         let mut dependent = send("pi");
@@ -3143,6 +3193,7 @@ mod tests {
             prompt: Some("review frontend".into()),
             confirmed: false,
             allow_busy: false,
+            follow_up: false,
         };
         let pending_tail = ConversationStep {
             operation: PlanOperation::AgentSend,
@@ -3153,6 +3204,7 @@ mod tests {
             prompt: Some("review backend".into()),
             confirmed: false,
             allow_busy: false,
+            follow_up: false,
         };
         let pending = PendingConversationalIntent {
             workspace_id: "w".into(),
@@ -3178,6 +3230,7 @@ mod tests {
             prompt: None,
             confirmed: false,
             allow_busy: true,
+            follow_up: false,
         };
         let (operations, resumes) = operations_for_execution(
             &ConversationalPlan {
@@ -3311,6 +3364,7 @@ mod tests {
                 prompt: Some("x".into()),
                 confirmed: false,
                 allow_busy: false,
+                follow_up: false,
             }],
             response: None,
         };
@@ -3330,6 +3384,7 @@ mod tests {
                 prompt: None,
                 confirmed: false,
                 allow_busy: true,
+                follow_up: false,
             }],
             response: None,
         };
@@ -3347,6 +3402,7 @@ mod tests {
             prompt: Some("controlla soprattutto i test".into()),
             confirmed: false,
             allow_busy: false,
+            follow_up: false,
         };
         let pending = PendingConversationalIntent {
             workspace_id: "w".into(),
@@ -3372,6 +3428,7 @@ mod tests {
             prompt: None,
             confirmed: false,
             allow_busy: false,
+            follow_up: false,
         };
         let merged = merge_step_with_pending(&next, Some(&pending));
         assert_eq!(merged.source.as_deref(), Some("Codex Auth"));
@@ -3602,7 +3659,8 @@ mod tests {
                     destination: None,
                     prompt: Some("continua il lavoro".into()),
                     confirmed: false,
-                    allow_busy: true,
+                    allow_busy: false,
+                    follow_up: false,
                 }],
                 response: None,
             },
@@ -3615,7 +3673,8 @@ mod tests {
             destination: None,
             prompt: None,
             confirmed: false,
-            allow_busy: true,
+            allow_busy: false,
+            follow_up: false,
         };
         let merged = merge_step_with_pending(&incoming, Some(&pending));
         let target = bound_target_from_pending(&context, Some(&pending), &merged, &incoming)
@@ -3626,6 +3685,72 @@ mod tests {
             target.session.reference.agent_alias.as_deref(),
             Some("codex-2")
         );
+    }
+
+    #[test]
+    fn follow_up_intent_skips_busy_confirmation_only_for_a_bound_assignment() {
+        let pending = PendingConversationalIntent {
+            workspace_id: "workspace-a".into(),
+            kind: PendingConversationKind::Clarification,
+            question: "aggiungo il follow-up?".into(),
+            operation: PlanOperation::AgentSend,
+            terminal_id: Some("terminal-2".into()),
+            generation: Some(7),
+            binding: Some(AgentAssignmentBinding {
+                assignment_id: "assignment:test:2".into(),
+                agent_alias: "codex-2".into(),
+                agent_session_id: "session-codex-2".into(),
+                terminal_id: "terminal-2".into(),
+                generation: 7,
+                process_id: Some(101),
+                provider: "codex".into(),
+                provider_session_id: None,
+            }),
+            created_at: "2026-08-12T00:00:00Z".into(),
+            expires_at: "2999-08-12T00:00:00Z".into(),
+            plan: ConversationalPlan {
+                operations: Vec::new(),
+                response: None,
+            },
+        };
+        let answer = ConversationStep {
+            operation: PlanOperation::AgentSend,
+            provider: None,
+            target: None,
+            source: None,
+            destination: None,
+            prompt: None,
+            confirmed: false,
+            allow_busy: false,
+            follow_up: false,
+        };
+        assert!(automatic_follow_up_requested(
+            Some(&pending),
+            &answer,
+            &answer,
+        ));
+
+        let fresh_follow_up = ConversationStep {
+            follow_up: true,
+            ..answer.clone()
+        };
+        assert!(automatic_follow_up_requested(
+            None,
+            &fresh_follow_up,
+            &fresh_follow_up,
+        ));
+        assert!(!automatic_follow_up_requested(None, &answer, &answer));
+
+        let decoded: ConversationalPlan = serde_json::from_value(serde_json::json!({
+            "operations": [{
+                "operation": "agent_send",
+                "target": "codex-2",
+                "prompt": "controlla il risultato",
+                "followUp": true
+            }]
+        }))
+        .expect("followUp is part of the typed plan contract");
+        assert!(decoded.operations[0].follow_up);
     }
 
     #[test]

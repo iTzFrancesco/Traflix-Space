@@ -67,11 +67,15 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settingsError = useJarvisStore((state) => state.settingsError);
   const codexRuntime = useJarvisStore((state) => state.codexRuntime);
   const codexAccount = useJarvisStore((state) => state.codexAccount);
+  const codexAccountLoading = useJarvisStore((state) => state.codexAccountLoading);
   const codexLoginBusy = useJarvisStore((state) => state.codexLoginBusy);
   const codexError = useJarvisStore((state) => state.codexError);
   const codexModels = useJarvisStore((state) => state.codexModels);
   const codexModelsLoading = useJarvisStore((state) => state.codexModelsLoading);
+  const codexUsage = useJarvisStore((state) => state.codexUsage);
+  const codexUsageLoading = useJarvisStore((state) => state.codexUsageLoading);
   const codexRateLimits = useJarvisStore((state) => state.codexRateLimits);
+  const codexRateLimitsLoading = useJarvisStore((state) => state.codexRateLimitsLoading);
   const codexThreads = useJarvisStore((state) => state.codexThreads);
   const codexStreamingTurns = useJarvisStore((state) => state.codexStreamingTurns);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -97,7 +101,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   }, [loadSettings, open, settingsLoaded, settingsLoading]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !settingsLoaded) return;
     setDraft({
       ...settings,
       jarvis: ownerModeJarvisSettings(settings.jarvis),
@@ -110,17 +114,9 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-    void useJarvisStore.getState().loadCodexRuntime();
-    void useJarvisStore.getState().loadCodexAccount();
-    void useJarvisStore.getState().loadCodexModels();
-    void useJarvisStore.getState().loadCodexRateLimits();
+    void useJarvisStore.getState().bootstrapCodex();
     void useJarvisStore.getState().loadCodexThreads();
-  }, [open, settings]);
-
-  useEffect(() => {
-    if (!open || codexAccount?.account.kind !== "chatgpt") return;
-    void useJarvisStore.getState().loadCodexRateLimits();
-  }, [open, codexAccount?.account.kind]);
+  }, [open, settings, settingsLoaded]);
 
   const updateJarvis = (
     updater: (jarvis: AppSettings["jarvis"]) => AppSettings["jarvis"],
@@ -233,6 +229,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
           <div className="mt-3">
             <CodexConnectionRow
               account={codexAccount}
+              accountLoading={codexAccountLoading}
               loginBusy={codexLoginBusy}
               error={codexError}
               running={codexRuntime?.state === "running"}
@@ -248,14 +245,14 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         >
           <CodexStatusSettings
             account={codexAccount}
+            accountLoading={codexAccountLoading}
             runtime={codexRuntime}
             rateLimits={codexRateLimits}
+            rateLimitsLoading={codexRateLimitsLoading}
+            usage={codexUsage}
+            usageLoading={codexUsageLoading}
             onRefresh={async () => {
-              await Promise.all([
-                useJarvisStore.getState().loadCodexRuntime(),
-                useJarvisStore.getState().loadCodexAccount(),
-                useJarvisStore.getState().loadCodexRateLimits(),
-              ]);
+              await useJarvisStore.getState().refreshCodex();
             }}
           />
         </SettingsSection>

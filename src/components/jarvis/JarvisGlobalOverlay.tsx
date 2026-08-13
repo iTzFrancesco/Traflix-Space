@@ -65,6 +65,7 @@ export function JarvisGlobalOverlay() {
   const clearCodexSpeech = useJarvisStore((state) => state.clearCodexSpeech);
   const speechWorkerBusyRef = useRef(false);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
+  const bootstrapCodex = useJarvisStore((state) => state.bootstrapCodex);
   const setContext = useJarvisStore((state) => state.setContext);
   const setContextStatus = useJarvisStore((state) => state.setContextStatus);
   const setRegistrySessions = useJarvisStore((state) => state.setRegistrySessions);
@@ -272,9 +273,16 @@ export function JarvisGlobalOverlay() {
   // whenever the App Server emits a status or account notification.
   useEffect(() => {
     const unlisten = bindCodexEvents();
-    void useJarvisStore.getState().loadCodexRuntime();
     return unlisten;
   }, []);
+
+  // The runtime is lazy, but a persisted/enabled Jarvis widget is already an
+  // explicit activation boundary. Start Codex only after settings are known,
+  // then load account and status data through the single-flight bootstrap.
+  useEffect(() => {
+    if (!settingsLoaded || !settings.jarvis.enabled) return;
+    void bootstrapCodex();
+  }, [bootstrapCodex, settings.jarvis.enabled, settingsLoaded]);
 
   // A failed transcript submission must not create an automatic retry loop.
   // Closing Settings is an explicit recovery boundary: if the user just fixed

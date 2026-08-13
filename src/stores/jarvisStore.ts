@@ -51,6 +51,10 @@ import { reportFrontendDiagnosticCode } from "../lib/crashDiagnostics";
 import { useWorkspaceStore } from "./workspaceStore";
 import { sanitizedVoiceError, sanitizedVoiceErrorView } from "../lib/jarvis/voiceSettings";
 import { decideVoiceSubmit } from "../lib/jarvis/voiceState";
+import {
+  bootstrapCodexData,
+  createCodexBootstrapQueue,
+} from "../lib/jarvis/codexBootstrap";
 import type {
   AgentResult,
   AgentSessionContext,
@@ -117,7 +121,9 @@ interface JarvisStore {
   codexModels: CodexModelCatalog | null;
   codexModelsLoading: boolean;
   codexUsage: CodexUsageView | null;
+  codexUsageLoading: boolean;
   codexRateLimits: CodexRateLimitsView | null;
+  codexRateLimitsLoading: boolean;
   codexThreads: Record<string, JarvisCodexThread>;
   // C7: per-workspace streaming turns (commentary/tool/final lifecycle).
   codexStreamingTurns: Record<string, CodexStreamingTurn[]>;
@@ -184,11 +190,13 @@ interface JarvisStore {
   updatePendingAction: (action: PendingAction, text: string) => Promise<PendingAction>;
   loadProviderStatus: () => Promise<void>;
   loadCodexRuntime: () => Promise<void>;
-  startCodex: () => Promise<void>;
-  loadCodexAccount: () => Promise<void>;
-  loadCodexModels: () => Promise<void>;
-  loadCodexUsage: () => Promise<void>;
-  loadCodexRateLimits: () => Promise<void>;
+  startCodex: () => Promise<boolean>;
+  loadCodexAccount: () => Promise<boolean>;
+  loadCodexModels: () => Promise<boolean>;
+  loadCodexUsage: () => Promise<boolean>;
+  loadCodexRateLimits: () => Promise<boolean>;
+  bootstrapCodex: () => Promise<void>;
+  refreshCodex: () => Promise<void>;
   restartCodex: () => Promise<void>;
   startCodexLogin: () => Promise<void>;
   cancelCodexLogin: (loginId: string) => Promise<void>;
@@ -266,7 +274,25 @@ function voiceWarn(message: string, details: Record<string, unknown> = {}) {
   console.warn("[Jarvis voice]", message, details);
 }
 
-export const useJarvisStore = create<JarvisStore>((set, get) => ({
+export const useJarvisStore = create<JarvisStore>((set, get) => {
+  const requestCodexBootstrap = createCodexBootstrapQueue(async () => {
+    if (!get().settingsLoaded || !get().settings.jarvis.enabled) return;
+
+    set({ codexError: null });
+    const result = await bootstrapCodexData({
+      enabled: true,
+      startRuntime: () => get().startCodex(),
+      loadAccount: () => get().loadCodexAccount(),
+      loadModels: () => get().loadCodexModels(),
+      loadUsage: () => get().loadCodexUsage(),
+      loadRateLimits: () => get().loadCodexRateLimits(),
+    });
+    if (result.status === "error") {
+      set((state) => ({ codexError: state.codexError ?? result.error }));
+    }
+  });
+
+  return {
   settings: defaultAppSettings(), settingsLoaded: false, settingsLoading: false, settingsError: null,
   expanded: false, dragging: false, settingsOpen: false, selectedAgentSessionId: null,
   context: null, contextStatus: "idle", contextError: null, registrySessions: [], isRefreshing: false,
@@ -274,7 +300,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   registryRefreshTimestamp: null, otherWorkspaceAgentCount: 0, conversation: [], pendingActions: [],
   requests: {}, chatErrors: {}, providerStatus: null, codexRuntime: null, codexAccount: null,
   codexAccountLoading: false, codexLoginBusy: false, codexError: null, codexModels: null,
-  codexModelsLoading: false, codexUsage: null, codexRateLimits: null, codexThreads: {},
+  codexModelsLoading: false, codexUsage: null, codexUsageLoading: false,
+  codexRateLimits: null, codexRateLimitsLoading: false, codexThreads: {},
   codexStreamingTurns: {},
   codexSpeechQueue: [],
   codexSpokenItemIds: [],
@@ -491,32 +518,70 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   },
   startCodex: async () => {
     try {
-      set({ codexRuntime: await codexRuntimeStart(), codexError: null });
+      const runtime = await codexRuntimeStart();
+      set({ codexRuntime: runtime, codexError: null });
+      return runtime.state === "running";
     } catch (error) {
       set({ codexError: errorMessage(error) });
+      return false;
     }
   },
   loadCodexAccount: async () => {
     set({ codexAccountLoading: true });
     try {
       set({ codexAccount: await codexAccountRead(), codexAccountLoading: false });
+      return true;
     } catch (error) {
       set({ codexAccountLoading: false, codexError: errorMessage(error) });
+      return false;
     }
   },
   loadCodexModels: async () => {
     set({ codexModelsLoading: true });
     try {
       set({ codexModels: await codexModelList(), codexModelsLoading: false });
+      return true;
     } catch (error) {
       set({ codexModelsLoading: false, codexError: errorMessage(error) });
+      return false;
     }
   },
   loadCodexUsage: async () => {
-    try { set({ codexUsage: await codexUsage() }); } catch { /* keep last usage */ }
+    if (get().codexAccount?.account.kind !== "chatgpt") {
+      set({ codexUsageLoading: false });
+      return true;
+    }
+    set({ codexUsageLoading: true });
+    try {
+      set({ codexUsage: await codexUsage(), codexUsageLoading: false });
+      return true;
+    } catch (error) {
+      set({ codexUsageLoading: false, codexError: errorMessage(error) });
+      return false;
+    }
   },
   loadCodexRateLimits: async () => {
-    try { set({ codexRateLimits: await codexRateLimits() }); } catch { /* keep last snapshot */ }
+    if (get().codexAccount?.account.kind !== "chatgpt") {
+      set({ codexRateLimitsLoading: false });
+      return true;
+    }
+    set({ codexRateLimitsLoading: true });
+    try {
+      set({ codexRateLimits: await codexRateLimits(), codexRateLimitsLoading: false });
+      return true;
+    } catch (error) {
+      set({ codexRateLimitsLoading: false, codexError: errorMessage(error) });
+      return false;
+    }
+  },
+  bootstrapCodex: async () => {
+    // Never start with the in-memory defaults. Persisted settings are loaded
+    // asynchronously on the root overlay and may disable Jarvis entirely.
+    if (!get().settingsLoaded || !get().settings.jarvis.enabled) return;
+    await requestCodexBootstrap();
+  },
+  refreshCodex: async () => {
+    await get().bootstrapCodex();
   },
   dequeueCodexSpeech: (itemId) => {
     set((state) => ({
@@ -1039,7 +1104,8 @@ export const useJarvisStore = create<JarvisStore>((set, get) => ({
   }),
   stopTts: async () => { try { const status = await ttsStop(); get().setTtsStatus(status); } catch (error) { set({ voiceError: sanitizedVoiceError(error) }); } },
   clearVoiceError: () => set({ voiceError: null }),
-}));
+  };
+});
 
 function mergeActions(current: PendingAction[], incoming: PendingAction[]): PendingAction[] {
   const byId = new Map(current.map((action) => [action.id, action]));
@@ -1126,9 +1192,10 @@ export function bindCodexEvents(): () => void {
       method === "account/login/completed" ||
       method === "account/updated"
     ) {
-      // Refresh the account view; the completion notification carries no
-      // token data (login/error only), so a fresh read is always safe.
-      void useJarvisStore.getState().loadCodexAccount();
+      // The notification carries no token data (login/error only). Re-run
+      // the single-flight bootstrap so usage and rate limits follow the new
+      // account session instead of waiting for a manual refresh.
+      void useJarvisStore.getState().bootstrapCodex();
     }
   }).then((unlisten) => unlisteners.push(unlisten));
   // C3: the backend merges incremental rate-limit updates into the last
