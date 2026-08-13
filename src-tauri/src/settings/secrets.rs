@@ -41,25 +41,22 @@ pub fn status() -> JarvisSecretStatus {
 pub fn hydrate_process_environment(app: &AppHandle) {
     // Existing process/user environment variables always win over `.env`.
     let _ = read_secret_env(GROQ_API_KEY_ENV);
-    load_dotenv_environment(dotenv_candidates(app), false);
+    load_dotenv_environment(dotenv_candidates(app));
 }
 
 /// Re-check the supported `.env` locations before a voice request. This keeps
 /// development runs plug-and-play when the file was created after the app
 /// process started, without ever exposing the values to the frontend.
 pub fn refresh_dotenv_environment(app: &AppHandle) {
-    // In development, the repository `.env` is the source the owner edits and
-    // must win over a stale Windows user variable left by an older setup. In a
-    // packaged build we keep the persisted user secret as the fallback.
-    #[cfg(debug_assertions)]
-    load_dotenv_environment(dotenv_candidates(app), true);
-    #[cfg(not(debug_assertions))]
-    load_dotenv_environment(dotenv_candidates(app), false);
+    // `.env` is only a fallback. A key saved from Settings is loaded into the
+    // current process and Windows user environment; refreshing `.env` must not
+    // replace it with a stale or invalid development value.
+    load_dotenv_environment(dotenv_candidates(app));
 
     let _ = read_secret_env(GROQ_API_KEY_ENV);
 }
 
-fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
+fn load_dotenv_environment(candidates: Vec<PathBuf>) {
     let mut loaded = HashSet::new();
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -75,10 +72,7 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
             if loaded.contains(name) {
                 continue;
             }
-            let already_configured = env::var(name)
-                .ok()
-                .is_some_and(|current| !current.trim().is_empty());
-            if already_configured && !overwrite_existing {
+            if !dotenv_may_fill(env::var(name).ok().as_deref()) {
                 continue;
             }
             if let Ok(value) = normalize_secret(&value) {
@@ -87,6 +81,10 @@ fn load_dotenv_environment(candidates: Vec<PathBuf>, overwrite_existing: bool) {
             }
         }
     }
+}
+
+fn dotenv_may_fill(current: Option<&str>) -> bool {
+    current.is_none_or(|value| value.trim().is_empty())
 }
 
 fn dotenv_candidates(app: &AppHandle) -> Vec<PathBuf> {
@@ -284,7 +282,7 @@ fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_secret, parse_dotenv_assignment};
+    use super::{dotenv_may_fill, normalize_secret, parse_dotenv_assignment};
 
     #[test]
     fn secret_normalization_trims_copy_paste_whitespace() {
@@ -319,5 +317,12 @@ mod tests {
         );
         assert!(parse_dotenv_assignment("# GROQ_API_KEY=ignored").is_none());
         assert!(parse_dotenv_assignment("not valid").is_none());
+    }
+
+    #[test]
+    fn dotenv_is_fallback_and_never_overwrites_a_configured_secret() {
+        assert!(dotenv_may_fill(None));
+        assert!(dotenv_may_fill(Some("   ")));
+        assert!(!dotenv_may_fill(Some("settings-secret")));
     }
 }

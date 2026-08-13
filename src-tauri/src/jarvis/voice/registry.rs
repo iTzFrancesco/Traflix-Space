@@ -600,8 +600,8 @@ fn prune(requests: &mut HashMap<String, ActiveVoiceRequest>) {
 pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
     match code {
         VoiceErrorCode::ConsentRequired => "Attiva il consenso privacy vocale nelle impostazioni.",
-        VoiceErrorCode::ProviderNotConfigured => "Credenziale audio non rilevata. Apri Impostazioni → Connessioni e verifica Groq, poi riprova.",
-        VoiceErrorCode::AuthFailed => "La credenziale Groq non è valida.",
+        VoiceErrorCode::ProviderNotConfigured => "Credenziale Groq non rilevata (GROQ_API_KEY). Apri Impostazioni → Connessioni e verifica Groq, poi riprova.",
+        VoiceErrorCode::AuthFailed => "La chiave Groq è stata trovata ma rifiutata. Sostituiscila in Impostazioni → Connessioni.",
         VoiceErrorCode::Forbidden => "Groq ha rifiutato l'accesso.",
         VoiceErrorCode::RateLimited => "Limite Groq raggiunto; riprova più tardi.",
         VoiceErrorCode::ModelUnavailable => "Il modello Whisper richiesto non è disponibile.",
