@@ -592,6 +592,7 @@ mod tests {
     use super::*;
     use crate::jarvis::voice::wake::{WakeWordDetection, WakeWordEngine};
     use crate::settings::store::VoiceActivationMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TriggerOnFirstFrame {
         triggered: bool,
@@ -649,6 +650,63 @@ mod tests {
         drop(snapshot);
 
         process_samples(&buffer, vec![0.4; 160]);
+        assert_eq!(buffer.lock().unwrap().samples.len(), 160);
+    }
+
+    struct CountingWakeEngine {
+        calls: Arc<AtomicUsize>,
+        trigger_on_call: usize,
+    }
+
+    impl WakeWordEngine for CountingWakeEngine {
+        fn backend_name(&self) -> &'static str {
+            "test-local"
+        }
+
+        fn process(
+            &mut self,
+            _samples: &[f32],
+            _sample_rate: u32,
+            _channels: u16,
+        ) -> Option<WakeWordDetection> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            (call >= self.trigger_on_call).then_some(WakeWordDetection { score: 0.93 })
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    #[test]
+    fn wake_only_discards_every_standby_frame_until_the_detector_matches() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
+            1,
+            16_000,
+            wake_options(),
+            Some(Box::new(CountingWakeEngine {
+                calls: Arc::clone(&calls),
+                trigger_on_call: 3,
+            })),
+        )));
+
+        process_samples(&buffer, vec![0.1; 160]);
+        process_samples(&buffer, vec![0.2; 160]);
+        {
+            let snapshot = buffer.lock().unwrap();
+            assert!(!snapshot.wake_word_activated);
+            assert!(snapshot.samples.is_empty());
+            assert!(snapshot.pre_roll.is_empty());
+        }
+
+        process_samples(&buffer, vec![0.9; 160]);
+        {
+            let snapshot = buffer.lock().unwrap();
+            assert!(snapshot.wake_word_activated);
+            assert!(snapshot.samples.is_empty());
+        }
+
+        process_samples(&buffer, vec![0.8; 160]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(buffer.lock().unwrap().samples.len(), 160);
     }
 }

@@ -38,6 +38,7 @@ pub enum WakeWordState {
     Off,
     Standby,
     Listening,
+    Fallback,
     Unavailable,
     Error,
 }
