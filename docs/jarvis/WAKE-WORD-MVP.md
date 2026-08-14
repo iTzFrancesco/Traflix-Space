@@ -45,7 +45,26 @@ prima di inizializzare il provider audio o aprire CPAL.
 
 La build corrente usa il caso `fallback`: il modello non è presente, quindi la
 frase configurata non può essere validata acusticamente; l'attivazione locale
-richiede comunque tre frame consecutivi di voce sopra la soglia bounded.
+richiede comunque tre frame consecutivi di voce sopra la soglia VAD configurata
+(default `0.018` RMS, modulata dalla sensibilità). Il fallback non distingue
+semanticamente `Hey Jarvis`, `Jarvis Space` o altre frasi: è un'attivazione per
+voce sostenuta, non un keyword spotter.
+Il default storico resta `Hey Traflix`; modificarlo nelle impostazioni aggiorna
+il contratto/configurazione esposto, ma non aggiunge riconoscimento fonetico in
+assenza del modello.
+
+## Correzione di affidabilità
+
+Il fallback usava una soglia indipendente e fissa (`0.027` RMS con la
+sensibilità predefinita), quindi alcuni microfoni Windows restavano sotto il
+gate anche durante una frase normale. Ora riusa la soglia VAD salvata
+dall'utente, con una modulazione bounded della sensibilità e la stessa
+calibrazione del rumore ambientale.
+
+Nel passaggio `armed` → `recording`, il frame che produce l'attivazione viene
+ora mantenuto nel buffer e non passa dal noise gate di rilascio; i frame
+precedenti restano fuori dal buffer di trascrizione. Questo conserva la prima
+sillaba senza trasformare lo standby locale in una registrazione permanente.
 
 ## Abilitazione futura
 
@@ -57,15 +76,20 @@ scrivere PCM su disco né effettuare rete durante `wake_only`.
 ## Validazione Windows
 
 1. Abilitare `Standby wake word locale` nelle impostazioni: lo stato deve
-   mostrare `fallback VAD locale`, non un errore bloccante.
+   mostrare `fallback VAD locale`, non un errore bloccante. Lasciare il microfono
+   in standby almeno 300 ms per la calibrazione locale.
 2. Verificare che il mute mostri `Microfono disattivato`, cancelli una cattura
    attiva e impedisca un nuovo start.
 3. Disabilitare il mute e provare il pulsante/hotkey VAD: deve partire una sola
    sessione CPAL.
 4. Controllare l'indicatore microfono di Windows e verificare che il fallback
    resti locale, non invii audio in standby e non apra un secondo microfono.
-5. Solo dopo aver incluso un engine/modello reale, ripetere il test con
-   `WAKE_ONLY` e verificare la transizione `standby` → `listening` usando lo
+5. Pronunciare a volume normale `Hey Jarvis` e `Jarvis Space` (anche come parte
+   di una frase): entrambe devono portare da `standby` a `listening` quando il
+   livello supera la soglia configurata. In questa build non è atteso un
+   comportamento semanticamente diverso tra le due frasi.
+6. Solo dopo aver incluso un engine/modello reale, ripetere il test con
+   `WAKE_ONLY` e verificare il riconoscimento semantico della frase usando lo
    stesso stream.
 
 La suite deterministica copre anche i confini che non richiedono hardware o un modello:
@@ -74,5 +98,8 @@ La suite deterministica copre anche i confini che non richiedono hardware o un m
 - `capture.rs`: nessun sample conservato prima del match e riuso dello stesso buffer dopo l'attivazione;
 - `registry.rs`: `WakeWord` resta `Armed` finché il capture session non segnala il match, poi passa a `Recording`;
 - `scripts/jarvis-wake-word.test.mjs`: separazione da mute privacy, singolo stream CPAL, fallback VAD, eventi di stato ed esclusione dell'auto-arm wake durante TTS.
+- La regressione sul livello microfonico normale e sul frame di attivazione è
+  coperta da `wake.rs` e dal test statico `fallback sensitivity follows
+  configured VAD levels and keeps the trigger frame`.
 
 Questi test non certificano l'accuratezza acustica né l'apertura reale di un device CPAL. La verifica runtime completa richiede ancora un adapter locale approvato, modello/asset con licenza e un microfono Windows funzionante.

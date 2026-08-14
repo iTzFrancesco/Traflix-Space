@@ -18,7 +18,7 @@
 > | C5 Dynamic tools | ✅ | `4315c2f` | turno reale: il modello chiama `agent.list` end-to-end (request namespaced + risposta) |
 > | C6 Conversational control | ✅ | `e52465f` | tool `conversational.plan` registrato e osservato in turno reale (args tipizzati + receipt risposto); guard 1 plan/turno unit-tested |
 > | C7 Streaming UI | ✅ | `37d9fde` | hub `jarvis://chat-stream` (Item/* + AgentMessageDelta normalizzati, reasoning mai emesso), streamingTurns in UI; ordine commentary→tool→final verificato nel test reale |
-> | C8 Progressive TTS | ✅ | `8074c9e` | SpeechQueue commentary (FIFO, dedupe itemId, skip frasi corte, barge-in, worker non sovrappone il finale); `speakCommentary` setting |
+> | C8 Progressive TTS | ✅ | `8074c9e` + voice-stream fix | SpeechQueue commentary (FIFO senza drop, dedupe itemId, delta-only fallback, retry Edge, barge-in, worker non sovrappone il finale); `speakCommentary` setting |
 > | C9 Steering/cancel | ✅ | `8074c9e` | `turn/interrupt` cancella la token reale del plan; `turn/steer` gated (≤240 char, solo turno attivo) + UI Interrompi/Steer |
 > | C10 Cleanup Zen + wiring | ✅ | vedi log | `CodexAppServerProvider` sostituisce Zen (chat = turn/start + attesa turn/completed); migrazione settings `open_code_zen`→`codex`; secrets Groq-only; docs `docs/jarvis/codex/*` |
 > | **C1–C10** | ✅ | — | **integrazione completa** — runtime/handshake, account, modelli, thread isolati, tool dinamici, plan, streaming, TTS, steer/cancel, provider unico Codex |
@@ -1083,7 +1083,8 @@ La sintesi audio non deve bloccare il model turn.
 - parlare final answer completata;
 - deduplicare per `itemId`;
 - cancellare audio stale dopo barge-in;
-- evitare commentary troppo breve tipo "Ok.";
+- parlare anche gli step brevi ma naturali ("Ok.", "Fatto."); il filtro
+  tecnico/empty resta al confine Edge TTS;
 - non leggere JSON/tool output;
 - rispettare `maxSpokenChars`;
 - mantenere `stopOnUserSpeech`.

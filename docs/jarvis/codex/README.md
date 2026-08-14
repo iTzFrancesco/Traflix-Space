@@ -1,8 +1,8 @@
 # Jarvis × Codex App Server — documentazione
 
-La spec master è `Traflix Space — Jarvis Codex App Server Integration.md`
-(radice del repo): obiettivo, architettura, protocollo e fasi C1–C10 con lo
-stato di avanzamento (§30). Questa cartella contiene il dettaglio operativo.
+La spec master è [APP-SERVER-INTEGRATION.md](APP-SERVER-INTEGRATION.md):
+obiettivo, architettura, protocollo e fasi C1–C10 con lo stato di avanzamento
+(§30). Questa cartella contiene il dettaglio operativo.
 
 ## Indice
 
