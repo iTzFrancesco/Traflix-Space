@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::rpc::JsonRpcClient;
 use super::runtime::CodexRuntimeManager;
 use super::threads::ThreadRegistry;
 use crate::jarvis::agent_registry::{DEFAULT_ACTIVITY_LIMIT, MAX_ACTIVITY_LIMIT};
@@ -55,7 +56,8 @@ pub struct CodexToolService {
     runtime: CodexRuntimeManager,
     call_budget: Arc<Mutex<HashMap<String, usize>>>,
     plan_executed: Arc<Mutex<HashMap<String, bool>>>,
-    plan_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    plan_cancellations: Arc<Mutex<HashMap<(String, String), CancellationToken>>>,
+    server_client: Option<Arc<JsonRpcClient>>,
 }
 
 impl CodexToolService {
@@ -66,6 +68,23 @@ impl CodexToolService {
             call_budget: Arc::new(Mutex::new(HashMap::new())),
             plan_executed: Arc::new(Mutex::new(HashMap::new())),
             plan_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            server_client: None,
+        }
+    }
+
+    /// Binds a bridge clone to the exact App Server client that delivered a
+    /// server request. A runtime restart must never route the old request's
+    /// JSON-RPC response into the new process.
+    pub fn for_server_client(&self, client: Arc<JsonRpcClient>) -> Self {
+        let mut scoped = self.clone();
+        scoped.server_client = Some(client);
+        scoped
+    }
+
+    async fn client(&self) -> Result<Arc<JsonRpcClient>, super::runtime::RuntimeError> {
+        match &self.server_client {
+            Some(client) => Ok(client.clone()),
+            None => self.runtime.client().await,
         }
     }
 
@@ -180,6 +199,11 @@ impl CodexToolService {
             .get("tool")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let turn_id = params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let name = format!("{namespace}.{tool_name}");
         let input = params
             .get("arguments")
@@ -222,9 +246,15 @@ impl CodexToolService {
         );
 
         if namespace == PLAN_NAMESPACE && tool_name == PLAN_TOOL {
+            if turn_id.is_empty() {
+                self.respond_error(id, -32602, "missing turnId for conversational.plan")
+                    .await;
+                return true;
+            }
             self.handle_conversational_plan(
                 id,
                 thread_id,
+                &turn_id,
                 &workspace_id,
                 &tool_call_id,
                 &input,
@@ -251,7 +281,7 @@ impl CodexToolService {
                         "text": serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()),
                     }]
                 });
-                match self.runtime.client().await {
+                match self.client().await {
                     Ok(client) => {
                         if let Err(err) = client.respond(id, payload).await {
                             warn!(error = %err, "codex tool call response failed");
@@ -272,28 +302,41 @@ impl CodexToolService {
         self.plan_executed.lock().await.remove(thread_id);
     }
 
-    pub async fn register_plan_cancel(&self, thread_id: &str, token: CancellationToken) {
+    pub async fn register_plan_cancel(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        token: CancellationToken,
+    ) {
         self.plan_cancellations
             .lock()
             .await
-            .insert(thread_id.to_string(), token);
+            .insert((thread_id.to_owned(), turn_id.to_owned()), token);
     }
 
-    pub async fn cancel_plan(&self, thread_id: &str) {
-        let token = self.plan_cancellations.lock().await.remove(thread_id);
+    pub async fn cancel_plan(&self, thread_id: &str, turn_id: &str) {
+        let token = self
+            .plan_cancellations
+            .lock()
+            .await
+            .remove(&(thread_id.to_owned(), turn_id.to_owned()));
         if let Some(token) = token {
             token.cancel();
         }
     }
 
-    pub async fn clear_plan_cancel(&self, thread_id: &str) {
-        self.plan_cancellations.lock().await.remove(thread_id);
+    pub async fn clear_plan_cancel(&self, thread_id: &str, turn_id: &str) {
+        self.plan_cancellations
+            .lock()
+            .await
+            .remove(&(thread_id.to_owned(), turn_id.to_owned()));
     }
 
     async fn handle_conversational_plan(
         &self,
         id: u64,
         thread_id: &str,
+        turn_id: &str,
         workspace_id: &str,
         request_id: &str,
         args: &Value,
@@ -384,7 +427,7 @@ impl CodexToolService {
         };
 
         let cancellation = CancellationToken::new();
-        self.register_plan_cancel(thread_id, cancellation.clone())
+        self.register_plan_cancel(thread_id, turn_id, cancellation.clone())
             .await;
         let execution = execute_plan(
             &self.app,
@@ -395,7 +438,7 @@ impl CodexToolService {
             &context,
         )
         .await;
-        self.clear_plan_cancel(thread_id).await;
+        self.clear_plan_cancel(thread_id, turn_id).await;
         let receipt = json!({
             "response": execution.response,
             "warnings": execution.warnings,
@@ -419,7 +462,7 @@ impl CodexToolService {
                 "text": serde_json::to_string(&receipt).unwrap_or_else(|_| "{}".into()),
             }]
         });
-        match self.runtime.client().await {
+        match self.client().await {
             Ok(client) => {
                 if let Err(err) = client.respond(id, payload).await {
                     warn!(error = %err, "codex conversational.plan response failed");
@@ -799,7 +842,7 @@ impl CodexToolService {
     }
 
     async fn respond_error(&self, id: u64, code: i64, message: &str) {
-        match self.runtime.client().await {
+        match self.client().await {
             Ok(client) => {
                 if let Err(err) = client.respond_error(id, code, message).await {
                     warn!(error = %err, "codex tool error response failed");

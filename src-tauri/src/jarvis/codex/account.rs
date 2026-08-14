@@ -132,14 +132,6 @@ async fn emit_chat_stream(
         request_id.as_deref(),
     );
     for event in events {
-        if matches!(
-            event.kind,
-            super::events::ChatStreamEventKind::TurnCompleted
-                | super::events::ChatStreamEventKind::TurnFailed
-                | super::events::ChatStreamEventKind::TurnInterrupted
-        ) {
-            threads.forget_turn(&event.turn_id).await;
-        }
         let _ = app.emit(CHAT_STREAM_EVENT, event);
     }
 }
@@ -232,6 +224,7 @@ fn turn_error_message(params: &Value) -> String {
 pub fn spawn_account_bridge(
     runtime: CodexRuntimeManager,
     app: AppHandle,
+    client: Arc<JsonRpcClient>,
     models: Option<CodexModelService>,
     threads: Option<ThreadRegistry>,
     tools: Option<CodexToolService>,
@@ -253,8 +246,8 @@ pub fn spawn_account_bridge(
                         "codex rpc server request received (dispatched async)",
                     );
                     if let Some(tools) = &tools {
-                        let tools = tools.clone();
-                        let runtime = runtime.clone();
+                        let tools = tools.for_server_client(Arc::clone(&client));
+                        let client = Arc::clone(&client);
                         let method = method.clone();
                         let params = params.clone();
                         let id = *id;
@@ -262,17 +255,15 @@ pub fn spawn_account_bridge(
                             if tools.handle_server_request(id, &method, params).await {
                                 return;
                             }
-                            if let Ok(client) = runtime.client().await {
-                                let _ = client
-                                    .respond_error(
-                                        id,
-                                        -32601,
-                                        &format!("unknown server request: {method}"),
-                                    )
-                                    .await;
-                            }
+                            let _ = client
+                                .respond_error(
+                                    id,
+                                    -32601,
+                                    &format!("unknown server request: {method}"),
+                                )
+                                .await;
                         });
-                    } else if let Ok(client) = runtime.client().await {
+                    } else {
                         let _ = client
                             .respond_error(
                                 *id,
@@ -302,32 +293,66 @@ pub fn spawn_account_bridge(
                     }
                 }
 
-                if matches!(
-                    method.as_str(),
-                    "turn/completed" | "turn/failed" | "turn/interrupted"
-                ) {
-                    if let (Some(params), Some(tools)) = (&params, &tools) {
-                        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                            tools.clear_plan_cancel(thread_id).await;
-                        }
-                    }
-                }
-
                 if let Some(threads) = &threads {
-                    threads.apply_notification(&method, &params).await;
-                    if method.starts_with("turn/") {
-                        emit_chat_stream(&app, threads, &method, &params).await;
-                    }
-
-                    if let Some(params) = params.as_ref() {
-                        if method == "turn/completed" {
-                            capture_turn_final_fallback(threads, params).await;
+                    let terminal = matches!(
+                        method.as_str(),
+                        "turn/completed" | "turn/failed" | "turn/interrupted"
+                    );
+                    if terminal {
+                        let terminal_matches = if let Some(value) = params.as_ref() {
+                            if let Some(thread_id) = value.get("threadId").and_then(Value::as_str) {
+                                let turn_id = super::events::turn_id_of(value);
+                                !turn_id.is_empty()
+                                    && threads.terminal_turn_matches(thread_id, &turn_id).await
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if !terminal_matches {
+                            // A late or identity-less terminal notification
+                            // must not emit events or resolve the current
+                            // request waiter.
+                            continue;
                         }
-
-                        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                            match method.as_str() {
-                                "turn/completed" => match turn_status(params) {
-                                    Some("failed") => {
+                        if let (Some(params), Some(tools)) = (&params, &tools) {
+                            if let Some(thread_id) = params.get("threadId").and_then(Value::as_str)
+                            {
+                                let turn_id = super::events::turn_id_of(params);
+                                tools.clear_plan_cancel(thread_id, &turn_id).await;
+                            }
+                        }
+                        // Read the request mapping before apply_notification
+                        // removes the completed turn from the registry.
+                        emit_chat_stream(&app, threads, &method, &params).await;
+                        if let Some(params) = params.as_ref() {
+                            if method == "turn/completed" {
+                                capture_turn_final_fallback(threads, params).await;
+                            }
+                            if let Some(thread_id) = params.get("threadId").and_then(Value::as_str)
+                            {
+                                match method.as_str() {
+                                    "turn/completed" => match turn_status(params) {
+                                        Some("failed") => {
+                                            threads
+                                                .fail_chat_waiter(
+                                                    thread_id,
+                                                    TurnOutcome::Failed(turn_error_message(params)),
+                                                )
+                                                .await;
+                                        }
+                                        Some("interrupted") => {
+                                            threads
+                                                .fail_chat_waiter(
+                                                    thread_id,
+                                                    TurnOutcome::Interrupted,
+                                                )
+                                                .await;
+                                        }
+                                        _ => threads.complete_chat_waiter(thread_id).await,
+                                    },
+                                    "turn/failed" => {
                                         threads
                                             .fail_chat_waiter(
                                                 thread_id,
@@ -335,28 +360,20 @@ pub fn spawn_account_bridge(
                                             )
                                             .await;
                                     }
-                                    Some("interrupted") => {
+                                    "turn/interrupted" => {
                                         threads
                                             .fail_chat_waiter(thread_id, TurnOutcome::Interrupted)
                                             .await;
                                     }
-                                    _ => threads.complete_chat_waiter(thread_id).await,
-                                },
-                                "turn/failed" => {
-                                    threads
-                                        .fail_chat_waiter(
-                                            thread_id,
-                                            TurnOutcome::Failed(turn_error_message(params)),
-                                        )
-                                        .await;
+                                    _ => {}
                                 }
-                                "turn/interrupted" => {
-                                    threads
-                                        .fail_chat_waiter(thread_id, TurnOutcome::Interrupted)
-                                        .await;
-                                }
-                                _ => {}
                             }
+                        }
+                        threads.apply_notification(&method, &params).await;
+                    } else {
+                        threads.apply_notification(&method, &params).await;
+                        if method.starts_with("turn/") {
+                            emit_chat_stream(&app, threads, &method, &params).await;
                         }
                     }
                 }
@@ -368,13 +385,23 @@ pub fn spawn_account_bridge(
                 || method == "AgentMessageThreadItem"
             {
                 if let Some(threads) = &threads {
+                    let Some(value) = params.as_ref() else {
+                        continue;
+                    };
+                    let Some(thread_id) = value.get("threadId").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let turn_id = super::events::turn_id_of(value);
+                    if turn_id.is_empty() || !threads.active_turn_matches(thread_id, &turn_id).await
+                    {
+                        // Item notifications are also turn-scoped. Dropping
+                        // stale items prevents a timed-out turn from
+                        // repopulating the final-text buffer of a newer one.
+                        continue;
+                    }
                     emit_chat_stream(&app, threads, &method, &params).await;
                     if method == "item/completed" || method == "AgentMessageThreadItem" {
-                        capture_final_message_text(
-                            threads,
-                            params.as_ref().unwrap_or(&Value::Null),
-                        )
-                        .await;
+                        capture_final_message_text(threads, value).await;
                     }
                 }
                 continue;

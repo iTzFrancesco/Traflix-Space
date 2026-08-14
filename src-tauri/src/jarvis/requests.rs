@@ -76,6 +76,7 @@ impl ChatRequestRegistry {
     /// Spec §18: `jarvis_cancel_chat` also has to interrupt the active Codex
     /// turn of the workspace owning the request; the record keeps the
     /// workspace binding so the cancel path can reach the thread registry.
+    #[cfg(test)]
     pub fn workspace_id_of(&self, request_id: &str) -> Option<String> {
         self.requests
             .lock()

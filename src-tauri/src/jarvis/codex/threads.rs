@@ -168,13 +168,18 @@ pub enum TurnOutcome {
     Interrupted,
 }
 
+struct ChatWaiter {
+    request_id: String,
+    sender: oneshot::Sender<TurnOutcome>,
+}
+
 #[derive(Clone)]
 pub struct ThreadRegistry {
     runtime: CodexRuntimeManager,
     app: AppHandle,
     threads: Arc<Mutex<HashMap<String, JarvisCodexThread>>>,
     request_ids: Arc<Mutex<HashMap<String, String>>>,
-    chat_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<TurnOutcome>>>>,
+    chat_waiters: Arc<Mutex<HashMap<String, ChatWaiter>>>,
     last_message_text: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -329,11 +334,35 @@ impl ThreadRegistry {
         self.request_ids.lock().await.get(turn_id).cloned()
     }
 
-    pub async fn register_chat_waiter(&self, thread_id: &str, tx: oneshot::Sender<TurnOutcome>) {
-        self.chat_waiters
-            .lock()
-            .await
-            .insert(thread_id.to_string(), tx);
+    /// Terminal notifications are allowed to affect a waiter only when their
+    /// explicit turn id is still the turn advertised by this thread. An
+    /// id-less notification is deliberately rejected: clearing a current
+    /// turn without an identity can complete the wrong request.
+    pub async fn terminal_turn_matches(&self, thread_id: &str, turn_id: &str) -> bool {
+        self.active_turn_matches(thread_id, turn_id).await
+    }
+
+    pub async fn active_turn_matches(&self, thread_id: &str, turn_id: &str) -> bool {
+        let threads = self.threads.lock().await;
+        threads
+            .values()
+            .find(|record| record.thread_id == thread_id)
+            .is_some_and(|record| terminal_turn_matches_record(record, Some(turn_id)))
+    }
+
+    pub async fn register_chat_waiter(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+        tx: oneshot::Sender<TurnOutcome>,
+    ) {
+        self.chat_waiters.lock().await.insert(
+            thread_id.to_string(),
+            ChatWaiter {
+                request_id: request_id.to_owned(),
+                sender: tx,
+            },
+        );
     }
 
     pub async fn dismiss_chat_waiter(&self, thread_id: &str) {
@@ -350,16 +379,41 @@ impl ThreadRegistry {
     pub async fn complete_chat_waiter(&self, thread_id: &str) {
         let text = self.last_message_text.lock().await.remove(thread_id);
         let final_text = text.unwrap_or_default();
-        if let Some(tx) = self.chat_waiters.lock().await.remove(thread_id) {
-            let _ = tx.send(TurnOutcome::Final(final_text));
+        if let Some(waiter) = self.chat_waiters.lock().await.remove(thread_id) {
+            let _ = waiter.sender.send(TurnOutcome::Final(final_text));
         }
     }
 
     pub async fn fail_chat_waiter(&self, thread_id: &str, outcome: TurnOutcome) {
         self.last_message_text.lock().await.remove(thread_id);
-        if let Some(tx) = self.chat_waiters.lock().await.remove(thread_id) {
-            let _ = tx.send(outcome);
+        if let Some(waiter) = self.chat_waiters.lock().await.remove(thread_id) {
+            let _ = waiter.sender.send(outcome);
         }
+    }
+
+    /// Fails exactly the waiter owned by a request, even when the outer chat
+    /// timeout dropped the provider future before a terminal RPC arrived.
+    pub async fn fail_chat_waiter_for_request(
+        &self,
+        request_id: &str,
+        outcome: TurnOutcome,
+    ) -> bool {
+        let (thread_id, waiter) = {
+            let mut waiters = self.chat_waiters.lock().await;
+            let thread_id = waiters.iter().find_map(|(thread_id, waiter)| {
+                (waiter.request_id == request_id).then_some(thread_id.clone())
+            });
+            let Some(thread_id) = thread_id else {
+                return false;
+            };
+            let waiter = waiters
+                .remove(&thread_id)
+                .expect("chat waiter found immediately before removal");
+            (thread_id, waiter)
+        };
+        self.last_message_text.lock().await.remove(&thread_id);
+        let _ = waiter.sender.send(outcome);
+        true
     }
 
     pub async fn on_runtime_crashed(&self) {
@@ -380,13 +434,11 @@ impl ThreadRegistry {
             let mut map = self.chat_waiters.lock().await;
             std::mem::take(&mut *map)
         };
-        for (_, tx) in waiters {
-            let _ = tx.send(TurnOutcome::Interrupted);
+        let mut last_message_text = self.last_message_text.lock().await;
+        for (thread_id, waiter) in waiters {
+            last_message_text.remove(&thread_id);
+            let _ = waiter.sender.send(TurnOutcome::Interrupted);
         }
-    }
-
-    pub async fn forget_turn(&self, turn_id: &str) {
-        self.request_ids.lock().await.remove(turn_id);
     }
 
     pub async fn interrupt_turn(
@@ -394,7 +446,7 @@ impl ThreadRegistry {
         workspace_id: &str,
         tools: &CodexToolService,
     ) -> Result<(), RuntimeError> {
-        let (thread_id, turn_id) = {
+        let turn_id = {
             let thread = self
                 .threads
                 .lock()
@@ -405,17 +457,117 @@ impl ThreadRegistry {
             let Some(turn_id) = thread.active_turn_id else {
                 return Ok(());
             };
-            (thread.thread_id, turn_id)
+            turn_id
         };
-        tools.cancel_plan(&thread_id).await;
-        let client = self.runtime.client().await?;
-        client
-            .request(
-                "turn/interrupt",
-                json!({ "threadId": thread_id, "turnId": turn_id }),
-            )
-            .await?;
-        Ok(())
+        self.interrupt_turn_id(workspace_id, &turn_id, tools).await
+    }
+
+    /// Interrupts only the turn that the caller started. A newer turn on the
+    /// same workspace is left untouched when cancellation arrives late.
+    pub async fn interrupt_turn_id(
+        &self,
+        workspace_id: &str,
+        expected_turn_id: &str,
+        tools: &CodexToolService,
+    ) -> Result<(), RuntimeError> {
+        let thread_id = {
+            let thread = self
+                .threads
+                .lock()
+                .await
+                .get(workspace_id)
+                .cloned()
+                .ok_or_else(|| RuntimeError::Rpc("no thread for workspace".into()))?;
+            if thread.active_turn_id.as_deref() != Some(expected_turn_id) {
+                return Ok(());
+            }
+            thread.thread_id
+        };
+        let turn_id = expected_turn_id.to_owned();
+        tools.cancel_plan(&thread_id, &turn_id).await;
+        // Cancellation is a recovery boundary. Even if the App Server has
+        // already forgotten the turn (or the notification was lost), the
+        // local registry must not keep advertising a turn that the server no
+        // longer owns. The expected id prevents a late interrupt from
+        // clearing a newer turn on the same workspace.
+        let result = match self.runtime.client().await {
+            Ok(client) => client
+                .request(
+                    "turn/interrupt",
+                    json!({ "threadId": thread_id, "turnId": turn_id }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(RuntimeError::from),
+            Err(error) => Err(error),
+        };
+        self.clear_active_turn(workspace_id, Some(&turn_id)).await;
+        result
+    }
+
+    /// Resolves a request to its current turn before interrupting it. This is
+    /// used by the outer chat timeout after the provider task was dropped.
+    pub async fn interrupt_turn_for_request(
+        &self,
+        request_id: &str,
+        tools: &CodexToolService,
+    ) -> Result<(), RuntimeError> {
+        // Resolve the provider waiter before clearing the turn/request map;
+        // otherwise an outer timeout or manual cancel can leave the model
+        // future waiting for a terminal event that we intentionally ignore.
+        self.fail_chat_waiter_for_request(request_id, TurnOutcome::Interrupted)
+            .await;
+        let turn_id = {
+            let request_ids = self.request_ids.lock().await;
+            request_ids
+                .iter()
+                .find_map(|(turn_id, owner)| (owner == request_id).then_some(turn_id.clone()))
+        };
+        let Some(turn_id) = turn_id else {
+            return Ok(());
+        };
+        let workspace_id = {
+            let threads = self.threads.lock().await;
+            threads.iter().find_map(|(workspace_id, record)| {
+                (record.active_turn_id.as_deref() == Some(turn_id.as_str()))
+                    .then_some(workspace_id.clone())
+            })
+        };
+        let Some(workspace_id) = workspace_id else {
+            return Ok(());
+        };
+        self.interrupt_turn_id(&workspace_id, &turn_id, tools).await
+    }
+
+    /// Clears a locally advertised turn when its caller has reached a
+    /// terminal boundary (cancel, timeout, runtime recovery). The optional
+    /// turn id makes this operation idempotent and protects a newer turn from
+    /// a late cleanup belonging to an older one.
+    pub async fn clear_active_turn(
+        &self,
+        workspace_id: &str,
+        expected_turn_id: Option<&str>,
+    ) -> bool {
+        let (turn_id, changed) = {
+            let mut threads = self.threads.lock().await;
+            let Some(record) = threads.get_mut(workspace_id) else {
+                return false;
+            };
+            let Some(current_turn_id) = record.active_turn_id.clone() else {
+                return false;
+            };
+            if expected_turn_id.is_some_and(|expected| expected != current_turn_id) {
+                return false;
+            }
+            record.active_turn_id = None;
+            record.status = "idle".into();
+            (current_turn_id, true)
+        };
+        if changed {
+            self.request_ids.lock().await.remove(&turn_id);
+            self.emit_snapshot().await;
+        }
+        changed
     }
 
     pub async fn steer_turn(
@@ -522,11 +674,33 @@ impl ThreadRegistry {
             "turn/completed" | "turn/interrupted" | "turn/failed" => {
                 if let Some(params) = params {
                     if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
+                        let reported_turn_id = notification_turn_id(&params);
+                        // A delayed completion from an older turn must not
+                        // close a newer turn. Terminal events without an
+                        // identity are also ignored because they cannot be
+                        // safely attributed to the active request.
+                        let current_record = self
+                            .threads
+                            .lock()
+                            .await
+                            .values()
+                            .find(|record| record.thread_id == thread_id)
+                            .cloned();
+                        if current_record.as_ref().is_none_or(|record| {
+                            !terminal_turn_matches_record(record, reported_turn_id.as_deref())
+                        }) {
+                            return;
+                        }
+                        let current_turn_id =
+                            current_record.and_then(|record| record.active_turn_id);
                         self.update_thread(thread_id, |record| {
                             record.status = "idle".into();
                             record.active_turn_id = None;
                         })
                         .await;
+                        if let Some(turn_id) = reported_turn_id.or(current_turn_id) {
+                            self.request_ids.lock().await.remove(&turn_id);
+                        }
                     }
                 }
             }
@@ -553,6 +727,26 @@ fn retain_current_generation(threads: &mut HashMap<String, JarvisCodexThread>, g
     threads.retain(|_, thread| thread.runtime_generation == generation);
 }
 
+fn notification_turn_id(params: &Value) -> Option<String> {
+    params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_owned)
+}
+
+fn terminal_turn_matches_record(
+    record: &JarvisCodexThread,
+    reported_turn_id: Option<&str>,
+) -> bool {
+    reported_turn_id.is_some_and(|reported| record.active_turn_id.as_deref() == Some(reported))
+}
+
 #[cfg(test)]
 fn apply_notification_to_record(
     record: &mut JarvisCodexThread,
@@ -575,6 +769,10 @@ fn apply_notification_to_record(
             false
         }
         "turn/completed" | "turn/interrupted" | "turn/failed" => {
+            let reported_turn_id = params.as_ref().and_then(notification_turn_id);
+            if !terminal_turn_matches_record(record, reported_turn_id.as_deref()) {
+                return false;
+            }
             record.status = "idle".into();
             record.active_turn_id = None;
             true
@@ -723,12 +921,12 @@ mod tests {
         assert!(apply_notification_to_record(
             &mut record,
             "turn/completed",
-            &None
+            &Some(json!({ "turn": { "id": "turn-1" } }))
         ));
         assert_eq!(record.status, "idle");
         assert!(record.active_turn_id.is_none());
 
-        assert!(apply_notification_to_record(
+        assert!(!apply_notification_to_record(
             &mut record,
             "turn/failed",
             &None
@@ -741,6 +939,56 @@ mod tests {
             &None
         ));
         assert_eq!(record.status, "idle");
+    }
+
+    #[test]
+    fn late_terminal_notification_cannot_clear_a_newer_turn() {
+        let mut record = JarvisCodexThread {
+            thread_id: "t1".into(),
+            workspace_id: "w1".into(),
+            model: "gpt-5.6-luna".into(),
+            reasoning_effort: "low".into(),
+            created_at: 0,
+            status: "in_progress".into(),
+            active_turn_id: Some("turn-new".into()),
+            runtime_generation: 1,
+        };
+        let late_completion = json!({
+            "threadId": "t1",
+            "turn": { "id": "turn-old" }
+        });
+        assert!(!apply_notification_to_record(
+            &mut record,
+            "turn/completed",
+            &Some(late_completion)
+        ));
+        assert_eq!(record.active_turn_id.as_deref(), Some("turn-new"));
+
+        // Older App Server payloads without a turn id are rejected rather
+        // than being allowed to clear the newer active turn.
+        assert!(!apply_notification_to_record(
+            &mut record,
+            "turn/interrupted",
+            &None
+        ));
+        assert_eq!(record.active_turn_id.as_deref(), Some("turn-new"));
+    }
+
+    #[test]
+    fn terminal_turn_match_requires_the_current_explicit_turn_id() {
+        let record = JarvisCodexThread {
+            thread_id: "t1".into(),
+            workspace_id: "w1".into(),
+            model: "gpt-5.6-luna".into(),
+            reasoning_effort: "low".into(),
+            created_at: 0,
+            status: "in_progress".into(),
+            active_turn_id: Some("turn-new".into()),
+            runtime_generation: 1,
+        };
+        assert!(terminal_turn_matches_record(&record, Some("turn-new")));
+        assert!(!terminal_turn_matches_record(&record, Some("turn-old")));
+        assert!(!terminal_turn_matches_record(&record, None));
     }
 
     #[test]

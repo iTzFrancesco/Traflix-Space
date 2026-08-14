@@ -173,7 +173,6 @@ pub async fn jarvis_cancel_chat(
     request_id: String,
 ) -> Result<JarvisChatRequestStatus, JarvisErrorEnvelope> {
     let state = app.state::<JarvisState>();
-    let workspace_id = state.chat_requests.workspace_id_of(&request_id);
     let status = state
         .chat_requests
         .cancel(&request_id)
@@ -182,17 +181,17 @@ pub async fn jarvis_cancel_chat(
     // Spec §18: cancel must also stop the active Codex turn, not only drop
     // the local waiter. Best-effort — the turn may already be over or the
     // thread may not exist yet; `interrupt_turn` is idempotent server-side.
-    if let Some(workspace_id) = workspace_id {
-        let registry = app.state::<crate::jarvis::codex::threads::ThreadRegistry>();
-        let tools = app.state::<crate::jarvis::codex::tools::CodexToolService>();
-        if let Err(error) = registry.interrupt_turn(&workspace_id, tools.inner()).await {
-            debug!(
-                request_id = %request_id,
-                workspace_id = %workspace_id,
-                error = %error,
-                "cancel: turn/interrupt skipped (best-effort)"
-            );
-        }
+    let registry = app.state::<crate::jarvis::codex::threads::ThreadRegistry>();
+    let tools = app.state::<crate::jarvis::codex::tools::CodexToolService>();
+    if let Err(error) = registry
+        .interrupt_turn_for_request(&request_id, tools.inner())
+        .await
+    {
+        debug!(
+            request_id = %request_id,
+            error = %error,
+            "cancel: turn/interrupt skipped (best-effort)"
+        );
     }
     Ok(JarvisChatRequestStatus {
         request_id,
@@ -248,6 +247,23 @@ pub async fn jarvis_chat(
                 timeout_s = CHAT_REQUEST_MAX_DURATION.as_secs(),
                 "Jarvis chat request timed out"
             );
+            // `timeout` drops `run_chat`; that does not execute the model
+            // provider's cancellation branch. Interrupt the exact workspace
+            // turn explicitly so the App Server and the local registry leave
+            // the same lifecycle state.
+            let registry = app.state::<crate::jarvis::codex::threads::ThreadRegistry>();
+            let tools = app.state::<crate::jarvis::codex::tools::CodexToolService>();
+            if let Err(error) = registry
+                .interrupt_turn_for_request(&request_id, tools.inner())
+                .await
+            {
+                debug!(
+                    request_id = %request_id,
+                    workspace_id = %workspace_id,
+                    error = %error,
+                    "chat timeout: best-effort turn/interrupt failed"
+                );
+            }
             Err(JarvisErrorEnvelope::new(
                 "chat_request_timeout",
                 "La richiesta ha impiegato troppo tempo ed è stata interrotta. Riprova tra poco.",
@@ -269,6 +285,21 @@ pub async fn jarvis_chat(
             error_code = %error.code,
             "Jarvis chat request failed"
         ),
+    }
+    if let Err(error) = &result {
+        // Any error path is terminal for this UI request. This synthetic
+        // request checkpoint supersedes older open phases (including a tool
+        // phase whose completion event was lost) without claiming that a
+        // provider turn started.
+        emit_checkpoint(
+            &app,
+            &request_id,
+            &workspace_id,
+            "request",
+            &format!("Jarvis: {}", error.message),
+            JarvisActivityStatus::Failed,
+            None,
+        );
     }
     result
 }

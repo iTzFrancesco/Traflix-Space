@@ -374,6 +374,7 @@ impl CodexRuntimeManager {
                     super::account::spawn_account_bridge(
                         self.clone(),
                         self.app.clone(),
+                        client.clone(),
                         models,
                         threads,
                         tools,

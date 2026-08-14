@@ -77,9 +77,22 @@ pub(crate) fn stream_events_from_notification(
     match method {
         "turn/started" => vec![base(ChatStreamEventKind::TurnStarted)],
         // Current App Server ends every turn with turn/completed and puts the
-        // terminal outcome in turn.status. Keep the old split notifications
-        // too so the pinned 0.147.x compatibility path remains defensive.
-        "turn/completed" => vec![base(turn_completed_kind(params))],
+        // terminal outcome in turn.status. Some compatible builds include
+        // the final agentMessage only inside turn.items, without emitting an
+        // item/completed notification. Surface that item before the terminal
+        // event so progressive TTS and the visible reducer have one canonical
+        // final-message boundary.
+        "turn/completed" => {
+            let kind = turn_completed_kind(params);
+            let mut events = Vec::new();
+            if kind == ChatStreamEventKind::TurnCompleted {
+                if let Some(event) = final_turn_message_event(&base, params) {
+                    events.push(event);
+                }
+            }
+            events.push(base(kind));
+            events
+        }
         "turn/failed" => vec![base(ChatStreamEventKind::TurnFailed)],
         "turn/interrupted" => vec![base(ChatStreamEventKind::TurnInterrupted)],
         "item/started" => item_event(base, params, false),
@@ -183,6 +196,31 @@ fn item_event(
             Vec::new()
         }
     }
+}
+
+fn final_turn_message_event(
+    base: &impl Fn(ChatStreamEventKind) -> ChatStreamEvent,
+    params: &Value,
+) -> Option<ChatStreamEvent> {
+    let turn_id = turn_id_of(params);
+    let item = params
+        .get("turn")
+        .and_then(|turn| turn.get("items"))
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().rev().find(|item| {
+                item.get("type").and_then(Value::as_str) == Some(ITEM_KIND_AGENT_MESSAGE)
+                    && extract_text(item).is_some()
+            })
+        })?;
+    let mut event = base(ChatStreamEventKind::MessageCompleted);
+    event.item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| Some(format!("final-{turn_id}")));
+    event.text = extract_text(item);
+    Some(event)
 }
 
 /// Canonical agentMessage is `{ id, type: "agentMessage", text }`.
@@ -318,6 +356,31 @@ mod tests {
                 vec![expected]
             );
         }
+    }
+
+    #[test]
+    fn completed_turn_items_surface_a_final_message_before_terminal_event() {
+        let params = Some(json!({
+            "threadId": "t",
+            "turn": {
+                "id": "turn-1",
+                "status": "completed",
+                "items": [
+                    { "id": "tool", "type": "dynamicToolCall" },
+                    { "id": "final", "type": "agentMessage", "text": "Fatto." }
+                ]
+            }
+        }));
+        let events = stream_events_from_notification("turn/completed", &params, "w", None);
+        assert_eq!(
+            kinds(&events),
+            vec![
+                ChatStreamEventKind::MessageCompleted,
+                ChatStreamEventKind::TurnCompleted
+            ]
+        );
+        assert_eq!(events[0].item_id.as_deref(), Some("final"));
+        assert_eq!(events[0].text.as_deref(), Some("Fatto."));
     }
 
     #[test]

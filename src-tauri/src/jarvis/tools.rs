@@ -523,6 +523,7 @@ pub fn canonicalize_terminal_order(
     ordered
 }
 
+#[allow(dead_code)]
 pub fn effective_terminal_title(
     configured_title: &str,
     agent_id: Option<&str>,

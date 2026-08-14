@@ -278,7 +278,13 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     ModelError::Server
                 })?;
             let (tx, rx) = oneshot::channel();
-            threads.register_chat_waiter(&thread.thread_id, tx).await;
+            threads
+                .register_chat_waiter(
+                    &thread.thread_id,
+                    request.request_id.as_deref().unwrap_or_default(),
+                    tx,
+                )
+                .await;
             let turn_id = match threads
                 .start_turn(&request.workspace_id, &text, request.request_id.as_deref())
                 .await
@@ -308,7 +314,10 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     // server-side turn too (plan token first, then
                     // turn/interrupt), best-effort and idempotent.
                     if let Some(tools) = app.try_state::<crate::jarvis::codex::tools::CodexToolService>() {
-                        if let Err(err) = threads.interrupt_turn(&request.workspace_id, tools.inner()).await {
+                        if let Err(err) = threads
+                            .interrupt_turn_id(&request.workspace_id, &turn_id, tools.inner())
+                            .await
+                        {
                             debug!(error = %err, "cancel: best-effort turn/interrupt failed");
                         }
                     }
@@ -318,8 +327,14 @@ impl JarvisModelProvider for CodexAppServerProvider {
                 result = rx => match result {
                     Ok(outcome) => outcome,
                     // The sender was dropped without a terminal notification:
-                    // treat as a server-side failure rather than hanging.
-                    Err(_) => return Err(ModelError::Server),
+                    // treat as a server-side failure rather than hanging and
+                    // clear the local turn binding. Without this cleanup the
+                    // UI can keep displaying an in-progress turn after the
+                    // App Server has already stopped sending anything.
+                    Err(_) => {
+                        threads.clear_active_turn(&request.workspace_id, Some(&turn_id)).await;
+                        return Err(ModelError::Server);
+                    }
                 },
                 _ = tokio::time::sleep(TURN_DEADLINE) => {
                     warn!(workspace_id = %request.workspace_id, "codex chat turn timed out");
@@ -328,7 +343,10 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     // reasoning and later fire a conversational.plan even
                     // though the caller already got a Timeout.
                     if let Some(tools) = app.try_state::<crate::jarvis::codex::tools::CodexToolService>() {
-                        if let Err(err) = threads.interrupt_turn(&request.workspace_id, tools.inner()).await {
+                        if let Err(err) = threads
+                            .interrupt_turn_id(&request.workspace_id, &turn_id, tools.inner())
+                            .await
+                        {
                             debug!(error = %err, "timeout: best-effort turn/interrupt failed");
                         }
                     }

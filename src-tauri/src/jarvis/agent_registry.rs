@@ -42,6 +42,11 @@ pub struct TerminalAgentSnapshot {
     pub generation: u64,
     pub process_id: Option<u32>,
     pub process_alive: bool,
+    /// Presence of the provider process below the long-lived PTY shell.
+    /// `None` means that the process-tree observer has not established a
+    /// state yet; it must not be confused with `process_alive`, which is the
+    /// shell/PTY lifetime.
+    pub agent_process_alive: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1635,6 +1640,7 @@ mod tests {
             generation,
             process_id: Some(100),
             process_alive: alive,
+            agent_process_alive: Some(alive),
         }
     }
 
