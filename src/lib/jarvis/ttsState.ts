@@ -1,25 +1,19 @@
 import type { CodexSpeechItem, TtsStatusView } from "./types";
 
 // C8 — progressive commentary speech queue (spec §17).
-// Rules: speak only completed commentary/final items, dedupe by itemId,
-// skip too-short utterances ("Ok."), FIFO order, clear on barge-in.
+// Rules: speak every completed commentary/final item, dedupe by itemId, FIFO
+// order, clear on barge-in. Filtering of empty/technical content belongs to
+// the backend speech normalizer; a short natural plan step is still useful.
 
-/** Skip utterances shorter than this ("Ok.", "Fatto." are noise). */
-export const MIN_SPOKEN_COMMENTARY_CHARS = 8;
 /** Keep at most this many spoken item ids (bounded dedupe memory). */
 export const MAX_SPOKEN_ITEM_IDS = 200;
-/** At most this many items waiting in the queue (bounded, FIFO drop). */
-export const MAX_SPEECH_QUEUE_LENGTH = 8;
 
-/** Whether a completed message deserves speech (not too short/empty). */
+/** Whether a completed message contains something that can be spoken. */
 export function shouldSpeakCommentary(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length < MIN_SPOKEN_COMMENTARY_CHARS) return false;
-  const words = trimmed.split(/\s+/).filter(Boolean).length;
-  return words >= 2;
+  return text.trim().length > 0;
 }
 
-/** Appends an item to the queue, deduping by itemId (bounded). */
+/** Appends an item to the queue, deduping by itemId, without dropping steps. */
 export function enqueueSpeech(
   queue: CodexSpeechItem[],
   item: CodexSpeechItem,
@@ -27,7 +21,7 @@ export function enqueueSpeech(
   if (queue.some((candidate) => candidate.itemId === item.itemId)) {
     return queue;
   }
-  return [...queue, item].slice(-MAX_SPEECH_QUEUE_LENGTH);
+  return [...queue, item];
 }
 
 /** Removes the first item (called after synthesis is accepted/failed). */

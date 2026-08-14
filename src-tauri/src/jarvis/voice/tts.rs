@@ -971,8 +971,8 @@ fn extract_markdown_link_text(input: &str) -> String {
 
 fn matching_parenthesis(chars: &[char], opening: usize) -> Option<usize> {
     let mut depth = 0;
-    for index in opening..chars.len() {
-        match chars[index] {
+    for (index, character) in chars.iter().enumerate().skip(opening) {
+        match character {
             '(' => depth += 1,
             ')' => {
                 depth -= 1;

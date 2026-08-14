@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 use super::capture::{AudioCaptureSession, AudioCaptureSource, PlatformAudioCapture};
 use super::playback::{AudioPlayback, PlatformAudioPlayback};
 use super::types::{
-    error_view, TtsStatus, TtsStatusView, VoiceCaptureOptions, VoiceErrorCode, VoiceRequestStatus,
-    VoiceRequestStatusView, MAX_VOICE_REQUESTS,
+    error_view, TtsStatus, TtsStatusView, VoiceCaptureOptions, VoiceEndpointState, VoiceErrorCode,
+    VoiceRequestStatus, VoiceRequestStatusView, MAX_VOICE_REQUESTS,
 };
 use super::vad::VadState;
 use super::wake::WakeWordEngine;
@@ -75,6 +75,7 @@ impl VoiceState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn start(
         &self,
         request_id: String,
@@ -136,6 +137,11 @@ impl VoiceState {
                 VadState::Silence
             } else {
                 VadState::Speech
+            },
+            endpoint_state: if armed_activation {
+                VoiceEndpointState::Standby
+            } else {
+                VoiceEndpointState::Speaking
             },
         };
         inner.requests.insert(
@@ -601,7 +607,7 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
     match code {
         VoiceErrorCode::ConsentRequired => "Attiva il consenso privacy vocale nelle impostazioni.",
         VoiceErrorCode::ProviderNotConfigured => "Credenziale Groq non rilevata (GROQ_API_KEY). Apri Impostazioni → Connessioni e verifica Groq, poi riprova.",
-        VoiceErrorCode::AuthFailed => "La chiave Groq è stata trovata ma rifiutata. Sostituiscila in Impostazioni → Connessioni.",
+        VoiceErrorCode::AuthFailed => "La chiave Groq è stata trovata ma rifiutata (HTTP 401). Incolla la chiave grezza gsk_… senza 'Bearer ' in Impostazioni → Connessioni e riprova.",
         VoiceErrorCode::Forbidden => "Groq ha rifiutato l'accesso.",
         VoiceErrorCode::RateLimited => "Limite Groq raggiunto; riprova più tardi.",
         VoiceErrorCode::ModelUnavailable => "Il modello Whisper richiesto non è disponibile.",
@@ -637,6 +643,7 @@ pub fn friendly_message(code: VoiceErrorCode) -> &'static str {
 
 fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
     let previous_status = request.view.status.clone();
+    let previous_endpoint_state = request.view.endpoint_state;
     let Some(capture) = request.capture.as_ref() else {
         return false;
     };
@@ -644,6 +651,7 @@ fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
     let elapsed_ms = capture.elapsed_ms();
     let level = capture.normalized_level().clamp(0.0, 1.0);
     let vad_state = capture.vad_state();
+    let endpoint_state = capture.endpoint_state();
     let wake_word_activated = capture.wake_word_activated();
     if request.view.status == VoiceRequestStatus::Armed && (speech_started || wake_word_activated) {
         request.view.status = VoiceRequestStatus::Recording;
@@ -655,8 +663,9 @@ fn refresh_request(request: &mut ActiveVoiceRequest) -> bool {
         request.view.duration_ms = Some(elapsed_ms);
         request.view.normalized_level = level;
         request.view.vad_state = vad_state;
+        request.view.endpoint_state = endpoint_state;
     }
-    request.view.status != previous_status
+    request.view.status != previous_status || request.view.endpoint_state != previous_endpoint_state
 }
 
 fn stop_tts_locked(

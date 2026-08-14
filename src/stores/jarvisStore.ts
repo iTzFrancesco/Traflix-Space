@@ -43,7 +43,13 @@ import {
 } from "../lib/jarvis/client";
 import { defaultAppSettings, defaultJarvisSettings } from "../lib/jarvis/settings";
 import { applyRegistrySnapshot } from "../lib/jarvis/registryState";
-import { applyCodexChatStream, isWorkspaceChatLoading, mergeConversationMessages, pruneRequestHistory } from "../lib/jarvis/chatState";
+import {
+  applyCodexChatStream,
+  completedCodexSpeechItem,
+  isWorkspaceChatLoading,
+  mergeConversationMessages,
+  pruneRequestHistory,
+} from "../lib/jarvis/chatState";
 import { clearSpeechQueue, dequeueSpeech, enqueueSpeech, rememberSpoken, shouldSpeakCommentary } from "../lib/jarvis/ttsState";
 import { mergeActivityEvents, type ActivityCheckpoint } from "../lib/jarvis/activityState";
 import { applyTtsStatusTransition, beginLocalTtsRequest } from "../lib/jarvis/ttsState";
@@ -85,6 +91,13 @@ import type {
   VoiceSubmitState,
   WakeWordStatusView,
 } from "../lib/jarvis/types";
+
+// A turn must not be started until the global chat-stream listener has been
+// registered. Tauri's `listen` is asynchronous; without this barrier a very
+// fast Codex response could emit all commentary events before React finishes
+// installing the handler, leaving only the legacy final response visible.
+let codexChatStreamBindingReady: Promise<void> = Promise.resolve();
+let codexChatStreamAvailable = false;
 
 export type JarvisContextStatus = "idle" | "loading" | "ready" | "unavailable";
 
@@ -130,9 +143,8 @@ interface JarvisStore {
   // C8: progressive commentary speech queue (FIFO, dedupe itemId).
   codexSpeechQueue: CodexSpeechItem[];
   codexSpokenItemIds: string[];
-  /** Review #6: last streamed completed-message text per workspace — lets
-   *  the chat response path know the final was already handled by the
-   *  progressive TTS worker (single owner for the final speech). */
+  /** Terminal streamed final text per workspace — lets the chat response
+   *  path know the final was already handled by the progressive TTS worker. */
   codexStreamFinal: Record<string, string | undefined>;
   dequeueCodexSpeech: (itemId: string) => void;
   clearCodexSpeech: () => void;
@@ -202,7 +214,7 @@ interface JarvisStore {
   cancelCodexLogin: (loginId: string) => Promise<void>;
   logoutCodex: () => Promise<void>;
   clearConversation: (workspaceId: string) => Promise<void>;
-  startVoice: (options?: { interruptTts?: boolean; activationMode?: VoiceActivationMode; forceEndpointing?: boolean }) => Promise<void>;
+  startVoice: (options?: { activationMode?: VoiceActivationMode; forceEndpointing?: boolean }) => Promise<void>;
   stopVoice: () => Promise<void>;
   cancelVoice: () => Promise<void>;
   discardVoiceTranscript: () => Promise<void>;
@@ -406,6 +418,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
     const userMessage: JarvisConversationMessage = { id: `local-user-${invocation.requestId}`, role: "user", content: trimmed, workspaceId, createdAt: invocation.createdAt };
     set((state) => ({ conversation: mergeConversationMessages(state.conversation, [userMessage]), requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { requestId: invocation.requestId, workspaceId, createdAt: invocation.createdAt, status: "running" } }), chatErrors: { ...state.chatErrors, [workspaceId]: undefined } }));
     try {
+      await codexChatStreamBindingReady;
       const response = await jarvisChat({ invocation, message: trimmed, messageId: userMessage.id });
       if (get().requests[invocation.requestId]?.status === "cancellation_requested") {
         set((state) => ({ requests: pruneRequestHistory({ ...state.requests, [invocation.requestId]: { ...state.requests[invocation.requestId], status: "cancelled" } }) }));
@@ -419,24 +432,14 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
         responseChars: response.message.content.length,
         autoSpeak: voiceSettings.enabled && voiceSettings.autoSpeak && Boolean(voiceSettings.privacyConsent && voiceSettings.privacyConsentAt),
       });
-      if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt) {
-        // Review #6: one owner for the final TTS. The progressive worker
-        // already speaks the streamed final (C8, when speakCommentary is
-        // on and the text passes the commentary filter). The final item
-        // event is emitted before the invoke resolves, but the event
-        // dispatch may be queued behind the promise microtask — wait a
-        // beat for the streaming listener, then skip the legacy speak
-        // when the final text matches what was streamed.
-        const finalText = response.message.content.trim();
-        const finalHandledByStream = await waitForStreamedFinal(workspaceId, finalText);
-        if (finalHandledByStream) {
-          voiceLog("final TTS handled by progressive stream; skipping legacy speak", {
-            requestId: invocation.requestId,
-            workspaceId,
-          });
-        } else {
-          const ttsRequestId = `tts-${response.message.id}`;
-        voiceLog("tts request started", {
+     const progressiveCodexSpeech = get().settings.jarvis.codex.speakCommentary && codexChatStreamAvailable;
+     if (voiceSettings.enabled && voiceSettings.autoSpeak && voiceSettings.privacyConsent && voiceSettings.privacyConsentAt && !progressiveCodexSpeech) {
+       // Progressive Codex speech is the sole owner of completed
+       // commentary/final items when enabled. The legacy path is kept
+       // only for the explicit non-progressive configuration, so a
+       // delayed terminal event cannot cause a duplicate TTS request.
+       const ttsRequestId = `tts-${response.message.id}`;
+       voiceLog("tts request started", {
           requestId: ttsRequestId,
           workspaceId,
           textChars: response.message.content.length,
@@ -484,10 +487,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
               status: "failed",
               error: errorView,
             });
-          });
-        }
-      }
-      return true;
+      });
+    }
+    return true;
     } catch (error) {
       const cancelled = error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "chat_cancelled";
       // invokeWithTimeout cannot cancel a Tauri command by itself. Best-effort
@@ -626,6 +628,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
   },
   startCodexTurn: async (workspaceId, input) => {
     try {
+      await codexChatStreamBindingReady;
       return await codexTurnStart(workspaceId, input);
     } catch {
       return null;
@@ -700,15 +703,9 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
       return;
     }
     const requestId = crypto.randomUUID();
-    voiceLog("start requested", { requestId, workspaceId, interruptTts: Boolean(options.interruptTts) });
+    voiceLog("start requested", { requestId, workspaceId });
     set({ activeVoiceRequestId: requestId, voiceStopRequested: false, voiceCancelRequested: false, voiceError: null });
     try {
-      if (options.interruptTts && get().settings.jarvis.voiceOutput.stopOnUserSpeech && (get().ttsStatus.status === "playing" || get().ttsStatus.status === "synthesizing")) {
-        // Do not block microphone startup on TTS acknowledgement. The
-        // backend also stops the TTS-only token at the audio boundary when
-        // VAD confirms speech, so this fast path cannot cancel the chat/task.
-        void get().stopTts();
-      }
       const status = await voiceStart({
         requestId,
         workspaceId,
@@ -857,8 +854,11 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
       accepted = await get().sendMessage(text);
     } catch (error) {
       voiceSubmissionInFlight.delete(requestId);
+      // A submission that threw (IPC timeout, transport error) must not be
+      // re-fired automatically by a late voice-state event: the draft is
+      // claimed as failed and only an explicit send can retry it.
       set((state) => ({
-        voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "manual" },
+        voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "failed" },
         voiceError: sanitizedVoiceError(error),
       }));
       throw error;
@@ -901,7 +901,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
           : "La trascrizione non è stata inviata a Jarvis. Riprovare quando vuoi.",
         voiceSubmitStates: {
           ...get().voiceSubmitStates,
-          [requestId]: chatError ? "queued" : "manual",
+          [requestId]: chatError ? "queued" : "failed",
         },
       });
       voiceSubmissionInFlight.delete(requestId);
@@ -1018,7 +1018,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
         chatBusy: isWorkspaceChatLoading(state.requests, voiceRequest.workspaceId),
         alreadyClaimed: Boolean(
           autoSubmittedVoiceRequests.has(voiceRequest.requestId) ||
-          ["sent", "submitting"].includes(state.voiceSubmitStates[voiceRequest.requestId] ?? ""),
+          ["sent", "submitting", "failed"].includes(state.voiceSubmitStates[voiceRequest.requestId] ?? ""),
         ),
       });
       shouldAutoSubmit = ["send", "queue"].includes(submitDecision)
@@ -1073,7 +1073,7 @@ export const useJarvisStore = create<JarvisStore>((set, get) => {
   },
   applyActivityEvents: (activities) => set((state) => ({ activities: mergeActivityEvents(state.activities, activities) })),
   clearWorkspaceActivities: (workspaceId) => set((state) => ({ activities: state.activities.filter((event) => event.workspaceId !== workspaceId) })),
-  setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState } } }; }),
+  setVoiceLevel: (voiceLevel) => set((state) => { const request = Object.values(state.voiceRequests).find((item) => item.requestId === voiceLevel.requestId); if (!request) return state; return { voiceLevel, voiceRequests: { ...state.voiceRequests, [request.workspaceId]: { ...request, normalizedLevel: voiceLevel.normalizedLevel, durationMs: voiceLevel.elapsedMs, vadState: voiceLevel.vadState, endpointState: voiceLevel.endpointState ?? request.endpointState } } }; }),
   setWakeWordStatus: (wakeWordStatus) => set({ wakeWordStatus }),
   setVoiceSubmitState: (requestId, submitState) => set((state) => ({
     voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: submitState },
@@ -1130,31 +1130,6 @@ function codexErrorMessage(message: string): string {
 }
 
 /** Opens the ChatGPT OAuth URL in the internal incognito browser. */
-/** Review #6: waits (bounded) for the streaming listener to process the
- *  final `message_completed` of the turn and reports whether its text
- *  matches the chat response — i.e. the progressive TTS worker already
- *  owns (or will own) the final speech.
- *
- *  The final item event is emitted by the backend before the invoke
- *  resolves, but the WebView may dispatch the event after the promise
- *  microtask, so we poll the store for a short window instead of relying
- *  on ordering. Text equality is reliable because both the streamed
- *  payload and the chat response come from the same `item/completed`.
- */
-async function waitForStreamedFinal(
-  workspaceId: string,
-  finalText: string,
-): Promise<boolean> {
-  const deadline = Date.now() + 300;
-  while (Date.now() < deadline) {
-    const streamed = useJarvisStore.getState().codexStreamFinal[workspaceId];
-    if (streamed !== undefined) {
-      return streamed.trim() === finalText;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 15));
-  }
-  return false;
-}
 
 async function openCodexAuthUrl(authUrl: string): Promise<void> {
   await invoke("browser_create");
@@ -1166,6 +1141,7 @@ async function openCodexAuthUrl(authUrl: string): Promise<void> {
  * each call returns an unlisten function (call from a root effect).
  */
 export function bindCodexEvents(): () => void {
+  codexChatStreamAvailable = false;
   const unlisteners: Array<() => void> = [];
 
   // C7 observability: per-turn/per-tool `performance.now()` anchors used to
@@ -1216,7 +1192,7 @@ export function bindCodexEvents(): () => void {
   }).then((unlisten) => unlisteners.push(unlisten));
   // C7: streaming conversation events (commentary deltas, tool lifecycle,
   // final message marking, turn completion).
-  void listen<CodexChatStreamEvent>("jarvis://chat-stream", (event) => {
+  const chatStreamRegistration = listen<CodexChatStreamEvent>("jarvis://chat-stream", (event) => {
     const payload = event.payload;
     const meta = {
       requestId: payload.requestId ?? undefined,
@@ -1282,39 +1258,41 @@ export function bindCodexEvents(): () => void {
       default:
         break;
     }
-    useJarvisStore.setState((state) => ({
-      codexStreamingTurns: applyCodexChatStream(
-        state.codexStreamingTurns,
-        event.payload,
-      ),
-    }));
-    // C8: progressive TTS — enqueue completed commentary/final items.
-    const store = useJarvisStore.getState();
-    if (payload.kind === "message_completed" && payload.text) {
-      // Review #6: remember the LAST streamed message text per workspace
-      // (the final answer) so the chat response path can skip the legacy
-      // TTS speak — one owner for the final speech. Updated on every
-      // completed message; cleared when a new turn starts below.
-      const finalText = payload.text;
-      useJarvisStore.setState((state) => ({
-        codexStreamFinal: {
-          ...state.codexStreamFinal,
-          [payload.workspaceId ?? "unknown"]: finalText,
-        },
-      }));
-    }
+    const nextStreamingTurns = applyCodexChatStream(
+      useJarvisStore.getState().codexStreamingTurns,
+      payload,
+    );
+    const workspaceId = payload.workspaceId ?? "unknown";
+    const nextStreamFinal = {
+      ...useJarvisStore.getState().codexStreamFinal,
+    };
     if (payload.kind === "turn_started") {
       // New turn: the previous final is no longer authoritative.
-      const cleared: Record<string, string | undefined> = {
-        ...useJarvisStore.getState().codexStreamFinal,
-        [payload.workspaceId ?? "unknown"]: undefined,
-      };
-      useJarvisStore.setState({ codexStreamFinal: cleared });
+      nextStreamFinal[workspaceId] = undefined;
+    } else if (payload.kind === "turn_completed" || payload.kind === "message_completed") {
+      // Only the terminal event can identify the final message. Intermediate
+      // completed commentary must never satisfy the legacy final-TTS guard.
+      // The message branch only applies when a terminal event was observed
+      // first, covering WebView event reordering without changing normal flow.
+      const completedTurn = nextStreamingTurns[workspaceId]?.find(
+        (turn) => turn.turnId === (payload.turnId ?? "unknown"),
+      );
+      if (payload.kind === "turn_completed" || completedTurn?.status === "completed") {
+        nextStreamFinal[workspaceId] = completedTurn?.items.find((item) => item.final)?.text;
+      }
     }
+    useJarvisStore.setState({
+      codexStreamingTurns: nextStreamingTurns,
+      codexStreamFinal: nextStreamFinal,
+    });
+
+    // C8: progressive TTS — use accumulated delta text when the App Server's
+    // item/completed notification carries no body.
+    const completedSpeech = completedCodexSpeechItem(nextStreamingTurns, payload);
+    const store = useJarvisStore.getState();
     if (
-      payload.kind === "message_completed" &&
-      payload.text &&
-      !store.codexSpokenItemIds.includes(payload.itemId ?? "") &&
+      completedSpeech &&
+      !store.codexSpokenItemIds.includes(completedSpeech.itemId) &&
       store.settings.jarvis.codex.speakCommentary &&
       store.settings.jarvis.voiceOutput.enabled &&
       store.settings.jarvis.voiceOutput.autoSpeak &&
@@ -1323,22 +1301,32 @@ export function bindCodexEvents(): () => void {
           store.settings.jarvis.voiceOutput.privacyConsentAt,
       ) &&
       !store.settings.jarvis.muted &&
-      shouldSpeakCommentary(payload.text)
+      shouldSpeakCommentary(completedSpeech.text)
     ) {
       useJarvisStore.setState((state) => ({
-        codexSpeechQueue: enqueueSpeech(state.codexSpeechQueue, {
-          itemId: payload.itemId ?? `msg-${payload.turnId ?? "unknown"}`,
-          turnId: payload.turnId ?? "unknown",
-          workspaceId: payload.workspaceId ?? "unknown",
-          text: payload.text ?? "",
-        }),
+        codexSpeechQueue: enqueueSpeech(state.codexSpeechQueue, completedSpeech),
       }));
       console.info("[Jarvis TTS] commentary queued", {
         ...meta,
-        chars: payload.text.length,
+        chars: completedSpeech.text.length,
       });
     }
-  }).then((unlisten) => unlisteners.push(unlisten));
+  }).then(
+    (unlisten) => {
+      codexChatStreamAvailable = true;
+      unlisteners.push(unlisten);
+    },
+    (error) => {
+      codexChatStreamAvailable = false;
+      console.error("[Jarvis Codex] chat-stream listener registration failed", error);
+    },
+  );
+  codexChatStreamBindingReady = chatStreamRegistration.then(
+    () => undefined,
+    (error) => {
+      console.error("[Jarvis Codex] chat-stream listener registration failed", error);
+    },
+  );
   return () => {
     for (const unlisten of unlisteners) unlisten();
   };

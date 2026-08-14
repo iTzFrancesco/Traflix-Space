@@ -8,6 +8,10 @@ use tauri::Manager;
 
 const OWNER_MODE_MARKER: &str = "owner-mode";
 const MIN_SAFE_VAD_POST_SPEECH_MS: u32 = 3_000;
+const DEFAULT_ENDPOINT_GRACE_MS: u32 = 6_500;
+const MIN_SAFE_ENDPOINT_GRACE_MS: u32 = 3_500;
+const MAX_ENDPOINT_GRACE_MS: u32 = 15_000;
+const LEGACY_ENDPOINT_GRACE_MS: u32 = 1_200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -318,6 +322,16 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
         .voice_input
         .vad_post_speech_ms
         .max(MIN_SAFE_VAD_POST_SPEECH_MS);
+    if settings.voice_input.endpoint_grace_ms == LEGACY_ENDPOINT_GRACE_MS {
+        // 1.2s was the old default and caused the stable VAD candidate to be
+        // sent during ordinary pauses. Migrate only that known default so a
+        // future user-selected value remains configurable.
+        settings.voice_input.endpoint_grace_ms = DEFAULT_ENDPOINT_GRACE_MS;
+    }
+    settings.voice_input.endpoint_grace_ms = settings
+        .voice_input
+        .endpoint_grace_ms
+        .clamp(MIN_SAFE_ENDPOINT_GRACE_MS, MAX_ENDPOINT_GRACE_MS);
     if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
         settings.voice_input.activation_mode = VoiceActivationMode::Vad;
     }
@@ -535,7 +549,7 @@ fn default_vad_threshold() -> f32 {
     0.018
 }
 fn default_vad_start_frames() -> u16 {
-    3
+    5
 }
 fn default_vad_silence_frames() -> u16 {
     16
@@ -547,7 +561,7 @@ fn default_vad_post_speech_ms() -> u32 {
     MIN_SAFE_VAD_POST_SPEECH_MS
 }
 fn default_endpoint_grace_ms() -> u32 {
-    1_200
+    DEFAULT_ENDPOINT_GRACE_MS
 }
 fn default_min_spoken_ms() -> u32 {
     350
@@ -750,7 +764,7 @@ mod tests {
         assert!(input.endpointing_enabled);
         assert_eq!(input.vad_pre_roll_ms, 500);
         assert_eq!(input.vad_post_speech_ms, 3_000);
-        assert_eq!(input.endpoint_grace_ms, 1_200);
+        assert_eq!(input.endpoint_grace_ms, 6_500);
         assert_eq!(input.min_spoken_ms, 350);
     }
 
@@ -758,12 +772,20 @@ mod tests {
     fn owner_mode_raises_legacy_short_endpoint_timeout_without_shortening_longer_values() {
         let mut settings = AppSettings::default();
         settings.jarvis.voice_input.vad_post_speech_ms = 1_800;
+        settings.jarvis.voice_input.endpoint_grace_ms = 1_200;
         enforce_owner_mode(&mut settings.jarvis);
         assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 3_000);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 6_500);
 
         settings.jarvis.voice_input.vad_post_speech_ms = 4_000;
+        settings.jarvis.voice_input.endpoint_grace_ms = 4_000;
         enforce_owner_mode(&mut settings.jarvis);
         assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 4_000);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 4_000);
+
+        settings.jarvis.voice_input.endpoint_grace_ms = 20_000;
+        enforce_owner_mode(&mut settings.jarvis);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 15_000);
     }
 
     #[test]

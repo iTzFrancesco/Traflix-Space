@@ -267,6 +267,7 @@ export interface JarvisStepInput {
   pendingActions: PendingAction[];
   codexTool: { toolName: string } | null;
   codexTurnActive: boolean;
+  codexMessage: string | null;
 }
 
 const codexToolLabels: Record<string, string> = {
@@ -298,7 +299,7 @@ const checkpointPhaseLabels: Record<string, string> = {
 };
 
 export function jarvisStepLabel(input: JarvisStepInput): string | null {
-  const { workspaceId, voiceRequest, ttsStatus, activities, pendingActions, codexTool, codexTurnActive } = input;
+  const { workspaceId, voiceRequest, ttsStatus, activities, pendingActions, codexTool, codexTurnActive, codexMessage } = input;
   if (!workspaceId) return null;
 
   // 1. Voice capture always wins (latency-critical feedback).
@@ -322,11 +323,19 @@ export function jarvisStepLabel(input: JarvisStepInput): string | null {
     return checkpointPhaseLabels[checkpoint.phase] ?? checkpoint.label;
   }
 
-  // 4. Progressive TTS narrates while the model works.
+  // 4. Show the latest accumulated Codex message in the compact pill. This
+  // keeps intermediate plan commentary visible even when the audio worker is
+  // still speaking an earlier FIFO item.
+  if (codexMessage) {
+    const compact = codexMessage.replace(/\s+/g, " ").trim();
+    return compact.length > 96 ? `${compact.slice(0, 93)}…` : compact;
+  }
+
+  // 5. Progressive TTS narrates while the model works.
   if (ttsStatus.status === "synthesizing") return "Preparo la risposta";
   if (ttsStatus.status === "playing") return "Ti rispondo";
 
-  // 5. Turn active without tools/messages yet: model is thinking.
+  // 6. Turn active without tools/messages yet: model is thinking.
   if (codexTurnActive) return "Sto pensando";
 
   return null;

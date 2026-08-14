@@ -9,15 +9,18 @@ import {
   jarvisStepLabel,
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
-import { shouldShowVoiceSendControl } from "../../lib/jarvis/voiceState";
+import {
+  shouldShowVoiceSendControl,
+  voiceEndpointCaption,
+} from "../../lib/jarvis/voiceState";
 import {
   currentCodexTool,
   isCodexTurnActive,
+  latestCodexMessage,
 } from "../../lib/jarvis/chatState";
 import {
   isJarvisOwnerModeReady,
   ownerModeJarvisSettings,
-  VOICE_ENDPOINT_WAIT_SECONDS,
 } from "../../lib/jarvis/settings";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
@@ -46,7 +49,6 @@ interface JarvisWidgetProps {
   voiceRequest: VoiceRequestStatusView | null;
   voiceSubmitState?: VoiceSubmitState;
   bargeIn: boolean;
-  endpointingEnabled: boolean;
   activationMode: VoiceActivationMode;
   onVoiceStart: () => Promise<void> | void;
   onVoiceStop: () => void;
@@ -298,10 +300,13 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.voiceRequest?.status === "stopping" ||
     props.voiceRequest?.status === "transcript_ready";
   const voiceStatusLabel =
-    props.voiceRequest?.status === "recording" && props.voiceRequest.vadState === "silence"
-      ? props.endpointingEnabled
-        ? `Pausa · invio automatico tra circa ${VOICE_ENDPOINT_WAIT_SECONDS} s`
-        : "Pausa · premi Invia per terminare"
+    props.voiceRequest?.status === "armed"
+      ? voiceEndpointCaption("standby")
+      : props.voiceRequest?.status === "recording"
+        ? voiceEndpointCaption(
+            props.voiceRequest.endpointState,
+            props.voiceRequest.vadState,
+          )
       : props.voiceRequest?.status === "stopping"
         ? "Preparazione invio…"
         : props.voiceRequest?.status === "transcribing"
@@ -313,10 +318,12 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             : props.voiceRequest?.status === "transcript_ready"
               ? "Pronto · premi Invia"
               : null;
-  const level = Math.max(
-    0,
-    Math.min(1, (props.voiceRequest?.normalizedLevel ?? 0) * 1.35),
-  );
+  // TTS barge-in stays hands-free: the send control appears only after a
+  // normal recording starts, never while Jarvis is still speaking.
+  const voiceBargeIn = props.bargeIn || (voiceListening && speaking);
+  // The backend already exposes a calibrated 0..1 RMS meter. Do not amplify
+  // it again: that made ordinary speech and room noise look clipped.
+  const level = Math.max(0, Math.min(1, props.voiceRequest?.normalizedLevel ?? 0));
 
   const codexStreamingTurns = useJarvisStore(
     (state) => state.codexStreamingTurns,
@@ -329,6 +336,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     () => isCodexTurnActive(codexStreamingTurns, props.workspaceId),
     [codexStreamingTurns, props.workspaceId],
   );
+  const codexMessage = useMemo(
+    () => latestCodexMessage(codexStreamingTurns, props.workspaceId),
+    [codexStreamingTurns, props.workspaceId],
+  );
   const stepLabel = jarvisStepLabel({
     workspaceId: props.workspaceId,
     voiceRequest: props.voiceRequest,
@@ -337,6 +348,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     pendingActions: props.pendingActions,
     codexTool,
     codexTurnActive,
+    codexMessage,
   });
   const displayedStepLabel = voiceStatusLabel ?? stepLabel;
 
@@ -418,12 +430,16 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
         <div className="jarvis-controls" data-jarvis-control-group>
           {(voiceArmed || voiceListening) && (
-            <VoiceMeter level={level} listening={voiceListening} />
+            <VoiceMeter
+              level={level}
+              listening={voiceListening}
+              endpointState={props.voiceRequest?.endpointState}
+            />
           )}
           {shouldShowVoiceSendControl({
             voiceListening,
             transcriptReady: props.voiceRequest?.status === "transcript_ready",
-            bargeIn: props.bargeIn,
+            bargeIn: voiceBargeIn,
           }) && (
             <button
               type="button"
@@ -482,16 +498,18 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 function VoiceMeter({
   level,
   listening,
+  endpointState,
 }: {
   level: number;
   listening: boolean;
+  endpointState?: VoiceRequestStatusView["endpointState"];
 }) {
   const visibleLevel = Math.max(0, Math.min(1, level));
   const factors = [0.42, 0.72, 1, 0.72, 0.42];
   return (
     <span
-      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""}`}
-      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%`}
+      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""} ${endpointState === "pause" ? "jarvis-level-meter--pause" : ""} ${endpointState === "breath" ? "jarvis-level-meter--breath" : ""} ${endpointState === "micro_interruption" ? "jarvis-level-meter--micro" : ""} ${endpointState === "finalizing" ? "jarvis-level-meter--finalizing" : ""}`}
+      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%, ${voiceEndpointCaption(endpointState)}`}
       role="img"
     >
       {factors.map((factor, index) => (

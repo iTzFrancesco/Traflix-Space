@@ -10,27 +10,56 @@ use super::types::{
 // edge silence from an already captured turn; it must not eat quiet speech.
 const CLOUD_SILENCE_THRESHOLD: f32 = 0.003;
 const CLOUD_SILENCE_PADDING_MS: u64 = 160;
-const LEVEL_FLOOR_DB: f32 = -52.0;
+// A meter floor around -48 dBFS keeps room noise near the bottom while still
+// making normal speech visible. The meter is presentation-only; VAD keeps its
+// own linear thresholds and never consumes this value.
+const LEVEL_FLOOR_DB: f32 = -48.0;
 const LEVEL_CEILING_DB: f32 = 0.0;
 
 /// Converts a linear microphone block into a perceptual 0..1 level.
 ///
 /// VAD keeps its own linear threshold; this value is only for the UI meter.
-/// RMS shows sustained speech while a small peak contribution keeps consonants
-/// and word onsets visible, matching the working Traflix-Voice pipeline.
+/// RMS shows sustained speech without letting a single click or background
+/// peak fill the meter. This is deliberately calmer than the VAD signal.
 pub fn perceptual_level(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
     let rms =
         (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
-    let peak = samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0_f32, f32::max);
-    let effective = rms.max(peak * 0.12).max(0.000001);
+    let effective = rms.max(0.000001);
     let db = 20.0 * effective.log10();
     ((db - LEVEL_FLOOR_DB) / (LEVEL_CEILING_DB - LEVEL_FLOOR_DB)).clamp(0.0, 1.0)
+}
+
+/// Smooth the presentation level at the capture boundary. Faster attack keeps
+/// the start of speech visible; slower release prevents the meter from
+/// twitching on every CPAL block or background click.
+pub fn smooth_perceptual_level(previous: f32, target: f32) -> f32 {
+    let previous = previous.clamp(0.0, 1.0);
+    let target = target.clamp(0.0, 1.0);
+    let alpha = if target >= previous { 0.45 } else { 0.2 };
+    (previous + (target - previous) * alpha).clamp(0.0, 1.0)
+}
+
+/// Apply a conservative downward noise gate to audio that is about to be
+/// retained for STT. Samples above the calibrated floor are untouched, while
+/// low-level room tone is attenuated instead of hard-clipped. That preserves
+/// quiet consonants and breath transitions better than a binary gate.
+pub fn apply_noise_gate(samples: &[f32], gate_threshold: f32) -> Vec<f32> {
+    let threshold = gate_threshold.clamp(0.0005, 0.25);
+    samples
+        .iter()
+        .map(|sample| {
+            let magnitude = sample.abs();
+            if magnitude >= threshold {
+                *sample
+            } else {
+                let relative = (magnitude / threshold).clamp(0.0, 1.0);
+                sample * relative * relative * 0.12
+            }
+        })
+        .collect()
 }
 
 pub fn normalize_f32(sample: f32) -> f32 {
@@ -196,6 +225,32 @@ mod tests {
         let loud = perceptual_level(&[0.25; 128]);
         assert!(quiet > 0.0);
         assert!(loud > quiet);
+    }
+
+    #[test]
+    fn perceptual_level_ignores_a_single_background_click() {
+        let steady = perceptual_level(&[0.03; 128]);
+        let mut with_click = vec![0.03; 128];
+        with_click[0] = 1.0;
+        assert!(perceptual_level(&with_click) < 1.0);
+        assert!(perceptual_level(&with_click) > steady);
+    }
+
+    #[test]
+    fn meter_release_is_slower_than_attack() {
+        let attack = smooth_perceptual_level(0.0, 1.0);
+        let release = smooth_perceptual_level(1.0, 0.0);
+        assert!(attack < release);
+        assert_eq!(smooth_perceptual_level(0.4, 0.4), 0.4);
+    }
+
+    #[test]
+    fn noise_gate_attenuates_room_tone_without_cutting_quiet_voice() {
+        let gated = apply_noise_gate(&[0.01, 0.029, 0.04, -0.2], 0.03);
+        assert!(gated[0].abs() < 0.001);
+        assert!(gated[1].abs() < 0.004);
+        assert_eq!(gated[2], 0.04);
+        assert_eq!(gated[3], -0.2);
     }
 
     #[test]

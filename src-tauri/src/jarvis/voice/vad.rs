@@ -5,9 +5,13 @@ use serde::{Deserialize, Serialize};
 /// release threshold sits clearly above the absolute start threshold, so a
 /// constant noise floor that is louder than the base threshold still counts
 /// as trailing silence once a real phrase (much louder) has been heard.
-const RELEASE_RATIO: f32 = 0.375;
+// Keep the release gate closer to the configured floor. A larger ratio lets a
+// loud phrase promote ordinary room noise to "speech" and prevents automatic
+// endpointing from ever seeing stable silence.
+const RELEASE_RATIO: f32 = 0.25;
 const NOISE_GATE_RATIO: f32 = 1.35;
 const NOISE_FLOOR_UPDATE_ALPHA: f32 = 0.75;
+const NOISE_FLOOR_TRACK_ALPHA: f32 = 0.45;
 const NOISE_FLOOR_MAX_RATIO: f32 = 2.0;
 const NOISE_CALIBRATION_MS: u64 = 300;
 const STRONG_SPEECH_RATIO: f32 = 2.0;
@@ -18,6 +22,10 @@ const STRONG_SPEECH_RATIO: f32 = 2.0;
 /// release threshold while a genuinely louder phrase still can.
 const MAX_PEAK_STEP_RATIO: f32 = 2.0;
 const PEAK_JUMP_CONFIRM_FRAMES: u16 = 2;
+/// A resumed phrase may be quieter than the release gate raised by the
+/// previous phrase. Require a short run above the adaptive floor before
+/// reopening speech, so a breath/click does not reset the endpoint.
+const RESUME_FRAME_COUNT: u16 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +74,8 @@ pub struct EnergyVad {
     /// Candidate for a large sustained jump in speaking level.
     peak_jump_candidate_rms: f32,
     peak_jump_candidate_frames: u16,
+    resume_frames: u16,
+    last_rms: f32,
     /// Smoothed ambient RMS collected before speech starts. This is a noise
     /// gate, not a replacement for the configured initial threshold.
     noise_floor_rms: f32,
@@ -74,6 +84,10 @@ pub struct EnergyVad {
     /// peak is accepted. Only levels below this count as trailing silence once
     /// speech has started.
     release_threshold: f32,
+    /// Wake fallback must not promote a quiet but sustained speech onset to
+    /// the room floor between consecutive candidate frames. Normal VAD keeps
+    /// the default adaptive behavior for late ambient noise.
+    freeze_noise_floor_on_candidate: bool,
 }
 
 impl EnergyVad {
@@ -91,9 +105,20 @@ impl EnergyVad {
             speech_peak_rms: 0.0,
             peak_jump_candidate_rms: 0.0,
             peak_jump_candidate_frames: 0,
+            resume_frames: 0,
+            last_rms: 0.0,
             noise_floor_rms: config.threshold * 0.5,
             calibration_audio_ms: 0,
+            freeze_noise_floor_on_candidate: false,
         }
+    }
+
+    /// Keep a candidate speech run from raising the ambient floor before the
+    /// debounce can confirm it. This is used only by the phrase-agnostic wake
+    /// fallback, where a normal quiet voice must remain detectable.
+    pub fn with_candidate_noise_floor_freeze(mut self) -> Self {
+        self.freeze_noise_floor_on_candidate = true;
+        self
     }
 
     pub fn process(&mut self, samples: &[f32]) -> VadState {
@@ -106,10 +131,12 @@ impl EnergyVad {
             .sum::<f32>()
             / samples.len() as f32)
             .sqrt();
+        self.last_rms = rms;
         let audio_ms = (samples.len() as u64)
             .div_ceil(self.config.channels as u64)
             .saturating_mul(1_000)
             .div_ceil(self.config.sample_rate as u64);
+        let previous_noise_floor = self.noise_floor_rms;
         self.update_noise_floor(rms, audio_ms);
 
         if !self.speech_started {
@@ -118,10 +145,17 @@ impl EnergyVad {
             // room tone from arming the microphone. Clearly strong speech can
             // bypass calibration so the first word is not held back.
             let start_threshold = self.start_threshold();
-            let strong_speech = rms >= self.config.threshold * STRONG_SPEECH_RATIO;
+            // Strong audio may bypass calibration only while the calibration
+            // window is still open. Once the room has been measured, steady
+            // background audio must pass the adaptive gate and debounce.
+            let strong_speech = self.calibration_audio_ms < NOISE_CALIBRATION_MS
+                && rms >= self.config.threshold * STRONG_SPEECH_RATIO;
             if rms >= start_threshold
                 && (self.calibration_audio_ms >= NOISE_CALIBRATION_MS || strong_speech)
             {
+                if self.freeze_noise_floor_on_candidate {
+                    self.noise_floor_rms = previous_noise_floor;
+                }
                 self.speech_frames = self.speech_frames.saturating_add(1);
                 self.silence_frames = 0;
                 self.silence_audio_frames = 0;
@@ -143,15 +177,46 @@ impl EnergyVad {
 
         self.update_representative_peak(rms);
 
+        // Once a pause has started, require a short consecutive run above the
+        // adaptive floor before reopening speech. This covers both a quiet
+        // resumed phrase and a loud click: neither one frame can cancel the
+        // pending endpoint or discard the existing capture.
+        // A quiet continuation is only a valid resume candidate after the
+        // trailing-silence window has produced an endpoint candidate. Before
+        // that point, a level below the release gate is ordinary silence and
+        // must keep accumulating toward auto-stop. Loud resumptions remain
+        // debounced even during the grace window so a single click cannot
+        // cancel it.
+        if self.silence_frames > 0
+            && rms >= self.resume_threshold()
+            && (self.should_stop || rms >= self.release_threshold)
+        {
+            self.resume_frames = self.resume_frames.saturating_add(1);
+            if self.resume_frames >= RESUME_FRAME_COUNT {
+                self.silence_frames = 0;
+                self.silence_audio_frames = 0;
+                self.should_stop = false;
+                self.state = VadState::Speech;
+                return self.state;
+            }
+            self.state = VadState::MaybeSpeech;
+            return self.state;
+        }
+
+        // A continuing phrase that never crossed into a pause remains speech
+        // immediately; only post-pause samples use the resume debounce above.
         if rms >= self.release_threshold {
             self.silence_frames = 0;
             self.silence_audio_frames = 0;
+            self.resume_frames = 0;
             // A speaker may resume during the endpoint grace period. VAD is
             // reusable for that utterance; endpointing, not VAD, owns the
             // final stop decision.
             self.should_stop = false;
             self.state = VadState::Speech;
             return self.state;
+        } else {
+            self.resume_frames = 0;
         }
 
         // A candidate large peak jump is only meaningful while the high level
@@ -216,13 +281,20 @@ impl EnergyVad {
             .calibration_audio_ms
             .saturating_add(audio_ms)
             .min(NOISE_CALIBRATION_MS);
-        if self.speech_started()
-            || self.calibration_audio_ms >= NOISE_CALIBRATION_MS
-            || rms > self.config.threshold * NOISE_FLOOR_MAX_RATIO
-        {
+        if self.speech_started() || rms > self.config.threshold * STRONG_SPEECH_RATIO {
             return;
         }
-        self.noise_floor_rms += (rms - self.noise_floor_rms) * NOISE_FLOOR_UPDATE_ALPHA;
+        let alpha = if self.calibration_audio_ms >= NOISE_CALIBRATION_MS {
+            // Keep learning a newly introduced steady room tone while the
+            // microphone is armed. Strong speech is excluded above so a real
+            // first word can still cross the gate immediately.
+            NOISE_FLOOR_TRACK_ALPHA
+        } else if rms <= self.config.threshold * NOISE_FLOOR_MAX_RATIO {
+            NOISE_FLOOR_UPDATE_ALPHA
+        } else {
+            return;
+        };
+        self.noise_floor_rms += (rms - self.noise_floor_rms) * alpha;
     }
 
     fn start_threshold(&self) -> f32 {
@@ -230,6 +302,12 @@ impl EnergyVad {
             .threshold
             .max(self.noise_floor_rms * NOISE_GATE_RATIO)
             .min(1.0)
+    }
+
+    fn resume_threshold(&self) -> f32 {
+        self.start_threshold()
+            .max(self.release_threshold * 0.5)
+            .min(self.release_threshold)
     }
 
     pub fn state(&self) -> VadState {
@@ -242,6 +320,22 @@ impl EnergyVad {
 
     pub fn should_stop(&self) -> bool {
         self.should_stop
+    }
+
+    /// A low but measurable burst above the learned room floor is useful for
+    /// the caption: it is more likely a breath than an empty pause. This hint
+    /// never changes endpointing decisions.
+    pub fn pause_is_breath(&self) -> bool {
+        self.state == VadState::Silence
+            && self.last_rms > self.noise_floor_rms * 1.6
+            && self.last_rms < self.resume_threshold()
+    }
+
+    /// Threshold consumed by the capture-side downward expander. It stays
+    /// just above the learned room floor. Samples above this threshold are
+    /// untouched, so the gate can follow a louder room without cutting speech.
+    pub fn noise_gate_threshold(&self) -> f32 {
+        (self.noise_floor_rms * 1.1).clamp(0.0005, 0.25)
     }
 }
 
@@ -372,6 +466,43 @@ mod tests {
     }
 
     #[test]
+    fn noise_that_starts_after_calibration_does_not_arm_the_microphone() {
+        let mut detector = vad();
+        // The room is quiet during the initial calibration window.
+        for _ in 0..3 {
+            detector.process(&[0.0; 100]);
+        }
+
+        // A steady fan/room tone begins only after calibration. It must be
+        // learned as the new floor instead of becoming a voice request.
+        for _ in 0..12 {
+            detector.process(&[0.03; 100]);
+        }
+
+        assert!(!detector.speech_started());
+        assert_eq!(detector.state(), VadState::Silence);
+    }
+
+    #[test]
+    fn speech_after_late_noise_still_starts_promptly() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.0; 100]);
+        }
+        for _ in 0..12 {
+            detector.process(&[0.03; 100]);
+        }
+
+        // The new ambient floor must not make the first real phrase wait for
+        // another calibration cycle.
+        for _ in 0..2 {
+            assert_eq!(detector.process(&[0.06; 100]), VadState::MaybeSpeech);
+        }
+        assert_eq!(detector.process(&[0.06; 100]), VadState::Speech);
+        assert!(detector.speech_started());
+    }
+
+    #[test]
     fn a_continuing_phrase_resets_the_trailing_silence_window() {
         let mut detector = vad();
         for _ in 0..3 {
@@ -382,7 +513,9 @@ mod tests {
         detector.process(&[0.03; 100]);
         assert_eq!(detector.state(), VadState::Silence);
         assert!(!detector.should_stop());
-        detector.process(&[0.2; 100]);
+        for _ in 0..3 {
+            detector.process(&[0.2; 100]);
+        }
         assert_eq!(detector.state(), VadState::Speech);
         assert!(!detector.should_stop());
         detector.process(&[0.03; 100]);
@@ -451,7 +584,49 @@ mod tests {
             detector.process(&[0.0; 100]);
         }
         assert!(detector.should_stop());
+        assert_eq!(detector.process(&[0.2; 100]), VadState::MaybeSpeech);
+        assert_eq!(detector.process(&[0.2; 100]), VadState::MaybeSpeech);
         assert_eq!(detector.process(&[0.2; 100]), VadState::Speech);
+        assert!(!detector.should_stop());
+    }
+
+    #[test]
+    fn a_breath_or_single_click_does_not_reopen_a_paused_turn() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.2; 100]);
+        }
+
+        // Breath: below the release threshold and too short to end the turn.
+        detector.process(&[0.025; 100]);
+        detector.process(&[0.025; 100]);
+        assert_eq!(detector.state(), VadState::Silence);
+        assert!(detector.pause_is_breath());
+        assert!(!detector.should_stop());
+
+        // A loud transient is debounced after a pause and cannot reset VAD.
+        assert_eq!(detector.process(&[0.8; 100]), VadState::MaybeSpeech);
+        detector.process(&[0.0; 100]);
+        assert_eq!(detector.state(), VadState::Silence);
+        assert!(detector.should_stop());
+    }
+
+    #[test]
+    fn quieter_speech_can_resume_after_a_loud_phrase_and_breath() {
+        let mut detector = vad();
+        for _ in 0..3 {
+            detector.process(&[0.2; 100]);
+        }
+        // The speaker pauses for a breath long enough to produce an endpoint
+        // candidate, then continues in a quieter voice.
+        for _ in 0..3 {
+            detector.process(&[0.0; 100]);
+        }
+        assert!(detector.should_stop());
+        for _ in 0..3 {
+            detector.process(&[0.04; 100]);
+        }
+        assert_eq!(detector.state(), VadState::Speech);
         assert!(!detector.should_stop());
     }
 

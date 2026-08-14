@@ -11,7 +11,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use super::types::{
-    CapturedAudio, VoiceCaptureOptions, VoiceErrorCode, VoiceInputDevice, MAX_RECORDING_MS,
+    CapturedAudio, VoiceCaptureOptions, VoiceEndpointState, VoiceErrorCode, VoiceInputDevice,
+    MAX_RECORDING_MS,
 };
 use super::vad::{EnergyVad, EnergyVadConfig, VadState};
 use super::wake::WakeWordEngine;
@@ -31,6 +32,17 @@ pub trait AudioCaptureSession: Send {
     }
     fn should_auto_stop(&self) -> bool {
         false
+    }
+    fn endpoint_state(&self) -> VoiceEndpointState {
+        if !self.speech_started() {
+            VoiceEndpointState::Standby
+        } else if self.vad_state() == VadState::Speech {
+            VoiceEndpointState::Speaking
+        } else if self.should_auto_stop() {
+            VoiceEndpointState::Finalizing
+        } else {
+            VoiceEndpointState::Pause
+        }
     }
     fn wake_word_activated(&self) -> bool {
         false
@@ -314,6 +326,12 @@ impl AudioCaptureSession for CpalCaptureSession {
             .map(|buffer| buffer.should_auto_stop())
             .unwrap_or(false)
     }
+    fn endpoint_state(&self) -> VoiceEndpointState {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.endpoint_state())
+            .unwrap_or(VoiceEndpointState::Standby)
+    }
     fn failure(&self) -> Option<VoiceErrorCode> {
         self.buffer.lock().ok().and_then(|buffer| buffer.failure)
     }
@@ -424,6 +442,25 @@ impl CaptureBuffer {
             .map(EnergyVad::should_stop)
             .unwrap_or(false)
     }
+    fn endpoint_state(&self) -> VoiceEndpointState {
+        if self.vad.is_none() {
+            return VoiceEndpointState::Speaking;
+        }
+        if !self.speech_started() {
+            return VoiceEndpointState::Standby;
+        }
+        if self.should_auto_stop() {
+            return VoiceEndpointState::Finalizing;
+        }
+        match self.vad_state() {
+            VadState::Speech => VoiceEndpointState::Speaking,
+            VadState::MaybeSpeech => VoiceEndpointState::MicroInterruption,
+            VadState::Silence if self.vad.as_ref().is_some_and(EnergyVad::pause_is_breath) => {
+                VoiceEndpointState::Breath
+            }
+            VadState::Silence => VoiceEndpointState::Pause,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -453,11 +490,13 @@ fn push_samples<I: IntoIterator<Item = f32>>(
 #[cfg(windows)]
 fn process_samples(buffer: &Arc<Mutex<CaptureBuffer>>, incoming: Vec<f32>) {
     if let Ok(mut buffer) = buffer.lock() {
-        buffer.level = super::audio::perceptual_level(&incoming);
+        let target_level = super::audio::perceptual_level(&incoming);
+        buffer.level = super::audio::smooth_perceptual_level(buffer.level, target_level);
 
         // Wake-only capture shares this CPAL stream with the later recording
         // phase. Until the engine confirms a keyword, no raw samples are kept
         // in the transcript buffer and no VAD recording is started.
+        let mut wake_detected = false;
         if let Some(mut engine) = buffer.wake_engine.take() {
             let detected = engine
                 .process(&incoming, buffer.sample_rate, buffer.channels)
@@ -465,27 +504,42 @@ fn process_samples(buffer: &Arc<Mutex<CaptureBuffer>>, incoming: Vec<f32>) {
             if detected {
                 engine.reset();
                 buffer.wake_word_activated = true;
+                wake_detected = true;
             } else {
                 buffer.wake_engine = Some(engine);
+                return;
             }
-            return;
         }
 
-        let speech_started = if let Some(vad) = buffer.vad.as_mut() {
+        let (speech_started, gate_threshold) = if let Some(vad) = buffer.vad.as_mut() {
             vad.process(&incoming);
-            vad.speech_started()
+            (vad.speech_started(), Some(vad.noise_gate_threshold()))
         } else {
-            true
+            (true, None)
         };
         if buffer.vad.is_some() {
             if speech_started && buffer.samples.is_empty() {
                 let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
-                let preroll = std::mem::take(&mut buffer.pre_roll);
+                let preroll: Vec<f32> = std::mem::take(&mut buffer.pre_roll).into_iter().collect();
+                // Pre-roll is the only evidence captured before VAD confirms
+                // speech. Preserve it verbatim so a quiet first syllable is
+                // not attenuated away by a floor learned from the room.
                 buffer.samples.extend(preroll.into_iter().take(remaining));
             }
-            if speech_started {
+            if speech_started || wake_detected {
                 let remaining = buffer.max_samples.saturating_sub(buffer.samples.len());
-                buffer.samples.extend(incoming.into_iter().take(remaining));
+                // The detector's activation frame is the first retained
+                // evidence of the utterance. Do not attenuate it with the
+                // post-VAD room gate or a quiet "Jarvis" onset can disappear
+                // before STT sees it.
+                let retained = if wake_detected {
+                    incoming
+                } else {
+                    gate_threshold
+                        .map(|threshold| super::audio::apply_noise_gate(&incoming, threshold))
+                        .unwrap_or(incoming)
+                };
+                buffer.samples.extend(retained.into_iter().take(remaining));
             } else if buffer.max_pre_roll_samples > 0 {
                 buffer.pre_roll.extend(incoming);
                 while buffer.pre_roll.len() > buffer.max_pre_roll_samples {
@@ -649,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_only_does_not_retain_audio_before_activation_and_reuses_buffer_afterwards() {
+    fn wake_only_keeps_no_pre_match_audio_and_keeps_the_activation_frame() {
         let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
             1,
             16_000,
@@ -660,11 +714,11 @@ mod tests {
         process_samples(&buffer, vec![0.4; 160]);
         let snapshot = buffer.lock().unwrap();
         assert!(snapshot.wake_word_activated);
-        assert!(snapshot.samples.is_empty());
+        assert_eq!(snapshot.samples.len(), 160);
         drop(snapshot);
 
         process_samples(&buffer, vec![0.4; 160]);
-        assert_eq!(buffer.lock().unwrap().samples.len(), 160);
+        assert_eq!(buffer.lock().unwrap().samples.len(), 320);
     }
 
     struct CountingWakeEngine {
@@ -691,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_only_discards_every_standby_frame_until_the_detector_matches() {
+    fn wake_only_discards_standby_frames_but_keeps_the_detector_match() {
         let calls = Arc::new(AtomicUsize::new(0));
         let buffer = Arc::new(Mutex::new(CaptureBuffer::new(
             1,
@@ -716,12 +770,12 @@ mod tests {
         {
             let snapshot = buffer.lock().unwrap();
             assert!(snapshot.wake_word_activated);
-            assert!(snapshot.samples.is_empty());
+            assert_eq!(snapshot.samples.len(), 160);
         }
 
         process_samples(&buffer, vec![0.8; 160]);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
-        assert_eq!(buffer.lock().unwrap().samples.len(), 160);
+        assert_eq!(buffer.lock().unwrap().samples.len(), 320);
     }
 
     #[test]
@@ -734,6 +788,7 @@ mod tests {
         )));
 
         process_samples(&buffer, vec![0.002; 160]);
+        process_samples(&buffer, vec![0.10; 160]);
         process_samples(&buffer, vec![0.10; 160]);
         process_samples(&buffer, vec![0.10; 160]);
         process_samples(&buffer, vec![0.10; 160]);

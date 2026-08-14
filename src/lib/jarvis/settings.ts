@@ -2,8 +2,25 @@ import type { AppSettings, JarvisSettings, VoiceActivationMode } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
 const ALWAYS_READY_ARM_SECONDS = 120;
-export const VOICE_ENDPOINT_WAIT_MS = 3_000;
+export const VOICE_ENDPOINT_WAIT_MS = 6_500;
+export const VOICE_ENDPOINT_MIN_WAIT_MS = 3_500;
+export const VOICE_ENDPOINT_MAX_WAIT_MS = 15_000;
+export const VOICE_VAD_CANDIDATE_MS = 3_000;
+const LEGACY_VOICE_ENDPOINT_WAIT_MS = 1_200;
 export const VOICE_ENDPOINT_WAIT_SECONDS = VOICE_ENDPOINT_WAIT_MS / 1_000;
+
+export function normalizeVoiceEndpointWaitMs(value: number | undefined): number {
+  const configured = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : VOICE_ENDPOINT_WAIT_MS;
+  const migrated = configured === LEGACY_VOICE_ENDPOINT_WAIT_MS
+    ? VOICE_ENDPOINT_WAIT_MS
+    : configured;
+  return Math.min(
+    VOICE_ENDPOINT_MAX_WAIT_MS,
+    Math.max(VOICE_ENDPOINT_MIN_WAIT_MS, migrated),
+  );
+}
 
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
@@ -21,8 +38,9 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
     selectedInputDeviceId: null,
     vadPostSpeechMs: Math.max(
       settings.voiceInput.vadPostSpeechMs,
-      VOICE_ENDPOINT_WAIT_MS,
+      VOICE_VAD_CANDIDATE_MS,
     ),
+    endpointGraceMs: normalizeVoiceEndpointWaitMs(settings.voiceInput.endpointGraceMs),
     activationMode,
     vadEnabled: activationMode !== "hold_to_talk",
     maxArmedSeconds:
@@ -123,12 +141,12 @@ export function defaultJarvisSettings(): JarvisSettings {
       shortcutBehavior: "toggle",
       vadEnabled: true,
       vadSpeechThreshold: 0.018,
-      vadStartFrames: 3,
+      vadStartFrames: 5,
       vadSilenceFrames: 16,
       vadPreRollMs: 500,
-      vadPostSpeechMs: VOICE_ENDPOINT_WAIT_MS,
+      vadPostSpeechMs: VOICE_VAD_CANDIDATE_MS,
       endpointingEnabled: true,
-      endpointGraceMs: 1200,
+      endpointGraceMs: VOICE_ENDPOINT_WAIT_MS,
       minSpokenMs: 350,
       maxArmedSeconds: ALWAYS_READY_ARM_SECONDS,
     },

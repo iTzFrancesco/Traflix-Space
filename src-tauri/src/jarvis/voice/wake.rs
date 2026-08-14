@@ -2,7 +2,9 @@ use super::types::{VoiceErrorCode, WakeWordState, WakeWordStatusView};
 use super::vad::{EnergyVad, EnergyVadConfig, VadState};
 
 pub const DEFAULT_WAKE_WORD: &str = "Hey Traflix";
+#[allow(dead_code)]
 pub const DEFAULT_WAKE_WORD_SENSITIVITY: f32 = 0.65;
+pub const DEFAULT_WAKE_WORD_THRESHOLD: f32 = 0.018;
 const FALLBACK_START_FRAMES: u16 = 3;
 const FALLBACK_POST_SPEECH_MS: u32 = 100;
 
@@ -15,6 +17,7 @@ const FALLBACK_POST_SPEECH_MS: u32 = 100;
 pub struct WakeWordConfig {
     pub keyword: String,
     pub sensitivity: f32,
+    pub speech_threshold: f32,
 }
 
 impl WakeWordConfig {
@@ -27,7 +30,13 @@ impl WakeWordConfig {
                 keyword
             },
             sensitivity: sensitivity.clamp(0.0, 1.0),
+            speech_threshold: DEFAULT_WAKE_WORD_THRESHOLD,
         }
+    }
+
+    pub fn with_speech_threshold(mut self, threshold: f32) -> Self {
+        self.speech_threshold = threshold.clamp(0.001, 1.0);
+        self
     }
 }
 
@@ -42,6 +51,7 @@ pub struct WakeWordDetection {
 /// from the capture worker, not from a realtime CPAL callback, so an adapter
 /// may perform bounded frame processing here.
 pub trait WakeWordEngine: Send {
+    #[allow(dead_code)]
     fn backend_name(&self) -> &'static str;
     fn process(
         &mut self,
@@ -54,6 +64,7 @@ pub trait WakeWordEngine: Send {
 
 /// Test/capability-only engine/detector that intentionally never reports a match.
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct DisabledWakeWordEngine;
 
 impl WakeWordEngine for DisabledWakeWordEngine {
@@ -82,6 +93,7 @@ impl WakeWordEngine for DisabledWakeWordEngine {
 #[derive(Debug)]
 pub struct LocalVadFallbackWakeEngine {
     sensitivity: f32,
+    speech_threshold: f32,
     vad: Option<EnergyVad>,
 }
 
@@ -89,15 +101,18 @@ impl LocalVadFallbackWakeEngine {
     pub fn new(config: &WakeWordConfig) -> Self {
         Self {
             sensitivity: config.sensitivity,
+            speech_threshold: config.speech_threshold,
             vad: None,
         }
     }
 
     fn threshold(&self) -> f32 {
-        // Keep the fallback threshold above a quiet-room floor and bounded
-        // even if sensitivity comes from an older or corrupted profile;
-        // EnergyVad still requires sustained frames before activation.
-        (0.04 - self.sensitivity * 0.02).clamp(0.018, 0.04)
+        // Use the same calibrated floor as normal VAD. The previous fixed
+        // 0.027 RMS floor rejected ordinary microphones before the configured
+        // sensitivity could have any useful effect. Sensitivity still moves
+        // the floor in a bounded range, while EnergyVad keeps the sustained
+        // frame and ambient-noise gates.
+        (self.speech_threshold * (1.2 - self.sensitivity * 0.3)).clamp(0.012, 0.04)
     }
 }
 
@@ -125,6 +140,7 @@ impl WakeWordEngine for LocalVadFallbackWakeEngine {
                 sample_rate,
                 channels,
             })
+            .with_candidate_noise_floor_freeze()
         });
         (vad.process(samples) == VadState::Speech).then_some(WakeWordDetection {
             score: 0.5 + self.sensitivity * 0.5,
@@ -278,6 +294,25 @@ mod tests {
         assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
         assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
         assert!(engine.process(&[0.02; 160], 16_000, 1).is_none());
+    }
+
+    #[test]
+    fn fallback_engine_detects_normal_speech_after_standby_calibration() {
+        for keyword in ["Hey Jarvis", "Jarvis Space"] {
+            let config = WakeWordConfig::new(keyword, DEFAULT_WAKE_WORD_SENSITIVITY);
+            let mut engine = LocalVadFallbackWakeEngine::new(&config);
+
+            // Standby remains local while the detector learns a quiet room.
+            for _ in 0..30 {
+                assert!(engine.process(&[0.0; 160], 16_000, 1).is_none());
+            }
+
+            // A normal microphone level must not be rejected solely because
+            // it is below the old hard-coded 0.027 RMS threshold.
+            assert!(engine.process(&[0.024; 160], 16_000, 1).is_none());
+            assert!(engine.process(&[0.024; 160], 16_000, 1).is_none());
+            assert!(engine.process(&[0.024; 160], 16_000, 1).is_some());
+        }
     }
 
     #[test]

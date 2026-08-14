@@ -83,7 +83,8 @@ pub async fn jarvis_wake_word_status(
     let config = WakeWordConfig::new(
         configured.jarvis.wake_word_phrase,
         configured.jarvis.wake_word_sensitivity,
-    );
+    )
+    .with_speech_threshold(configured.jarvis.voice_input.vad_speech_threshold);
     Ok(if configured.jarvis.muted {
         wake::off_status(&config)
     } else {
@@ -108,25 +109,36 @@ pub async fn jarvis_voice_start(
     ensure_microphone_unmuted(configured.jarvis.muted).inspect_err(|_| {
         warn!(request_id = %request.request_id, "Voice start rejected because Jarvis microphone is muted");
     })?;
+    let input = configured.jarvis.voice_input.clone();
+    let activation_mode = request.activation_mode.unwrap_or(input.activation_mode);
     crate::settings::secrets::refresh_dotenv_environment(&app);
-    let provider = GroqSpeechToTextProvider::from_environment().map_err(|code| {
-        warn!(request_id = %request.request_id, error_code = %code.as_str(), "Voice provider configuration lookup failed");
-        to_error(code)
-    })?;
+    // Wake-word standby is a local microphone/VAD feature. Do not require
+    // Groq just to open the microphone; the provider is resolved when a
+    // captured utterance is actually handed to STT.
+    let provider_configured = if activation_mode
+        == crate::settings::store::VoiceActivationMode::WakeWord
+    {
+        false
+    } else {
+        GroqSpeechToTextProvider::from_environment()
+            .map_err(|code| {
+                warn!(request_id = %request.request_id, error_code = %code.as_str(), "Voice provider configuration lookup failed");
+                to_error(code)
+            })?
+            .configured()
+    };
     debug!(
         request_id = %request.request_id,
-        provider_configured = provider.configured(),
-        activation_mode = ?configured.jarvis.voice_input.activation_mode,
+        provider_configured,
+        activation_mode = ?activation_mode,
         vad_enabled = configured.jarvis.voice_input.vad_enabled,
         "Voice start configuration resolved"
     );
-    ensure_input_allowed(&configured.jarvis.voice_input, provider.configured()).inspect_err(|error| {
+    ensure_input_allowed(&input, provider_configured, activation_mode).inspect_err(|error| {
         warn!(request_id = %request.request_id, error_code = %error.code, "Voice start rejected by input policy");
     })?;
     let max_duration_seconds =
         normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
-    let input = configured.jarvis.voice_input.clone();
-    let activation_mode = request.activation_mode.unwrap_or(input.activation_mode);
     let options = VoiceCaptureOptions {
         activation_mode,
         max_duration_seconds,
@@ -144,7 +156,8 @@ pub async fn jarvis_voice_start(
     let wake_config = WakeWordConfig::new(
         configured.jarvis.wake_word_phrase.clone(),
         configured.jarvis.wake_word_sensitivity,
-    );
+    )
+    .with_speech_threshold(input.vad_speech_threshold);
     let wake_engine = if activation_mode == crate::settings::store::VoiceActivationMode::WakeWord {
         if !configured.jarvis.wake_word_enabled {
             return Err(to_error(VoiceErrorCode::WakeWordDisabled));
@@ -192,7 +205,14 @@ pub async fn jarvis_voice_start(
                 break;
             };
             let status = signal.status;
-            if signal.status_changed {
+            // Only capture-phase transitions are published by this loop; the
+            // stop pipeline owns Stopping/Transcribing/terminal emissions.
+            if signal.status_changed
+                && matches!(
+                    status.status,
+                    VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
+                )
+            {
                 info!(
                     request_id = %request_id,
                     status = ?status.status,
@@ -224,6 +244,7 @@ pub async fn jarvis_voice_start(
                     elapsed_ms: status.duration_ms.unwrap_or_default(),
                     normalized_level: status.normalized_level,
                     vad_state: status.vad_state,
+                    endpoint_state: status.endpoint_state,
                 },
             );
             // Endpointing is evaluated by the dedicated watchdog below. This
@@ -247,7 +268,15 @@ pub async fn jarvis_voice_start(
                 break;
             };
             let current = signal.status;
-            if signal.status_changed {
+            // Capture-phase transitions are published here too (both loops may
+            // race on Armed→Recording); terminal phases are owned by the stop
+            // pipeline to avoid duplicate Transcribing/transcript events.
+            if signal.status_changed
+                && matches!(
+                    current.status,
+                    VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
+                )
+            {
                 emit_voice_state(&watchdog_app, &current);
                 if current.activation_mode == crate::settings::store::VoiceActivationMode::WakeWord
                     && current.status == VoiceRequestStatus::Recording
@@ -828,6 +857,7 @@ pub async fn jarvis_tts_list_voices(
 fn ensure_input_allowed(
     settings: &crate::settings::store::VoiceInputSettings,
     provider_configured: bool,
+    activation_mode: crate::settings::store::VoiceActivationMode,
 ) -> Result<(), VoiceErrorView> {
     if !settings.enabled
         || settings.provider != "groq"
@@ -841,7 +871,9 @@ fn ensure_input_allowed(
     {
         return Err(to_error(VoiceErrorCode::ConsentRequired));
     }
-    if !provider_configured {
+    if activation_mode != crate::settings::store::VoiceActivationMode::WakeWord
+        && !provider_configured
+    {
         return Err(to_error(VoiceErrorCode::ProviderNotConfigured));
     }
     Ok(())
@@ -1042,7 +1074,9 @@ mod tests {
         ensure_input_allowed, ensure_microphone_unmuted, reconcile_shortcut,
         should_stop_tts_on_speech, validate_shortcut, ShortcutRegistrar,
     };
-    use crate::jarvis::voice::types::{VoiceErrorCode, VoiceRequestStatus, VoiceRequestStatusView};
+    use crate::jarvis::voice::types::{
+        VoiceEndpointState, VoiceErrorCode, VoiceRequestStatus, VoiceRequestStatusView,
+    };
     use crate::jarvis::voice::vad::VadState;
     use crate::settings::store::{VoiceActivationMode, VoiceInputSettings};
 
@@ -1084,9 +1118,19 @@ mod tests {
         settings.privacy_consent = true;
         settings.privacy_consent_at = Some("now".into());
         assert_eq!(
-            ensure_input_allowed(&settings, false).unwrap_err().code,
+            ensure_input_allowed(&settings, false, VoiceActivationMode::Vad)
+                .unwrap_err()
+                .code,
             "voice_provider_not_configured"
         );
+    }
+
+    #[test]
+    fn wake_word_standby_does_not_require_groq_before_capture() {
+        let mut settings = VoiceInputSettings::default();
+        settings.privacy_consent = true;
+        settings.privacy_consent_at = Some("now".into());
+        assert!(ensure_input_allowed(&settings, false, VoiceActivationMode::WakeWord).is_ok());
     }
 
     #[test]
@@ -1113,6 +1157,7 @@ mod tests {
             error: None,
             activation_mode: VoiceActivationMode::Vad,
             vad_state: VadState::Speech,
+            endpoint_state: VoiceEndpointState::Standby,
         };
         assert!(!should_stop_tts_on_speech(&status));
 

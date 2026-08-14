@@ -64,6 +64,7 @@ export function JarvisGlobalOverlay() {
   const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
   const clearCodexSpeech = useJarvisStore((state) => state.clearCodexSpeech);
   const speechWorkerBusyRef = useRef(false);
+  const speechRetryCountsRef = useRef<Map<string, number>>(new Map());
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const bootstrapCodex = useJarvisStore((state) => state.bootstrapCodex);
   const setContext = useJarvisStore((state) => state.setContext);
@@ -105,7 +106,6 @@ export function JarvisGlobalOverlay() {
     const currentTtsStatus = useJarvisStore.getState().ttsStatus.status;
     const ttsActive = currentTtsStatus === "synthesizing" || currentTtsStatus === "playing";
     void startVoice({
-      interruptTts: ttsActive,
       activationMode,
       forceEndpointing: activationMode === "vad" && ttsActive,
     }).then(() => {
@@ -218,20 +218,41 @@ export function JarvisGlobalOverlay() {
           turnId: item.turnId,
           requestId,
         });
+        speechRetryCountsRef.current.delete(item.itemId);
         useJarvisStore.getState().setTtsStatus(status);
+        useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
       })
       .catch((error) => {
         const errorView = sanitizedVoiceErrorView(error, "tts_ipc_failed");
+        const attempts = (speechRetryCountsRef.current.get(item.itemId) ?? 0) + 1;
+        speechRetryCountsRef.current.set(item.itemId, attempts);
         console.warn("[Jarvis TTS] commentary failed", {
           itemId: item.itemId,
           turnId: item.turnId,
           requestId,
           errorCode: errorView.code,
+          attempt: attempts,
         });
+        if (attempts >= 3) {
+          // The helper already retries internally. After three client-level
+          // attempts, release this item so one broken provider cannot block
+          // every later step forever; successful items are dequeued above.
+          speechRetryCountsRef.current.delete(item.itemId);
+          useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
+          return;
+        }
+        // Keep the failed item at the head of the FIFO. A fresh array reference
+        // wakes this effect after a short backoff without losing its text or
+        // allowing later steps to overtake it.
+        const retryDelayMs = Math.min(2_000, 250 * 2 ** (attempts - 1));
+        window.setTimeout(() => {
+          const currentQueue = useJarvisStore.getState().codexSpeechQueue;
+          if (currentQueue[0]?.itemId !== item.itemId) return;
+          useJarvisStore.setState({ codexSpeechQueue: [...currentQueue] });
+        }, retryDelayMs);
       })
       .finally(() => {
         speechWorkerBusyRef.current = false;
-        useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
       });
   }, [codexSpeechQueue, dequeueCodexSpeech, ttsStatus.status]);
 
@@ -518,6 +539,23 @@ export function JarvisGlobalOverlay() {
     const workspaceId = activeWorkspaceId;
     const timer = window.setTimeout(() => {
       const store = useJarvisStore.getState();
+      // Reconcile a stale active request: if the backend already finished or
+      // pruned the request but its terminal event was missed, clear the
+      // latch so hands-free capture can arm again instead of staying blocked.
+      const latchedRequestId = store.activeVoiceRequestId;
+      if (latchedRequestId) {
+        const latched = Object.values(store.voiceRequests).find(
+          (request) => request.requestId === latchedRequestId,
+        );
+        if (
+          !latched ||
+          ["idle", "transcript_ready", "cancelled", "failed"].includes(
+            latched.status,
+          )
+        ) {
+          useJarvisStore.setState({ activeVoiceRequestId: null });
+        }
+      }
       if (
         !store.settingsLoaded ||
         store.voiceError ||
@@ -833,7 +871,6 @@ export function JarvisGlobalOverlay() {
         voiceRequest={voiceRequest}
         voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
         bargeIn={bargeInRequestId === voiceRequest?.requestId}
-        endpointingEnabled={settings.jarvis.voiceInput.endpointingEnabled}
         activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}
         activities={activities}

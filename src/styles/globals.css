@@ -529,13 +529,50 @@ a:not(:disabled),
   background: oklch(0.78 0.13 157 / 0.08);
 }
 
+.jarvis-level-meter--pause {
+  opacity: 0.78;
+  background: oklch(0.78 0.13 157 / 0.045);
+}
+
+.jarvis-level-meter--breath {
+  opacity: 0.68;
+  background: oklch(0.78 0.13 157 / 0.03);
+}
+
+.jarvis-level-meter--micro {
+  opacity: 0.86;
+  background: oklch(0.78 0.13 157 / 0.06);
+}
+
+.jarvis-level-meter--finalizing {
+  color: var(--color-primary);
+  opacity: 0.9;
+  background: oklch(0.74 0.16 63 / 0.08);
+}
+
 .jarvis-level-meter > span {
   width: 2px;
   height: 17px;
   border-radius: 99px;
   background: currentColor;
   transform-origin: center;
-  transition: transform 65ms ease-out, opacity 65ms linear;
+  transition: transform 160ms ease-out, opacity 160ms linear;
+}
+
+@keyframes jarvisEndpointPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.jarvis-level-meter--finalizing > span {
+  animation: jarvisEndpointPulse 1.25s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-level-meter--finalizing > span {
+    animation: none;
+    opacity: 0.75;
+  }
 }
 
 /* Agent attention is informative, not a glowing dashboard. */

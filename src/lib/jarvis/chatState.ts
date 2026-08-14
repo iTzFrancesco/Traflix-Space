@@ -1,5 +1,6 @@
 import type {
   CodexChatStreamEvent,
+  CodexSpeechItem,
   CodexStreamItem,
   CodexStreamingTurn,
   JarvisConversationMessage,
@@ -128,8 +129,8 @@ function reduceTurn(turn: CodexStreamingTurn, event: CodexChatStreamEvent): Code
         updatedAt: event.timestamp,
       }, (existing) => existing.text + (event.text ?? ""));
     }
-    case "message_completed":
-      return upsertItem(turn, {
+    case "message_completed": {
+      const nextTurn = upsertItem(turn, {
         itemId: event.itemId ?? lastMessageItemId(turn) ?? `msg-${event.turnId}-${turn.items.length}`,
         kind: "message",
         status: "completed",
@@ -140,6 +141,12 @@ function reduceTurn(turn: CodexStreamingTurn, event: CodexChatStreamEvent): Code
         final: false,
         updatedAt: event.timestamp,
       }, (existing) => event.text ?? existing.text);
+      // Be tolerant of terminal notifications that arrive just before the
+      // final item completion on the WebView event queue.
+      return turn.status === "completed"
+        ? { ...nextTurn, items: markLastCompletedMessageFinal(nextTurn.items) }
+        : nextTurn;
+    }
     case "tool_started":
       return upsertItem(turn, {
         itemId: event.itemId ?? `tool-${event.turnId}-${turn.items.length}`,
@@ -267,4 +274,47 @@ export function isCodexTurnActive(
   if (!workspaceId) return false;
   const newest = turns[workspaceId]?.[0];
   return newest?.status === "active";
+}
+
+/**
+ * Resolves the text that must be sent to the progressive speech queue for a
+ * completed agent message. The App Server can deliver the body as deltas and
+ * then send `item/completed` with no `text`; the visible reducer has already
+ * accumulated those deltas, so TTS must use the post-event turn state too.
+ */
+export function completedCodexSpeechItem(
+  turns: Record<string, CodexStreamingTurn[]>,
+  event: CodexChatStreamEvent,
+): CodexSpeechItem | null {
+  if (event.kind !== "message_completed") return null;
+
+  const workspaceId = event.workspaceId ?? "unknown";
+  const turnId = event.turnId ?? "unknown";
+  const turn = turns[workspaceId]?.find((candidate) => candidate.turnId === turnId);
+  if (!turn) return null;
+
+  const itemId = event.itemId ?? lastMessageItemId(turn);
+  if (!itemId) return null;
+  const item = turn.items.find((candidate) => candidate.itemId === itemId);
+  if (!item || item.kind !== "message" || item.status !== "completed") return null;
+
+  const text = (event.text?.trim() ? event.text : item.text).trim();
+  if (!text) return null;
+
+  return { itemId, turnId, workspaceId, text };
+}
+
+/** Returns the newest accumulated agent message for the compact Jarvis pill. */
+export function latestCodexMessage(
+  turns: Record<string, CodexStreamingTurn[]>,
+  workspaceId: string | null,
+): string | null {
+  if (!workspaceId) return null;
+  for (const turn of turns[workspaceId] ?? []) {
+    for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+      const item = turn.items[index];
+      if (item.kind === "message" && item.text.trim()) return item.text.trim();
+    }
+  }
+  return null;
 }

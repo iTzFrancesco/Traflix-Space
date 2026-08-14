@@ -252,6 +252,7 @@ export interface AppSettings {
 export type VoiceRequestStatus = "idle" | "armed" | "recording" | "stopping" | "transcribing" | "transcript_ready" | "cancelled" | "failed";
 export interface VoiceInputDevice { id: string; name: string; isDefault: boolean; available: boolean; }
 export interface VoiceErrorView { code: string; message: string; }
+export type VoiceEndpointState = "standby" | "speaking" | "pause" | "breath" | "micro_interruption" | "finalizing";
 export type WakeWordState = "off" | "standby" | "listening" | "fallback" | "unavailable" | "error";
 export interface WakeWordStatusView {
   state: WakeWordState;
@@ -261,10 +262,10 @@ export interface WakeWordStatusView {
   score?: number;
   error?: VoiceErrorView;
 }
-export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; activationMode: VoiceActivationMode; vadState: VadState; }
-export type VoiceSubmitState = "manual" | "queued" | "submitting" | "sent";
+export interface VoiceRequestStatusView { requestId: string; workspaceId: string; selectedDeviceId?: string; status: VoiceRequestStatus; createdAt: string; startedAt?: string; durationMs?: number; normalizedLevel: number; transcript?: string; error?: VoiceErrorView; activationMode: VoiceActivationMode; vadState: VadState; endpointState?: VoiceEndpointState; }
+export type VoiceSubmitState = "manual" | "queued" | "submitting" | "sent" | "failed";
 export type VadState = "silence" | "maybe_speech" | "speech";
-export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; vadState: VadState; }
+export interface VoiceLevelEvent { requestId: string; elapsedMs: number; normalizedLevel: number; vadState: VadState; endpointState?: VoiceEndpointState; }
 export type TtsStatus = "idle" | "synthesizing" | "playing" | "stopped" | "failed";
 export interface TtsStatusView { requestId?: string; workspaceId?: string; sequence?: number; status: TtsStatus; error?: VoiceErrorView; }
 export interface TtsVoice { shortName: string; locale: string; gender?: string; }

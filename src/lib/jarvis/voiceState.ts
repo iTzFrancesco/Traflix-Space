@@ -1,4 +1,4 @@
-import type { VoiceRequestStatusView } from "./types";
+import type { VadState, VoiceEndpointState, VoiceRequestStatusView } from "./types";
 
 export type VoiceSubmitDecision = "ignore" | "manual" | "queue" | "send";
 
@@ -20,6 +20,34 @@ export function shouldShowVoiceSendControl(input: {
   bargeIn: boolean;
 }): boolean {
   return !input.bargeIn && (input.voiceListening || input.transcriptReady);
+}
+
+/**
+ * Stable, action-oriented caption for the meter. The wording makes it clear
+ * that a pause is still inside the current turn and that finalizing is only a
+ * protected candidate, not an already-sent transcript.
+ */
+export function voiceEndpointCaption(
+  endpointState?: VoiceEndpointState,
+  vadState?: VadState,
+): string {
+  const state = endpointState ?? (vadState === "silence" ? "pause" : undefined);
+  switch (state) {
+    case "standby":
+      return "Pronto · rumore filtrato";
+    case "pause":
+      return "Pausa naturale · continuo ad ascoltare";
+    case "breath":
+      return "Respiro · tengo aperto l'ascolto";
+    case "micro_interruption":
+      return "Micro-interruzione · verifico la ripresa";
+    case "finalizing":
+      return "Fine frase · attendo il silenzio";
+    case "speaking":
+      return "Ti ascolto";
+    default:
+      return "Ti ascolto";
+  }
 }
 
 /** Submit policy is intentionally independent from microphone VAD/endpointing. */

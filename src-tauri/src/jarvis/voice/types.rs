@@ -32,6 +32,26 @@ pub enum VoiceRequestStatus {
     Failed,
 }
 
+/// Endpointing phase exposed to the widget. It deliberately separates a
+/// short pause from the final silence window so the UI never suggests that a
+/// breath or micro-interruption has already ended the turn.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceEndpointState {
+    Standby,
+    Speaking,
+    Pause,
+    Breath,
+    MicroInterruption,
+    Finalizing,
+}
+
+impl Default for VoiceEndpointState {
+    fn default() -> Self {
+        Self::Standby
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeWordState {
@@ -69,6 +89,8 @@ pub struct VoiceRequestStatusView {
     pub error: Option<VoiceErrorView>,
     pub activation_mode: VoiceActivationMode,
     pub vad_state: VadState,
+    #[serde(default)]
+    pub endpoint_state: VoiceEndpointState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +100,8 @@ pub struct VoiceLevelEvent {
     pub elapsed_ms: u64,
     pub normalized_level: f32,
     pub vad_state: VadState,
+    #[serde(default)]
+    pub endpoint_state: VoiceEndpointState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,7 +178,9 @@ impl VoiceCaptureOptions {
             max_armed_seconds: self.max_armed_seconds.clamp(1, 120),
             vad_enabled: self.vad_enabled,
             vad_speech_threshold: self.vad_speech_threshold.clamp(0.001, 1.0),
-            vad_start_frames: self.vad_start_frames.clamp(1, 60),
+            // Four consecutive blocks debounce clicks/fan pulses while the
+            // preroll preserves the first syllable.
+            vad_start_frames: self.vad_start_frames.clamp(4, 60),
             vad_silence_frames: self.vad_silence_frames.clamp(1, 120),
             vad_pre_roll_ms: self.vad_pre_roll_ms.clamp(0, 1_000),
             vad_post_speech_ms: self.vad_post_speech_ms.clamp(100, 5_000),
@@ -214,6 +240,7 @@ pub enum VoiceErrorCode {
     PlaybackDeviceUnavailable,
     PlaybackFailed,
     TtsTimeout,
+    #[allow(dead_code)]
     WakeWordUnavailable,
     WakeWordDisabled,
     MicrophoneMuted,
@@ -255,6 +282,7 @@ mod tests {
         }
         .bounded();
         assert_eq!(options.max_armed_seconds, 120);
+        assert_eq!(options.vad_start_frames, 4);
     }
 
     #[test]

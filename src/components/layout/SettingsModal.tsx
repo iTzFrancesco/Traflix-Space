@@ -13,7 +13,11 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   defaultJarvisSettings,
   ownerModeJarvisSettings,
-  VOICE_ENDPOINT_WAIT_MS,
+  normalizeVoiceEndpointWaitMs,
+  VOICE_ENDPOINT_MAX_WAIT_MS,
+  VOICE_ENDPOINT_MIN_WAIT_MS,
+  VOICE_ENDPOINT_WAIT_SECONDS,
+  VOICE_VAD_CANDIDATE_MS,
 } from "../../lib/jarvis/settings";
 import {
   ttsListVoices,
@@ -477,11 +481,11 @@ function VoiceOptions({
     autoSubmitTranscript: true,
     vadEnabled: input.activationMode !== "hold_to_talk",
     endpointingEnabled: input.endpointingEnabled ?? true,
-    endpointGraceMs: input.endpointGraceMs ?? 1200,
+    endpointGraceMs: normalizeVoiceEndpointWaitMs(input.endpointGraceMs),
     minSpokenMs: input.minSpokenMs ?? 350,
     vadPostSpeechMs: Math.max(
-      input.vadPostSpeechMs ?? VOICE_ENDPOINT_WAIT_MS,
-      VOICE_ENDPOINT_WAIT_MS,
+      input.vadPostSpeechMs ?? VOICE_VAD_CANDIDATE_MS,
+      VOICE_VAD_CANDIDATE_MS,
     ),
   };
   const normalizedOutput: VoiceOutputSettings = {
@@ -621,10 +625,41 @@ function VoiceOptions({
           <span>
             <span className="block font-medium">Invio automatico dopo pausa naturale</span>
             <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              Dopo circa 3 secondi di silenzio Jarvis termina l&apos;ascolto e invia la trascrizione. Il primo attacco della frase viene conservato anche con VAD e calibrazione.
+              Respiri, pause e micro-interruzioni restano nella stessa frase. Il
+              draft viene chiuso solo dopo un silenzio finale stabile e il primo
+              attacco viene protetto da preroll e calibrazione.
             </span>
           </span>
         </label>
+
+        {normalizedInput.endpointingEnabled && (
+          <label className="mt-3 block max-w-xl space-y-1.5 text-xs text-neutral-text-muted">
+            <span className="flex items-center justify-between gap-3">
+              <span>Silenzio finale prima dell&apos;invio</span>
+              <output className="font-mono tabular-nums text-neutral-text">
+                {normalizedInput.endpointGraceMs / 1000}s
+              </output>
+            </span>
+            <input
+              type="range"
+              min={VOICE_ENDPOINT_MIN_WAIT_MS}
+              max={VOICE_ENDPOINT_MAX_WAIT_MS}
+              step={500}
+              value={normalizedInput.endpointGraceMs}
+              onChange={(event) =>
+                onInputChange({
+                  ...normalizedInput,
+                  endpointGraceMs: Number(event.target.value),
+                })
+              }
+              className="w-full accent-[var(--color-accent)]"
+              aria-label={`Silenzio finale prima dell'invio: ${normalizedInput.endpointGraceMs / 1000} secondi`}
+            />
+            <span className="block text-[11px] leading-relaxed">
+              Predefinito {VOICE_ENDPOINT_WAIT_SECONDS}s · configurabile da {VOICE_ENDPOINT_MIN_WAIT_MS / 1000}s a {VOICE_ENDPOINT_MAX_WAIT_MS / 1000}s.
+            </span>
+          </label>
+        )}
       </div>
 
       {voiceSettingsError && (
