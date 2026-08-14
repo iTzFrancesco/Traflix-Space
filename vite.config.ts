@@ -23,7 +23,32 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      // Provider checkouts are not part of the Traflix frontend. Their
+      // internal agent metadata often contains Windows reparse links that
+      // OneDrive cannot stat reliably, so chokidar must not enter them.
+      ignored: [
+        "**/src-tauri/**",
+        "**/agenti-riferimento/**",
+        "**/.agents/**",
+        "**/.claude/**",
+        "**/.codex/**",
+        "**/.cline/**",
+        "**/.fallow/**",
+        "**/.opencode/**",
+        "**/.pi/**",
+        "**/.playwright-mcp/**",
+        "**/.wayfinder/**",
+        "**/.warp/**",
+        "**/.worktreeinclude",
+        "agenti-riferimento/cline/**",
+        "agenti-riferimento/codebuff/**",
+        "agenti-riferimento/codex/**",
+        "agenti-riferimento/open-code/**",
+        "agenti-riferimento/opencode/**",
+        "agenti-riferimento/p/**",
+        "agenti-riferimento/pi/**",
+        "agenti-riferimento/warp/**",
+      ],
     },
     fs: {
       strict: false,

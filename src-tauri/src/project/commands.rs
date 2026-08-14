@@ -39,6 +39,7 @@ pub struct ProjectFilePreview {
     content_base64: Option<String>,
     binary: bool,
     truncated: bool,
+    redacted: bool,
     size: u64,
 }
 
@@ -56,6 +57,7 @@ pub async fn project_list_directory(
     relative_path: String,
 ) -> Result<ProjectDirectoryResponse, String> {
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     let workspace = registry
         .get(&workspace_id)
         .await
@@ -75,6 +77,7 @@ pub async fn project_git_status(
     workspace_id: String,
 ) -> Result<ProjectGitStatus, String> {
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     let workspace = registry
         .get(&workspace_id)
         .await
@@ -93,6 +96,7 @@ pub async fn project_git_diff(
     side: String,
 ) -> Result<ProjectGitDiff, String> {
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     let workspace = registry
         .get(&workspace_id)
         .await
@@ -183,12 +187,6 @@ pub async fn project_read_file(
     let workspace = workspace_from_registry(&app, &workspace_id).await?;
     let root_path = canonical_workspace_root(&workspace.root_path)?;
     let path = relative_path.replace('\\', "/");
-    if path
-        .split('/')
-        .any(|part| part == ".env" || part.starts_with(".env."))
-    {
-        return Err("L’anteprima dei file di ambiente è disabilitata".to_string());
-    }
 
     tauri::async_runtime::spawn_blocking(move || read_file_preview(workspace_id, root_path, path))
         .await
@@ -200,6 +198,7 @@ async fn workspace_from_registry(
     workspace_id: &str,
 ) -> Result<crate::workspace::registry::WorkspaceConfig, String> {
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     registry
         .get(workspace_id)
         .await
@@ -246,7 +245,13 @@ fn read_file_preview(
         .len();
     let mut file = std::fs::File::open(&file_path)
         .map_err(|error| format!("Impossibile leggere il file: {error}"))?;
-    let image_extension = image_extension(&file_path);
+    // Environment files are never eligible for image/Base64 previews. A
+    // file such as ".env.png" must remain redacted even when its bytes match
+    // a valid image signature.
+    let environment_file = is_environment_file(&relative_path);
+    let image_extension = (!environment_file)
+        .then(|| image_extension(&file_path))
+        .flatten();
     let read_limit = if image_extension.is_some() {
         MAX_IMAGE_PREVIEW_BYTES
     } else {
@@ -273,16 +278,24 @@ fn read_file_preview(
                 content_base64: (!truncated).then(|| encode_base64(&bytes)),
                 binary: true,
                 truncated,
+                redacted: false,
                 size,
             });
         }
     }
 
     let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
+    let mut redacted = environment_file;
     let content = if binary {
         String::new()
     } else {
-        String::from_utf8(bytes).unwrap_or_default()
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        if environment_file {
+            redacted = true;
+            redact_environment_preview(&text)
+        } else {
+            text
+        }
     };
 
     Ok(ProjectFilePreview {
@@ -298,8 +311,32 @@ fn read_file_preview(
         content_base64: None,
         binary,
         truncated,
+        redacted,
         size,
     })
+}
+
+fn is_environment_file(relative_path: &str) -> bool {
+    relative_path
+        .split('/')
+        .any(|part| part == ".env" || part.starts_with(".env."))
+}
+
+fn redact_environment_preview(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || (trimmed.starts_with('#') && !line.contains('=')) {
+                return line.to_string();
+            }
+            line.find('=').map_or_else(
+                || "<REDACTED>".to_string(),
+                |separator| format!("{}<REDACTED>", &line[..=separator]),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn image_extension(path: &Path) -> Option<String> {
@@ -360,6 +397,7 @@ fn encode_base64(bytes: &[u8]) -> String {
 #[tauri::command]
 pub async fn project_watch_workspace(app: AppHandle, workspace_id: String) -> Result<(), String> {
     let registry = app.state::<WorkspaceRegistry>();
+    registry.load().await?;
     let workspace = registry
         .get(&workspace_id)
         .await
@@ -457,6 +495,57 @@ mod tests {
         assert!(preview.content_base64.is_none());
         assert!(!preview.binary);
         assert!(!preview.truncated);
+        assert!(!preview.redacted);
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn environment_preview_keeps_structure_but_redacts_values() {
+        let file_name = format!(".env.preview-{}", std::process::id());
+        let file_path = std::env::temp_dir().join(&file_name);
+        let _ = std::fs::remove_file(&file_path);
+        std::fs::write(
+            &file_path,
+            "# local settings\n# GROQ_API_KEY=comment-secret\nGROQ_API_KEY=synthetic-secret\nEMPTY=\n",
+        )
+        .expect("write environment preview fixture");
+
+        let preview = read_file_preview(
+            "workspace".to_string(),
+            std::fs::canonicalize(std::env::temp_dir()).expect("canonical temp dir"),
+            file_name,
+        )
+        .expect("read environment preview fixture");
+
+        assert!(preview.redacted);
+        assert!(preview.content.contains("# local settings"));
+        assert!(preview.content.contains("# GROQ_API_KEY=<REDACTED>"));
+        assert!(preview.content.contains("GROQ_API_KEY=<REDACTED>"));
+        assert!(preview.content.contains("EMPTY=<REDACTED>"));
+        assert!(!preview.content.contains("comment-secret"));
+        assert!(!preview.content.contains("synthetic-secret"));
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn environment_image_preview_never_exposes_base64() {
+        let file_name = format!(".env.preview-{}.png", std::process::id());
+        let file_path = std::env::temp_dir().join(&file_name);
+        let _ = std::fs::remove_file(&file_path);
+        std::fs::write(&file_path, [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4])
+            .expect("write environment image fixture");
+
+        let preview = read_file_preview(
+            "workspace".to_string(),
+            std::fs::canonicalize(std::env::temp_dir()).expect("canonical temp dir"),
+            file_name,
+        )
+        .expect("read environment image preview fixture");
+
+        assert!(preview.redacted);
+        assert!(preview.content_base64.is_none());
+        assert!(preview.binary);
+        assert_eq!(preview.kind, "binary");
         let _ = std::fs::remove_file(file_path);
     }
 }

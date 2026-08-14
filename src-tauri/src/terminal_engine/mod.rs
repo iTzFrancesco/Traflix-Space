@@ -1038,6 +1038,58 @@ impl TerminalManager {
         Ok(Some(snapshot_from_session(&session)))
     }
 
+    /// Refresh the provider-child presence for one exact PTY lifetime before
+    /// a Jarvis prompt is written. The shell can remain alive after Codex (or
+    /// another provider) exits, so a shell-only liveness check is insufficient
+    /// for safe automatic reactivation.
+    pub async fn refresh_agent_process_presence(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_workspace_id: &str,
+        expected_generation: u64,
+        expected_process_id: Option<u32>,
+    ) -> Result<Option<bool>, String> {
+        self.validate_runtime_identity(
+            id,
+            expected_workspace_id,
+            expected_generation,
+            expected_process_id,
+        )
+        .await?;
+
+        #[cfg(windows)]
+        if let Some(process_id) = expected_process_id {
+            let source = self
+                .sessions
+                .get(id)
+                .map(|entry| entry.value().clone())
+                .ok_or_else(|| format!("Terminal {id} not found"))?;
+            let source = source.read().await.detection_source.clone();
+            let scan = scan_process_tree_async(vec![process_id]).await?;
+            self.apply_process_detections(
+                vec![(id.to_string(), expected_generation, process_id, source)],
+                scan,
+                app,
+            )
+            .await;
+        }
+
+        let session = self
+            .sessions
+            .get(id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Terminal {id} not found"))?;
+        let session = session.read().await;
+        if session.workspace_id.as_deref().unwrap_or_default() != expected_workspace_id
+            || session.generation != expected_generation
+            || session.process_id != expected_process_id
+        {
+            return Err("stale-terminal-generation: provider target changed".to_string());
+        }
+        Ok(session.agent_runtime_presence.alive())
+    }
+
     pub async fn observe_agent_provider_for_runtime(
         &self,
         id: &str,
@@ -1563,6 +1615,7 @@ fn snapshot_from_session(session: &TerminalSession) -> TerminalAgentSnapshot {
         generation: session.generation,
         process_id: session.process_id,
         process_alive: session.process_alive.load(Ordering::Acquire),
+        agent_process_alive: session.agent_runtime_presence.alive(),
     }
 }
 

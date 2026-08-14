@@ -525,6 +525,7 @@ impl TerminalSession {
                         generation: registry_generation,
                         process_id: registry_process_id,
                         process_alive: false,
+                        agent_process_alive: None,
                     },
                 );
             }
@@ -604,6 +605,7 @@ impl TerminalSession {
                         generation: registry_generation_watch,
                         process_id: registry_process_id_watch,
                         process_alive: false,
+                        agent_process_alive: None,
                     },
                 );
                 info!(terminal_id = %watch_id, "Child process exited (watch thread)");

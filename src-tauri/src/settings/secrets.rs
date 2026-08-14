@@ -218,7 +218,14 @@ fn secret_env_name(secret: JarvisSecretId) -> &'static str {
 }
 
 fn normalize_secret(value: &str) -> Result<String, String> {
+    // Users sometimes paste the value copied from an HTTP Authorization
+    // header. `bearer_auth` adds the scheme itself, so keep only the raw key.
     let value = value.trim();
+    let value = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .map(str::trim)
+        .unwrap_or(value);
     if value.is_empty()
         || value.len() > MAX_SECRET_BYTES
         || value.contains('\0')
@@ -328,5 +335,17 @@ mod tests {
         assert!(dotenv_should_load(Some("   "), false));
         assert!(!dotenv_should_load(Some("settings-secret"), false));
         assert!(dotenv_should_load(Some("stale-process-secret"), true));
+    }
+
+    #[test]
+    fn secret_normalization_removes_a_pasted_bearer_prefix() {
+        assert_eq!(
+            normalize_secret(" Bearer gsk_test-key ").unwrap(),
+            "gsk_test-key"
+        );
+        assert_eq!(
+            normalize_secret("bearer gsk_test-key").unwrap(),
+            "gsk_test-key"
+        );
     }
 }

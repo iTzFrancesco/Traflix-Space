@@ -34,6 +34,7 @@ export interface ProjectFilePreview {
   contentBase64?: string | null;
   binary: boolean;
   truncated: boolean;
+  redacted: boolean;
   size: number;
 }
 
