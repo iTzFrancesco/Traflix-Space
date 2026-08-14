@@ -52,6 +52,17 @@ test("the detector seam is local-only and unavailable fallback is explicit", () 
   assert.doesNotMatch(wakeSource, /reqwest|ureq|TcpStream|File::create/);
 });
 
+test("fallback sensitivity follows configured VAD levels and keeps the trigger frame", () => {
+  assert.match(wakeSource, /pub speech_threshold: f32/);
+  assert.match(wakeSource, /with_speech_threshold/);
+  assert.match(wakeSource, /with_candidate_noise_floor_freeze/);
+  assert.match(commandsSource, /with_speech_threshold\(input\.vad_speech_threshold\)/);
+  assert.match(wakeSource, /self\.speech_threshold \* \(1\.2 - self\.sensitivity \* 0\.3\)/);
+  assert.match(captureSource, /let mut wake_detected = false/);
+  assert.match(captureSource, /if speech_started \|\| wake_detected/);
+  assert.match(captureSource, /buffer\.wake_word_activated = true/);
+});
+
 test("standby audio goes to the detector before any transcript buffer append", () => {
   assert.match(captureSource, /run_cpal_capture\(selected_device_id, options, wake_engine/);
   assert.match(captureSource, /if let Some\(mut engine\) = buffer\.wake_engine\.take\(\)/);

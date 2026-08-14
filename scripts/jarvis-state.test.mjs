@@ -10,6 +10,7 @@ import {
 } from "../src/lib/jarvis/chatState.ts";
 import {
   collapsedJarvisStatus,
+  hasOpenActivity,
   mergeActivityEvents,
   stripActivities,
 } from "../src/lib/jarvis/activityState.ts";
@@ -163,6 +164,31 @@ test("conversation and legacy pending state stay workspace-scoped", () => {
       "workspace-a",
     ).map((item) => item.id),
     ["workspace-a"],
+  );
+});
+
+test("a PTY write receipt closes its local activity even without turn_started", () => {
+  const running = {
+    requestId: "dispatch-1",
+    workspaceId: "workspace-a",
+    phase: "writing",
+    label: "Writing to Codex…",
+    status: "running",
+    targetSessionId: "session-old",
+    createdAt: "2026-08-14T20:00:00.000Z",
+  };
+  const completed = {
+    ...running,
+    label: "Scritto; avvio turno non confermato.",
+    status: "done",
+    targetSessionId: undefined,
+    createdAt: "2026-08-14T20:00:00.100Z",
+  };
+  const activities = mergeActivityEvents([running], [completed]);
+  assert.equal(hasOpenActivity(activities, "workspace-a"), false);
+  assert.equal(
+    collapsedJarvisStatus(idle({ activities })),
+    "Al tuo comando",
   );
 });
 
@@ -384,6 +410,22 @@ test("VAD capture closes speech turns automatically and re-arms hands-free", () 
   assert.match(overlaySource, /store\.startVoice\(\)/);
 });
 
+test("watchdog loops publish only capture-phase states and the latch self-heals", () => {
+  assert.match(
+    voiceCommandsSource,
+    /matches!\(\s*status\.status,\s*VoiceRequestStatus::Recording \| VoiceRequestStatus::Armed\s*\)/s,
+  );
+  assert.match(
+    voiceCommandsSource,
+    /matches!\(\s*current\.status,\s*VoiceRequestStatus::Recording \| VoiceRequestStatus::Armed\s*\)/s,
+  );
+  assert.match(overlaySource, /Reconcile a stale active request/);
+  assert.match(
+    overlaySource,
+    /\["idle", "transcript_ready", "cancelled", "failed"\]\.includes\(\s*latched\.status[,\s]*\)/s,
+  );
+});
+
 test("successful model replies are spoken and transcripts auto-submit", () => {
   assert.match(
     storeSource,
@@ -479,7 +521,10 @@ test("agent routing binds alias separately from duplicate display titles", () =>
   assert.match(controlSource, /target_from_binding/);
   assert.match(controlSource, /agent_binding_stale_or_mismatch/);
   assert.match(controlSource, /Non ho un binding attivo per questo follow-up/);
-  assert.match(controlSource, /TargetResolution::Selected\(target_from_binding\(context, &binding\)\?\)/);
+  // The implementation now handles stale bindings in a dedicated match so a
+  // live binding can be reactivated without conflating it with ambiguity.
+  assert.match(controlSource, /match target_from_binding\(context, &binding\)/);
+  assert.match(controlSource, /TargetResolution::Selected\(target\)/);
   assert.match(controlSource, /follow_up/);
   assert.match(controlSource, /automatic_follow_up_requested/);
   assert.match(controlSource, /followUp/);

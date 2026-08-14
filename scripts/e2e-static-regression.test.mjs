@@ -14,19 +14,32 @@ const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const workspaceWizard = source("../src/components/workspace/NewSpaceWizard.tsx");
 const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const workspaceRegistry = source("../src-tauri/src/workspace/registry.rs");
+const projectCommands = source("../src-tauri/src/project/commands.rs");
+const projectPreview = source("../src/components/project/ProjectFilePreview.tsx");
+const projectTypes = source("../src/project/types.ts");
 const terminalManager = source("../src-tauri/src/terminal_engine/mod.rs");
 const sidebar = source("../src/components/layout/Sidebar.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
+const jarvisControl = source("../src-tauri/src/jarvis/control.rs");
+const jarvisThreads = source("../src-tauri/src/jarvis/codex/threads.rs");
+const jarvisAccount = source("../src-tauri/src/jarvis/codex/account.rs");
+const jarvisTools = source("../src-tauri/src/jarvis/codex/tools.rs");
+const jarvisEvents = source("../src-tauri/src/jarvis/codex/events.rs");
+const jarvisRuntime = source("../src-tauri/src/jarvis/codex/runtime.rs");
+const jarvisChat = source("../src-tauri/src/jarvis/chat.rs");
+const jarvisActivity = source("../src/lib/jarvis/activityState.ts");
 const rustSettings = source("../src-tauri/src/settings/store.rs");
 const secretLoader = source("../src-tauri/src/settings/secrets.rs");
 const skillsWatcher = source("../src-tauri/src/skills/watcher.rs");
 const windowsTauriConfig = source("../src-tauri/tauri.windows.conf.json");
 const windowsPrebuild = source("./tauri-before-build.ps1");
 const voiceCapture = source("../src-tauri/src/jarvis/voice/capture.rs");
+const voiceAudio = source("../src-tauri/src/jarvis/voice/audio.rs");
 const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const voiceTts = source("../src-tauri/src/jarvis/voice/tts.rs");
 const voiceStt = source("../src-tauri/src/jarvis/voice/stt.rs");
+const viteConfig = source("../vite.config.ts");
 const releaseWorkflow = source("../.github/workflows/release.yml");
 const ciWorkflow = source("../.github/workflows/ci.yml");
 const rustBuildScript = source("../src-tauri/build.rs");
@@ -170,6 +183,15 @@ test("dotenv credentials are refreshed without exposing secret values to the fro
   assert.match(settingsCommands, /secrets::refresh_dotenv_environment\(&app\)/);
 });
 
+test("workspace .env files stay visible with a redacted preview", () => {
+  assert.doesNotMatch(projectCommands, /L’anteprima dei file di ambiente è disabilitata/);
+  assert.match(projectCommands, /fn is_environment_file\(/);
+  assert.match(projectCommands, /fn redact_environment_preview\(/);
+  assert.match(projectCommands, /redacted,/);
+  assert.match(projectTypes, /redacted: boolean;/);
+  assert.match(projectPreview, /Anteprima protetta: i valori sensibili sono oscurati/);
+});
+
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
   assert.match(rustSettings, /impl Default for VoiceActivationMode[\s\S]*Self::Vad/);
   assert.match(
@@ -192,6 +214,9 @@ test("voice runtime avoids callback data loss, survives Windows Python aliases, 
   assert.match(voiceTts, /child\.try_wait\(\)/);
   assert.match(voiceStt, /language\.chars\(\)\.any\(\|ch\| ch\.is_control\(\)\)/);
   assert.match(voiceCapture, /perceptual_level/);
+  assert.match(voiceCapture, /smooth_perceptual_level/);
+  assert.match(voiceAudio, /LEVEL_FLOOR_DB: f32 = -48\.0/);
+  assert.match(voiceStt, /bearer_auth/);
   assert.match(voiceTts, /child\.try_wait\(\)/);
 });
 
@@ -202,6 +227,59 @@ test("chat completion reserves TTS state before IPC so hands-free cannot rearm i
   assert.match(jarvisStore, /status: "failed"/);
   assert.match(jarvisStore, /sanitizedVoiceErrorView\(error, "tts_ipc_failed"\)/);
   assert.match(jarvisStore, /cancelChat\(invocation\.requestId\)/);
+});
+
+test("PTY dispatches close their activity checkpoint without inventing turn_started", () => {
+  assert.match(
+    jarvisControl,
+    /Scritto; avvio turno non confermato\.[\s\S]{0,180}JarvisActivityStatus::Done/,
+  );
+  assert.match(jarvisControl, /status: DISPATCH_SUBMISSION_UNCONFIRMED/);
+  assert.match(jarvisControl, /DISPATCH_SUBMISSION_UNCONFIRMED, DISPATCH_TURN_STARTED/);
+  assert.match(jarvisActivity, /if \(event\.status === "running"\) return true/);
+});
+
+test("inactive and stale agent sessions are rebound to a fresh PTY generation before prompt write", () => {
+  assert.match(jarvisControl, /reactivate_bound_agent/);
+  assert.match(jarvisControl, /reactivate_explicit_agent/);
+  assert.match(jarvisControl, /ensure_target_runtime_for_prompt/);
+  assert.match(jarvisControl, /refresh_agent_process_presence/);
+  assert.match(jarvisControl, /target_was_reactivated/);
+  assert.match(
+    jarvisControl,
+    /!\s*target_was_reactivated\s*\)\s*\.then_some\(\s*follow_up_binding\s*\)/,
+  );
+  assert.match(jarvisControl, /wait_until_ready/);
+  assert.match(jarvisControl, /agent_process_alive: Option<bool>/);
+});
+
+test("Codex turn cleanup is bounded and late terminal events cannot clear a newer turn", () => {
+  assert.match(jarvisThreads, /pub async fn clear_active_turn/);
+  assert.match(jarvisThreads, /self\.clear_active_turn\(workspace_id, Some\(&turn_id\)\)/);
+  assert.match(jarvisThreads, /notification_turn_id/);
+  assert.match(jarvisThreads, /pub async fn terminal_turn_matches/);
+  assert.match(jarvisThreads, /terminal_turn_matches_record/);
+  assert.doesNotMatch(jarvisThreads, /legacy clear behavior/);
+  assert.match(jarvisAccount, /terminal_turn_matches/);
+  assert.match(jarvisAccount, /emit_chat_stream[\s\S]*capture_turn_final_fallback[\s\S]*fail_chat_waiter/);
+  assert.match(jarvisChat, /chat timeout: best-effort turn\/interrupt failed/);
+  assert.match(jarvisChat, /interrupt_turn_for_request/);
+  assert.match(jarvisChat, /"request",[\s\S]*JarvisActivityStatus::Failed/);
+});
+
+test("Codex cancellation and stream fallbacks stay request- and generation-scoped", () => {
+  assert.match(jarvisThreads, /struct ChatWaiter/);
+  assert.match(jarvisThreads, /fail_chat_waiter_for_request/);
+  assert.match(jarvisThreads, /active_turn_matches/);
+  assert.match(jarvisAccount, /active_turn_matches\(thread_id, &turn_id\)/);
+  assert.match(jarvisAccount, /clear_plan_cancel\(thread_id, &turn_id\)/);
+  assert.match(jarvisTools, /HashMap<\(String, String\), CancellationToken>/);
+  assert.match(jarvisTools, /missing turnId for conversational\.plan/);
+  assert.match(jarvisRuntime, /client\.clone\(\),\s*models/);
+  assert.match(jarvisAccount, /for_server_client\(Arc::clone\(&client\)\)/);
+  assert.match(jarvisEvents, /final_turn_message_event/);
+  assert.match(jarvisStore, /codexChatStreamAvailable/);
+  assert.match(jarvisStore, /!progressiveCodexSpeech/);
 });
 
 test("failed voice transcript submissions stay preserved without automatic retry loops", () => {
@@ -232,6 +310,39 @@ test("strict regression runner gates frontend, formatting, clippy safety and war
   assert.match(strictTestRunner, /RUSTFLAGS: rustFlags/);
   assert.match(strictTestRunner, /RUSTFLAGS/);
   assert.match(strictTestRunner, /explicit Clippy baseline/);
+});
+
+test("Vite ignores provider checkouts and agent metadata with broken Windows reparse links", () => {
+  for (const segment of [
+    "agenti-riferimento",
+    ".agents",
+    ".claude",
+    ".codex",
+    ".cline",
+    ".fallow",
+    ".opencode",
+    ".pi",
+    ".playwright-mcp",
+   ".wayfinder",
+   ".warp",
+ ]) {
+    const escapedSegment = segment.replace(".", "\\.");
+    assert.match(viteConfig, new RegExp(`\\*\\*/${escapedSegment}\\/\\*\\*`));
+  }
+  for (const segment of [
+    "cline",
+    "codebuff",
+    "codex",
+    "open-code",
+    "opencode",
+    "p",
+    "pi",
+    "warp",
+  ]) {
+    const escapedSegment = segment.replace(".", "\\.");
+    assert.match(viteConfig, new RegExp(`agenti-riferimento\\/${escapedSegment}\\/\\*\\*`));
+    assert.doesNotMatch(viteConfig, new RegExp(`\\*\\/${escapedSegment}\\/\\*\\*`));
+  }
 });
 
 test("CI and release builds use runner-local Rust paths and version all MSI inputs", () => {
