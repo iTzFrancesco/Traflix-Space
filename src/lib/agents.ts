@@ -32,6 +32,15 @@ export const AGENTS: AgentDefinition[] = [
     color: "#d97757",
   },
   {
+    id: "claudex",
+    name: "Claudex",
+    description: "Agente AI Claudex",
+    command: "claudex",
+    args: [],
+    icon: "MessageSquare",
+    color: "#a855f7",
+  },
+  {
     id: "codex",
     name: "Codex",
     description: "Agente AI OpenAI Codex",

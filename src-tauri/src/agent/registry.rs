@@ -44,6 +44,17 @@ impl AgentRegistry {
                     readiness_hints: vec!["❯".into(), "anthropic".into()],
                 },
                 AgentDefinition {
+                    id: "claudex".into(),
+                    name: "Claudex".into(),
+                    description: "Agente AI Claudex".into(),
+                    command: "claudex".into(),
+                    args: vec![],
+                    env: std::collections::HashMap::new(),
+                    icon: "MessageSquare".into(),
+                    color: "#a855f7".into(),
+                    readiness_hints: vec!["❯".into(), "anthropic".into()],
+                },
+                AgentDefinition {
                     id: "codex".into(),
                     name: "Codex".into(),
                     description: "Agente AI OpenAI Codex".into(),

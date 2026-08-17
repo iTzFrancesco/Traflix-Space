@@ -583,7 +583,8 @@ fn agent_display_name(agent_id: &str) -> String {
     match agent_id.trim().to_ascii_lowercase().as_str() {
         "codex" => "Codex".to_string(),
         "opencode" => "OpenCode".to_string(),
-        "claude" => "Claude".to_string(),
+        "claude" | "cloud" => "Claude".to_string(),
+        "claudex" | "cloudx" => "Claudex".to_string(),
         "pi" => "PI".to_string(),
         "freebuff" => "Freebuff".to_string(),
         "anti-gravity" | "agy" => "Anti-Gravity".to_string(),

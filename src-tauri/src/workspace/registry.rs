@@ -443,7 +443,8 @@ fn is_builtin_terminal_title(title: &str, agent_id: Option<&str>) -> bool {
         let display = match normalized.as_str() {
             "codex" => "Codex".to_string(),
             "opencode" => "OpenCode".to_string(),
-            "claude" => "Claude".to_string(),
+            "claude" | "cloud" => "Claude".to_string(),
+            "claudex" | "cloudx" => "Claudex".to_string(),
             "pi" => "PI".to_string(),
             "cline" => "Cline".to_string(),
             other => other.to_string(),

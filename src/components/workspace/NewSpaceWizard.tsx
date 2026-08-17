@@ -35,6 +35,7 @@ const agentIcons: Record<string, typeof Bot> = {
   opencode: Terminal,
   "anti-gravity": Bot,
   claude: Bot,
+  claudex: Bot,
   codex: Bot,
   cmdc: Terminal,
   cline: Bot,
