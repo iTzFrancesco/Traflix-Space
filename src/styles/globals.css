@@ -529,27 +529,6 @@ a:not(:disabled),
   background: oklch(0.78 0.13 157 / 0.08);
 }
 
-.jarvis-level-meter--pause {
-  opacity: 0.78;
-  background: oklch(0.78 0.13 157 / 0.045);
-}
-
-.jarvis-level-meter--breath {
-  opacity: 0.68;
-  background: oklch(0.78 0.13 157 / 0.03);
-}
-
-.jarvis-level-meter--micro {
-  opacity: 0.86;
-  background: oklch(0.78 0.13 157 / 0.06);
-}
-
-.jarvis-level-meter--finalizing {
-  color: var(--color-primary);
-  opacity: 0.9;
-  background: oklch(0.74 0.16 63 / 0.08);
-}
-
 .jarvis-level-meter > span {
   width: 2px;
   height: 17px;

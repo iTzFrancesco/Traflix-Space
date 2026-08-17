@@ -2440,9 +2440,8 @@ export const TerminalPane = memo(function TerminalPane({
       scheduleFollowBottomRepair(3);
     }
   }, [agentStatus, scheduleFollowBottomRepair]);
-  const workspaces = useWorkspaceStore((s) => s.workspaces);
-  const workspaceIndex = workspaces.findIndex(
-    (workspace) => workspace.id === terminalWorkspaceId,
+  const workspaceIndex = useWorkspaceStore((state) =>
+    state.workspaces.findIndex((workspace) => workspace.id === terminalWorkspaceId),
   );
   const workspaceColor = getWorkspaceColor(
     workspaceIndex >= 0 ? workspaceIndex : 0,

@@ -54,6 +54,8 @@ export function BrowserPanel() {
   const currentUrlRef = useRef("");
   const nativeVisibleRef = useRef(false);
   const lastBoundsRef = useRef<BrowserBounds | null>(null);
+  const boundsSyncBusyRef = useRef(false);
+  const boundsSyncPendingRef = useRef(false);
   const layoutFrameRef = useRef<number | null>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
   const [address, setAddress] = useState("");
@@ -69,47 +71,64 @@ export function BrowserPanel() {
   }, []);
 
   const syncBounds = useCallback(async () => {
-    const viewport = viewportRef.current;
-    const webview = webviewRef.current;
-    if (!viewport || !webview) return;
-
-    const rect = viewport.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return;
-
+    if (boundsSyncBusyRef.current) {
+      // Native WebView calls are asynchronous. Keep only the newest layout
+      // request so a slow resize cannot reorder stale bounds updates.
+      boundsSyncPendingRef.current = true;
+      return;
+    }
+    boundsSyncBusyRef.current = true;
     try {
-      if (!currentUrlRef.current) {
-        if (nativeVisibleRef.current) {
-          await webview.hide();
-          nativeVisibleRef.current = false;
+      do {
+        boundsSyncPendingRef.current = false;
+        const viewport = viewportRef.current;
+        const webview = webviewRef.current;
+        if (!viewport || !webview || !aliveRef.current) return;
+
+        const rect = viewport.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return;
+
+        try {
+          if (!currentUrlRef.current) {
+            if (nativeVisibleRef.current) {
+              await webview.hide();
+              nativeVisibleRef.current = false;
+            }
+            // A hidden browser must not retain a stale comparison target after
+            // the panel changes size while it has no document.
+            lastBoundsRef.current = null;
+            continue;
+          }
+          const bounds: BrowserBounds = {
+            x: Math.max(0, Math.round(rect.left)),
+            y: Math.max(0, Math.round(rect.top)),
+            width: Math.max(1, Math.round(rect.width)),
+            height: Math.max(1, Math.round(rect.height)),
+          };
+          const previous = lastBoundsRef.current;
+          if (!previous || previous.x !== bounds.x || previous.y !== bounds.y) {
+            await webview.setPosition(new LogicalPosition(bounds.x, bounds.y));
+          }
+          if (
+            !previous ||
+            previous.width !== bounds.width ||
+            previous.height !== bounds.height
+          ) {
+            await webview.setSize(new LogicalSize(bounds.width, bounds.height));
+          }
+          lastBoundsRef.current = bounds;
+          if (!nativeVisibleRef.current && currentUrlRef.current) {
+            await webview.show();
+            nativeVisibleRef.current = true;
+          }
+        } catch (reason) {
+          if (aliveRef.current && currentUrlRef.current) {
+            setError(reason instanceof Error ? reason.message : "Pagina non disponibile");
+          }
         }
-        return;
-      }
-      const bounds: BrowserBounds = {
-        x: Math.max(0, Math.round(rect.left)),
-        y: Math.max(0, Math.round(rect.top)),
-        width: Math.max(1, Math.round(rect.width)),
-        height: Math.max(1, Math.round(rect.height)),
-      };
-      const previous = lastBoundsRef.current;
-      if (!previous || previous.x !== bounds.x || previous.y !== bounds.y) {
-        await webview.setPosition(new LogicalPosition(bounds.x, bounds.y));
-      }
-      if (
-        !previous ||
-        previous.width !== bounds.width ||
-        previous.height !== bounds.height
-      ) {
-        await webview.setSize(new LogicalSize(bounds.width, bounds.height));
-      }
-      lastBoundsRef.current = bounds;
-      if (!nativeVisibleRef.current) {
-        await webview.show();
-        nativeVisibleRef.current = true;
-      }
-    } catch (reason) {
-      if (aliveRef.current && currentUrlRef.current) {
-        setError(reason instanceof Error ? reason.message : "Pagina non disponibile");
-      }
+      } while (boundsSyncPendingRef.current && aliveRef.current);
+    } finally {
+      boundsSyncBusyRef.current = false;
     }
   }, []);
 
@@ -178,6 +197,7 @@ export function BrowserPanel() {
         window.cancelAnimationFrame(layoutFrameRef.current);
       }
       layoutFrameRef.current = null;
+      boundsSyncPendingRef.current = false;
       unlisten?.();
       webviewRef.current = null;
       nativeVisibleRef.current = false;

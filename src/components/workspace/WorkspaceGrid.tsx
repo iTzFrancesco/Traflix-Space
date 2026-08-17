@@ -29,7 +29,15 @@ export function WorkspaceGrid({
   const focusedTerminalId = useTerminalStore(
     (state) => state.focusedTerminalByWorkspace[workspaceId] ?? null,
   );
-  const runtimeTerminals = useTerminalStore((state) => state.terminals);
+  const exitedTerminalKey = useTerminalStore((state) =>
+    terminals
+      .filter((terminal) => state.terminals[terminal.id]?.exitCode != null)
+      .map((terminal) => terminal.id)
+      .join(","),
+  );
+  const exitedTerminalIds = new Set(
+    exitedTerminalKey ? exitedTerminalKey.split(",") : [],
+  );
   const toggleFocusTerminal = useTerminalStore((state) => state.toggleFocusTerminal);
   // Sidebar drag/collapse changes the grid geometry before React necessarily
   // delivers a ResizeObserver notification to every xterm pane.
@@ -108,7 +116,7 @@ export function WorkspaceGrid({
       {terminals.map((terminal) => {
         const isFocused = localFocusId === terminal.id;
         const isHidden = isFocusMode && !isFocused;
-        const hasExited = runtimeTerminals[terminal.id]?.exitCode !== null && runtimeTerminals[terminal.id]?.exitCode !== undefined;
+        const hasExited = exitedTerminalIds.has(terminal.id);
         return (
           <div
             key={terminal.id}
