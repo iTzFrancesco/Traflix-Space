@@ -105,7 +105,7 @@ workspace, registry, task e risultati bounded.
 ## PTY visibile e catalogo agenti
 
 Il catalogo typed runtime supporta soltanto i provider conosciuti dal percorso
-Jarvis: Codex, OpenCode, Pi, Freebuff e Claude Code. Non esiste network
+Jarvis: Codex, OpenCode, Pi, Freebuff, Claude Code e Claudex. Non esiste network
 discovery e non è previsto provider fallback silenzioso.
 
 `agent.open` verifica la workspace, crea un normale terminale Traflix visibile,

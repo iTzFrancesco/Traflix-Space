@@ -40,7 +40,11 @@ del rumore dedicata.
 - `cargo fmt --manifest-path src-tauri\\Cargo.toml -- --check`.
 - `cargo test --manifest-path src-tauri\\Cargo.toml --no-run`: compilazione dei
   test Rust.
+- `npm run test:strict`: suite completa; imposta automaticamente
+  `TRAFLIX_RUST_TEST_MANIFEST=1`, necessario per incorporare il manifest
+  common-controls nei test Windows.
 
-I binari Rust possono non avviarsi su questa macchina Windows con
-`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`; questo è distinto dalla compilazione
-riuscita e va risolto nell'ambiente/runtime Windows.
+Un `cargo test` lanciato senza `TRAFLIX_RUST_TEST_MANIFEST=1` può terminare con
+`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND` prima dell'harness. Non è un errore
+delle asserzioni: usare `npm run test:strict` oppure impostare la variabile
+prima del comando Cargo.

@@ -50,8 +50,8 @@ Gli eventi intermedi non erano persi tutti nello stesso punto:
 La cattura resta nello stesso request finché il VAD e l'endpointing non hanno
 confermato la fine. I default owner mode correnti sono:
 
-- almeno 3 secondi di silenzio VAD stabile per creare il candidato;
-- ulteriori 6,5 secondi di endpoint grace prima dello stop automatico;
+- almeno 650 ms di silenzio VAD stabile per creare il candidato;
+- ulteriori 900 ms di endpoint grace prima dello stop automatico;
 - 500 ms di pre-roll e conservazione del buffer dopo il primo parlato;
 - auto-submit solo nello stato `transcript_ready`, mai durante `armed`,
   `recording` o una pausa candidata.

@@ -8,7 +8,7 @@ ripresa cancella la finestra di endpointing e conserva il preroll e il draft
 nella stessa richiesta. La trascrizione viene consegnata a STT soltanto quando
 il watchdog conferma la fine reale del turno.
 
-Le fasi esposte al widget sono:
+Il backend conserva le fasi diagnostiche:
 
 - `standby`: microfono armato, calibrazione/rumore filtrato, nessun parlato;
 - `speaking`: parlato confermato;
@@ -19,20 +19,25 @@ Le fasi esposte al widget sono:
 - `finalizing`: VAD ha confermato silenzio stabile, ma la finestra finale è
   ancora aperta e l'utente può riprendere senza perdere la frase.
 
+La pillola compatta non cambia testo a ogni micro-fase: durante l'ascolto mostra
+`Ti ascolto`; i dettagli restano disponibili nello stato diagnostico e nel
+meter.
+
 ## Parametri
 
 | Parametro | Default | Limiti | Scopo |
 | --- | ---: | ---: | --- |
-| `endpointGraceMs` / `endpoint_grace_ms` | 6.500 ms | 3.500–15.000 ms | Silenzio finale dall'inizio della pausa prima dello stop automatico |
-| `vadPostSpeechMs` / `vad_post_speech_ms` | 3.000 ms | 100–5.000 ms | Candidato VAD di silenzio stabile; non è più il timer finale di invio |
+| `endpointGraceMs` / `endpoint_grace_ms` | 900 ms | 500–5.000 ms | Silenzio finale dall'inizio della pausa prima dello stop automatico |
+| `vadPostSpeechMs` / `vad_post_speech_ms` | 650 ms | 100–5.000 ms | Candidato VAD di silenzio stabile; non è più il timer finale di invio |
 | `vadStartFrames` | 5 | 4–60 | Debounce per confermare l'attacco vocale |
 | `vadSilenceFrames` | 16 | 1–120 | Debounce della transizione verso silenzio |
 | `vadPreRollMs` | 500 ms | 0–1.000 ms | Protezione della prima sillaba |
 | ripresa dopo pausa | 3 blocchi | fisso | Isteresi/debounce contro click e impulsi singoli |
 
-Il vecchio default `endpointGraceMs = 1.200` viene migrato a 6.500 ms; valori
-personalizzati diversi restano configurabili e vengono solo limitati al range
-sicuro.
+I vecchi default `endpointGraceMs = 1.200` e `6.500` vengono migrati a
+900 ms; il vecchio `vadPostSpeechMs = 3.000` viene migrato a 650 ms. I valori
+personalizzati diversi restano configurabili e vengono limitati ai rispettivi
+range sicuri.
 
 Il rumore di fondo viene stimato nei primi 300 ms e seguito lentamente anche
 quando il microfono è armato. Il gate usa `1.1 × noiseFloor`, attenua i campioni
