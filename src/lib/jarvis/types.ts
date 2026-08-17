@@ -649,6 +649,8 @@ export type JarvisRequestStatus = "running" | "cancellation_requested" | "comple
 export interface JarvisRequestState {
   requestId: string;
   workspaceId: string;
+  /** Voice capture id that created this chat request, when applicable. */
+  voiceRequestId?: string;
   createdAt: string;
   status: JarvisRequestStatus;
   error?: string;

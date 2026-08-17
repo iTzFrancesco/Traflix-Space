@@ -7,11 +7,18 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 const OWNER_MODE_MARKER: &str = "owner-mode";
-const MIN_SAFE_VAD_POST_SPEECH_MS: u32 = 3_000;
-const DEFAULT_ENDPOINT_GRACE_MS: u32 = 6_500;
-const MIN_SAFE_ENDPOINT_GRACE_MS: u32 = 3_500;
-const MAX_ENDPOINT_GRACE_MS: u32 = 15_000;
+// Keep one short silence window for normal conversation. The previous
+// defaults (3 s VAD + 6.5 s endpoint grace) made every turn feel stuck.
+const MIN_SAFE_VAD_POST_SPEECH_MS: u32 = 650;
+const MAX_SAFE_VAD_POST_SPEECH_MS: u32 = 5_000;
+const DEFAULT_ENDPOINT_GRACE_MS: u32 = 900;
+const MIN_SAFE_ENDPOINT_GRACE_MS: u32 = 500;
+const MAX_ENDPOINT_GRACE_MS: u32 = 5_000;
+const LEGACY_VAD_POST_SPEECH_MS: u32 = 3_000;
 const LEGACY_ENDPOINT_GRACE_MS: u32 = 1_200;
+const PREVIOUS_ENDPOINT_GRACE_MS: u32 = 6_500;
+const DEFAULT_VOICE_MAX_DURATION_SECONDS: u32 = 600;
+const LEGACY_VOICE_MAX_DURATION_SECONDS: u32 = 45;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -318,14 +325,30 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
 
     settings.voice_input.enabled = true;
     settings.voice_input.auto_submit_transcript = true;
+    if settings.voice_input.max_duration_seconds == LEGACY_VOICE_MAX_DURATION_SECONDS {
+        // The old 45 s cap was a short-turn safety default, not a deliberate
+        // user limit. Manual capture follows Traflix Voice and stays open
+        // until the explicit stop, with a generous ten-minute ceiling.
+        settings.voice_input.max_duration_seconds = DEFAULT_VOICE_MAX_DURATION_SECONDS;
+    }
+    settings.voice_input.max_duration_seconds = settings
+        .voice_input
+        .max_duration_seconds
+        .clamp(1, DEFAULT_VOICE_MAX_DURATION_SECONDS);
+    if settings.voice_input.vad_post_speech_ms == LEGACY_VAD_POST_SPEECH_MS {
+        // The former 3 s candidate window made the UI look like it was still
+        // listening long after the user had finished a short sentence.
+        settings.voice_input.vad_post_speech_ms = MIN_SAFE_VAD_POST_SPEECH_MS;
+    }
     settings.voice_input.vad_post_speech_ms = settings
         .voice_input
         .vad_post_speech_ms
-        .max(MIN_SAFE_VAD_POST_SPEECH_MS);
-    if settings.voice_input.endpoint_grace_ms == LEGACY_ENDPOINT_GRACE_MS {
-        // 1.2s was the old default and caused the stable VAD candidate to be
-        // sent during ordinary pauses. Migrate only that known default so a
-        // future user-selected value remains configurable.
+        .clamp(MIN_SAFE_VAD_POST_SPEECH_MS, MAX_SAFE_VAD_POST_SPEECH_MS);
+    if matches!(
+        settings.voice_input.endpoint_grace_ms,
+        LEGACY_ENDPOINT_GRACE_MS | PREVIOUS_ENDPOINT_GRACE_MS
+    ) {
+        // Migrate known defaults only; preserve a deliberately selected value.
         settings.voice_input.endpoint_grace_ms = DEFAULT_ENDPOINT_GRACE_MS;
     }
     settings.voice_input.endpoint_grace_ms = settings
@@ -337,6 +360,12 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
     }
     settings.voice_input.vad_enabled =
         settings.voice_input.activation_mode != VoiceActivationMode::HoldToTalk;
+    if settings.voice_input.activation_mode == VoiceActivationMode::HoldToTalk {
+        // Manual mode must remain reachable after reload: the widget exposes
+        // stop/send, while the global shortcut is the start boundary.
+        // Preserve the user's hold/toggle choice.
+        settings.voice_input.global_shortcut_enabled = true;
+    }
     settings.voice_input.privacy_consent = true;
     if settings.voice_input.privacy_consent_at.is_none() {
         settings.voice_input.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
@@ -540,7 +569,7 @@ fn default_voice_language() -> String {
     "it".to_string()
 }
 fn default_voice_max_duration() -> u32 {
-    45
+    DEFAULT_VOICE_MAX_DURATION_SECONDS
 }
 fn default_global_shortcut() -> String {
     "Ctrl+Alt+Space".to_string()
@@ -758,24 +787,30 @@ mod tests {
     }
 
     #[test]
-    fn voice_endpointing_defaults_allow_natural_pauses() {
+    fn voice_endpointing_defaults_finish_promptly() {
         let settings = AppSettings::default();
         let input = &settings.jarvis.voice_input;
         assert!(input.endpointing_enabled);
         assert_eq!(input.vad_pre_roll_ms, 500);
-        assert_eq!(input.vad_post_speech_ms, 3_000);
-        assert_eq!(input.endpoint_grace_ms, 6_500);
+        assert_eq!(input.vad_post_speech_ms, 650);
+        assert_eq!(input.endpoint_grace_ms, 900);
         assert_eq!(input.min_spoken_ms, 350);
     }
 
     #[test]
-    fn owner_mode_raises_legacy_short_endpoint_timeout_without_shortening_longer_values() {
+    fn owner_mode_migrates_slow_legacy_defaults_without_shortening_custom_values() {
         let mut settings = AppSettings::default();
+        settings.jarvis.voice_input.vad_post_speech_ms = 3_000;
+        settings.jarvis.voice_input.endpoint_grace_ms = 6_500;
+        enforce_owner_mode(&mut settings.jarvis);
+        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 650);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 900);
+
         settings.jarvis.voice_input.vad_post_speech_ms = 1_800;
         settings.jarvis.voice_input.endpoint_grace_ms = 1_200;
         enforce_owner_mode(&mut settings.jarvis);
-        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 3_000);
-        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 6_500);
+        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 1_800);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 900);
 
         settings.jarvis.voice_input.vad_post_speech_ms = 4_000;
         settings.jarvis.voice_input.endpoint_grace_ms = 4_000;
@@ -784,8 +819,10 @@ mod tests {
         assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 4_000);
 
         settings.jarvis.voice_input.endpoint_grace_ms = 20_000;
+        settings.jarvis.voice_input.vad_post_speech_ms = 20_000;
         enforce_owner_mode(&mut settings.jarvis);
-        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 15_000);
+        assert_eq!(settings.jarvis.voice_input.endpoint_grace_ms, 5_000);
+        assert_eq!(settings.jarvis.voice_input.vad_post_speech_ms, 5_000);
     }
 
     #[test]

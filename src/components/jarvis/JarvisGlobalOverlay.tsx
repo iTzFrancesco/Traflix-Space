@@ -2,7 +2,12 @@
 import { listen } from "@tauri-apps/api/event";
 import { useState } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
-import { agentSnapshot, buildModelContext, ttsSpeak } from "../../lib/jarvis/client";
+import {
+  agentSnapshot,
+  buildModelContext,
+  ttsSpeak,
+  voiceWorkspaceStatus,
+} from "../../lib/jarvis/client";
 import type {
   TtsStatusView,
   VoiceActivationMode,
@@ -31,6 +36,7 @@ import {
 import { JarvisWidget } from "./JarvisWidget";
 
 const AUTO_ARM_DELAY_MS = 180;
+const VOICE_TRANSCRIPTION_RECONCILE_MS = 1_000;
 
 export function JarvisGlobalOverlay() {
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -56,15 +62,27 @@ export function JarvisGlobalOverlay() {
   const voiceRequest = activeWorkspaceId
     ? voiceRequests[activeWorkspaceId] ?? null
     : null;
+  // Audio ownership is global even when the user changes workspace during a
+  // recording/transcription. The visible request remains workspace-scoped,
+  // but commentary TTS must not speak over a voice turn in another workspace.
+  const activeVoiceRequest = activeVoiceRequestId
+    ? Object.values(voiceRequests).find(
+        (request) => request.requestId === activeVoiceRequestId,
+      ) ?? null
+    : null;
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
   const wakeWordStatus = useJarvisStore((state) => state.wakeWordStatus);
   const voiceError = useJarvisStore((state) => state.voiceError);
   const codexSpeechQueue = useJarvisStore((state) => state.codexSpeechQueue);
-  const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
   const clearCodexSpeech = useJarvisStore((state) => state.clearCodexSpeech);
+  const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
   const speechWorkerBusyRef = useRef(false);
   const speechRetryCountsRef = useRef<Map<string, number>>(new Map());
+  const previousVoiceCaptureRef = useRef<{
+    requestId: string;
+    status: VoiceRequestStatusView["status"];
+  } | null>(null);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const bootstrapCodex = useJarvisStore((state) => state.bootstrapCodex);
   const setContext = useJarvisStore((state) => state.setContext);
@@ -89,6 +107,7 @@ export function JarvisGlobalOverlay() {
     (state) => state.clearWorkspaceActivities,
   );
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
+  const clearVoiceError = useJarvisStore((state) => state.clearVoiceError);
   const setTtsStatus = useJarvisStore((state) => state.setTtsStatus);
   const setWakeWordStatus = useJarvisStore((state) => state.setWakeWordStatus);
   const shortcutPressedRef = useRef<VoicePress | null>(null);
@@ -113,6 +132,12 @@ export function JarvisGlobalOverlay() {
       if (ttsActive && requestId) setBargeInRequestId(requestId);
     });
   }, [startVoice]);
+
+  useEffect(() => {
+    // Voice errors are diagnostic UI state, not a global lock. A failed
+    // request in workspace A must not prevent hands-free auto-arm in B.
+    if (activeWorkspaceId) clearVoiceError();
+  }, [activeWorkspaceId, clearVoiceError]);
 
   useEffect(() => {
     if (!bargeInRequestId) return;
@@ -181,6 +206,13 @@ export function JarvisGlobalOverlay() {
     if (speechWorkerBusyRef.current) return;
     const item = codexSpeechQueue[0];
     if (!item) return;
+    const voiceTurnActive = activeVoiceRequest
+      && ["armed", "recording", "stopping", "transcribing", "transcript_ready"].includes(
+        activeVoiceRequest.status,
+      );
+    // Voice capture owns the audio channel. Keep Codex commentary queued and
+    // resume it after the voice turn instead of dropping messages mid-speech.
+    if (voiceTurnActive) return;
     const busy =
       ttsStatus.status === "synthesizing" ||
       ttsStatus.status === "playing";
@@ -254,22 +286,36 @@ export function JarvisGlobalOverlay() {
       .finally(() => {
         speechWorkerBusyRef.current = false;
       });
-  }, [codexSpeechQueue, dequeueCodexSpeech, ttsStatus.status]);
+  }, [
+    activeVoiceRequest?.requestId,
+    activeVoiceRequest?.status,
+    codexSpeechQueue,
+    dequeueCodexSpeech,
+    ttsStatus.status,
+  ]);
 
-  // C8 barge-in: the moment the user starts speaking, drop pending
-  // commentary speech (the existing voice pipeline stops the active TTS).
+  // Pending commentary is stale at the moment a new voice turn starts. The
+  // backend stops active playback at the audio boundary; this clears queued
+  // items so an interrupted turn cannot speak old instructions afterward.
   useEffect(() => {
-    if (voiceRequest?.status === "recording") {
+    const current = activeVoiceRequest;
+    const previous = previousVoiceCaptureRef.current;
+    const enteringRecording = current?.status === "recording"
+      && (previous?.requestId !== current.requestId || previous.status !== "recording");
+    if (enteringRecording) {
       const queued = useJarvisStore.getState().codexSpeechQueue;
       if (queued.length > 0) {
         console.info("[Jarvis TTS] queue cleared by barge-in", {
           droppedItems: queued.length,
           itemIds: queued.map((entry) => entry.itemId),
         });
+        clearCodexSpeech();
       }
-      clearCodexSpeech();
     }
-  }, [clearCodexSpeech, voiceRequest?.status]);
+    previousVoiceCaptureRef.current = current
+      ? { requestId: current.requestId, status: current.status }
+      : null;
+  }, [activeVoiceRequest?.requestId, activeVoiceRequest?.status, clearCodexSpeech]);
 
   const toggleMicrophoneMuted = useCallback(async () => {
     const store = useJarvisStore.getState();
@@ -383,6 +429,65 @@ export function JarvisGlobalOverlay() {
     requests,
     settings.jarvis.enabled,
     settingsOpen,
+  ]);
+
+  // Reconcile a terminal backend snapshot if the WebView missed or reordered
+  // the Tauri event. This is deliberately a status read, not a cancellation
+  // watchdog: long manual captures and slow uploads remain user-controlled.
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !voiceRequest ||
+      voiceRequest.status !== "transcribing"
+    ) {
+      return;
+    }
+    const workspaceId = activeWorkspaceId;
+    const requestId = voiceRequest.requestId;
+    let disposed = false;
+
+    const reconcile = async () => {
+      try {
+        const status = await voiceWorkspaceStatus(workspaceId);
+        if (
+          disposed ||
+          !status ||
+          status.requestId !== requestId ||
+          !["transcript_ready", "cancelled", "failed", "idle"].includes(status.status)
+        ) {
+          return;
+        }
+        console.warn("[Jarvis voice] reconciled missed terminal state", {
+          requestId,
+          workspaceId,
+          status: status.status,
+        });
+        setVoiceRequest(status);
+      } catch (error) {
+        if (!disposed) {
+          console.debug("[Jarvis voice] terminal state reconciliation skipped", {
+            requestId,
+            workspaceId,
+            error: sanitizedVoiceError(error),
+          });
+        }
+      }
+    };
+
+    void reconcile();
+    const timer = window.setInterval(
+      () => void reconcile(),
+      VOICE_TRANSCRIPTION_RECONCILE_MS,
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    activeWorkspaceId,
+    setVoiceRequest,
+    voiceRequest?.requestId,
+    voiceRequest?.status,
   ]);
 
   // A transcript that reached the endpoint while the current turn was still

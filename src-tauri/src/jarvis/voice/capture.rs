@@ -401,13 +401,17 @@ impl CaptureBuffer {
         } else {
             None
         };
+        let max_samples = (sample_rate as u64 * channels as u64 * max_seconds) as usize;
+        // Do not reserve the entire ten-minute ceiling up front. A normal VAD
+        // turn is short and manual capture can grow on demand without a large
+        // startup allocation on 48 kHz stereo devices.
+        let initial_capacity =
+            (sample_rate as u64 * channels as u64 * 10).min(max_samples as u64) as usize;
         Self {
-            samples: Vec::with_capacity(
-                (sample_rate as u64 * channels as u64 * max_seconds) as usize,
-            ),
+            samples: Vec::with_capacity(initial_capacity),
             channels,
             sample_rate,
-            max_samples: (sample_rate as u64 * channels as u64 * max_seconds) as usize,
+            max_samples,
             level: 0.0,
             pre_roll: VecDeque::with_capacity(max_pre_roll_samples),
             max_pre_roll_samples,

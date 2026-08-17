@@ -10,8 +10,10 @@ import {
   type ActivityCheckpoint,
 } from "../../lib/jarvis/activityState";
 import {
+  isVoiceCaptureBusy,
   shouldShowVoiceSendControl,
-  voiceEndpointCaption,
+  voiceUiLabel,
+  voiceUiPhase,
 } from "../../lib/jarvis/voiceState";
 import {
   currentCodexTool,
@@ -293,31 +295,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     props.workspaceId,
     props.pendingActions,
   );
-  const voiceArmed = props.voiceRequest?.status === "armed";
-  const voiceListening = props.voiceRequest?.status === "recording";
-  const voiceBusy =
-    props.voiceRequest?.status === "transcribing" ||
-    props.voiceRequest?.status === "stopping" ||
-    props.voiceRequest?.status === "transcript_ready";
-  const voiceStatusLabel =
-    props.voiceRequest?.status === "armed"
-      ? voiceEndpointCaption("standby")
-      : props.voiceRequest?.status === "recording"
-        ? voiceEndpointCaption(
-            props.voiceRequest.endpointState,
-            props.voiceRequest.vadState,
-          )
-      : props.voiceRequest?.status === "stopping"
-        ? "Preparazione invio…"
-        : props.voiceRequest?.status === "transcribing"
-          ? "Trascrizione…"
-          : props.voiceRequest?.status === "transcript_ready" && props.voiceSubmitState === "queued"
-            ? "In coda · invio appena libero"
-            : props.voiceRequest?.status === "transcript_ready" && props.voiceSubmitState === "submitting"
-              ? "Invio a Jarvis…"
-            : props.voiceRequest?.status === "transcript_ready"
-              ? "Pronto · premi Invia"
-              : null;
+  const voicePhase = voiceUiPhase(props.voiceRequest, props.muted);
+  const voiceArmed = props.voiceRequest?.status === "armed" && !props.muted;
+  const voiceListening = props.voiceRequest?.status === "recording" && !props.muted;
+  const voiceBusy = isVoiceCaptureBusy(props.voiceRequest, props.muted);
+  const voiceDraftReady = voicePhase === "draft";
+  const voiceStatusLabel = props.muted
+    ? null
+    : voicePhase === "draft" && props.voiceSubmitState === "queued"
+      ? "In coda · invio appena libero"
+      : voicePhase === "draft" && props.voiceSubmitState === "submitting"
+        ? "Invio a Jarvis…"
+        : voiceUiLabel(props.voiceRequest, props.muted);
+
   // TTS barge-in stays hands-free: the send control appears only after a
   // normal recording starts, never while Jarvis is still speaking.
   const voiceBargeIn = props.bargeIn || (voiceListening && speaking);
@@ -350,18 +340,32 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     codexTurnActive,
     codexMessage,
   });
-  const displayedStepLabel = voiceStatusLabel ?? stepLabel;
 
   // Manual submission remains a dedicated action. The mute button never
   // doubles as stop/send, start capture, or hold-to-talk.
   const handleSendNow = () => {
+    const submitState = props.voiceRequest?.requestId
+      ? props.voiceSubmitState
+      : undefined;
+    if (
+      submitState === "queued" ||
+      submitState === "submitting" ||
+      submitState === "sent" ||
+      submitState === "failed"
+    ) {
+      return;
+    }
     console.info("[Jarvis voice] manual stop/send", {
       requestId: props.voiceRequest?.requestId,
       workspaceId: props.workspaceId,
     });
-    if (props.voiceRequest?.status === "transcript_ready") {
+    if (
+      props.voiceRequest?.status === "transcript_ready" &&
+      props.activationMode === "hold_to_talk" &&
+      Boolean(props.voiceRequest.transcript?.trim())
+    ) {
       props.onVoiceSend();
-    } else {
+    } else if (props.voiceRequest?.status === "recording") {
       onVoiceStopRef.current();
     }
   };
@@ -371,7 +375,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     : "Disattiva il microfono di Jarvis";
 
   const active =
-    activeRequests > 0 || speaking || jarvisActive || voiceArmed || voiceListening || voiceBusy;
+    !props.muted &&
+    (activeRequests > 0 || speaking || jarvisActive || voiceListening || voiceBusy);
   const statusLabel = props.voiceError
     ? props.voiceError
     : props.muted
@@ -393,6 +398,16 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         activities: props.activities,
       });
 
+  const displayedStepLabel = props.muted ? null : voiceStatusLabel ?? stepLabel;
+  // A label can remain in the stream after a turn completes. The compact pill
+  // must not turn that historical text into a perpetual activity animation.
+  const showActivityLoader = Boolean(
+    displayedStepLabel &&
+      active &&
+      voicePhase !== "listening" &&
+      !voiceDraftReady,
+  );
+
   return (
     <div
       ref={widgetRef}
@@ -413,11 +428,16 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         role="status"
         aria-live={props.voiceError ? "assertive" : "polite"}
       >
-        <JarvisOrb active={active} listening={voiceListening} speaking={speaking} muted={props.muted} />
+        <JarvisOrb
+          active={active}
+          listening={voiceListening}
+          speaking={speaking}
+          muted={props.muted}
+        />
 
         <div className="min-w-0 flex-1">
-          {displayedStepLabel ? (
-            <JarvisActivityLoader label={displayedStepLabel} />
+          {showActivityLoader ? (
+            <JarvisActivityLoader label={displayedStepLabel ?? ""} />
           ) : (
             <p
               className="truncate text-[11px] font-semibold leading-none tracking-[0.01em] text-neutral-text"
@@ -433,13 +453,15 @@ export function JarvisWidget(props: JarvisWidgetProps) {
             <VoiceMeter
               level={level}
               listening={voiceListening}
-              endpointState={props.voiceRequest?.endpointState}
             />
           )}
           {shouldShowVoiceSendControl({
             voiceListening,
-            transcriptReady: props.voiceRequest?.status === "transcript_ready",
+            transcriptReady: voiceDraftReady,
             bargeIn: voiceBargeIn,
+            activationMode: props.activationMode,
+            submitState: props.voiceSubmitState,
+            hasTranscript: Boolean(props.voiceRequest?.transcript?.trim()),
           }) && (
             <button
               type="button"
@@ -498,18 +520,16 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 function VoiceMeter({
   level,
   listening,
-  endpointState,
 }: {
   level: number;
   listening: boolean;
-  endpointState?: VoiceRequestStatusView["endpointState"];
 }) {
   const visibleLevel = Math.max(0, Math.min(1, level));
   const factors = [0.42, 0.72, 1, 0.72, 0.42];
   return (
     <span
-      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""} ${endpointState === "pause" ? "jarvis-level-meter--pause" : ""} ${endpointState === "breath" ? "jarvis-level-meter--breath" : ""} ${endpointState === "micro_interruption" ? "jarvis-level-meter--micro" : ""} ${endpointState === "finalizing" ? "jarvis-level-meter--finalizing" : ""}`}
-      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%, ${voiceEndpointCaption(endpointState)}`}
+      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""}`}
+      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%`}
       role="img"
     >
       {factors.map((factor, index) => (

@@ -2,11 +2,16 @@ import type { AppSettings, JarvisSettings, VoiceActivationMode } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
 const ALWAYS_READY_ARM_SECONDS = 120;
-export const VOICE_ENDPOINT_WAIT_MS = 6_500;
-export const VOICE_ENDPOINT_MIN_WAIT_MS = 3_500;
-export const VOICE_ENDPOINT_MAX_WAIT_MS = 15_000;
-export const VOICE_VAD_CANDIDATE_MS = 3_000;
+export const VOICE_MAX_DURATION_SECONDS = 600;
+const LEGACY_VOICE_MAX_DURATION_SECONDS = 45;
+export const VOICE_ENDPOINT_WAIT_MS = 900;
+export const VOICE_ENDPOINT_MIN_WAIT_MS = 500;
+export const VOICE_ENDPOINT_MAX_WAIT_MS = 5_000;
+export const VOICE_VAD_CANDIDATE_MS = 650;
+export const VOICE_VAD_POST_SPEECH_MAX_MS = 5_000;
 const LEGACY_VOICE_ENDPOINT_WAIT_MS = 1_200;
+const PREVIOUS_VOICE_ENDPOINT_WAIT_MS = 6_500;
+const LEGACY_VOICE_VAD_CANDIDATE_MS = 3_000;
 export const VOICE_ENDPOINT_WAIT_SECONDS = VOICE_ENDPOINT_WAIT_MS / 1_000;
 
 export function normalizeVoiceEndpointWaitMs(value: number | undefined): number {
@@ -14,6 +19,7 @@ export function normalizeVoiceEndpointWaitMs(value: number | undefined): number 
     ? value
     : VOICE_ENDPOINT_WAIT_MS;
   const migrated = configured === LEGACY_VOICE_ENDPOINT_WAIT_MS
+    || configured === PREVIOUS_VOICE_ENDPOINT_WAIT_MS
     ? VOICE_ENDPOINT_WAIT_MS
     : configured;
   return Math.min(
@@ -22,11 +28,37 @@ export function normalizeVoiceEndpointWaitMs(value: number | undefined): number 
   );
 }
 
+export function normalizeVoiceMaxDurationSeconds(value: number | undefined): number {
+  const configured = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : VOICE_MAX_DURATION_SECONDS;
+  const migrated = configured === LEGACY_VOICE_MAX_DURATION_SECONDS
+    ? VOICE_MAX_DURATION_SECONDS
+    : configured;
+  return Math.min(VOICE_MAX_DURATION_SECONDS, Math.max(1, migrated));
+}
+
+export function normalizeVoiceVadPostSpeechMs(value: number | undefined): number {
+  const configured = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : VOICE_VAD_CANDIDATE_MS;
+  return Math.min(
+    VOICE_VAD_POST_SPEECH_MAX_MS,
+    Math.max(
+      configured === LEGACY_VOICE_VAD_CANDIDATE_MS
+        ? VOICE_VAD_CANDIDATE_MS
+        : configured,
+      VOICE_VAD_CANDIDATE_MS,
+    ),
+  );
+}
+
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
  * runs in owner mode: network consent, transcript submission and spoken
  * replies are always enabled. Hands-free local VAD is the default interaction;
- * hold-to-talk remains available as an explicit advanced choice.
+ * hold-to-talk remains available as an explicit advanced choice. Manual mode
+ * keeps a global shortcut enabled so it always has a start/stop boundary.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
   const activationMode: VoiceActivationMode =
@@ -35,14 +67,20 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
     ...settings.voiceInput,
     enabled: true,
     autoSubmitTranscript: true,
+    maxDurationSeconds: normalizeVoiceMaxDurationSeconds(
+      settings.voiceInput.maxDurationSeconds,
+    ),
     selectedInputDeviceId: null,
-    vadPostSpeechMs: Math.max(
+    vadPostSpeechMs: normalizeVoiceVadPostSpeechMs(
       settings.voiceInput.vadPostSpeechMs,
-      VOICE_VAD_CANDIDATE_MS,
     ),
     endpointGraceMs: normalizeVoiceEndpointWaitMs(settings.voiceInput.endpointGraceMs),
     activationMode,
     vadEnabled: activationMode !== "hold_to_talk",
+    globalShortcutEnabled:
+      activationMode === "hold_to_talk"
+        ? true
+        : settings.voiceInput.globalShortcutEnabled,
     maxArmedSeconds:
       activationMode === "vad"
         ? Math.max(ALWAYS_READY_ARM_SECONDS, settings.voiceInput.maxArmedSeconds)
@@ -130,7 +168,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       provider: "groq",
       model: "whisper-large-v3-turbo",
       language: "it",
-      maxDurationSeconds: 45,
+      maxDurationSeconds: VOICE_MAX_DURATION_SECONDS,
       selectedInputDeviceId: undefined,
       autoSubmitTranscript: true,
       privacyConsent: true,

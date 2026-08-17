@@ -464,7 +464,12 @@ export function voiceStart(request: { requestId: string; workspaceId: string; se
 }
 
 export function voiceStop(requestId: string): Promise<VoiceRequestStatusView> {
-  return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_stop", { request: { requestId } }), MODEL_TIMEOUT_MS);
+  // A manual capture can be much longer than a normal VAD turn. Let the
+  // backend finish encoding/uploading it; explicit cancellation remains a
+  // separate cooperative command rather than an IPC timer race.
+  return invoke<VoiceRequestStatusView>("jarvis_voice_stop", {
+    request: { requestId },
+  });
 }
 
 export function voiceCancel(requestId: string): Promise<VoiceRequestStatusView> {

@@ -139,13 +139,19 @@ pub async fn jarvis_voice_start(
     })?;
     let max_duration_seconds =
         normalize_max_duration_seconds(configured.jarvis.voice_input.max_duration_seconds);
+    // Hold-to-talk is a true manual capture path. Do not let a stale
+    // `vad_enabled` value from an older settings file silently re-enable VAD
+    // or endpointing after the user selected manual mode.
+    let automatic_capture =
+        activation_mode != crate::settings::store::VoiceActivationMode::HoldToTalk;
     let options = VoiceCaptureOptions {
         activation_mode,
         max_duration_seconds,
         max_armed_seconds: input.max_armed_seconds,
-        vad_enabled: input.vad_enabled
-            || activation_mode == crate::settings::store::VoiceActivationMode::Vad
-            || activation_mode == crate::settings::store::VoiceActivationMode::WakeWord,
+        vad_enabled: automatic_capture
+            && (input.vad_enabled
+                || activation_mode == crate::settings::store::VoiceActivationMode::Vad
+                || activation_mode == crate::settings::store::VoiceActivationMode::WakeWord),
         vad_speech_threshold: input.vad_speech_threshold,
         vad_start_frames: input.vad_start_frames,
         vad_silence_frames: input.vad_silence_frames,
@@ -193,65 +199,11 @@ pub async fn jarvis_voice_start(
     let mut watchdog_config = configured.jarvis.voice_input.clone();
     watchdog_config.max_duration_seconds = max_duration_seconds;
     watchdog_config.max_armed_seconds = options.max_armed_seconds;
-    watchdog_config.endpointing_enabled |= force_endpointing;
-    let event_app = app.clone();
-    let event_state = (*state).clone();
-    let request_id = status.request_id.clone();
-    let event_wake_config = wake_config.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let Ok(signal) = event_state.signal(&request_id) else {
-                break;
-            };
-            let status = signal.status;
-            // Only capture-phase transitions are published by this loop; the
-            // stop pipeline owns Stopping/Transcribing/terminal emissions.
-            if signal.status_changed
-                && matches!(
-                    status.status,
-                    VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
-                )
-            {
-                info!(
-                    request_id = %request_id,
-                    status = ?status.status,
-                    vad_state = ?status.vad_state,
-                    level = status.normalized_level,
-                    "Voice state changed in capture watchdog"
-                );
-                emit_voice_state(&event_app, &status);
-                if status.activation_mode == crate::settings::store::VoiceActivationMode::WakeWord
-                    && status.status == VoiceRequestStatus::Recording
-                {
-                    emit_wake_state(
-                        &event_app,
-                        &wake::listening_status(true, &event_wake_config, None),
-                    );
-                }
-            }
-            stop_tts_on_speech(&event_app, &event_state, &status);
-            if !matches!(
-                status.status,
-                VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
-            ) {
-                break;
-            }
-            let _ = event_app.emit(
-                VOICE_LEVEL_EVENT,
-                VoiceLevelEvent {
-                    request_id: request_id.clone(),
-                    elapsed_ms: status.duration_ms.unwrap_or_default(),
-                    normalized_level: status.normalized_level,
-                    vad_state: status.vad_state,
-                    endpoint_state: status.endpoint_state,
-                },
-            );
-            // Endpointing is evaluated by the dedicated watchdog below. This
-            // loop only publishes level/VAD telemetry and remains responsive
-            // during pauses and long requests.
-        }
-    });
+    watchdog_config.endpointing_enabled =
+        automatic_capture && (watchdog_config.endpointing_enabled || force_endpointing);
+    // One watchdog owns capture telemetry, endpointing and automatic stops.
+    // Separate readers of VoiceState used to race on Armed→Recording and emit
+    // duplicate intermediate events while the stop pipeline was starting.
     let watchdog_app = app.clone();
     let watchdog_state = (*state).clone();
     let watchdog_request_id = status.request_id.clone();
@@ -263,20 +215,27 @@ pub async fn jarvis_voice_start(
             min_spoken_ms: watchdog_config.min_spoken_ms,
         });
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let Ok(signal) = watchdog_state.signal(&watchdog_request_id) else {
                 break;
             };
+            let status_changed = signal.status_changed;
+            let should_stop = signal.should_stop;
             let current = signal.status;
-            // Capture-phase transitions are published here too (both loops may
-            // race on Armed→Recording); terminal phases are owned by the stop
-            // pipeline to avoid duplicate Transcribing/transcript events.
-            if signal.status_changed
-                && matches!(
+
+            if status_changed
+                && (matches!(
                     current.status,
                     VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
-                )
+                ) || current.status == VoiceRequestStatus::Failed)
             {
+                info!(
+                    request_id = %watchdog_request_id,
+                    status = ?current.status,
+                    vad_state = ?current.vad_state,
+                    level = current.normalized_level,
+                    "Voice capture state changed"
+                );
                 emit_voice_state(&watchdog_app, &current);
                 if current.activation_mode == crate::settings::store::VoiceActivationMode::WakeWord
                     && current.status == VoiceRequestStatus::Recording
@@ -288,8 +247,26 @@ pub async fn jarvis_voice_start(
                 }
             }
             stop_tts_on_speech(&watchdog_app, &watchdog_state, &current);
+            if !matches!(
+                current.status,
+                VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
+            ) {
+                break;
+            }
+
+            let _ = watchdog_app.emit(
+                VOICE_LEVEL_EVENT,
+                VoiceLevelEvent {
+                    request_id: watchdog_request_id.clone(),
+                    elapsed_ms: current.duration_ms.unwrap_or_default(),
+                    normalized_level: current.normalized_level,
+                    vad_state: current.vad_state,
+                    endpoint_state: current.endpoint_state,
+                },
+            );
+
             if current.status == VoiceRequestStatus::Recording {
-                match endpointing.observe(Instant::now(), &current, signal.should_stop) {
+                match endpointing.observe(Instant::now(), &current, should_stop) {
                     EndpointingDecision::Stop => {
                         info!(request_id = %watchdog_request_id, "Voice endpoint confirmed after silence grace period");
                         if let Err(error) = finish_voice_stop(
@@ -307,6 +284,7 @@ pub async fn jarvis_voice_start(
                     EndpointingDecision::PauseCandidate | EndpointingDecision::Continue => {}
                 }
             }
+
             if current.status == VoiceRequestStatus::Armed {
                 if current.duration_ms.unwrap_or_default()
                     >= watchdog_config.max_armed_seconds as u64 * 1000
@@ -333,11 +311,6 @@ pub async fn jarvis_voice_start(
                 {
                     error!(request_id = %watchdog_request_id, error_code = %error.code, "Maximum-duration voice stop failed");
                 }
-                break;
-            } else if !matches!(
-                current.status,
-                VoiceRequestStatus::Recording | VoiceRequestStatus::Armed
-            ) {
                 break;
             }
         }

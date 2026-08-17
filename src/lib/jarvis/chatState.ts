@@ -22,6 +22,29 @@ export function requestsForWorkspace(requests: Record<string, JarvisRequestState
   return Object.values(requests).filter((request) => request.workspaceId === workspaceId);
 }
 
+export function mergeJarvisRequestState(
+  current: JarvisRequestState | undefined,
+  incoming: JarvisRequestState,
+): JarvisRequestState {
+  if (!current || current.requestId !== incoming.requestId) return incoming;
+
+  // Chat responses and cancellation callbacks race across IPC boundaries. A
+  // terminal result is authoritative and cannot be rewritten by a late
+  // cancellation marker or an older running snapshot. Cancellation requested
+  // remains transitional, so a successful backend response may still win.
+  if (
+    ["completed", "cancelled", "failed"].includes(current.status) &&
+    incoming.status !== current.status
+  ) {
+    return current;
+  }
+  if (current.status === "cancellation_requested" && incoming.status === "running") {
+    return current;
+  }
+  return { ...current, ...incoming };
+}
+
+
 export function pruneRequestHistory(requests: Record<string, JarvisRequestState>): Record<string, JarvisRequestState> {
   const entries = Object.entries(requests);
   const active = entries.filter(([, request]) => request.status === "running" || request.status === "cancellation_requested");

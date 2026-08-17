@@ -4,8 +4,12 @@ use serde::{Deserialize, Serialize};
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const MIN_RECORDING_MS: u64 = 250;
-pub const MAX_RECORDING_MS: u64 = 180_000;
-pub const MAX_WAV_BYTES: usize = 4 * 1024 * 1024;
+// Manual hold-to-talk follows Traflix Voice: allow a long capture and stop
+// only when the user releases/toggles the shortcut.
+pub const MAX_RECORDING_MS: u64 = 600_000;
+// Ten minutes of mono 16 kHz PCM16 is about 19.2 MiB; leave headroom while
+// staying below Groq's usual multipart upload ceiling.
+pub const MAX_WAV_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_VOICE_REQUESTS: usize = 32;
 pub const GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
 pub const MAX_MP3_BYTES: u64 = 8 * 1024 * 1024;
@@ -151,9 +155,9 @@ pub struct VoiceStartRequest {
     pub selected_device_id: Option<String>,
     #[serde(default)]
     pub activation_mode: Option<VoiceActivationMode>,
-    /// Barge-in must remain automatic even if the normal manual fallback is
-    /// selected in settings; this only overrides endpointing for this audio
-    /// request and never affects task/LLM cancellation.
+    /// A VAD barge-in request may force endpointing for that capture even when
+    /// the persisted policy has endpointing disabled; it never affects
+    /// task/LLM cancellation. Hold-to-talk still remains fully manual.
     #[serde(default)]
     pub force_endpointing: bool,
 }
@@ -176,7 +180,8 @@ impl VoiceCaptureOptions {
         Self {
             max_duration_seconds: normalize_max_duration_seconds(self.max_duration_seconds),
             max_armed_seconds: self.max_armed_seconds.clamp(1, 120),
-            vad_enabled: self.vad_enabled,
+            vad_enabled: self.vad_enabled
+                && self.activation_mode != crate::settings::store::VoiceActivationMode::HoldToTalk,
             vad_speech_threshold: self.vad_speech_threshold.clamp(0.001, 1.0),
             // Four consecutive blocks debounce clicks/fan pulses while the
             // preroll preserves the first syllable.
@@ -285,6 +290,22 @@ mod tests {
         assert_eq!(options.vad_start_frames, 4);
     }
 
+    #[test]
+    fn hold_to_talk_disables_stale_vad_configuration() {
+        let options = VoiceCaptureOptions {
+            activation_mode: VoiceActivationMode::HoldToTalk,
+            max_duration_seconds: 600,
+            max_armed_seconds: 120,
+            vad_enabled: true,
+            vad_speech_threshold: 0.018,
+            vad_start_frames: 5,
+            vad_silence_frames: 16,
+            vad_pre_roll_ms: 500,
+            vad_post_speech_ms: 650,
+        }
+        .bounded();
+        assert!(!options.vad_enabled);
+    }
     #[test]
     fn legacy_voice_start_requests_default_to_normal_endpointing_policy() {
         let request: VoiceStartRequest = serde_json::from_value(serde_json::json!({

@@ -6,6 +6,7 @@ import type {
   TtsStatusView,
   VoiceRequestStatusView,
 } from "./types";
+import { voiceUiPhase } from "./voiceState";
 
 /** Maximum checkpoint events kept per workspace in the ephemeral activity view. */
 export const MAX_ACTIVITY_EVENTS = 16;
@@ -229,10 +230,10 @@ export function collapsedJarvisStatus(input: CollapsedStatusInput): string {
   // label) instead of reducing every failure to the opaque "Errore voce".
   if (voiceError) return voiceError;
   if (!workspaceName || !workspaceId) return "Seleziona uno spazio di lavoro";
-  if (voiceRequest?.status === "recording") return "In ascolto…";
-  if (voiceRequest?.status === "armed") return "Ascolto attivo…";
-  if (voiceRequest?.status === "transcribing" || voiceRequest?.status === "stopping") return "Trascrivo…";
-  if (voiceRequest?.status === "transcript_ready") return "Invio a Jarvis…";
+  const voicePhase = voiceUiPhase(voiceRequest);
+  if (voicePhase === "listening") return "Ti ascolto";
+  if (voicePhase === "processing") return "Elaboro…";
+  if (voicePhase === "draft") return "Invio a Jarvis…";
 
   const activityLabel = currentActivityLabel(activities, workspaceId, pendingActions);
   if (activityLabel) return activityLabel;
@@ -302,15 +303,12 @@ export function jarvisStepLabel(input: JarvisStepInput): string | null {
   const { workspaceId, voiceRequest, ttsStatus, activities, pendingActions, codexTool, codexTurnActive, codexMessage } = input;
   if (!workspaceId) return null;
 
-  // 1. Voice capture always wins (latency-critical feedback).
-  if (voiceRequest?.status === "recording") return "Ti ascolto";
-  if (
-    voiceRequest?.status === "transcribing" ||
-    voiceRequest?.status === "stopping"
-  ) {
-    return "Trascrivo";
-  }
-  if (voiceRequest?.status === "transcript_ready") return "Invio a Jarvis…";
+  // 1. Voice is intentionally reduced to one listening and one processing
+  // phase; endpoint details remain available to diagnostics and the meter.
+  const voicePhase = voiceUiPhase(voiceRequest);
+  if (voicePhase === "listening") return "Ti ascolto";
+  if (voicePhase === "processing") return "Elaboro";
+  if (voicePhase === "draft") return "Invio a Jarvis…";
 
   // 2. An in-flight Codex tool is the real current step.
   if (codexTool) {
@@ -323,10 +321,10 @@ export function jarvisStepLabel(input: JarvisStepInput): string | null {
     return checkpointPhaseLabels[checkpoint.phase] ?? checkpoint.label;
   }
 
-  // 4. Show the latest accumulated Codex message in the compact pill. This
-  // keeps intermediate plan commentary visible even when the audio worker is
-  // still speaking an earlier FIFO item.
-  if (codexMessage) {
+  // Only an active turn may expose accumulated commentary. Completed turns
+  // remain available in chat history, but must not keep the compact widget in
+  // a perpetual "working" animation after timeout, mute, or idle.
+  if (codexMessage && codexTurnActive) {
     const compact = codexMessage.replace(/\s+/g, " ").trim();
     return compact.length > 96 ? `${compact.slice(0, 93)}…` : compact;
   }
