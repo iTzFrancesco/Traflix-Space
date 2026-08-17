@@ -72,6 +72,17 @@ if ([string]::IsNullOrWhiteSpace($Provider)) {
 }
 
 $Provider = $Provider.Trim().ToLowerInvariant()
+# Claudex is a local wrapper around Claude Code that routes through the
+# Traflix Codex proxy. It reuses Claude's native hook file, so derive the
+# provider from its process-local markers instead of emitting a Claude event
+# that cannot match a Claudex terminal binding.
+if (
+    $Provider -eq "claude" -and
+    -not [string]::IsNullOrWhiteSpace($env:CCP_CONFIG_DIR) -and
+    $env:ANTHROPIC_BASE_URL -like "http://127.0.0.1:18765*"
+) {
+    $Provider = "claudex"
+}
 $sessionId = Get-SourceValue $source @(
     "providerSessionId", "sessionId", "sessionID", "session_id", "thread-id", "threadId"
 )

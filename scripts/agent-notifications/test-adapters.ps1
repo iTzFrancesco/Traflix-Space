@@ -78,7 +78,7 @@ foreach ($contract in $adapterContracts) {
 }
 
 $uiContracts = @(
-    @{ Name = "owner-routed bridge"; Path = $bridgePath; Required = @("notification route=owner-pipe", "Add-PipeLeaf $PipeName", "PipeAlternates"); Forbidden = @("Get-FocusedTraflixPipe", "GetForegroundWindow", "route=focused-pipe") },
+    @{ Name = "owner-routed bridge"; Path = $bridgePath; Required = @("notification route=owner-pipe", "Add-PipeLeaf $PipeName", "PipeAlternates", "CCP_CONFIG_DIR", "ANTHROPIC_BASE_URL", '$Provider = "claudex"'); Forbidden = @("Get-FocusedTraflixPipe", "GetForegroundWindow", "route=focused-pipe") },
     @{ Name = "Traflix native overlay action"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @("AGENT_NOTIFICATION_SHOW_EVENT", "WebviewWindow.getCurrent", 'WebviewWindow.getByLabel("main")', "mainWindow?.unminimize()", 'await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT', "workspaceId: currentNotification.workspaceId", "terminalId: currentNotification.terminalId", '[agent-notification] open event dispatched', "projectName", "Apri", "Continua") },
     @{ Name = "overlay open error path"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentNotificationOverlay.tsx"; Required = @('WebviewWindow.getByLabel("main")', "mainWindow?.show()", "mainWindow?.setFocus()", "if (!currentNotification?.canOpenTerminal) return;", 'await emitTo("main", AGENT_NOTIFICATION_OPEN_EVENT', "workspaceId: currentNotification.workspaceId", "terminalId: currentNotification.terminalId", "catch (error)", 'console.warn("Traflix terminal notification could not open main window:", error)'); Forbidden = @("terminal_write", "terminal_kill", "create_workspace", "update_workspace", "delete_workspace") },
     @{ Name = "focus gate"; Path = Join-Path $scriptRoot "..\..\src\components\agent\AgentCompletionListener.tsx"; Required = @("document.hasFocus()", "getCurrentWebviewWindow().isFocused()", "appHasFocus", "terminalStore.terminalTitles", "attentionRequired = true", "playAgentCompletionChime", "showAgentNotificationOverlay", "[agent-notification] handling completion", "[agent-notification] focus resolved", "[agent-notification] showing in-app toast", "[agent-notification] showing external overlay") },
@@ -235,7 +235,7 @@ function Test-BridgeFanout {
 # Includes providers without a checked-in adapter implementation: the common
 # bridge contract is provider-agnostic, so these agents can be wired to it by
 # their native hook/notification mechanism without changing Traflix itself.
-foreach ($provider in @("anti-gravity", "claude", "codex", "opencode", "pi", "cmdc", "freebuff")) {
+foreach ($provider in @("anti-gravity", "claude", "claudex", "codex", "opencode", "pi", "cmdc", "freebuff")) {
     Test-BridgeProvider $provider
 }
 Test-BridgeFanout

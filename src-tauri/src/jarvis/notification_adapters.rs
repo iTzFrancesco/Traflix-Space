@@ -86,6 +86,12 @@ fn adapter_health(app: &AppHandle, restart_required: bool) -> NotificationAdapte
             "Notification hook",
         ),
         (
+            "claudex",
+            profile.join(".claude").join("settings.json"),
+            "traflix-agent-event.ps1",
+            "Notification hook condiviso con Claude",
+        ),
+        (
             "opencode",
             profile
                 .join(".config")

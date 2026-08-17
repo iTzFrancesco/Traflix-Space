@@ -90,7 +90,7 @@ npm run test:agent-notifications
 
 It checks the Codex, Claude, OpenCode, Pi, Cline, and Anti-Gravity lifecycle adapters, then sends
 synthetic completion payloads through a real named pipe for every configured
-agent (`anti-gravity`, `claude`, `codex`, `opencode`, `pi`, `cmdc`, and
+agent (`anti-gravity`, `claude`, `claudex`, `codex`, `opencode`, `pi`, `cmdc`, and
 `freebuff`). It never reads `.env` and never starts an agent process.
 
 Attention-required completions use Traflix's own always-on-top overlay window;
@@ -131,15 +131,18 @@ retry/compaction/follow-up work.
 
 Merge the `Notification` block from [`claude-hooks.json`](./claude-hooks.json)
 into the desired Claude settings or plugin hook file. The `idle_prompt`
-notification is side-effect-only and cannot block Claude.
+notification is side-effect-only and cannot block Claude. Claudex reuses this
+Claude hook through its wrapper; the bridge detects `CCP_CONFIG_DIR` plus its
+local proxy URL and emits provider `claudex`, so the terminal binding remains
+provider-correct.
 
 Freebuff is wired in its source tree at `codebuff/cli/src/utils/sdk-event-handlers.ts`:
 the Freebuff-only root `finish` event starts the bridge process. A rebuilt
 Freebuff binary is required before the installed binary can use that change.
 
-The current Traflix agent registry also contains Claude, Cline, Anti-Gravity,
-and Freebuff. Claude is left unchanged here because it is not available in the
-current environment.
+The current Traflix agent registry also contains Claude, Claudex, Cline,
+Anti-Gravity, and Freebuff. Claudex still requires the local wrapper/proxy and
+Codex authentication; the adapter hook itself is shared with Claude.
 
 ## Manual smoke event
 
