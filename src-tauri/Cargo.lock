@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "traflix-space"
-version = "1.7.7"
+version = "1.7.8"
 dependencies = [
  "anyhow",
  "chrono",
