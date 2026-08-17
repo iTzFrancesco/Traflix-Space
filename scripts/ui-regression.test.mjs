@@ -18,6 +18,7 @@ const rightPanelSource = source("../src/components/layout/RightPanel.tsx");
 const browserPanelSource = source("../src/components/browser/BrowserPanel.tsx");
 const workspaceGridSource = source("../src/components/workspace/WorkspaceGrid.tsx");
 const terminalPaneSource = source("../src/components/workspace/TerminalPane.tsx");
+const terminalPaneSupportSource = source("../src/components/workspace/TerminalPaneSupport.ts");
 const skillsSource = source("../src/components/skills/SkillsModule.tsx");
 const jarvisSettingsSource = source("../src/lib/jarvis/settings.ts");
 const rustSettingsSource = source("../src-tauri/src/settings/store.rs");
@@ -162,6 +163,16 @@ test("workspace grid avoids rerendering all panes for unrelated terminal metadat
   assert.doesNotMatch(workspaceGridSource, /runtimeTerminals = useTerminalStore/);
   assert.match(terminalPaneSource, /state\.workspaces\.findIndex/);
   assert.doesNotMatch(terminalPaneSource, /const workspaces = useWorkspaceStore/);
+});
+
+test("terminal pane keeps presentation and prompt policy behind a focused support module", () => {
+  assert.match(terminalPaneSource, /from \"\.\/TerminalPaneSupport\"/);
+  assert.match(terminalPaneSupportSource, /export interface TerminalPaneProps/);
+  assert.match(terminalPaneSupportSource, /export const STOCK_THEME/);
+  assert.match(terminalPaneSupportSource, /export function powerShellPrompt/);
+  assert.match(terminalPaneSupportSource, /export function sameWindowsPath/);
+  assert.doesNotMatch(terminalPaneSource, /const STOCK_THEME =/);
+  assert.doesNotMatch(terminalPaneSource, /interface TerminalPaneProps/);
 });
 
 test("persisted workspace presets are bounded before the wizard consumes them", () => {

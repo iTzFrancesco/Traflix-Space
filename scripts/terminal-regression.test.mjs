@@ -4,6 +4,7 @@ import test from "node:test";
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const terminalPane = source("../src/components/workspace/TerminalPane.tsx");
+const terminalPaneSupport = source("../src/components/workspace/TerminalPaneSupport.ts");
 const terminalEvents = source("../src/lib/terminalEvents.ts");
 const workspaceView = source("../src/components/workspace/WorkspaceView.tsx");
 
@@ -310,7 +311,7 @@ test("closing sibling panes re-arms the mounted pane fit and observes the outer 
     "a mounted pane must fit again when sibling closure changes the grid count",
   );
   assert.match(resizeFlow, /scheduleFitAndResize\(2\)/);
-  assert.match(terminalPane, /const CONTAINER_STYLE[\s\S]*minWidth: 0[\s\S]*width: "100%"/);
+  assert.match(terminalPaneSupport, /export const CONTAINER_STYLE[\s\S]*minWidth: 0[\s\S]*width: "100%"/);
   const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
   assert.match(workspaceGrid, /computeLayout\(terminals\.length\)/);
   assert.match(workspaceGrid, /layoutRevision/);
@@ -369,7 +370,7 @@ test("fullscreen and close transitions cannot retain stale grid tracks or an emp
     /layoutRevision[\s\S]*scheduleFitAndResize\(2\)/,
     "the pane must receive an explicit layout epoch in addition to ResizeObserver",
   );
-  assert.match(terminalPane, /MAX_LAYOUT_FIT_RETRY_FRAMES = 5/);
+  assert.match(terminalPaneSupport, /MAX_LAYOUT_FIT_RETRY_FRAMES = 5/);
   assert.match(
     terminalPane,
     /let fitted = false;[\s\S]*fitted = fitAndResizePty\([\s\S]*if \(!fitted && schedule\.retryFrames > 0\)[\s\S]*schedule\.retryFrames -= 1/,
@@ -381,7 +382,7 @@ test("fullscreen and close transitions cannot retain stale grid tracks or an emp
     "a measurement exception must re-arm the fit inside the settle window instead of killing the loop",
   );
   assert.match(
-    terminalPane,
+    terminalPaneSupport,
     /MAX_LAYOUT_SETTLE_MS = 1500/,
     "explicit layout transitions must keep a bounded settle window",
   );

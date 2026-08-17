@@ -21,8 +21,6 @@ import {
 } from "../../lib/terminalEvents";
 import { encodeForPty } from "../../lib/ptyWrite";
 import { getWorkspaceColor } from "../../lib/workspaceColors";
-import { AGENTS } from "../../lib/agents";
-import { findCurrentPowerShellPrompt } from "../../lib/powerShellPrompt";
 import { invokeWithTimeout } from "../../lib/timeout";
 import { reportFrontendDiagnostic, reportFrontendDiagnosticCode } from "../../lib/crashDiagnostics";
 import { isStableTerminalLayout } from "../../lib/terminalPolicies";
@@ -54,302 +52,34 @@ import type {
   TerminalRehydrateState,
   TerminalRuntimeIdentity,
 } from "../terminal/types";
+import {
+  ACTIVE_STYLE,
+  CONTAINER_STYLE,
+  EXITED_STYLE,
+  FOCUSED_STYLE,
+  INACTIVE_STYLE,
+  MAX_LAYOUT_FIT_RETRY_FRAMES,
+  MAX_LAYOUT_SETTLE_MS,
+  STOCK_THEME,
+  TITLE_BAR_BRANCH,
+  TITLE_BAR_DOT,
+  TITLE_BAR_LEFT,
+  TITLE_BAR_NAME,
+  TITLE_BAR_RENAME_INPUT,
+  TITLE_BAR_RIGHT,
+  TITLE_BAR_STYLE,
+  TOOL_BTN_BASE,
+  agentDisplayName,
+  getTitleBarMetrics,
+  isPowerShell,
+  powerShellPrompt,
+  projectNameFromCwd,
+  sameWindowsPath,
+  type TerminalContext,
+  type TerminalCwdChangedPayload,
+  type TerminalPaneProps,
+} from "./TerminalPaneSupport";
 import "xterm/css/xterm.css";
-
-/** Map agent id to a short display name for the title bar. */
-function agentDisplayName(agentId: string): string {
-  const found = AGENTS.find((a) => a.id === agentId);
-  return found?.name ?? agentId;
-}
-
-/** Extract project/folder name from a CWD path. */
-function projectNameFromCwd(cwd: string): string {
-  // Normalize backslashes for cross-platform consistency.
-  const normalized = cwd.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? cwd;
-}
-
-const STOCK_THEME = {
-  background: "#111211", // --canvas
-  foreground: "#f5f3ef", // --ink
-  cursor: "#ff9d24", // --accent
-  cursorAccent: "#111211",
-  selectionBackground: "rgba(255, 157, 36, 0.25)",
-  selectionInactiveBackground: "rgba(255, 157, 36, 0.12)",
-  black: "#111211",
-  red: "#ff626b", // --danger
-  green: "#55d89b", // --signal
-  yellow: "#ffae42", // --primary-light
-  blue: "#ff9d24",
-  magenta: "#ff6b21",
-  cyan: "#29b8db",
-  white: "#f5f3ef",
-  brightBlack: "#74716c",
-  brightRed: "#ff626b",
-  brightGreen: "#55d89b",
-  brightYellow: "#ffae42",
-  brightBlue: "#ff9d24",
-  brightMagenta: "#ff6b21",
-  brightCyan: "#29b8db",
-  brightWhite: "#f5f3ef",
-};
-
-interface TerminalPaneProps {
-  terminalId: string;
-  shell: string;
-  cwd: string;
-  title: string;
-  agentId?: string | null;
-  /** Number of panes in this workspace; drives the title-bar density. */
-  terminalCount: number;
-  /** Explicit layout epoch for sidebar, close, reorder and fullscreen changes. */
-  layoutRevision: string;
-  isActive: boolean;
-  /** This pane is the focus-mode target. */
-  isFocused?: boolean;
-  /** Any pane is currently in focus mode (grid collapsed). */
-  focusModeActive?: boolean;
-  /** Monotonic token used to request the close confirmation from a shortcut. */
-  closeRequestToken?: number;
-  onActivate: (id: string) => void;
-  onClose?: (id: string) => void;
-  onToggleFocus?: (id: string) => void;
-  onReorder?: (draggedId: string, targetId: string) => void;
-}
-
-// Layout definitions for each terminal pane. The terminal pane consists of title
-// bar (above) and xterm container (below) stack vertically.
-const ACTIVE_STYLE: React.CSSProperties = {
-  position: "relative",
-  display: "flex",
-  flexDirection: "column",
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  background: "var(--color-neutral-bg)",
-  borderRadius: "var(--radius-pane)",
-  border: "1px solid var(--color-primary)",
-  overflow: "hidden",
-  isolation: "isolate",
-  boxShadow: "0 4px 20px rgba(255, 157, 36, 0.04)",
-};
-
-const FOCUSED_STYLE: React.CSSProperties = {
-  position: "relative",
-  display: "flex",
-  flexDirection: "column",
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  background: "var(--color-neutral-bg)",
-  borderRadius: "var(--radius-pane)",
-  border: "1px solid var(--color-primary-strong)",
-  overflow: "hidden",
-  isolation: "isolate",
-  boxShadow: "0 4px 20px rgba(255, 107, 33, 0.05)",
-};
-
-const INACTIVE_STYLE: React.CSSProperties = {
-  position: "relative",
-  display: "flex",
-  flexDirection: "column",
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  background: "var(--color-neutral-bg)",
-  borderRadius: "var(--radius-pane)",
-  border: "1px solid var(--color-neutral-border)",
-  overflow: "hidden",
-  cursor: "pointer",
-  isolation: "isolate",
-};
-
-const EXITED_STYLE: React.CSSProperties = {
-  position: "relative",
-  display: "flex",
-  flexDirection: "column",
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  background: "var(--color-neutral-bg)",
-  borderRadius: "var(--radius-pane)",
-  border: "1px solid rgba(255, 98, 107, 0.25)",
-  overflow: "hidden",
-  isolation: "isolate",
-};
-
-const CONTAINER_STYLE: React.CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  width: "100%",
-  background: "var(--color-neutral-bg)",
-  overflow: "hidden",
-};
-
-const TITLE_BAR_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  background: "rgba(255, 255, 255, 0.015)",
-  borderBottom: "1px solid var(--color-neutral-border)",
-  userSelect: "none",
-  overflow: "hidden",
-};
-
-function getTitleBarMetrics(terminalCount: number) {
-  if (terminalCount <= 1) {
-    return { height: 42, padding: "0 14px", fontSize: 13, buttonSize: 32, iconSize: 16, dotSize: 10 };
-  }
-  if (terminalCount === 2) {
-    return { height: 40, padding: "0 12px", fontSize: 12, buttonSize: 32, iconSize: 15, dotSize: 9 };
-  }
-  if (terminalCount <= 4) {
-    return { height: 38, padding: "0 10px", fontSize: 12, buttonSize: 32, iconSize: 14, dotSize: 8 };
-  }
-  return { height: 36, padding: "0 9px", fontSize: 12, buttonSize: 30, iconSize: 14, dotSize: 7 };
-}
-
-/** Return the latest complete PowerShell prompt, including wrapped paths. */
-function powerShellPrompt(term: Terminal) {
-  const buffer = term.buffer.active;
-  const lastLine = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY);
-  let firstLine = Math.max(0, lastLine - 16);
-  while (firstLine > 0 && buffer.getLine(firstLine)?.isWrapped) {
-    firstLine--;
-  }
-
-  const lines = [];
-  for (let lineIndex = firstLine; lineIndex <= lastLine; lineIndex++) {
-    const line = buffer.getLine(lineIndex);
-    if (!line) continue;
-    const nextLine = buffer.getLine(lineIndex + 1);
-    lines.push({
-      // A wrapped continuation means this row was completely filled. Keeping
-      // its trailing spaces preserves valid paths split exactly on a space.
-      text: line.translateToString(!nextLine?.isWrapped),
-      isWrapped: line.isWrapped,
-    });
-  }
-  return findCurrentPowerShellPrompt(lines);
-}
-
-function sameWindowsPath(left: string, right: string): boolean {
-  const normalize = (value: string) =>
-    value.replace(/^\\\\[?.]\\/, "").replace(/[\\/]+$/, "").toLowerCase();
-  return normalize(left) === normalize(right);
-}
-
-function isPowerShell(shell: string): boolean {
-  const executable = shell.replace(/\\/g, "/").split("/").pop() ?? shell;
-  return /^(?:powershell|pwsh)(?:\.exe)?$/i.test(executable);
-}
-
-interface TerminalContext {
-  cwd: string;
-  gitBranch: string | null;
-}
-
-interface TerminalCwdChangedPayload {
-  terminalId: string;
-  workspaceId: string;
-  generation: number;
-  processId: number | null;
-  cwd: string;
-}
-
-const TITLE_BAR_LEFT: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "10px",
-  minWidth: 0,
-  flex: 1,
-};
-
-const TITLE_BAR_DOT: React.CSSProperties = {
-  width: 8,
-  height: 8,
-  borderRadius: "50%",
-  flexShrink: 0,
-};
-
-const TITLE_BAR_NAME: React.CSSProperties = {
-  fontSize: 12,
-  fontFamily: 'var(--font-mono)',
-  color: "rgba(255,255,255,0.8)",
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  cursor: "text",
-  lineHeight: 1,
-  minWidth: 0,
-  letterSpacing: "0.02em",
-};
-
-const TITLE_BAR_RENAME_INPUT: React.CSSProperties = {
-  fontSize: 12,
-  fontFamily: 'var(--font-mono)',
-  color: "rgba(255,255,255,0.9)",
-  background: "rgba(0,0,0,0.4)",
-  border: "1px solid rgba(255,255,255,0.2)",
-  borderRadius: 4,
-  padding: "1px 4px",
-  outline: "none",
-  lineHeight: 1,
-  width: "100%",
-  minWidth: 0,
-};
-
-// Layout changes can span more than one browser frame (grid track calculation,
-// xterm canvas measurement, then WebView2's ConPTY resize). Retry only this
-// bounded number of animation frames when a measurement is still transient.
-const MAX_LAYOUT_FIT_RETRY_FRAMES = 5;
-
-// An explicit layout transition (focus/fullscreen, close, sidebar drag) can
-// commit late in WebView2: the grid template changes in one frame while the
-// xterm canvas and the ConPTY resize settle afterwards. Instead of abandoning
-// the fit once the frame retries are exhausted, keep a bounded settle window
-// during which a failed or transient measurement is re-armed continuously.
-// A successful fit clears the window; otherwise it expires silently.
-const MAX_LAYOUT_SETTLE_MS = 1500;
-
-const TITLE_BAR_BRANCH: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 4,
-  fontSize: 11,
-  fontFamily: 'var(--font-mono)',
-  color: "rgba(255,255,255,0.45)",
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  maxWidth: 180,
-  flexShrink: 0,
-};
-
-const TITLE_BAR_RIGHT: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 4,
-  flexShrink: 0,
-  marginLeft: "auto",
-  paddingLeft: 8,
-};
-
-const TOOL_BTN_BASE: React.CSSProperties = {
-  width: "30px",
-  height: "30px",
-  borderRadius: "8px",
-  border: "none",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  lineHeight: 1,
-  transition: "background 0.15s ease, color 0.15s ease",
-  padding: 0,
-};
 
 function captureScrollPosition(
   term: Terminal,
