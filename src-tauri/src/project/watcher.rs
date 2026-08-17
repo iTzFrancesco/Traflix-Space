@@ -49,11 +49,15 @@ impl ProjectWatcherRegistry {
             .watch(&root, RecursiveMode::Recursive)
             .map_err(|error| format!("Impossibile osservare la workspace: {error}"))?;
         for additional_root in additional_roots {
-            if additional_root != root {
-                watcher
-                    .watch(&additional_root, RecursiveMode::Recursive)
-                    .map_err(|error| format!("Impossibile osservare la root Git: {error}"))?;
+            // The workspace watcher already covers nested repository roots.
+            // Watching the child a second time duplicates notify events and
+            // amplifies Git refreshes during cargo/Vite output.
+            if additional_root == root || additional_root.starts_with(&root) {
+                continue;
             }
+            watcher
+                .watch(&additional_root, RecursiveMode::Recursive)
+                .map_err(|error| format!("Impossibile osservare la root Git: {error}"))?;
         }
 
         let revision = {

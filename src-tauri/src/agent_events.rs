@@ -177,7 +177,11 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
         server = ServerOptions::new().create(agent_event_pipe_name())?;
 
         let client_app = app.clone();
-        let registry = client_app.state::<AgentEventRegistry>().inner().clone();
+        let Some(registry_state) = client_app.try_state::<AgentEventRegistry>() else {
+            warn!("Agent event ignored: application state unavailable");
+            continue;
+        };
+        let registry = registry_state.inner().clone();
         tauri::async_runtime::spawn(async move {
             let mut line = String::new();
             let mut reader = BufReader::new(connected);
@@ -198,8 +202,10 @@ async fn run_named_pipe_server(app: AppHandle) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn pipe_busy(error: &std::io::Error) -> bool {
-    // ERROR_PIPE_BUSY = 231 (another instance owns the first pipe instance).
-    error.raw_os_error() == Some(231)
+    // ERROR_PIPE_BUSY = 231 and ERROR_ACCESS_DENIED = 5 can both mean that
+    // another Traflix instance already owns the first named-pipe instance.
+    // A normal co-listener is still allowed for both cases.
+    matches!(error.raw_os_error(), Some(231) | Some(5))
 }
 
 async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload: &str) {
@@ -230,7 +236,11 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
         return;
     }
 
-    let manager = app.state::<TerminalManager>();
+    let Some(manager_state) = app.try_state::<TerminalManager>() else {
+        warn!(terminal_id = %event.terminal_id, "Agent completion ignored: terminal manager unavailable");
+        return;
+    };
+    let manager = manager_state.inner();
     let terminal_known = manager.has_session(&event.terminal_id);
     if !terminal_known {
         // A completion without a current PTY identity cannot be distinguished

@@ -7,6 +7,8 @@ use crate::terminal_engine::TerminalAgentSnapshot;
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,6 +17,8 @@ use tracing::{error, info, warn};
 
 const MAX_COMMAND_BUFFER_BYTES: usize = 8 * 1024;
 const MAX_INPUT_OPERATIONS: usize = 128;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub(crate) const AGENT_PROCESS_MISS_THRESHOLD: u8 = 3;
 pub const MIN_TERMINAL_COLS: u16 = 8;
 pub const MIN_TERMINAL_ROWS: u16 = 2;
@@ -911,6 +915,15 @@ impl TerminalSession {
         // place so the manager can reinsert the exact session and let the user
         // retry, instead of reporting a false successful close.
         if self.process_alive.load(Ordering::Acquire) {
+            // portable-pty kills the shell, but a running cargo/rustc/node
+            // descendant can outlive that direct child. On Windows terminate
+            // the complete process tree first; the PTY killer below remains the
+            // cross-platform fallback and still owns the normal cleanup path.
+            #[cfg(windows)]
+            if let Some(process_id) = self.process_id {
+                terminate_process_tree(process_id);
+            }
+
             let kill_result = self
                 .pty
                 .as_ref()
@@ -927,26 +940,11 @@ impl TerminalSession {
             if let Err(kill_error) = kill_result {
                 // A process can exit naturally just before kill reaches the
                 // OS. Treat that case as success, but never hide a live child
-                // or a failed liveness check.
+                // or a failed liveness check. Give taskkill/ConPTY a bounded
+                // window to publish the exit before declaring the close failed.
                 let observed_exit = match self.child.as_ref() {
-                    Some(child) => {
-                        let mut child = child
-                            .lock()
-                            .map_err(|_| format!("{kill_error}; child lock poisoned"))?;
-                        match child.try_wait() {
-                            Ok(Some(status)) => {
-                                self.process_exit_code
-                                    .store(status.exit_code() as i32, Ordering::Release);
-                                true
-                            }
-                            Ok(None) => false,
-                            Err(error) => {
-                                return Err(format!(
-                                    "{kill_error}; child liveness check failed: {error}"
-                                ));
-                            }
-                        }
-                    }
+                    Some(child) => wait_for_child_exit(child, &self.process_exit_code)
+                        .map_err(|error| format!("{kill_error}; {error}"))?,
                     None => false,
                 };
                 if !observed_exit {
@@ -993,6 +991,54 @@ impl TerminalSession {
         info!(terminal_id = %self.id, "Terminal session cleaned up");
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn terminate_process_tree(process_id: u32) -> bool {
+    let mut command = std::process::Command::new("taskkill");
+    command
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            warn!(
+                process_id,
+                exit_code = ?status.code(),
+                "Process-tree termination command returned a failure"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(process_id, error = %error, "Process-tree termination command could not start");
+            false
+        }
+    }
+}
+
+fn wait_for_child_exit(
+    child: &Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    shared: &AtomicI32,
+) -> Result<bool, String> {
+    for _ in 0..20 {
+        let status = {
+            let mut child = child
+                .lock()
+                .map_err(|_| "child lock poisoned".to_string())?;
+            child
+                .try_wait()
+                .map_err(|error| format!("child liveness check failed: {error}"))?
+        };
+        if let Some(status) = status {
+            shared.store(status.exit_code() as i32, Ordering::Release);
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    Ok(false)
 }
 
 fn collect_exit_code(
@@ -1121,6 +1167,14 @@ mod tests {
         let detections = session.observe_agent_commands(b"\n");
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].provider, "claude");
+
+        let session = make_session();
+        assert!(session
+            .observe_agent_commands(b"claudex --resume")
+            .is_empty());
+        let detections = session.observe_agent_commands(b"\r");
+        assert_eq!(detections.len(), 1);
+        assert_eq!(detections[0].provider, "claudex");
     }
 
     #[test]

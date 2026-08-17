@@ -72,8 +72,11 @@ fn initialize_logging() -> Option<WorkerGuard> {
 }
 
 fn install_safe_panic_hook() {
-    let default_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
+    // The standard hook writes to stderr. Release Tauri processes normally have
+    // no console, and that write can itself panic when the inherited stdio
+    // handle is closed (the historical std::io::stdio.rs:1165 failure). The
+    // persistent tracing sink is the only panic path allowed here.
+    panic::set_hook(Box::new(|panic_info| {
         let location = panic_info
             .location()
             .map(|location| {
@@ -91,7 +94,6 @@ fn install_safe_panic_hook() {
             thread = thread.name().unwrap_or("unnamed"),
             "Unhandled Rust panic (payload intentionally omitted)"
         );
-        default_hook(panic_info);
     }));
 }
 
@@ -99,7 +101,12 @@ fn main() {
     let _log_guard = initialize_logging();
     install_safe_panic_hook();
 
-    info!(log_directory = %release_log_directory().display(), "Avvio Traflix Space");
+    info!(
+        log_directory = %release_log_directory().display(),
+        process_id = std::process::id(),
+        debug_build = cfg!(debug_assertions),
+        "Avvio Traflix Space"
+    );
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

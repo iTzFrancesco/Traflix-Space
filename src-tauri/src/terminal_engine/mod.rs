@@ -1444,7 +1444,10 @@ impl TerminalManager {
         #[cfg(windows)]
         tauri::async_runtime::spawn(async move {
             loop {
-                let manager = app.state::<TerminalManager>();
+                let Some(manager) = app.try_state::<TerminalManager>() else {
+                    info!("Terminal process detector stopped: application state unavailable");
+                    break;
+                };
                 let targets = manager.process_detection_targets().await;
                 let root_pids = targets
                     .iter()

@@ -1,9 +1,18 @@
 use std::collections::{HashMap, HashSet};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::sync::{Arc, OnceLock};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+// A prompt/reactivation scan may arrive while the periodic detector owns the
+// gate. Wait long enough for a normal WMI query to finish instead of turning
+// that expected overlap into a false stale-agent failure.
+const PROCESS_TREE_SCAN_GATE_WAIT_MS: u64 = 2_500;
+#[cfg(windows)]
+const PROCESS_TREE_SCAN_TIMEOUT_SECS: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDetection {
@@ -22,13 +31,19 @@ pub struct ProcessTreeScan {
     pub roots_with_candidate_descendants: HashSet<u32>,
 }
 
-const SUPPORTED_PROVIDERS: [&str; 5] = ["codex", "opencode", "claude", "pi", "freebuff"];
+const SUPPORTED_PROVIDERS: [&str; 6] = ["codex", "opencode", "claude", "claudex", "pi", "freebuff"];
 
 pub fn normalize_provider(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
+    let canonical = match normalized.as_str() {
+        // Voice/transcription aliases used for Claude and Claudex.
+        "cloud" => "claude",
+        "cloudx" => "claudex",
+        other => other,
+    };
     SUPPORTED_PROVIDERS
         .iter()
-        .find(|provider| **provider == normalized)
+        .find(|provider| **provider == canonical)
         .map(|provider| (*provider).to_string())
 }
 
@@ -233,9 +248,41 @@ pub fn detect_from_process_tree_for_roots(root_pids: &[u32]) -> Result<ProcessTr
 }
 
 #[cfg(windows)]
+fn process_tree_scan_gate() -> &'static Arc<tokio::sync::Semaphore> {
+    static GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+}
+
+#[cfg(windows)]
 pub async fn scan_process_tree_async(root_pids: Vec<u32>) -> Result<ProcessTreeScan, String> {
-    let query = tokio::task::spawn_blocking(move || detect_from_process_tree_for_roots(&root_pids));
-    match tokio::time::timeout(std::time::Duration::from_secs(2), query).await {
+    if root_pids.is_empty() {
+        return Ok(ProcessTreeScan::default());
+    }
+
+    // `spawn_blocking` cannot cancel a PowerShell/WMI query after the async
+    // timeout fires. The permit therefore lives inside the blocking closure:
+    // a timed-out query keeps the single-flight gate until the OS call really
+    // returns, instead of allowing a second full-system process enumeration to
+    // overlap it. Callers that arrive while it is stuck fail fast and retry on
+    // their normal detection cadence rather than accumulating queued workers.
+    let permit = tokio::time::timeout(
+        std::time::Duration::from_millis(PROCESS_TREE_SCAN_GATE_WAIT_MS),
+        process_tree_scan_gate().clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| "process-tree-query-busy".to_string())?
+    .map_err(|_| "process-tree-query-gate-closed".to_string())?;
+
+    let query = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        detect_from_process_tree_for_roots(&root_pids)
+    });
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(PROCESS_TREE_SCAN_TIMEOUT_SECS),
+        query,
+    )
+    .await
+    {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => Err(format!("process-tree-query-join-failed: {error}")),
         Err(_) => Err("process-tree-query-timeout".to_string()),
@@ -258,6 +305,9 @@ mod tests {
             ("codex --resume\r\n", "codex"),
             ("npx -y opencode\r\n", "opencode"),
             ("pnpm exec claude\r\n", "claude"),
+            ("cloud --resume\r\n", "claude"),
+            ("claudex --resume\r\n", "claudex"),
+            ("cloudx --resume\r\n", "claudex"),
             ("bunx pi\r\n", "pi"),
             ("cmdc\r\n", "cmdc"),
             ("cline\r\n", "cline"),
@@ -299,6 +349,9 @@ mod tests {
     fn provider_normalization_is_bounded_to_readiness_verified_runtime_agents() {
         assert_eq!(normalize_provider("Pi").as_deref(), Some("pi"));
         assert_eq!(normalize_provider("freebuff").as_deref(), Some("freebuff"));
+        assert_eq!(normalize_provider("CLAUDEX").as_deref(), Some("claudex"));
+        assert_eq!(normalize_provider("Cloud").as_deref(), Some("claude"));
+        assert_eq!(normalize_provider("CloudX").as_deref(), Some("claudex"));
         for manual_only in ["agy", "anti-gravity", "cmdc", "command code", "cline"] {
             assert!(normalize_provider(manual_only).is_none(), "{manual_only}");
         }
