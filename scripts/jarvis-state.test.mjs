@@ -6,16 +6,21 @@ import { applyRegistrySnapshot } from "../src/lib/jarvis/registryState.ts";
 import {
   isWorkspaceChatLoading,
   mergeConversationMessages,
+  mergeJarvisRequestState,
   pendingActionsForWorkspace,
 } from "../src/lib/jarvis/chatState.ts";
 import {
   collapsedJarvisStatus,
   hasOpenActivity,
+  jarvisStepLabel,
   mergeActivityEvents,
   stripActivities,
 } from "../src/lib/jarvis/activityState.ts";
 import {
   canSendTranscript,
+  isVoiceCaptureBusy,
+  isVoiceEndpointPaused,
+  mergeVoiceRequestStatus,
   shouldAutoSpeak,
   shouldStopTtsBeforeRecording,
   voiceRequestForWorkspace,
@@ -167,6 +172,31 @@ test("conversation and legacy pending state stay workspace-scoped", () => {
   );
 });
 
+test("a successful chat response cannot be rewritten by a late cancellation", () => {
+  const running = {
+    requestId: "chat-voice",
+    workspaceId: "workspace-a",
+    voiceRequestId: "voice-a",
+    createdAt: "now",
+    status: "running",
+  };
+  const cancellation = mergeJarvisRequestState(running, {
+    ...running,
+    status: "cancellation_requested",
+  });
+  const completed = mergeJarvisRequestState(cancellation, {
+    ...running,
+    status: "completed",
+  });
+  const lateCancellation = mergeJarvisRequestState(completed, {
+    ...running,
+    status: "cancellation_requested",
+  });
+  assert.equal(completed.status, "completed");
+  assert.equal(lateCancellation.status, "completed");
+  assert.equal(lateCancellation.voiceRequestId, "voice-a");
+});
+
 test("a PTY write receipt closes its local activity even without turn_started", () => {
   const running = {
     requestId: "dispatch-1",
@@ -206,6 +236,63 @@ test("voice transcript cannot escape its origin workspace", () => {
   assert.equal(canSendTranscript(request, "workspace-a", "ciao"), true);
 });
 
+test("same-request voice events cannot rewind speech into standby", () => {
+  const recording = {
+    requestId: "voice-order",
+    workspaceId: "workspace-a",
+    status: "recording",
+    createdAt: "now",
+    normalizedLevel: 0.4,
+    durationMs: 500,
+    endpointState: "pause",
+    vadState: "silence",
+  };
+  const lateStartResponse = { ...recording, status: "armed", endpointState: "standby" };
+  assert.equal(mergeVoiceRequestStatus(recording, lateStartResponse), recording);
+  assert.equal(
+    mergeVoiceRequestStatus(recording, {
+      ...recording,
+      durationMs: 400,
+      endpointState: "speaking",
+    }),
+    recording,
+  );
+
+  const resumed = mergeVoiceRequestStatus(recording, {
+    ...recording,
+    durationMs: 650,
+    endpointState: "speaking",
+    normalizedLevel: 0.7,
+  });
+  assert.equal(resumed.status, "recording");
+  assert.equal(resumed.endpointState, "speaking");
+  assert.equal(isVoiceEndpointPaused(recording), true);
+  assert.equal(isVoiceEndpointPaused(resumed), false);
+  assert.equal(isVoiceCaptureBusy({ ...recording, status: "transcript_ready" }), false);
+});
+
+test("terminal voice state wins over a shorter WAV duration", () => {
+  const transcribing = {
+    requestId: "voice-terminal",
+    workspaceId: "workspace-a",
+    status: "transcribing",
+    createdAt: "now",
+    normalizedLevel: 0,
+    durationMs: 5_300,
+    vadState: "silence",
+  };
+  const terminal = mergeVoiceRequestStatus(transcribing, {
+    ...transcribing,
+    status: "transcript_ready",
+    durationMs: 5_120,
+    transcript: "Ehi Jarvis, mi senti?",
+  });
+  assert.equal(terminal.status, "transcript_ready");
+  assert.equal(terminal.durationMs, 5_120);
+  assert.equal(terminal.transcript, "Ehi Jarvis, mi senti?");
+});
+
+
 test("owner mode defaults to hands-free VAD with automatic submit and speech", () => {
   const settings = defaultJarvisSettings();
   assert.equal(isJarvisOwnerModeReady(settings), true);
@@ -235,10 +322,10 @@ test("owner mode upgrades old automatic modes without rewriting model choice or 
 
   const hold = defaultJarvisSettings();
   hold.voiceInput.activationMode = "hold_to_talk";
-  assert.equal(
-    ownerModeJarvisSettings(hold).voiceInput.activationMode,
-    "hold_to_talk",
-  );
+  hold.voiceInput.globalShortcutEnabled = false;
+  const holdSettings = ownerModeJarvisSettings(hold);
+  assert.equal(holdSettings.voiceInput.activationMode, "hold_to_talk");
+  assert.equal(holdSettings.voiceInput.globalShortcutEnabled, true);
 });
 
 test("voice utility output is safe and bounded", () => {
@@ -352,7 +439,7 @@ test("idle and active status hierarchy stays compact", () => {
         },
       }),
     ),
-    "In ascolto…",
+    "Ti ascolto",
   );
   assert.equal(
     collapsedJarvisStatus(
@@ -366,13 +453,32 @@ test("idle and active status hierarchy stays compact", () => {
         },
       }),
     ),
-    "Trascrivo…",
+    "Elaboro…",
   );
   assert.equal(
     collapsedJarvisStatus(idle({ ttsStatus: { status: "playing" } })),
     "Sto parlando…",
   );
 });
+
+test("completed Codex messages do not keep the compact widget animated", () => {
+  const input = {
+    workspaceId: "workspace-a",
+    voiceRequest: null,
+    ttsStatus: { status: "idle" },
+    activities: [],
+    pendingActions: [],
+    codexTool: null,
+    codexTurnActive: false,
+    codexMessage: "Sono qui, Jarvis all'ascolto…",
+  };
+  assert.equal(jarvisStepLabel(input), null);
+  assert.equal(
+    jarvisStepLabel({ ...input, codexTurnActive: true }),
+    "Sono qui, Jarvis all'ascolto…",
+  );
+});
+
 
 test("activity timeline supersedes stale phases and stays workspace-scoped", () => {
   const preparing = {
@@ -410,14 +516,16 @@ test("VAD capture closes speech turns automatically and re-arms hands-free", () 
   assert.match(overlaySource, /store\.startVoice\(\)/);
 });
 
-test("watchdog loops publish only capture-phase states and the latch self-heals", () => {
-  assert.match(
-    voiceCommandsSource,
-    /matches!\(\s*status\.status,\s*VoiceRequestStatus::Recording \| VoiceRequestStatus::Armed\s*\)/s,
-  );
+test("single watchdog publishes capture states and the latch self-heals", () => {
   assert.match(
     voiceCommandsSource,
     /matches!\(\s*current\.status,\s*VoiceRequestStatus::Recording \| VoiceRequestStatus::Armed\s*\)/s,
+  );
+  assert.match(voiceCommandsSource, /One watchdog owns capture telemetry/);
+  assert.match(voiceCommandsSource, /current\.status == VoiceRequestStatus::Failed/);
+  assert.equal(
+    (voiceCommandsSource.match(/tokio::spawn\(async move/g) ?? []).length,
+    1,
   );
   assert.match(overlaySource, /Reconcile a stale active request/);
   assert.match(

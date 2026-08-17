@@ -59,6 +59,14 @@ test("Windows backend subprocesses stay hidden and the TTS sidecar has no consol
   assert.equal(existsSync(new URL("../public/icon.png", import.meta.url)), true);
 });
 
+test("heavy-runtime failures cannot overlap process scans or panic through closed stdio", () => {
+  assert.match(runtimeDetectorSource, /process_tree_scan_gate/);
+  assert.match(runtimeDetectorSource, /process-tree-query-busy/);
+  assert.match(runtimeDetectorSource, /let _permit = permit/);
+  assert.match(mainSource, /persistent tracing sink is the only panic path allowed here/);
+  assert.doesNotMatch(mainSource, /default_hook\(panic_info\)/);
+});
+
 test("Rust TTS shares one warm worker and prewarms it at startup", () => {
   assert.match(ttsSource, /static WORKER: OnceLock<SharedWorker>/);
   assert.match(ttsSource, /pub fn prewarm_runtime/);

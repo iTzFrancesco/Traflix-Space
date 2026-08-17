@@ -6,8 +6,12 @@ import {
   decideVoiceSubmit,
   shouldShowVoiceSendControl,
   voiceEndpointCaption,
+  voiceUiPhase,
 } from "../src/lib/jarvis/voiceState.ts";
-import { normalizeVoiceEndpointWaitMs } from "../src/lib/jarvis/settings.ts";
+import {
+  normalizeVoiceEndpointWaitMs,
+  normalizeVoiceVadPostSpeechMs,
+} from "../src/lib/jarvis/settings.ts";
 import {
   enqueueSpeech,
   shouldSpeakCommentary,
@@ -24,6 +28,8 @@ const voiceTypesSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/typ
 const frontendSettingsSource = readFileSync(new URL("../src/lib/jarvis/settings.ts", import.meta.url), "utf8");
 const ttsSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/tts.rs", import.meta.url), "utf8");
 const frontendTypesSource = readFileSync(new URL("../src/lib/jarvis/types.ts", import.meta.url), "utf8");
+const settingsModalSource = readFileSync(new URL("../src/components/layout/SettingsModal.tsx", import.meta.url), "utf8");
+const sttSource = readFileSync(new URL("../src-tauri/src/jarvis/voice/stt.rs", import.meta.url), "utf8");
 
 test("submit policy queues a complete transcript while chat is busy", () => {
   assert.equal(decideVoiceSubmit({
@@ -67,14 +73,23 @@ test("voice UI keeps the transcript draft while queued and exposes manual send",
   assert.match(storeSource, /voiceSubmitStates/);
   assert.match(storeSource, /voiceSubmissionInFlight/);
   assert.match(overlaySource, /sendVoiceTranscript\(draft\.requestId, draft\.transcript, \{ automatic: true \}\)/);
-  assert.match(widgetSource, /Preparazione invio…/);
-  assert.match(widgetSource, /Trascrizione…/);
+  assert.match(widgetSource, /voiceUiPhase/);
+  assert.match(widgetSource, /voiceUiLabel/);
   assert.match(widgetSource, /In coda · invio appena libero/);
-  assert.match(widgetSource, /Pronto · premi Invia/);
+  assert.match(widgetSource, /Invio a Jarvis…/);
   assert.match(widgetSource, /Termina e invia/);
   assert.match(widgetSource, /Invia ora/);
+  assert.match(widgetSource, /activationMode: props\.activationMode/);
+  assert.match(widgetSource, /submitState: props\.voiceSubmitState/);
+  assert.match(widgetSource, /submitState === "submitting"/);
+  assert.match(storeSource, /voiceRequestId: options\.voiceRequestId/);
+  assert.match(storeSource, /stale terminal voice event ignored during handoff/);
+  assert.match(storeSource, /cancel skipped: voice handoff owns the request/);
+  assert.match(storeSource, /chat response won a late local cancellation race/);
+  assert.match(storeSource, /voiceRequests\[origin\.workspaceId\]\?\.requestId === requestId/);
   assert.match(widgetSource, /shouldShowVoiceSendControl/);
 });
+
 
 test("automatic submit waits for the final transcript after pause and resume", () => {
   for (const status of ["armed", "recording", "stopping", "transcribing"]) {
@@ -95,20 +110,24 @@ test("automatic submit waits for the final transcript after pause and resume", (
   }), "send");
 });
 
-test("voice caption distinguishes pause, finalizing, speech and standby", () => {
+test("voice caption stays stable across endpoint details", () => {
   assert.equal(voiceEndpointCaption("speaking"), "Ti ascolto");
-  assert.equal(voiceEndpointCaption("pause"), "Pausa naturale · continuo ad ascoltare");
-  assert.equal(voiceEndpointCaption("breath"), "Respiro · tengo aperto l'ascolto");
-  assert.equal(voiceEndpointCaption("micro_interruption"), "Micro-interruzione · verifico la ripresa");
-  assert.equal(voiceEndpointCaption("finalizing"), "Fine frase · attendo il silenzio");
-  assert.equal(voiceEndpointCaption("standby"), "Pronto · rumore filtrato");
+  assert.equal(voiceEndpointCaption("pause"), "Ti ascolto");
+  assert.equal(voiceEndpointCaption("breath"), "Ti ascolto");
+  assert.equal(voiceEndpointCaption("micro_interruption"), "Ti ascolto");
+  assert.equal(voiceEndpointCaption("finalizing"), "Ti ascolto");
+  assert.equal(voiceEndpointCaption("standby", "silence"), "Pronto");
+  assert.equal(voiceUiPhase({ status: "recording" }), "listening");
+  assert.equal(voiceUiPhase({ status: "transcribing" }), "processing");
 });
 
 test("endpoint wait is configurable, migrated and bounded", () => {
-  assert.equal(normalizeVoiceEndpointWaitMs(1_200), 6_500);
+  assert.equal(normalizeVoiceEndpointWaitMs(1_200), 900);
+  assert.equal(normalizeVoiceEndpointWaitMs(6_500), 900);
   assert.equal(normalizeVoiceEndpointWaitMs(4_000), 4_000);
-  assert.equal(normalizeVoiceEndpointWaitMs(1_000), 3_500);
-  assert.equal(normalizeVoiceEndpointWaitMs(20_000), 15_000);
+  assert.equal(normalizeVoiceEndpointWaitMs(400), 500);
+  assert.equal(normalizeVoiceEndpointWaitMs(20_000), 5_000);
+  assert.equal(normalizeVoiceVadPostSpeechMs(20_000), 5_000);
 });
 
 test("progressive TTS does not discard a short completed intermediate step", () => {
@@ -131,10 +150,30 @@ test("progressive TTS retains every completed step until the worker consumes it"
   ));
 });
 
-test("voice widget keeps a stable listening label while VAD samples change", () => {
+test("Codex commentary stops stale queued speech at a global voice barge-in", () => {
+  assert.match(overlaySource, /const activeVoiceRequest = activeVoiceRequestId/);
+  assert.match(overlaySource, /const voiceTurnActive = activeVoiceRequest/);
+  assert.match(overlaySource, /previousVoiceCaptureRef/);
+  assert.match(overlaySource, /queue cleared by barge-in/);
+  assert.match(overlaySource, /clearCodexSpeech\(\)/);
+});
+
+test("slow transcription is reconciled without an arbitrary cancellation watchdog", () => {
+  assert.match(overlaySource, /VOICE_TRANSCRIPTION_RECONCILE_MS = 1_000/);
+  assert.match(overlaySource, /voiceWorkspaceStatus\(workspaceId\)/);
+  assert.match(overlaySource, /reconciled missed terminal state/);
+  assert.doesNotMatch(overlaySource, /VOICE_TRANSCRIPTION_WATCHDOG_MS = 25_000/);
+  assert.doesNotMatch(overlaySource, /transcription watchdog cancelling slow request/);
+  assert.match(sttSource, /GROQ_STT_TIMEOUT_SECS: u64 = 180/);
+  assert.match(sttSource, /\.timeout\(Duration::from_secs\(GROQ_STT_TIMEOUT_SECS\)\)/);
+  assert.match(sttSource, /connect_timeout\(Duration::from_secs\(8\)\)/);
+});
+
+test("voice widget keeps one stable listening label while VAD samples change", () => {
   assert.doesNotMatch(widgetSource, /props\.voiceRequest\.vadState\s*===/);
-  assert.match(widgetSource, /voiceEndpointCaption/);
-  assert.match(widgetSource, /endpointState/);
+  assert.match(widgetSource, /voiceUiPhase/);
+  assert.match(widgetSource, /voiceUiLabel/);
+  assert.doesNotMatch(widgetSource, /voicePaused|jarvis-pill--paused|endpointState=\{props\.voiceRequest\?\.endpointState\}/);
   assert.match(widgetSource, /voiceListening = props\.voiceRequest\?\.status === "recording"/);
 });
 
@@ -154,6 +193,43 @@ test("barge-in never exposes a forced manual send control", () => {
     transcriptReady: false,
     bargeIn: false,
   }), true);
+});
+
+test("manual draft send control disappears once handoff starts", () => {
+  assert.equal(shouldShowVoiceSendControl({
+    voiceListening: false,
+    transcriptReady: true,
+    bargeIn: false,
+    activationMode: "hold_to_talk",
+    submitState: "manual",
+    hasTranscript: true,
+  }), true);
+  for (const submitState of ["queued", "submitting", "sent", "failed"]) {
+    assert.equal(shouldShowVoiceSendControl({
+      voiceListening: false,
+      transcriptReady: true,
+      bargeIn: false,
+      activationMode: "hold_to_talk",
+      submitState,
+      hasTranscript: true,
+    }), false, submitState);
+  }
+  assert.equal(shouldShowVoiceSendControl({
+    voiceListening: false,
+    transcriptReady: true,
+    bargeIn: false,
+    activationMode: "vad",
+    submitState: "manual",
+    hasTranscript: true,
+  }), false);
+  assert.equal(shouldShowVoiceSendControl({
+    voiceListening: false,
+    transcriptReady: true,
+    bargeIn: false,
+    activationMode: "hold_to_talk",
+    submitState: "manual",
+    hasTranscript: false,
+  }), false);
 });
 
 test("barge-in auto-arm is restricted to VAD and does not call chat cancellation", () => {
@@ -187,10 +263,10 @@ test("endpointing is configurable and wired to automatic voice stop", () => {
   assert.match(settingsSource, /endpoint_grace_ms/);
   assert.match(settingsSource, /min_spoken_ms/);
   assert.match(settingsSource, /fn default_vad_post_speech_ms\(\)[\s\S]*MIN_SAFE_VAD_POST_SPEECH_MS/);
-  assert.match(settingsSource, /vad_post_speech_ms = settings[\s\S]*\.max\(MIN_SAFE_VAD_POST_SPEECH_MS\)/);
-  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_WAIT_MS = 6_500/);
-  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_MIN_WAIT_MS = 3_500/);
-  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_MAX_WAIT_MS = 15_000/);
+  assert.match(settingsSource, /vad_post_speech_ms = settings[\s\S]*\.clamp\(MIN_SAFE_VAD_POST_SPEECH_MS, MAX_SAFE_VAD_POST_SPEECH_MS\)/);
+  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_WAIT_MS = 900/);
+  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_MIN_WAIT_MS = 500/);
+  assert.match(frontendSettingsSource, /VOICE_ENDPOINT_MAX_WAIT_MS = 5_000/);
   assert.match(frontendSettingsSource, /endpointGraceMs: normalizeVoiceEndpointWaitMs/);
   assert.match(frontendSettingsSource, /vadPostSpeechMs: VOICE_VAD_CANDIDATE_MS/);
   assert.match(commandsSource, /EndpointingConfig/);
@@ -204,13 +280,27 @@ test("endpointing is configurable and wired to automatic voice stop", () => {
   assert.match(vadSource, /fn noise_gate_threshold/);
   assert.match(captureSource, /apply_noise_gate/);
   assert.match(captureSource, /vad_pre_roll_ms: 500/);
-  assert.match(commandsSource, /endpoint_state: status\.endpoint_state/);
+  assert.match(commandsSource, /endpoint_state: current\.endpoint_state/);
   assert.match(voiceTypesSource, /enum VoiceEndpointState/);
   assert.match(frontendTypesSource, /VoiceEndpointState/);
   assert.match(voiceTypesSource, /force_endpointing: bool/);
-  assert.match(commandsSource, /watchdog_config\.endpointing_enabled \|= force_endpointing/);
+  assert.match(commandsSource, /watchdog_config\.endpointing_enabled\s*=\s*automatic_capture/);
   assert.match(storeSource, /forceEndpointing: options\.forceEndpointing/);
 });
+
+test("manual capture keeps long pauses and disables stale VAD endpointing", () => {
+  assert.match(settingsModalSource, /hold_to_talk/);
+  assert.match(settingsModalSource, /Durata massima acquisizione/);
+  assert.match(settingsModalSource, /Fino a 10 minuti/);
+  assert.match(frontendSettingsSource, /VOICE_MAX_DURATION_SECONDS = 600/);
+  assert.match(commandsSource, /let automatic_capture\s*=\s*activation_mode/);
+  assert.match(commandsSource, /vad_enabled: automatic_capture/);
+  assert.match(commandsSource, /watchdog_config\.endpointing_enabled\s*=\s*automatic_capture/);
+  assert.match(voiceTypesSource, /MAX_RECORDING_MS: u64 = 600_000/);
+  assert.match(voiceTypesSource, /MAX_WAV_BYTES: usize = 24 \* 1024 \* 1024/);
+  assert.match(voiceTypesSource, /activation_mode[\s\S]*HoldToTalk/);
+});
+
 
 test("barge-in owns only the TTS cancellation token", () => {
   const voiceHandoffStart = storeSource.lastIndexOf("setVoiceRequest:");

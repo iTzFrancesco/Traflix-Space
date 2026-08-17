@@ -12,6 +12,9 @@ const agentLauncher = source("../src/lib/agentLauncher.ts");
 const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const workspaceWizard = source("../src/components/workspace/NewSpaceWizard.tsx");
+const projectWorkspaceSync = source("../src/components/project/ProjectWorkspaceSync.tsx");
+const workspaceView = source("../src/components/workspace/WorkspaceView.tsx");
+const app = source("../src/App.tsx");
 const workspaceCommands = source("../src-tauri/src/workspace/commands.rs");
 const workspaceRegistry = source("../src-tauri/src/workspace/registry.rs");
 const projectCommands = source("../src-tauri/src/project/commands.rs");
@@ -79,6 +82,7 @@ test("manual agent catalog is complete while Jarvis advertises only readiness-ve
   const manualAgents = [
     "anti-gravity",
     "claude",
+    "claudex",
     "codex",
     "opencode",
     "pi",
@@ -90,7 +94,7 @@ test("manual agent catalog is complete while Jarvis advertises only readiness-ve
     assert.match(agents, new RegExp(`id: "${provider}"`));
   }
 
-  const jarvisProviders = ["claude", "codex", "opencode", "pi", "freebuff"];
+  const jarvisProviders = ["claude", "claudex", "codex", "opencode", "pi", "freebuff"];
   for (const provider of jarvisProviders) {
     assert.match(agentRegistry, new RegExp(`id: "${provider}"\\.into\\(\\)`));
     assert.match(runtimeDetector, new RegExp(`"${provider}"`));
@@ -176,8 +180,11 @@ test("dotenv credentials are refreshed without exposing secret values to the fro
   assert.match(sttSource, /read_secret_env\(\s*crate::settings::secrets::GROQ_API_KEY_ENV/);
   assert.doesNotMatch(sttSource, /std::env::var\(\s*[\"']GROQ_API_KEY/);
   const voiceRegistry = source("../src-tauri/src/jarvis/voice/registry.rs");
-  assert.match(voiceRegistry, /GROQ_API_KEY/);
-  assert.match(voiceRegistry, /chiave Groq è stata trovata ma rifiutata/);
+  assert.match(secretLoader, /pub fn is_groq_api_key/);
+  assert.match(secretLoader, /GROQ_API_KEY=/);
+  assert.match(secretLoader, /Bearer /);
+  assert.match(sttSource, /is_groq_api_key/);
+  assert.match(voiceRegistry, /credenziale vocale è stata rifiutata/);
   const settingsCommands = source("../src-tauri/src/settings/commands.rs");
   assert.match(settingsCommands, /pub fn jarvis_secret_status\(app: AppHandle\)/);
   assert.match(settingsCommands, /secrets::refresh_dotenv_environment\(&app\)/);
@@ -190,6 +197,19 @@ test("workspace .env files stay visible with a redacted preview", () => {
   assert.match(projectCommands, /redacted,/);
   assert.match(projectTypes, /redacted: boolean;/);
   assert.match(projectPreview, /Anteprima protetta: i valori sensibili sono oscurati/);
+});
+
+test("workspace restore waits for one authoritative backend snapshot", () => {
+  assert.match(workspaceStore, /backendReady: boolean/);
+  assert.match(workspaceStore, /backendReady: false/);
+  assert.match(workspaceStore, /backendReady: true/);
+  assert.match(app, /syncWithBackend\(\)/);
+  assert.match(workspaceView, /backendReady/);
+  assert.match(projectWorkspaceSync, /backendReady/);
+  assert.match(
+    projectWorkspaceSync,
+    /if \(!backendReady \|\| !activeWorkspaceId\) return/,
+  );
 });
 
 test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {

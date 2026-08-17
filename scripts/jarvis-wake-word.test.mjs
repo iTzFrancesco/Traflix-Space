@@ -98,7 +98,7 @@ test("wake status follows off → standby → listening transitions", () => {
   assert.match(frontendTypesSource, /"off" \| "standby" \| "listening" \| "fallback" \| "unavailable" \| "error"/);
   assert.match(typesSource, /WakeWordState::Standby|enum WakeWordState/);
   assert.match(commandsSource, /wake::standby_status\(true, &wake_config\)/);
-  assert.match(commandsSource, /wake::listening_status\(true, &event_wake_config/);
+  assert.match(commandsSource, /wake::listening_status\(true, &watchdog_wake_config/);
   assert.match(commandsSource, /jarvis:\/\/wake-state/);
   assert.match(registrySource, /VoiceRequestStatus::Armed/);
   assert.match(registrySource, /speech_started \|\| wake_word_activated/);

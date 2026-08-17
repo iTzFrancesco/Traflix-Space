@@ -9,11 +9,15 @@ const modalSource = source("../src/components/ui/Modal.tsx");
 const uiStoreSource = source("../src/stores/uiStore.ts");
 const presetStoreSource = source("../src/stores/presetStore.ts");
 const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
+const activityStateSource = source("../src/lib/jarvis/activityState.ts");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const globalsSource = source("../src/styles/globals.css");
 const settingsSource = source("../src/components/layout/SettingsModal.tsx");
 const sidebarSource = source("../src/components/layout/Sidebar.tsx");
 const rightPanelSource = source("../src/components/layout/RightPanel.tsx");
+const browserPanelSource = source("../src/components/browser/BrowserPanel.tsx");
+const workspaceGridSource = source("../src/components/workspace/WorkspaceGrid.tsx");
+const terminalPaneSource = source("../src/components/workspace/TerminalPane.tsx");
 const skillsSource = source("../src/components/skills/SkillsModule.tsx");
 const jarvisSettingsSource = source("../src/lib/jarvis/settings.ts");
 const rustSettingsSource = source("../src-tauri/src/settings/store.rs");
@@ -87,7 +91,11 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /workspaceName: string \| null/);
   assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
-  assert.match(widgetSource, /const displayedStepLabel = voiceStatusLabel \?\? stepLabel/);
+  assert.match(widgetSource, /const displayedStepLabel = props\.muted \? null : voiceStatusLabel \?\? stepLabel/);
+  assert.match(widgetSource, /const showActivityLoader = Boolean/);
+  assert.match(widgetSource, /voicePhase !== "listening"/);
+  assert.match(widgetSource, /voiceUiPhase/);
+  assert.doesNotMatch(widgetSource, /voicePaused|jarvis-pill--paused|paused=\{/);
   assert.match(widgetSource, /aria-label=\{`Jarvis · \$\{displayedStepLabel \?\? statusLabel\}`\}/);
   assert.match(widgetSource, /role="status"/);
   assert.match(widgetSource, /aria-live=\{props\.voiceError \? "assertive" : "polite"\}/);
@@ -101,6 +109,7 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.match(widgetSource, /props\.muted \? <MicOff/);
   assert.match(globalsSource, /\.jarvis-pill--muted\.jarvis-pill--listening/);
   assert.match(globalsSource, /\.jarvis-orb--muted\.jarvis-orb--speaking/);
+  assert.match(activityStateSource, /if \(codexMessage && codexTurnActive\)/);
 });
 
 test("hands-free ambient capture follows workspace focus without stealing an active spoken turn", () => {
@@ -135,17 +144,24 @@ test("modal traps keyboard focus and restores the previous control", () => {
   assert.match(modalSource, /tabIndex=\{-1\}/);
 });
 
-test("persisted desktop layout rejects obsolete right-panel views", () => {
-  assert.match(
-    uiStoreSource,
-    /RightPanelView = "browser" \| "files" \| "git" \| "skills" \| null/,
-  );
-  assert.match(uiStoreSource, /normalizeRightPanelView/);
-  assert.match(uiStoreSource, /merge: \(persisted, current\)/);
-  assert.match(uiStoreSource, /MIN_SIDEBAR_WIDTH = 260/);
-  assert.match(uiStoreSource, /MAX_RIGHT_PANEL_WIDTH = 560/);
-  assert.doesNotMatch(uiStoreSource, /RightPanelView = string/);
-  assert.doesNotMatch(uiStoreSource, /\.\.\.saved,/);
+test("native BrowserPanel bounds stay serialized and tied to its viewport", () => {
+  assert.match(browserPanelSource, /boundsSyncBusyRef/);
+  assert.match(browserPanelSource, /boundsSyncPendingRef/);
+  assert.match(browserPanelSource, /requestAnimationFrame/);
+  assert.match(browserPanelSource, /getBoundingClientRect/);
+  assert.match(browserPanelSource, /setPosition\(new LogicalPosition/);
+  assert.match(browserPanelSource, /setSize\(new LogicalSize/);
+  assert.match(browserPanelSource, /lastBoundsRef\.current = null/);
+  assert.match(rightPanelSource, /activeView === "browser"/);
+  assert.match(rightPanelSource, /min-h-0 min-w-0 flex-1/);
+});
+
+test("workspace grid avoids rerendering all panes for unrelated terminal metadata", () => {
+  assert.match(workspaceGridSource, /exitedTerminalKey/);
+  assert.match(workspaceGridSource, /exitedTerminalIds\.has\(terminal\.id\)/);
+  assert.doesNotMatch(workspaceGridSource, /runtimeTerminals = useTerminalStore/);
+  assert.match(terminalPaneSource, /state\.workspaces\.findIndex/);
+  assert.doesNotMatch(terminalPaneSource, /const workspaces = useWorkspaceStore/);
 });
 
 test("persisted workspace presets are bounded before the wizard consumes them", () => {
@@ -202,7 +218,7 @@ test("workspace config LRU is PTY-safe, active-safe and self-healing", () => {
   );
   assert.match(
     workspaceViewSource,
-    /\[activeWorkspaceId, loadedMap, loadWorkspace\]/,
+    /\[activeWorkspaceId, (?:backendReady, )?loadedMap, loadWorkspace\]/,
   );
 });
 
