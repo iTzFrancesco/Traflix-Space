@@ -10,6 +10,9 @@ use tracing::{debug, warn};
 use super::types::{VoiceErrorCode, GROQ_STT_MODEL, MAX_WAV_BYTES};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
+// Long manual captures need more than the old short-turn timeout, but a
+// network black hole must still leave Transcribing within a bounded window.
+const GROQ_STT_TIMEOUT_SECS: u64 = 180;
 const GROQ_BOUNDARY: &str = "------------------------traflix-space-jarvis";
 const GROQ_CONTENT_TYPE: &str =
     "multipart/form-data; boundary=------------------------traflix-space-jarvis";
@@ -54,6 +57,10 @@ impl GroqSpeechToTextProvider {
         let Some(api_key) = api_key else {
             return Self::new(GROQ_ENDPOINT, None);
         };
+        if !crate::settings::secrets::is_groq_api_key(&api_key) {
+            warn!("Configured voice key is not a Groq gsk_ key");
+            return Err(VoiceErrorCode::AuthFailed);
+        }
 
         // Keep one reqwest client alive across voice turns. Besides avoiding
         // per-turn client construction, this lets reqwest reuse the Groq
@@ -81,7 +88,10 @@ impl GroqSpeechToTextProvider {
     ) -> Result<Self, VoiceErrorCode> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(60))
+            // The timeout is intentionally much longer than a normal turn so
+            // long manual captures can upload, while still bounding a stalled
+            // network response. Explicit cancellation remains cooperative.
+            .timeout(Duration::from_secs(GROQ_STT_TIMEOUT_SECS))
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(1)
             .tcp_nodelay(true)

@@ -33,9 +33,19 @@ pub struct JarvisSecretStatus {
 
 pub fn status() -> JarvisSecretStatus {
     JarvisSecretStatus {
-        groq_configured: read_secret_env(GROQ_API_KEY_ENV).is_some(),
+        groq_configured: read_secret_env(GROQ_API_KEY_ENV)
+            .is_some_and(|value| is_groq_api_key(&value)),
         persistent: cfg!(windows),
     }
+}
+
+/// Groq's API keys use the `gsk_` prefix. Keeping this check at the backend
+/// boundary prevents an xAI/Grok key from being reported as configured and
+/// only failing later with a confusing HTTP 401 from the Groq endpoint.
+pub fn is_groq_api_key(value: &str) -> bool {
+    value
+        .strip_prefix("gsk_")
+        .is_some_and(|suffix| suffix.len() >= 8)
 }
 
 pub fn hydrate_process_environment(app: &AppHandle) {
@@ -162,6 +172,12 @@ fn parse_dotenv_assignment(line: &str) -> Option<(&str, String)> {
 
 pub fn set_secret(secret: JarvisSecretId, value: String) -> Result<JarvisSecretStatus, String> {
     let value = normalize_secret(&value)?;
+    if matches!(secret, JarvisSecretId::Groq) && !is_groq_api_key(&value) {
+        return Err(
+            "Inserisci una chiave Groq valida con prefisso gsk_ (non una chiave xAI/Grok xai-)."
+                .to_string(),
+        );
+    }
     let name = secret_env_name(secret);
     persist_user_secret(name, Some(&value))?;
     env::set_var(name, value);
@@ -218,14 +234,48 @@ fn secret_env_name(secret: JarvisSecretId) -> &'static str {
 }
 
 fn normalize_secret(value: &str) -> Result<String, String> {
-    // Users sometimes paste the value copied from an HTTP Authorization
-    // header. `bearer_auth` adds the scheme itself, so keep only the raw key.
-    let value = value.trim();
-    let value = value
-        .strip_prefix("Bearer ")
-        .or_else(|| value.strip_prefix("bearer "))
-        .map(str::trim)
-        .unwrap_or(value);
+    // Accept the common copy/paste forms from Settings and `.env`, while
+    // always storing only the raw token used by `bearer_auth`.
+    let mut value = value.trim();
+    for _ in 0..4 {
+        if let Some(rest) = value.strip_prefix("export ") {
+            value = rest.trim();
+            continue;
+        }
+        if let Some(rest) = value
+            .strip_prefix("GROQ_API_KEY=")
+            .or_else(|| value.strip_prefix("groq_api_key="))
+        {
+            value = rest.trim();
+            continue;
+        }
+        if let Some(rest) = value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+        {
+            value = rest.trim();
+            continue;
+        }
+        if let Some(rest) = value
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .or_else(|| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.strip_suffix('\''))
+            })
+        {
+            value = rest.trim();
+            continue;
+        }
+        if !value.starts_with('"') && !value.starts_with('\'') {
+            if let Some((raw, _comment)) = value.split_once(" #") {
+                value = raw.trim();
+                continue;
+            }
+        }
+        break;
+    }
     if value.is_empty()
         || value.len() > MAX_SECRET_BYTES
         || value.contains('\0')
@@ -292,7 +342,7 @@ fn persist_user_secret(_name: &str, _value: Option<&str>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{dotenv_should_load, normalize_secret, parse_dotenv_assignment};
+    use super::{dotenv_should_load, is_groq_api_key, normalize_secret, parse_dotenv_assignment};
 
     #[test]
     fn secret_normalization_trims_copy_paste_whitespace() {
@@ -338,14 +388,25 @@ mod tests {
     }
 
     #[test]
-    fn secret_normalization_removes_a_pasted_bearer_prefix() {
+    fn secret_normalization_accepts_env_lines_and_nested_copy_wrappers() {
         assert_eq!(
-            normalize_secret(" Bearer gsk_test-key ").unwrap(),
+            normalize_secret("GROQ_API_KEY=\"Bearer gsk_test-key\"").unwrap(),
             "gsk_test-key"
         );
         assert_eq!(
-            normalize_secret("bearer gsk_test-key").unwrap(),
+            normalize_secret("  groq_api_key=gsk_test-key  ").unwrap(),
             "gsk_test-key"
         );
+        assert_eq!(
+            normalize_secret("export GROQ_API_KEY=gsk_test-key # local").unwrap(),
+            "gsk_test-key"
+        );
+    }
+
+    #[test]
+    fn groq_key_shape_distinguishes_xai_keys_before_network() {
+        assert!(is_groq_api_key("gsk_12345678"));
+        assert!(!is_groq_api_key("xai-12345678"));
+        assert!(!is_groq_api_key("gsk_short"));
     }
 }
