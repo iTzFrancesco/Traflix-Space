@@ -8,13 +8,14 @@ import type { ProjectFilesChanged } from "../../project/types";
 
 export function ProjectWorkspaceSync() {
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const backendReady = useWorkspaceStore((state) => state.backendReady);
   const ensureWorkspace = useProjectStore((state) => state.ensureWorkspace);
   const listDirectory = useProjectStore((state) => state.listDirectory);
   const refreshGitStatus = useProjectStore((state) => state.refreshGitStatus);
   const handleFilesChanged = useProjectStore((state) => state.handleFilesChanged);
 
   useEffect(() => {
-    if (!activeWorkspaceId) return;
+    if (!backendReady || !activeWorkspaceId) return;
 
     ensureWorkspace(activeWorkspaceId);
     void listDirectory(activeWorkspaceId, "");
@@ -46,7 +47,7 @@ export function ProjectWorkspaceSync() {
         10000,
       ).catch(() => undefined);
     };
-  }, [activeWorkspaceId, ensureWorkspace, handleFilesChanged, listDirectory, refreshGitStatus]);
+  }, [activeWorkspaceId, backendReady, ensureWorkspace, handleFilesChanged, listDirectory, refreshGitStatus]);
 
   return null;
 }

@@ -36,7 +36,7 @@ function App() {
   const syncWithBackend = useWorkspaceStore((s) => s.syncWithBackend);
 
   useEffect(() => {
-    syncWithBackend();
+    void syncWithBackend();
   }, [syncWithBackend]);
 
   useEffect(() => {

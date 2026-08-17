@@ -106,7 +106,15 @@ async function persistTerminalMutation(
 
 export function WorkspaceView() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const backendReady = useWorkspaceStore((s) => s.backendReady);
+  const backendSyncError = useWorkspaceStore((s) => s.backendSyncError);
+  const syncWithBackend = useWorkspaceStore((s) => s.syncWithBackend);
+  // Workspace metadata changes frequently while terminals stream. Subscribe
+  // only to membership for the cache cleanup effect; the active workspace is
+  // selected separately below.
+  const workspaceIdsKey = useWorkspaceStore((state) =>
+    state.workspaces.map((workspace) => workspace.id).join("|"),
+  );
   const addToast = useToastStore((s) => s.addToast);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
@@ -850,20 +858,20 @@ export function WorkspaceView() {
   // solo workspace attivo. Così se esci da una workspace in focus mode e ci
   // torni, il focus è preservato.
   useEffect(() => {
-    if (!activeWorkspaceId) return;
+    if (!backendReady || !activeWorkspaceId) return;
     if (
       !loadedMap.has(activeWorkspaceId) &&
       !loadingRef.current.has(activeWorkspaceId)
     ) {
       loadWorkspace(activeWorkspaceId);
     }
-  }, [activeWorkspaceId, loadedMap, loadWorkspace]);
+  }, [activeWorkspaceId, backendReady, loadedMap, loadWorkspace]);
 
   // A cached workspace does not pass through loadWorkspace again. Restore its
   // own active/focus identity instead of defaulting to the first pane or
   // retaining a pointer from the previously visible workspace.
   useEffect(() => {
-    if (!activeWorkspaceId || !activeLoaded) return;
+    if (!backendReady || !activeWorkspaceId || !activeLoaded) return;
     useTerminalStore.getState().restoreWorkspaceSelection(
       activeWorkspaceId,
       activeLoaded.terminals.map((terminal) => terminal.id),
@@ -881,11 +889,13 @@ export function WorkspaceView() {
         });
       });
     }
-  }, [activeWorkspaceId, activeLoaded]);
+  }, [activeWorkspaceId, activeLoaded, backendReady]);
 
-  // Pulisci i workspace rimossi dalla mappa — osserva tutto l'array workspaces
+  // Pulisci i workspace rimossi dalla mappa — osserva solo l'identità dei workspace
   useEffect(() => {
-    const allIds = new Set(workspaces.map((w) => w.id));
+    const allIds = new Set(
+      useWorkspaceStore.getState().workspaces.map((workspace) => workspace.id),
+    );
     const toRemove = Array.from(loadedMapRef.current.keys()).filter(
       (key) => !allIds.has(key),
     );
@@ -908,7 +918,7 @@ export function WorkspaceView() {
       for (const key of toRemove) next.delete(key);
       return next;
     });
-  }, [workspaces]);
+  }, [workspaceIdsKey]);
 
   // Sincronizza il ref workspaceTerminalsRef quando loadedMap cambia
   useEffect(() => {
@@ -922,6 +932,40 @@ export function WorkspaceView() {
       }
     }
   }, [loadedMap, activeWorkspaceId]);
+
+  if (!backendReady) {
+    return (
+      <>
+        <div className="flex h-full items-center justify-center bg-neutral-darkest px-8">
+          <div className="surface-card w-full max-w-sm px-6 py-5 text-center">
+            <TerminalSquare
+              size={22}
+              strokeWidth={1.4}
+              className="mx-auto text-neutral-text-muted"
+            />
+            <p
+              className="mt-3 text-sm font-semibold text-neutral-text"
+              role={backendSyncError ? "alert" : "status"}
+            >
+              {backendSyncError
+                ? "Impossibile sincronizzare lo spazio di lavoro"
+                : "Sincronizzazione spazio di lavoro…"}
+            </p>
+            {backendSyncError ? (
+              <button
+                type="button"
+                className="primary-button mt-4"
+                onClick={() => void syncWithBackend()}
+              >
+                Riprova
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <NewSpaceWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      </>
+    );
+  }
 
   // Empty state — keep the desktop shell quiet and task-focused.
   if (!workspace && !activeWorkspaceId) {

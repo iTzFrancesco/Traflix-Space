@@ -3,6 +3,8 @@ import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { invokeWithTimeout } from "../lib/timeout";
 
+let backendSyncInFlight: Promise<void> | null = null;
+
 export interface Workspace {
   id: string;
   name: string;
@@ -18,6 +20,8 @@ export interface Workspace {
 interface WorkspaceStore {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
+  backendReady: boolean;
+  backendSyncError: string | null;
 
   addWorkspace: (workspace: Workspace) => void;
   removeWorkspace: (id: string) => void;
@@ -33,6 +37,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
     (set, get) => ({
       workspaces: [],
       activeWorkspaceId: null,
+      backendReady: false,
+      backendSyncError: null,
 
       addWorkspace: (workspace) =>
         set((state) => ({
@@ -73,68 +79,74 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         return workspaces.find((w) => w.id === activeWorkspaceId);
       },
 
-      syncWithBackend: async () => {
-        try {
-          const backendWorkspaces = await invokeWithTimeout(
-            () => invoke<
-              Array<{
-                id: string;
-                name: string;
-                rootPath: string;
-                layout: { rows: number; cols: number };
-                terminals: Array<{ agentId: string | null }>;
-                createdAt: string;
-                updatedAt: string;
-              }>
-            >("get_workspaces"),
-            10000,
-          );
+      syncWithBackend: () => {
+        if (backendSyncInFlight) return backendSyncInFlight;
 
-          const { workspaces: localWorkspaces } = get();
+        set({ backendReady: false, backendSyncError: null });
+        backendSyncInFlight = (async () => {
+          try {
+            const backendWorkspaces = await invokeWithTimeout(
+              () => invoke<
+                Array<{
+                  id: string;
+                  name: string;
+                  rootPath: string;
+                  layout: { rows: number; cols: number };
+                  terminals: Array<{ agentId: string | null }>;
+                  createdAt: string;
+                  updatedAt: string;
+                }>
+              >("get_workspaces"),
+              10000,
+            );
 
-          const backendIds = new Set(backendWorkspaces.map((w) => w.id));
-          const localIds = new Set(localWorkspaces.map((w) => w.id));
-
-          // Aggiungi workspace presenti nel backend ma non in localStorage
-          const toAdd = backendWorkspaces
-            .filter((bw) => !localIds.has(bw.id))
-            .map((bw): Workspace => ({
-              id: bw.id,
-              name: bw.name,
-              rootPath: bw.rootPath,
-              layout: bw.layout,
-              terminalCount: bw.terminals.length,
-              agentCount: bw.terminals.filter((t) => t.agentId).length,
-              lastOpened: bw.updatedAt,
-              createdAt: bw.createdAt,
-              updatedAt: bw.updatedAt,
-            }));
-
-          // Rimuovi workspace presenti in localStorage ma non nel backend
-          const toRemove = localWorkspaces
-            .filter((lw) => !backendIds.has(lw.id))
-            .map((lw) => lw.id);
-
-          if (toAdd.length > 0 || toRemove.length > 0) {
             set((state) => {
-              const filtered = state.workspaces.filter(
-                (w) => !toRemove.includes(w.id),
+              const localById = new Map(
+                state.workspaces.map((workspace) => [workspace.id, workspace]),
               );
-              const nextWorkspaces = [...filtered, ...toAdd];
+              const nextWorkspaces = backendWorkspaces.map((backend) => {
+                const local = localById.get(backend.id);
+                return {
+                  ...local,
+                  id: backend.id,
+                  name: backend.name,
+                  rootPath: backend.rootPath,
+                  layout: backend.layout,
+                  terminalCount: backend.terminals.length,
+                  agentCount: backend.terminals.filter((terminal) => terminal.agentId).length,
+                  lastOpened: backend.updatedAt,
+                  createdAt: backend.createdAt,
+                  updatedAt: backend.updatedAt,
+                };
+              });
               const activeStillExists =
                 state.activeWorkspaceId &&
-                !toRemove.includes(state.activeWorkspaceId);
+                nextWorkspaces.some((workspace) => workspace.id === state.activeWorkspaceId);
+
               return {
                 workspaces: nextWorkspaces,
                 activeWorkspaceId: activeStillExists
                   ? state.activeWorkspaceId
                   : nextWorkspaces[0]?.id || null,
+                backendReady: true,
+                backendSyncError: null,
               };
             });
+          } catch (err) {
+            const message =
+              err instanceof Error && err.message
+                ? err.message
+                : typeof err === "string"
+                  ? err
+                  : "Impossibile sincronizzare le workspace";
+            console.error("Errore sincronizzazione backend:", err);
+            set({ backendReady: false, backendSyncError: message });
+          } finally {
+            backendSyncInFlight = null;
           }
-        } catch (err) {
-          console.error("Errore sincronizzazione backend:", err);
-        }
+        })();
+
+        return backendSyncInFlight;
       },
     }),
     {
