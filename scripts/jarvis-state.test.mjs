@@ -48,6 +48,7 @@ const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx")
 const registrySource = source("../src-tauri/src/jarvis/agent_registry.rs");
 const chatSource = source("../src-tauri/src/jarvis/chat.rs");
 const controlSource = source("../src-tauri/src/jarvis/control.rs");
+const planSource = source("../src-tauri/src/jarvis/control/plan.rs");
 const commandsSource = source("../src-tauri/src/jarvis/commands.rs");
 const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const captureSource = source("../src-tauri/src/jarvis/voice/capture.rs");
@@ -573,9 +574,9 @@ test("Phase 8 planner remains semantic, typed and allowlisted", () => {
   // remains typed and allowlisted in the control module.
   assert.match(controlSource, /conversational_plan/);
   assert.match(controlSource, /execute_plan\(/);
-  assert.match(controlSource, /pub enum PlanOperation/);
-  assert.match(controlSource, /AgentHandoff/);
-  assert.match(controlSource, /DraftPrompt/);
+  assert.match(planSource, /pub enum PlanOperation/);
+  assert.match(planSource, /AgentHandoff/);
+  assert.match(planSource, /DraftPrompt/);
   assert.doesNotMatch(
     chatSource,
     /if .*manda.*=>|if .*scrivi.*=>|if .*fai.*=>/i,
