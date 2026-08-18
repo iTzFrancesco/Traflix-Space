@@ -1,6 +1,5 @@
-﻿import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useState } from "react";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import {
   agentSnapshot,
@@ -8,34 +7,16 @@ import {
   ttsSpeak,
   voiceWorkspaceStatus,
 } from "../../lib/jarvis/client";
-import type {
-  TtsStatusView,
-  VoiceActivationMode,
-  VoiceLevelEvent,
-  VoiceRequestStatusView,
-  WakeWordStatusView,
-} from "../../lib/jarvis/types";
-import type { ActivityCheckpoint } from "../../lib/jarvis/activityState";
 import { SettingsModal } from "../layout/SettingsModal";
 import { useJarvisStore, bindCodexEvents } from "../../stores/jarvisStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
-import {
-  beginVoicePress,
-  releaseVoicePress,
-  type VoicePress,
-} from "../../lib/jarvis/voiceActivation";
-import { isJarvisOwnerModeReady } from "../../lib/jarvis/settings";
-import {
-  reportFrontendDiagnostic,
-  reportFrontendDiagnosticCode,
-} from "../../lib/crashDiagnostics";
 import {
   sanitizedVoiceError,
   sanitizedVoiceErrorView,
 } from "../../lib/jarvis/voiceSettings";
 import { JarvisWidget } from "./JarvisWidget";
+import { useJarvisEventBindings } from "./useJarvisEventBindings";
 
-const AUTO_ARM_DELAY_MS = 180;
 const VOICE_TRANSCRIPTION_RECONCILE_MS = 1_000;
 
 export function JarvisGlobalOverlay() {
@@ -72,17 +53,11 @@ export function JarvisGlobalOverlay() {
     : null;
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
-  const wakeWordStatus = useJarvisStore((state) => state.wakeWordStatus);
   const voiceError = useJarvisStore((state) => state.voiceError);
   const codexSpeechQueue = useJarvisStore((state) => state.codexSpeechQueue);
-  const clearCodexSpeech = useJarvisStore((state) => state.clearCodexSpeech);
   const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
   const speechWorkerBusyRef = useRef(false);
   const speechRetryCountsRef = useRef<Map<string, number>>(new Map());
-  const previousVoiceCaptureRef = useRef<{
-    requestId: string;
-    status: VoiceRequestStatusView["status"];
-  } | null>(null);
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const bootstrapCodex = useJarvisStore((state) => state.bootstrapCodex);
   const setContext = useJarvisStore((state) => state.setContext);
@@ -97,9 +72,6 @@ export function JarvisGlobalOverlay() {
   );
   const loadProviderStatus = useJarvisStore((state) => state.loadProviderStatus);
   const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
-  const startVoice = useJarvisStore((state) => state.startVoice);
-  const stopVoice = useJarvisStore((state) => state.stopVoice);
-  const sendVoiceTranscript = useJarvisStore((state) => state.sendVoiceTranscript);
   const loadVoiceDraft = useJarvisStore((state) => state.loadVoiceDraft);
   const setVoiceRequest = useJarvisStore((state) => state.setVoiceRequest);
   const applyActivityEvents = useJarvisStore((state) => state.applyActivityEvents);
@@ -107,50 +79,52 @@ export function JarvisGlobalOverlay() {
     (state) => state.clearWorkspaceActivities,
   );
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
+  const setWakeWordStatus = useJarvisStore((state) => state.setWakeWordStatus);
   const clearVoiceError = useJarvisStore((state) => state.clearVoiceError);
   const setTtsStatus = useJarvisStore((state) => state.setTtsStatus);
-  const setWakeWordStatus = useJarvisStore((state) => state.setWakeWordStatus);
-  const shortcutPressedRef = useRef<VoicePress | null>(null);
-  const shortcutGenerationRef = useRef(0);
   const registryRequestRef = useRef(0);
-  const resumeVoiceDraftRef = useRef<Set<string>>(new Set());
-  const settingsRecoveryDraftRef = useRef<Set<string>>(new Set());
-  const settingsWasOpenRef = useRef(settingsOpen);
-  const [bargeInRequestId, setBargeInRequestId] = useState<string | null>(null);
   const chatError = activeWorkspaceId
     ? chatErrors[activeWorkspaceId] ?? null
     : null;
 
-  const startBargeIn = useCallback((activationMode: VoiceActivationMode = "vad") => {
-    const currentTtsStatus = useJarvisStore.getState().ttsStatus.status;
-    const ttsActive = currentTtsStatus === "synthesizing" || currentTtsStatus === "playing";
-    void startVoice({
-      activationMode,
-      forceEndpointing: activationMode === "vad" && ttsActive,
-    }).then(() => {
-      const requestId = useJarvisStore.getState().activeVoiceRequestId;
-      if (ttsActive && requestId) setBargeInRequestId(requestId);
-    });
-  }, [startVoice]);
-
   useEffect(() => {
-    // Voice errors are diagnostic UI state, not a global lock. A failed
-    // request in workspace A must not prevent hands-free auto-arm in B.
+    // Voice errors are diagnostic UI state, not a global lock.
     if (activeWorkspaceId) clearVoiceError();
   }, [activeWorkspaceId, clearVoiceError]);
 
-  useEffect(() => {
-    if (!bargeInRequestId) return;
-    if (activeVoiceRequestId === bargeInRequestId) return;
-    if (
-      voiceRequest?.requestId === bargeInRequestId &&
-      voiceRequest.status !== "cancelled" &&
-      voiceRequest.status !== "failed"
-    ) {
+  const toggleVoice = useCallback(async () => {
+    const store = useJarvisStore.getState();
+    const active = store.activeVoiceRequestId
+      ? Object.values(store.voiceRequests).find(
+          (request) => request.requestId === store.activeVoiceRequestId,
+        )
+      : null;
+    if (active && ["armed", "recording"].includes(active.status)) {
+      const stopped = await store.stopVoice();
+      if (stopped?.status === "transcript_ready" && stopped.transcript?.trim()) {
+        await store.sendVoiceTranscript(stopped.requestId, stopped.transcript);
+      }
       return;
     }
-    setBargeInRequestId(null);
-  }, [activeVoiceRequestId, bargeInRequestId, voiceRequest]);
+    // The start request can be in flight before its first state event reaches
+    // the store. A second orb click still means stop, never a second start.
+    if (!active && store.activeVoiceRequestId) {
+      await store.stopVoice();
+      return;
+    }
+    if (store.voiceStopRequested) return;
+    if (store.settings.jarvis.muted) {
+      await store.toggleMuted();
+    }
+    if (active?.status === "transcript_ready" && active.transcript?.trim()) {
+      await store.sendVoiceTranscript(active.requestId, active.transcript);
+      return;
+    }
+    if (active && ["stopping", "transcribing"].includes(active.status)) {
+      return;
+    }
+    await store.startVoice({ activationMode: "click_toggle", forceEndpointing: false });
+  }, []);
 
   const refreshRegistry = useCallback(
     async (
@@ -200,8 +174,7 @@ export function JarvisGlobalOverlay() {
 
   // C8: progressive commentary speech worker. Speaks the completed
   // commentary/final items in FIFO order while Codex keeps working; never
-  // speaks over the final reply (waits until TTS is idle) and stops
-  // instantly on barge-in (user speech) or mute.
+  // speaks over the final reply and waits while a manual voice turn owns audio.
   useEffect(() => {
     if (speechWorkerBusyRef.current) return;
     const item = codexSpeechQueue[0];
@@ -294,44 +267,6 @@ export function JarvisGlobalOverlay() {
     ttsStatus.status,
   ]);
 
-  // Pending commentary is stale at the moment a new voice turn starts. The
-  // backend stops active playback at the audio boundary; this clears queued
-  // items so an interrupted turn cannot speak old instructions afterward.
-  useEffect(() => {
-    const current = activeVoiceRequest;
-    const previous = previousVoiceCaptureRef.current;
-    const enteringRecording = current?.status === "recording"
-      && (previous?.requestId !== current.requestId || previous.status !== "recording");
-    if (enteringRecording) {
-      const queued = useJarvisStore.getState().codexSpeechQueue;
-      if (queued.length > 0) {
-        console.info("[Jarvis TTS] queue cleared by barge-in", {
-          droppedItems: queued.length,
-          itemIds: queued.map((entry) => entry.itemId),
-        });
-        clearCodexSpeech();
-      }
-    }
-    previousVoiceCaptureRef.current = current
-      ? { requestId: current.requestId, status: current.status }
-      : null;
-  }, [activeVoiceRequest?.requestId, activeVoiceRequest?.status, clearCodexSpeech]);
-
-  const toggleMicrophoneMuted = useCallback(async () => {
-    const store = useJarvisStore.getState();
-    const nextMuted = !store.settings.jarvis.muted;
-    if (nextMuted && store.activeVoiceRequestId) {
-      try {
-        await store.cancelVoice();
-      } catch {
-        // Mute still wins even if an already-finished request races the cancel.
-      }
-      store.clearVoiceError();
-    }
-    if (!nextMuted) store.clearVoiceError();
-    await store.toggleMuted();
-  }, []);
-
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
@@ -351,85 +286,10 @@ export function JarvisGlobalOverlay() {
     void bootstrapCodex();
   }, [bootstrapCodex, settings.jarvis.enabled, settingsLoaded]);
 
-  // A failed transcript submission must not create an automatic retry loop.
-  // Closing Settings is an explicit recovery boundary: if the user just fixed
-  // credentials/configuration, permit exactly one retry of the preserved draft.
   useEffect(() => {
-    const wasOpen = settingsWasOpenRef.current;
-    settingsWasOpenRef.current = settingsOpen;
-    if (!wasOpen || settingsOpen || !activeWorkspaceId) return;
-    const draft = useJarvisStore.getState().voiceRequests[activeWorkspaceId];
-    if (draft?.status === "transcript_ready") {
-      settingsRecoveryDraftRef.current.add(draft.requestId);
-    }
-  }, [activeWorkspaceId, settingsOpen]);
-
-  useEffect(() => {
-    if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
-    const workspaceId = activeWorkspaceId;
-    let disposed = false;
-
-    void loadVoiceDraft(workspaceId).then(() => {
-      if (
-        disposed ||
-        useWorkspaceStore.getState().activeWorkspaceId !== workspaceId
-      ) {
-        return;
-      }
-      const store = useJarvisStore.getState();
-      const draft = store.voiceRequests[workspaceId];
-      const chatBusy = Object.values(store.requests).some(
-        (request) =>
-          request.workspaceId === workspaceId &&
-          (request.status === "running" ||
-            request.status === "cancellation_requested"),
-      );
-      const recoveryAllowed = draft
-        ? settingsRecoveryDraftRef.current.has(draft.requestId)
-        : false;
-      const previousChatFailed = Boolean(store.chatErrors[workspaceId]);
-      if (
-        store.settings.jarvis.enabled &&
-        !store.settingsOpen &&
-        draft?.status === "transcript_ready" &&
-        Boolean(draft.transcript?.trim()) &&
-        store.settings.jarvis.voiceInput.autoSubmitTranscript &&
-        !chatBusy &&
-        (!previousChatFailed || recoveryAllowed) &&
-        !resumeVoiceDraftRef.current.has(draft.requestId)
-      ) {
-        settingsRecoveryDraftRef.current.delete(draft.requestId);
-        resumeVoiceDraftRef.current.add(draft.requestId);
-        void store
-          .sendVoiceTranscript(draft.requestId, draft.transcript ?? "")
-          .then((accepted) => {
-            if (!accepted) {
-              console.warn("[Jarvis voice] draft submission was rejected", {
-                requestId: draft.requestId,
-              });
-            }
-          })
-          .catch((error) => {
-            console.error("[Jarvis voice] draft submission failed", {
-              requestId: draft.requestId,
-              error: sanitizedVoiceError(error),
-            });
-          })
-          .finally(() => resumeVoiceDraftRef.current.delete(draft.requestId));
-      }
-    });
-
-    return () => {
-      disposed = true;
-    };
-  }, [
-    activeWorkspaceId,
-    chatErrors,
-    loadVoiceDraft,
-    requests,
-    settings.jarvis.enabled,
-    settingsOpen,
-  ]);
+    if (!activeWorkspaceId || !settings.jarvis.enabled) return;
+    void loadVoiceDraft(activeWorkspaceId);
+  }, [activeWorkspaceId, loadVoiceDraft, settings.jarvis.enabled]);
 
   // Reconcile a terminal backend snapshot if the WebView missed or reordered
   // the Tauri event. This is deliberately a status read, not a cancellation
@@ -490,245 +350,6 @@ export function JarvisGlobalOverlay() {
     voiceRequest?.status,
   ]);
 
-  // A transcript that reached the endpoint while the current turn was still
-  // running remains a draft. Retry only queued request ids; the store owns the
-  // single-flight guard and never drops the transcript.
-  useEffect(() => {
-    if (!activeWorkspaceId || settingsOpen || !settings.jarvis.voiceInput.autoSubmitTranscript) return;
-    const draft = voiceRequests[activeWorkspaceId];
-    if (
-      draft?.status !== "transcript_ready" ||
-      !draft.transcript?.trim() ||
-      voiceSubmitStates[draft.requestId] !== "queued"
-    ) {
-      return;
-    }
-    void sendVoiceTranscript(draft.requestId, draft.transcript, { automatic: true }).catch((error) => {
-      console.warn("[Jarvis voice] queued transcript retry failed", {
-        requestId: draft.requestId,
-        error: sanitizedVoiceError(error),
-      });
-    });
-  }, [
-    activeWorkspaceId,
-    requests,
-    sendVoiceTranscript,
-    settings.jarvis.voiceInput.autoSubmitTranscript,
-    settingsOpen,
-    voiceRequests,
-    voiceSubmitStates,
-  ]);
-
-  // Barge-in is a VAD-only capture path. It is allowed while TTS is active,
-  // but it never calls chat/task cancellation; startVoice owns only the
-  // audio/TTS stop token and preserves the running turn.
-  useEffect(() => {
-    if (
-      !activeWorkspaceId ||
-      !settingsLoaded ||
-      settingsOpen ||
-      !settings.jarvis.enabled ||
-      settings.jarvis.muted ||
-      settings.jarvis.voiceInput.activationMode !== "vad" ||
-      !settings.jarvis.voiceOutput.stopOnUserSpeech ||
-      activeVoiceRequestId ||
-      (ttsStatus.status !== "synthesizing" && ttsStatus.status !== "playing")
-    ) {
-      return;
-    }
-
-    const workspaceId = activeWorkspaceId;
-    const timer = window.setTimeout(() => {
-      const store = useJarvisStore.getState();
-      const ttsBusy =
-        store.ttsStatus.status === "synthesizing" ||
-        store.ttsStatus.status === "playing";
-      if (
-        useWorkspaceStore.getState().activeWorkspaceId === workspaceId &&
-        ttsBusy &&
-        !store.activeVoiceRequestId &&
-        store.settings.jarvis.enabled &&
-        !store.settings.jarvis.muted &&
-        store.settings.jarvis.voiceInput.activationMode === "vad" &&
-        store.settings.jarvis.voiceOutput.stopOnUserSpeech
-      ) {
-        void startBargeIn();
-      }
-    }, AUTO_ARM_DELAY_MS);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    activeVoiceRequestId,
-    activeWorkspaceId,
-    settings.jarvis.enabled,
-    settings.jarvis.muted,
-    settings.jarvis.voiceInput.activationMode,
-    settings.jarvis.voiceOutput.stopOnUserSpeech,
-    settingsLoaded,
-    settingsOpen,
-    startBargeIn,
-    ttsStatus.status,
-  ]);
-
-  // An armed VAD capture is only ambient readiness, so it follows workspace
-  // focus. A capture that already heard speech keeps its original immutable
-  // workspace binding and is allowed to finish before the new workspace arms.
-  useEffect(() => {
-    if (!activeVoiceRequestId) return;
-    const activeRequest = Object.values(voiceRequests).find(
-      (request) => request.requestId === activeVoiceRequestId,
-    );
-    if (
-      activeRequest?.status !== "armed" ||
-      activeRequest.workspaceId === activeWorkspaceId
-    ) {
-      return;
-    }
-    const requestId = activeVoiceRequestId;
-    void useJarvisStore
-      .getState()
-      .cancelVoice()
-      .then(() => {
-        const store = useJarvisStore.getState();
-        if (store.activeVoiceRequestId !== requestId) store.clearVoiceError();
-      })
-      .catch(() => undefined);
-  }, [activeVoiceRequestId, activeWorkspaceId, voiceRequests]);
-
-  // Hands-free mode: while unmuted, keep either a local wake-word capture or
-  // the existing VAD capture armed in the focused workspace. If the local
-  // engine is unavailable, fall back to VAD instead of opening a microphone
-  // session that cannot ever trigger.
-  useEffect(() => {
-    if (!activeWorkspaceId || !settings.jarvis.enabled || settingsOpen) return;
-    if (settings.jarvis.wakeWordEnabled && !wakeWordStatus) return;
-    const wakeWordReady = settings.jarvis.wakeWordEnabled
-      && wakeWordStatus?.enabled === true
-      && wakeWordStatus.state !== "unavailable"
-      && wakeWordStatus.state !== "error";
-    const vadFallbackReady = !wakeWordReady
-      && settings.jarvis.voiceInput.activationMode === "vad";
-    if (
-      !settingsLoaded ||
-      voiceError ||
-      !isJarvisOwnerModeReady(settings.jarvis) ||
-      settings.jarvis.muted ||
-      (!wakeWordReady && !vadFallbackReady) ||
-      activeVoiceRequestId
-    ) {
-      return;
-    }
-    if (
-      voiceRequest &&
-      ["armed", "recording", "stopping", "transcribing", "transcript_ready"].includes(
-        voiceRequest.status,
-      )
-    ) {
-      // transcript_ready is still in the handoff window: the store is either
-      // submitting it to chat or preserving it for an explicit retry. Never
-      // start a second VAD capture over that draft.
-      return;
-    }
-    const chatBusy = Object.values(requests).some(
-      (request) =>
-        request.workspaceId === activeWorkspaceId &&
-        (request.status === "running" || request.status === "cancellation_requested"),
-    );
-    const ttsBusy = ttsStatus.status === "synthesizing" || ttsStatus.status === "playing";
-    const bargeInReady = vadFallbackReady && settings.jarvis.voiceOutput.stopOnUserSpeech && ttsBusy;
-    // During active TTS, VAD is intentionally allowed to arm for barge-in.
-    // The backend cancels only the TTS token; chat/task cancellation remains
-    // an explicit action. Wake-word capture keeps its existing gate.
-    if ((chatBusy || ttsBusy) && !bargeInReady) return;
-
-    const workspaceId = activeWorkspaceId;
-    const timer = window.setTimeout(() => {
-      const store = useJarvisStore.getState();
-      // Reconcile a stale active request: if the backend already finished or
-      // pruned the request but its terminal event was missed, clear the
-      // latch so hands-free capture can arm again instead of staying blocked.
-      const latchedRequestId = store.activeVoiceRequestId;
-      if (latchedRequestId) {
-        const latched = Object.values(store.voiceRequests).find(
-          (request) => request.requestId === latchedRequestId,
-        );
-        if (
-          !latched ||
-          ["idle", "transcript_ready", "cancelled", "failed"].includes(
-            latched.status,
-          )
-        ) {
-          useJarvisStore.setState({ activeVoiceRequestId: null });
-        }
-      }
-      if (
-        !store.settingsLoaded ||
-        store.voiceError ||
-        !isJarvisOwnerModeReady(store.settings.jarvis) ||
-        useWorkspaceStore.getState().activeWorkspaceId !== workspaceId ||
-        !store.settings.jarvis.enabled ||
-        store.settings.jarvis.muted ||
-        (
-          !(
-            store.settings.jarvis.wakeWordEnabled
-            && store.wakeWordStatus?.enabled === true
-            && store.wakeWordStatus.state !== "unavailable"
-            && store.wakeWordStatus.state !== "error"
-          )
-          && store.settings.jarvis.voiceInput.activationMode !== "vad"
-        ) ||
-        store.settingsOpen ||
-        store.activeVoiceRequestId
-      ) {
-        return;
-      }
-      const liveChatBusy = Object.values(store.requests).some(
-        (request) =>
-          request.workspaceId === workspaceId &&
-          (request.status === "running" ||
-            request.status === "cancellation_requested"),
-      );
-      const liveTtsBusy =
-        store.ttsStatus.status === "synthesizing" ||
-        store.ttsStatus.status === "playing";
-      const liveWakeWordReady = store.settings.jarvis.wakeWordEnabled
-        && store.wakeWordStatus?.enabled === true
-        && store.wakeWordStatus.state !== "unavailable"
-        && store.wakeWordStatus.state !== "error";
-      const liveVadFallbackReady = !liveWakeWordReady
-        && store.settings.jarvis.voiceInput.activationMode === "vad";
-      const liveBargeInReady = liveVadFallbackReady
-        && store.settings.jarvis.voiceOutput.stopOnUserSpeech
-        && liveTtsBusy;
-      if (
-        (!liveChatBusy && !liveTtsBusy && (liveWakeWordReady || liveVadFallbackReady)) ||
-        (liveBargeInReady && !liveWakeWordReady)
-      ) {
-        console.info("[Jarvis voice] auto-arm after turn", { workspaceId });
-        if (liveWakeWordReady) {
-          void store.startVoice({ activationMode: "wake_word" });
-        } else {
-          void store.startVoice();
-        }
-      }
-    }, AUTO_ARM_DELAY_MS);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    activeVoiceRequestId,
-    activeWorkspaceId,
-    requests,
-    settings,
-    settingsLoaded,
-    settingsOpen,
-    wakeWordStatus,
-    settings.jarvis.wakeWordEnabled,
-    ttsStatus.status,
-    voiceError,
-    voiceRequest?.requestId,
-    voiceRequest?.status,
-  ]);
-
   useEffect(() => {
     if (!settings.jarvis.enabled) return;
     void refreshRegistry();
@@ -783,182 +404,13 @@ export function JarvisGlobalOverlay() {
     }
   }, [loadProviderStatus, settings.jarvis.enabled, settingsOpen]);
 
-  useEffect(() => {
-    let disposed = false;
-    const listeners = Promise.allSettled([
-      listen<WakeWordStatusView>("jarvis://wake-state", (event) => {
-        if (!disposed) setWakeWordStatus(event.payload);
-      }),
-      listen<VoiceRequestStatusView>("jarvis://voice-state", (event) => {
-        if (disposed) return;
-        console.info("[Jarvis voice] frontend state event", {
-          requestId: event.payload.requestId,
-          workspaceId: event.payload.workspaceId,
-          status: event.payload.status,
-          errorCode: event.payload.error?.code,
-          transcriptChars: event.payload.transcript?.length ?? 0,
-        });
-        if (event.payload.status === "failed" && event.payload.error?.code) {
-          reportFrontendDiagnosticCode(
-            "jarvis-voice-error",
-            event.payload.error.code,
-            {
-              requestId: event.payload.requestId,
-              workspaceId: event.payload.workspaceId ?? undefined,
-              state: "failed",
-            },
-          );
-        }
-        setVoiceRequest(event.payload);
-      }),
-      listen<VoiceLevelEvent>("jarvis://voice-level", (event) => {
-        if (disposed) return;
-        setVoiceLevel(event.payload);
-      }),
-      listen<TtsStatusView>("jarvis://tts-state", (event) => {
-        if (disposed) return;
-        console.info("[Jarvis TTS] frontend state event", {
-          requestId: event.payload.requestId,
-          workspaceId: event.payload.workspaceId,
-          sequence: event.payload.sequence,
-          status: event.payload.status,
-          errorCode: event.payload.error?.code,
-          errorMessage: event.payload.error?.message,
-        });
-        if (event.payload.status === "failed" && event.payload.error?.code) {
-          reportFrontendDiagnosticCode(
-            "jarvis-tts-error",
-            event.payload.error.code,
-            {
-              requestId: event.payload.requestId,
-              workspaceId: event.payload.workspaceId ?? undefined,
-              state: "failed",
-            },
-          );
-        }
-        setTtsStatus(event.payload);
-      }),
-      listen<ActivityCheckpoint>("jarvis://activity", (event) => {
-        if (!disposed) applyActivityEvents([event.payload]);
-      }),
-      listen<{ shortcut: string; state: "pressed" | "released" }>(
-        "jarvis://voice-shortcut",
-        (event) => {
-          if (disposed) return;
-          const store = useJarvisStore.getState();
-          const currentSettings = store.settings.jarvis.voiceInput;
-          if (
-            !store.settings.jarvis.enabled ||
-            !currentSettings.globalShortcutEnabled
-          ) {
-            shortcutPressedRef.current = null;
-            return;
-          }
-
-          if (
-            currentSettings.activationMode === "vad" &&
-            currentSettings.shortcutBehavior === "toggle"
-          ) {
-            if (event.payload.state === "pressed") {
-              void toggleMicrophoneMuted();
-            }
-            shortcutPressedRef.current = null;
-            return;
-          }
-
-          const activeRequestId = store.activeVoiceRequestId;
-          const current = activeRequestId
-            ? Object.values(store.voiceRequests).find(
-                (request) => request.requestId === activeRequestId,
-              )
-            : undefined;
-
-          if (event.payload.state === "pressed") {
-            const press = beginVoicePress(
-              shortcutPressedRef.current,
-              ++shortcutGenerationRef.current,
-            );
-            if (!press) return;
-            shortcutPressedRef.current = press;
-            if (currentSettings.shortcutBehavior === "hold") {
-              if (
-                !current ||
-                !["recording", "armed", "transcribing", "stopping"].includes(
-                  current.status,
-                )
-              ) {
-                void startBargeIn(currentSettings.activationMode);
-              }
-            } else if (
-              current?.status === "recording" ||
-              current?.status === "armed"
-            ) {
-              void stopVoice();
-            } else if (
-              !current ||
-              !["transcribing", "stopping"].includes(current.status)
-            ) {
-              void startBargeIn(currentSettings.activationMode);
-            }
-          } else {
-            const press = releaseVoicePress(shortcutPressedRef.current);
-            shortcutPressedRef.current = null;
-            if (press && currentSettings.shortcutBehavior === "hold") {
-              void stopVoice();
-            }
-          }
-        },
-      ),
-    ]).then((results) => {
-      const active: Array<() => void> = [];
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          active.push(result.value);
-        } else {
-          reportFrontendDiagnostic("jarvis-listener-error", result.reason, {
-            state: "voice-events",
-          });
-          console.error("[Jarvis voice] event listener setup failed", result.reason);
-        }
-      }
-      return active;
-    });
-
-    return () => {
-      disposed = true;
-      void listeners
-        .then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()))
-        .catch(() => undefined);
-    };
-  }, [
+  useJarvisEventBindings({
     applyActivityEvents,
     setTtsStatus,
     setWakeWordStatus,
     setVoiceLevel,
     setVoiceRequest,
-    startBargeIn,
-    startVoice,
-    stopVoice,
-    toggleMicrophoneMuted,
-  ]);
-
-  useEffect(() => {
-    const releaseHeldVoice = () => {
-      const currentSettings =
-        useJarvisStore.getState().settings.jarvis.voiceInput;
-      const press = releaseVoicePress(shortcutPressedRef.current);
-      shortcutPressedRef.current = null;
-      if (press && currentSettings.shortcutBehavior === "hold") {
-        void stopVoice();
-      }
-    };
-    window.addEventListener("blur", releaseHeldVoice);
-    document.addEventListener("visibilitychange", releaseHeldVoice);
-    return () => {
-      window.removeEventListener("blur", releaseHeldVoice);
-      document.removeEventListener("visibilitychange", releaseHeldVoice);
-    };
-  }, [stopVoice]);
+  });
 
   if (!settings.jarvis.enabled) return null;
 
@@ -972,23 +424,13 @@ export function JarvisGlobalOverlay() {
         chatError={chatError}
         voiceError={voiceError}
         muted={settings.jarvis.muted}
-        wakeWordStatus={wakeWordStatus}
         voiceRequest={voiceRequest}
         voiceSubmitState={voiceRequest ? voiceSubmitStates[voiceRequest.requestId] : undefined}
-        bargeIn={bargeInRequestId === voiceRequest?.requestId}
-        activationMode={settings.jarvis.voiceInput.activationMode}
         ttsStatus={ttsStatus}
         activities={activities}
         onOpenSettings={() => setSettingsOpen(true)}
         onHide={() => void useJarvisStore.getState().hideJarvis()}
-        onToggleMuted={() => toggleMicrophoneMuted()}
-        onVoiceStart={() => startVoice()}
-        onVoiceStop={() => void stopVoice()}
-        onVoiceSend={() => {
-          if (voiceRequest?.transcript?.trim()) {
-            void sendVoiceTranscript(voiceRequest.requestId, voiceRequest.transcript);
-          }
-        }}
+        onVoiceToggle={toggleVoice}
       />
       <SettingsModal
         open={settingsOpen}

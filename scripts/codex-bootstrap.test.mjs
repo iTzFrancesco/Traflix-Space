@@ -11,6 +11,7 @@ const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const settingsModalSource = source("../src/components/layout/SettingsModal.tsx");
 const storeSource = source("../src/stores/jarvisStore.ts");
+const codexSliceSource = source("../src/stores/jarvis/codexSlice.ts");
 
 function mockTask(log, name, result = true) {
   return async () => {
@@ -38,9 +39,9 @@ test("React startup gates persisted settings and keeps loading/error refresh sta
   assert.match(overlaySource, /if \(!settingsLoaded \|\| !settings\.jarvis\.enabled\) return;/);
   assert.match(settingsModalSource, /if \(!open \|\| !settingsLoaded\) return;/);
   assert.match(settingsModalSource, /refreshCodex\(\)/);
-  assert.match(storeSource, /set\(\{ codexAccountLoading: true \}\)/);
-  assert.match(storeSource, /set\(\{ codexRateLimitsLoading: true \}\)/);
-  assert.match(storeSource, /codexError: errorMessage\(error\)/);
+  assert.match(codexSliceSource, /set\(\{ codexAccountLoading: true \}\)/);
+  assert.match(codexSliceSource, /set\(\{ codexRateLimitsLoading: true \}\)/);
+  assert.match(codexSliceSource, /codexError: errorMessage\(error\)/);
 });
 
 test("first startup starts Codex before loading account and statistics", async () => {

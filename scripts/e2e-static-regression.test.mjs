@@ -23,8 +23,23 @@ const projectTypes = source("../src/project/types.ts");
 const terminalManager = source("../src-tauri/src/terminal_engine/mod.rs");
 const sidebar = source("../src/components/layout/Sidebar.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
+const jarvisStoreModules = [
+  jarvisStore,
+  source("../src/stores/jarvis/chatSlice.ts"),
+  source("../src/stores/jarvis/codexSlice.ts"),
+  source("../src/stores/jarvis/runtime.ts"),
+].join("\n");
 const jarvisOverlay = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const jarvisControl = source("../src-tauri/src/jarvis/control.rs");
+const jarvisControlModules = [
+  jarvisControl,
+  source("../src-tauri/src/jarvis/control/dispatch.rs"),
+  source("../src-tauri/src/jarvis/control/execution.rs"),
+  source("../src-tauri/src/jarvis/control/lifecycle.rs"),
+  source("../src-tauri/src/jarvis/control/reactivation.rs"),
+  source("../src-tauri/src/jarvis/control/routing.rs"),
+  source("../src-tauri/src/jarvis/control/support.rs"),
+].join("\n");
 const jarvisThreads = source("../src-tauri/src/jarvis/codex/threads.rs");
 const jarvisAccount = source("../src-tauri/src/jarvis/codex/account.rs");
 const jarvisTools = source("../src-tauri/src/jarvis/codex/tools.rs");
@@ -41,6 +56,8 @@ const voiceCapture = source("../src-tauri/src/jarvis/voice/capture.rs");
 const voiceAudio = source("../src-tauri/src/jarvis/voice/audio.rs");
 const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const voiceTts = source("../src-tauri/src/jarvis/voice/tts.rs");
+const voiceTtsWorker = source("../src-tauri/src/jarvis/voice/tts_worker.rs");
+const voiceTtsModules = [voiceTts, voiceTtsWorker].join("\n");
 const voiceStt = source("../src-tauri/src/jarvis/voice/stt.rs");
 const viteConfig = source("../vite.config.ts");
 const releaseWorkflow = source("../.github/workflows/release.yml");
@@ -212,16 +229,13 @@ test("workspace restore waits for one authoritative backend snapshot", () => {
   );
 });
 
-test("hands-free VAD is authoritative in backend defaults and legacy click-toggle migration", () => {
-  assert.match(rustSettings, /impl Default for VoiceActivationMode[\s\S]*Self::Vad/);
-  assert.match(
-    rustSettings,
-    /activation_mode == VoiceActivationMode::ClickToggle[\s\S]*VoiceActivationMode::Vad/,
-  );
-  assert.match(
-    rustSettings,
-    /activation_mode: VoiceActivationMode::Vad/,
-  );
+test("manual click-toggle is authoritative and legacy voice modes migrate safely", () => {
+  assert.match(rustSettings, /impl Default for VoiceActivationMode[\s\S]*Self::ClickToggle/);
+  assert.match(rustSettings, /settings\.voice_input\.activation_mode = VoiceActivationMode::ClickToggle/);
+  assert.match(rustSettings, /settings\.voice_input\.auto_submit_transcript = false/);
+  assert.match(rustSettings, /settings\.voice_input\.vad_enabled = false/);
+  assert.match(rustSettings, /settings\.voice_input\.endpointing_enabled = false/);
+  assert.match(rustSettings, /settings\.voice_output\.stop_on_user_speech = false/);
   assert.match(rustSettings, /fn default_max_armed_seconds\(\) -> u32 \{\s*120\s*\}/);
   assert.match(rustSettings, /owner_mode_migrates_click_toggle_but_preserves_hold_to_talk/);
 });
@@ -230,47 +244,47 @@ test("voice runtime avoids callback data loss, survives Windows Python aliases, 
   assert.match(voiceCapture, /sync_channel::<Vec<f32>>\(32\)/);
   assert.match(voiceCapture, /sender\.try_send\(incoming\)/);
   assert.match(voiceCapture, /process_samples\(&buffer, samples\)/);
-  assert.match(voiceTts, /launcher\.args\(\["-3", "-u"\]\)/);
-  assert.match(voiceTts, /child\.try_wait\(\)/);
+  assert.match(voiceTtsModules, /launcher\.args\(\["-3", "-u"\]\)/);
+  assert.match(voiceTtsModules, /child\.try_wait\(\)/);
   assert.match(voiceStt, /language\.chars\(\)\.any\(\|ch\| ch\.is_control\(\)\)/);
   assert.match(voiceCapture, /perceptual_level/);
   assert.match(voiceCapture, /smooth_perceptual_level/);
   assert.match(voiceAudio, /LEVEL_FLOOR_DB: f32 = -48\.0/);
   assert.match(voiceStt, /bearer_auth/);
-  assert.match(voiceTts, /child\.try_wait\(\)/);
+  assert.match(voiceTtsModules, /child\.try_wait\(\)/);
 });
 
 test("chat completion reserves TTS state before IPC so hands-free cannot rearm into Jarvis speech", () => {
-  assert.match(jarvisStore, /const ttsRequestId = `tts-\$\{response\.message\.id\}`/);
-  assert.match(jarvisStore, /beginLocalTtsRequest\(state, ttsRequestId, workspaceId\)/);
-  assert.match(jarvisStore, /ttsSpeak\(\{ requestId: ttsRequestId, workspaceId/);
-  assert.match(jarvisStore, /status: "failed"/);
-  assert.match(jarvisStore, /sanitizedVoiceErrorView\(error, "tts_ipc_failed"\)/);
-  assert.match(jarvisStore, /cancelChat\(invocation\.requestId\)/);
+  assert.match(jarvisStoreModules, /const ttsRequestId = `tts-\$\{response\.message\.id\}`/);
+  assert.match(jarvisStoreModules, /beginLocalTtsRequest\(state, ttsRequestId, workspaceId\)/);
+  assert.match(jarvisStoreModules, /ttsSpeak\(\{[\s\S]*?requestId: ttsRequestId,\s*workspaceId/);
+  assert.match(jarvisStoreModules, /status: "failed"/);
+  assert.match(jarvisStoreModules, /sanitizedVoiceErrorView\(error, "tts_ipc_failed"\)/);
+  assert.match(jarvisStoreModules, /cancelChat\(invocation\.requestId\)/);
 });
 
 test("PTY dispatches close their activity checkpoint without inventing turn_started", () => {
   assert.match(
-    jarvisControl,
+    jarvisControlModules,
     /Scritto; avvio turno non confermato\.[\s\S]{0,180}JarvisActivityStatus::Done/,
   );
-  assert.match(jarvisControl, /status: DISPATCH_SUBMISSION_UNCONFIRMED/);
-  assert.match(jarvisControl, /DISPATCH_SUBMISSION_UNCONFIRMED, DISPATCH_TURN_STARTED/);
+  assert.match(jarvisControlModules, /status: DISPATCH_SUBMISSION_UNCONFIRMED/);
+  assert.match(jarvisControlModules, /DISPATCH_SUBMISSION_UNCONFIRMED, DISPATCH_TURN_STARTED/);
   assert.match(jarvisActivity, /if \(event\.status === "running"\) return true/);
 });
 
 test("inactive and stale agent sessions are rebound to a fresh PTY generation before prompt write", () => {
-  assert.match(jarvisControl, /reactivate_bound_agent/);
-  assert.match(jarvisControl, /reactivate_explicit_agent/);
-  assert.match(jarvisControl, /ensure_target_runtime_for_prompt/);
-  assert.match(jarvisControl, /refresh_agent_process_presence/);
-  assert.match(jarvisControl, /target_was_reactivated/);
+  assert.match(jarvisControlModules, /reactivate_bound_agent/);
+  assert.match(jarvisControlModules, /reactivate_explicit_agent/);
+  assert.match(jarvisControlModules, /ensure_target_runtime_for_prompt/);
+  assert.match(jarvisControlModules, /refresh_agent_process_presence/);
+  assert.match(jarvisControlModules, /target_was_reactivated/);
   assert.match(
-    jarvisControl,
+    jarvisControlModules,
     /!\s*target_was_reactivated\s*\)\s*\.then_some\(\s*follow_up_binding\s*\)/,
   );
-  assert.match(jarvisControl, /wait_until_ready/);
-  assert.match(jarvisControl, /agent_process_alive: Option<bool>/);
+  assert.match(jarvisControlModules, /wait_until_ready/);
+  assert.match(jarvisControlModules, /agent_process_alive: Option<bool>/);
 });
 
 test("Codex turn cleanup is bounded and late terminal events cannot clear a newer turn", () => {
@@ -298,17 +312,15 @@ test("Codex cancellation and stream fallbacks stay request- and generation-scope
   assert.match(jarvisRuntime, /client\.clone\(\),\s*models/);
   assert.match(jarvisAccount, /for_server_client\(Arc::clone\(&client\)\)/);
   assert.match(jarvisEvents, /final_turn_message_event/);
-  assert.match(jarvisStore, /codexChatStreamAvailable/);
-  assert.match(jarvisStore, /!progressiveCodexSpeech/);
+  assert.match(jarvisStoreModules, /codexChatStreamAvailable/);
+  assert.match(jarvisStoreModules, /!progressiveCodexSpeech/);
 });
 
 test("failed voice transcript submissions stay preserved without automatic retry loops", () => {
-  assert.match(jarvisOverlay, /settingsRecoveryDraftRef/);
-  assert.match(jarvisOverlay, /settingsWasOpenRef/);
-  assert.match(jarvisOverlay, /previousChatFailed/);
-  assert.match(jarvisOverlay, /\(!previousChatFailed \|\| recoveryAllowed\)/);
-  assert.match(jarvisOverlay, /settingsRecoveryDraftRef\.current\.delete\(draft\.requestId\)/);
-  assert.match(jarvisOverlay, /resumeVoiceDraftRef\.current\.has\(draft\.requestId\)/);
+  assert.match(jarvisOverlay, /loadVoiceDraft/);
+  assert.doesNotMatch(jarvisOverlay, /settingsRecoveryDraftRef|settingsWasOpenRef|resumeVoiceDraftRef/);
+  assert.doesNotMatch(jarvisOverlay, /sendVoiceTranscript\(draft/);
+  assert.match(jarvisOverlay, /onVoiceToggle/);
 });
 
 test("fresh installations watch the canonical skills directory before the first skill exists", () => {
