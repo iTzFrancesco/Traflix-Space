@@ -100,12 +100,6 @@ pub struct VoiceInputSettings {
     #[serde(default)]
     pub activation_mode: VoiceActivationMode,
     #[serde(default)]
-    pub global_shortcut_enabled: bool,
-    #[serde(default = "default_global_shortcut")]
-    pub global_shortcut: String,
-    #[serde(default)]
-    pub shortcut_behavior: ShortcutBehavior,
-    #[serde(default)]
     pub vad_enabled: bool,
     #[serde(default = "default_vad_threshold")]
     pub vad_speech_threshold: f32,
@@ -160,7 +154,7 @@ pub struct VoiceOutputSettings {
 #[serde(rename_all = "snake_case")]
 pub enum VoiceActivationMode {
     // Retained for backwards-compatible deserialization. Owner-mode migration
-    // normalizes this legacy push-to-toggle policy to hands-free VAD.
+    // normalizes every legacy mode to the explicit click-toggle policy.
     ClickToggle,
     HoldToTalk,
     Vad,
@@ -169,20 +163,7 @@ pub enum VoiceActivationMode {
 
 impl Default for VoiceActivationMode {
     fn default() -> Self {
-        Self::Vad
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ShortcutBehavior {
-    Toggle,
-    Hold,
-}
-
-impl Default for ShortcutBehavior {
-    fn default() -> Self {
-        Self::Toggle
+        Self::ClickToggle
     }
 }
 
@@ -324,7 +305,7 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
     }
 
     settings.voice_input.enabled = true;
-    settings.voice_input.auto_submit_transcript = true;
+    settings.voice_input.auto_submit_transcript = false;
     if settings.voice_input.max_duration_seconds == LEGACY_VOICE_MAX_DURATION_SECONDS {
         // The old 45 s cap was a short-turn safety default, not a deliberate
         // user limit. Manual capture follows Traflix Voice and stays open
@@ -355,17 +336,9 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
         .voice_input
         .endpoint_grace_ms
         .clamp(MIN_SAFE_ENDPOINT_GRACE_MS, MAX_ENDPOINT_GRACE_MS);
-    if settings.voice_input.activation_mode == VoiceActivationMode::ClickToggle {
-        settings.voice_input.activation_mode = VoiceActivationMode::Vad;
-    }
-    settings.voice_input.vad_enabled =
-        settings.voice_input.activation_mode != VoiceActivationMode::HoldToTalk;
-    if settings.voice_input.activation_mode == VoiceActivationMode::HoldToTalk {
-        // Manual mode must remain reachable after reload: the widget exposes
-        // stop/send, while the global shortcut is the start boundary.
-        // Preserve the user's hold/toggle choice.
-        settings.voice_input.global_shortcut_enabled = true;
-    }
+    settings.voice_input.activation_mode = VoiceActivationMode::ClickToggle;
+    settings.voice_input.vad_enabled = false;
+    settings.voice_input.endpointing_enabled = false;
     settings.voice_input.privacy_consent = true;
     if settings.voice_input.privacy_consent_at.is_none() {
         settings.voice_input.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
@@ -373,7 +346,8 @@ fn enforce_owner_mode(settings: &mut JarvisSettings) {
 
     settings.voice_output.enabled = true;
     settings.voice_output.auto_speak = true;
-    settings.voice_output.stop_on_user_speech = true;
+    settings.voice_output.stop_on_user_speech = false;
+    settings.wake_word_enabled = false;
     settings.voice_output.privacy_consent = true;
     if settings.voice_output.privacy_consent_at.is_none() {
         settings.voice_output.privacy_consent_at = Some(OWNER_MODE_MARKER.to_string());
@@ -432,20 +406,17 @@ impl Default for VoiceInputSettings {
             language: default_voice_language(),
             max_duration_seconds: default_voice_max_duration(),
             selected_input_device_id: None,
-            auto_submit_transcript: true,
+            auto_submit_transcript: false,
             privacy_consent: true,
             privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
-            activation_mode: VoiceActivationMode::Vad,
-            global_shortcut_enabled: false,
-            global_shortcut: default_global_shortcut(),
-            shortcut_behavior: ShortcutBehavior::default(),
-            vad_enabled: true,
+            activation_mode: VoiceActivationMode::ClickToggle,
+            vad_enabled: false,
             vad_speech_threshold: default_vad_threshold(),
             vad_start_frames: default_vad_start_frames(),
             vad_silence_frames: default_vad_silence_frames(),
             vad_pre_roll_ms: default_vad_preroll_ms(),
             vad_post_speech_ms: default_vad_post_speech_ms(),
-            endpointing_enabled: true,
+            endpointing_enabled: false,
             endpoint_grace_ms: default_endpoint_grace_ms(),
             min_spoken_ms: default_min_spoken_ms(),
             max_armed_seconds: default_max_armed_seconds(),
@@ -466,7 +437,7 @@ impl Default for VoiceOutputSettings {
             max_spoken_chars: default_max_spoken_chars(),
             privacy_consent: true,
             privacy_consent_at: Some(OWNER_MODE_MARKER.to_string()),
-            stop_on_user_speech: true,
+            stop_on_user_speech: false,
         }
     }
 }
@@ -571,9 +542,6 @@ fn default_voice_language() -> String {
 fn default_voice_max_duration() -> u32 {
     DEFAULT_VOICE_MAX_DURATION_SECONDS
 }
-fn default_global_shortcut() -> String {
-    "Ctrl+Alt+Space".to_string()
-}
 fn default_vad_threshold() -> f32 {
     0.018
 }
@@ -676,9 +644,7 @@ impl SettingsManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        enforce_owner_mode, AppSettings, ShortcutBehavior, VoiceActivationMode, VoiceEngine,
-    };
+    use super::{enforce_owner_mode, AppSettings, VoiceActivationMode, VoiceEngine};
 
     #[test]
     fn legacy_settings_migrate_to_codex_defaults() {
@@ -842,9 +808,6 @@ mod tests {
         settings.jarvis.voice_input.vad_enabled = true;
         settings.jarvis.voice_input.privacy_consent = false;
         settings.jarvis.voice_input.privacy_consent_at = None;
-        settings.jarvis.voice_input.global_shortcut_enabled = true;
-        settings.jarvis.voice_input.global_shortcut = "Ctrl+Shift+Space".into();
-        settings.jarvis.voice_input.shortcut_behavior = ShortcutBehavior::Hold;
         settings.jarvis.voice_input.vad_speech_threshold = 0.031;
         settings.jarvis.voice_output.stop_on_user_speech = false;
         settings.jarvis.voice_output.privacy_consent = false;
@@ -860,15 +823,6 @@ mod tests {
         assert!(reloaded.jarvis.voice_input.privacy_consent);
         assert!(reloaded.jarvis.voice_output.stop_on_user_speech);
         assert!(reloaded.jarvis.voice_output.privacy_consent);
-        assert!(reloaded.jarvis.voice_input.global_shortcut_enabled);
-        assert_eq!(
-            reloaded.jarvis.voice_input.global_shortcut,
-            "Ctrl+Shift+Space"
-        );
-        assert_eq!(
-            reloaded.jarvis.voice_input.shortcut_behavior,
-            ShortcutBehavior::Hold
-        );
         assert_eq!(reloaded.jarvis.voice_input.vad_speech_threshold, 0.031);
     }
 }

@@ -80,7 +80,7 @@ scrivere PCM su disco né effettuare rete durante `wake_only`.
    in standby almeno 300 ms per la calibrazione locale.
 2. Verificare che il mute mostri `Microfono disattivato`, cancelli una cattura
    attiva e impedisca un nuovo start.
-3. Disabilitare il mute e provare il pulsante/hotkey VAD: deve partire una sola
+3. Disabilitare il mute e provare il pulsante VAD: deve partire una sola
    sessione CPAL.
 4. Controllare l'indicatore microfono di Windows e verificare che il fallback
    resti locale, non invii audio in standby e non apra un secondo microfono.

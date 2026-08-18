@@ -455,10 +455,6 @@ export function getWakeWordStatus(): Promise<WakeWordStatusView> {
   );
 }
 
-export function voiceSyncShortcut(): Promise<void> {
-  return invokeWithTimeout(() => invoke<void>("jarvis_voice_sync_shortcut"), READ_TIMEOUT_MS);
-}
-
 export function voiceStart(request: { requestId: string; workspaceId: string; selectedDeviceId?: string | null; activationMode?: VoiceActivationMode; forceEndpointing?: boolean }): Promise<VoiceRequestStatusView> {
   return invokeWithTimeout(() => invoke<VoiceRequestStatusView>("jarvis_voice_start", { request }), READ_TIMEOUT_MS);
 }

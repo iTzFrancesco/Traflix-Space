@@ -181,7 +181,11 @@ impl VoiceCaptureOptions {
             max_duration_seconds: normalize_max_duration_seconds(self.max_duration_seconds),
             max_armed_seconds: self.max_armed_seconds.clamp(1, 120),
             vad_enabled: self.vad_enabled
-                && self.activation_mode != crate::settings::store::VoiceActivationMode::HoldToTalk,
+                && !matches!(
+                    self.activation_mode,
+                    crate::settings::store::VoiceActivationMode::ClickToggle
+                        | crate::settings::store::VoiceActivationMode::HoldToTalk
+                ),
             vad_speech_threshold: self.vad_speech_threshold.clamp(0.001, 1.0),
             // Four consecutive blocks debounce clicks/fan pulses while the
             // preroll preserves the first syllable.
@@ -233,8 +237,6 @@ pub enum VoiceErrorCode {
     InvalidRequest,
     VadTimeout,
     InvalidTransition,
-    ShortcutUnavailable,
-    ShortcutInvalid,
     TtsDisabled,
     TtsProviderInvalid,
     HelperFailed,
@@ -339,8 +341,6 @@ impl VoiceErrorCode {
             Self::InvalidRequest => "voice_invalid_request",
             Self::VadTimeout => "voice_vad_timeout",
             Self::InvalidTransition => "voice_invalid_transition",
-            Self::ShortcutUnavailable => "voice_shortcut_unavailable",
-            Self::ShortcutInvalid => "voice_shortcut_invalid",
             Self::TtsDisabled => "tts_output_disabled",
             Self::TtsProviderInvalid => "tts_provider_invalid",
             Self::HelperFailed => "tts_helper_failed",

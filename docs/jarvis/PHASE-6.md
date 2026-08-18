@@ -12,10 +12,9 @@ e `vad`. Hold-to-talk usa pointer capture e key press/release; una perdita di
 focus, cancel o cambio workspace non retargetta la richiesta. La workspace è
 catturata al momento dell'arming.
 
-La hotkey globale usa il plugin Tauri ufficiale. È disabilitata di default,
-configurabile con `globalShortcut` e `shortcutBehavior` (`toggle` o `hold`), e
-viene registrata solo se Jarvis e la hotkey sono abilitati. Conflitti e valori
-non validi restituiscono errori typed senza sostituire scorciatoie altrui.
+La modalità manuale usa esclusivamente il logo centrale del widget: il primo
+click apre l'ascolto e il secondo lo chiude, trascrive e invia il messaggio.
+Non vengono registrate scorciatoie globali e l'ascolto non termina per timeout.
 
 ## VAD locale
 
@@ -54,5 +53,4 @@ stessi tempi su input mono e stereo.
 
 Restano esclusi wake word, VAD cloud, ascolto continuo, streaming STT/TTS,
 Gemini Live, nuovi provider, autonomia agent e Fase 7. La validazione reale di
-CPAL, global shortcut e playback deve essere eseguita su Windows seguendo la
-checklist dedicata.
+CPAL e playback deve essere eseguita su Windows seguendo la checklist dedicata.

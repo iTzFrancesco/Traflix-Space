@@ -190,7 +190,6 @@ export interface CodexSpeechItem {
 }
 
 export type VoiceActivationMode = "click_toggle" | "hold_to_talk" | "vad" | "wake_word";
-export type ShortcutBehavior = "toggle" | "hold";
 
 export interface VoiceInputSettings {
   enabled: boolean;
@@ -203,9 +202,6 @@ export interface VoiceInputSettings {
   privacyConsent: boolean;
   privacyConsentAt?: string;
   activationMode: VoiceActivationMode;
-  globalShortcutEnabled: boolean;
-  globalShortcut: string;
-  shortcutBehavior: ShortcutBehavior;
   vadEnabled: boolean;
   vadSpeechThreshold: number;
   vadStartFrames: number;

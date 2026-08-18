@@ -1,12 +1,23 @@
 import type {
   VadState,
-  VoiceActivationMode,
   VoiceEndpointState,
   VoiceRequestStatusView,
-  VoiceSubmitState,
 } from "./types";
 
 export type VoiceUiPhase = "idle" | "listening" | "processing" | "draft" | "error";
+
+export type ManualVoiceToggleDecision = "start" | "stop" | "noop";
+
+/** The only capture transition exposed by the compact Jarvis widget. */
+export function manualVoiceToggle(
+  status: VoiceRequestStatusView["status"] | null,
+): ManualVoiceToggleDecision {
+  if (status === "recording" || status === "armed") return "stop";
+  if (!status || status === "idle" || status === "cancelled" || status === "failed") {
+    return "start";
+  }
+  return "noop";
+}
 
 /** Collapse backend lifecycle details into one stable user-facing phase. */
 export function voiceUiPhase(
@@ -151,34 +162,6 @@ export function canSendTranscript(request: VoiceRequestStatusView | null, worksp
   return Boolean(request && request.status === "transcript_ready" && request.workspaceId === workspaceId && text.trim());
 }
 
-export function shouldShowVoiceSendControl(input: {
-  voiceListening: boolean;
-  transcriptReady: boolean;
-  bargeIn: boolean;
-  activationMode?: VoiceActivationMode;
-  submitState?: VoiceSubmitState;
-  hasTranscript?: boolean;
-}): boolean {
-  if (input.bargeIn) return false;
-
-  // While recording, this is the explicit stop boundary. It remains useful in
-  // both VAD and manual mode, but it must never be confused with a draft send.
-  if (input.voiceListening) return true;
-
-  // A draft is actionable only in manual mode and only before the handoff has
-  // been queued. Once submission starts, the label is status-only and no
-  // second click can have a meaningful effect.
-  return Boolean(
-    input.transcriptReady &&
-      input.activationMode === "hold_to_talk" &&
-      input.submitState !== "queued" &&
-      input.submitState !== "submitting" &&
-      input.submitState !== "sent" &&
-      input.submitState !== "failed" &&
-      input.hasTranscript !== false,
-  );
-}
-
 /** Endpoint detail stays in diagnostics; the compact UI uses one listening caption. */
 export function voiceEndpointCaption(
   endpointState?: VoiceEndpointState,
@@ -188,7 +171,7 @@ export function voiceEndpointCaption(
   return "Ti ascolto";
 }
 
-/** Submit policy is intentionally independent from microphone VAD/endpointing. */
+/** A transcript is always a draft until the user explicitly sends it. */
 export function decideVoiceSubmit(input: {
   status: VoiceRequestStatusView["status"];
   hasTranscript: boolean;
@@ -199,14 +182,16 @@ export function decideVoiceSubmit(input: {
   if (input.status !== "transcript_ready" || !input.hasTranscript || input.alreadyClaimed) {
     return "ignore";
   }
-  if (!input.autoSubmit) return "manual";
-  return input.chatBusy ? "queue" : "send";
+  // `autoSubmit` remains in the input for persisted/API compatibility. The
+  // manual interaction contract deliberately ignores it so a stale legacy
+  // setting can never send a transcript behind the user's back.
+  void input.autoSubmit;
+  void input.chatBusy;
+  return "manual";
 }
 
 export function shouldAutoSpeak(settings: { enabled: boolean; autoSpeak: boolean; privacyConsent: boolean; privacyConsentAt?: string }): boolean {
   return settings.enabled && settings.autoSpeak && settings.privacyConsent && Boolean(settings.privacyConsentAt);
 }
 
-export function shouldStopTtsBeforeRecording(ttsStatus: string): boolean {
-  return ttsStatus === "playing" || ttsStatus === "synthesizing";
-}
+/** Kept as a compatibility seam; manual capture never interrupts TTS. */

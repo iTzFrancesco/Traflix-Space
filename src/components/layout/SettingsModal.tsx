@@ -13,12 +13,6 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import {
   defaultJarvisSettings,
   ownerModeJarvisSettings,
-  normalizeVoiceEndpointWaitMs,
-  normalizeVoiceMaxDurationSeconds,
-  normalizeVoiceVadPostSpeechMs,
-  VOICE_ENDPOINT_MAX_WAIT_MS,
-  VOICE_ENDPOINT_MIN_WAIT_MS,
-  VOICE_ENDPOINT_WAIT_SECONDS,
 } from "../../lib/jarvis/settings";
 import {
   ttsListVoices,
@@ -37,8 +31,6 @@ import {
 import type {
   AppSettings,
   TtsVoice,
-  VoiceActivationMode,
-  WakeWordStatusView,
 } from "../../lib/jarvis/types";
 import {
   JarvisAdvancedSettings,
@@ -62,12 +54,10 @@ const EMPTY_SECRET_STATUS: JarvisSecretStatus = {
   persistent: false,
 };
 
-type VoiceInputSettings = AppSettings["jarvis"]["voiceInput"];
 type VoiceOutputSettings = AppSettings["jarvis"]["voiceOutput"];
 
 export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const settings = useJarvisStore((state) => state.settings);
-  const wakeWordStatus = useJarvisStore((state) => state.wakeWordStatus);
   const settingsLoaded = useJarvisStore((state) => state.settingsLoaded);
   const settingsLoading = useJarvisStore((state) => state.settingsLoading);
   const settingsError = useJarvisStore((state) => state.settingsError);
@@ -210,7 +200,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             La voce è l'interfaccia principale
           </p>
           <p className="mt-1 max-w-xl text-xs leading-relaxed text-neutral-text-muted">
-            Jarvis resta pronto in ascolto e risponde a voce.
+            Jarvis usa il microfono solo dopo il click sul logo centrale e risponde a voce.
           </p>
         </header>
 
@@ -279,17 +269,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
         </SettingsSection>
 
         <VoiceOptions
-          input={jarvis.voiceInput}
           output={jarvis.voiceOutput}
-          wakeWordEnabled={jarvis.wakeWordEnabled}
-          wakeWordPhrase={jarvis.wakeWordPhrase}
-          wakeWordStatus={wakeWordStatus}
-          onWakeWordChange={(patch) =>
-            updateJarvis((current) => ({ ...current, ...patch }))
-          }
-          onInputChange={(voiceInput) =>
-            updateJarvis((current) => ({ ...current, voiceInput }))
-          }
           onOutputChange={(voiceOutput) =>
             updateJarvis((current) => ({ ...current, voiceOutput }))
           }
@@ -452,48 +432,21 @@ function CredentialField({
 }
 
 function VoiceOptions({
-  input,
   output,
-  wakeWordEnabled,
-  wakeWordPhrase,
-  wakeWordStatus,
-  onWakeWordChange,
-  onInputChange,
   onOutputChange,
 }: {
-  input: VoiceInputSettings;
   output: VoiceOutputSettings;
-  wakeWordEnabled: boolean;
-  wakeWordPhrase: string;
-  wakeWordStatus: WakeWordStatusView | null;
-  onWakeWordChange: (patch: {
-    wakeWordEnabled?: boolean;
-    wakeWordPhrase?: string;
-  }) => void;
-  onInputChange: (value: VoiceInputSettings) => void;
   onOutputChange: (value: VoiceOutputSettings) => void;
 }) {
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
 
-  const normalizedInput: VoiceInputSettings = {
-    ...input,
-    enabled: true,
-    autoSubmitTranscript: true,
-    maxDurationSeconds: normalizeVoiceMaxDurationSeconds(input.maxDurationSeconds),
-    vadEnabled: input.activationMode !== "hold_to_talk",
-    endpointingEnabled: input.activationMode !== "hold_to_talk"
-      && (input.endpointingEnabled ?? true),
-    minSpokenMs: input.minSpokenMs ?? 350,
-    vadPostSpeechMs: normalizeVoiceVadPostSpeechMs(input.vadPostSpeechMs),
-    endpointGraceMs: normalizeVoiceEndpointWaitMs(input.endpointGraceMs),
-  };
   const normalizedOutput: VoiceOutputSettings = {
     ...output,
     enabled: true,
     autoSpeak: true,
-    stopOnUserSpeech: true,
+    stopOnUserSpeech: false,
   };
 
   const loadVoices = async () => {
@@ -513,59 +466,11 @@ function VoiceOptions({
       title="Voce"
       description="Microfono e voce di Jarvis."
     >
-      <div className="mb-4 space-y-3 border-y border-neutral-border py-3">
-        <label className="flex items-start gap-2.5 text-xs text-neutral-text">
-          <input
-            type="checkbox"
-            checked={wakeWordEnabled}
-            onChange={(event) =>
-              onWakeWordChange({ wakeWordEnabled: event.target.checked })
-            }
-            className="mt-0.5 accent-[var(--color-accent)]"
-          />
-          <span className="min-w-0">
-            <span className="block font-medium">Standby wake word locale</span>
-            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              Mantiene soltanto il detector locale pronto; il mute del widget
-              continua a chiudere completamente il microfono.
-            </span>
-          </span>
-        </label>
-
-        <div className="max-w-xl">
-          <label className="space-y-1.5 text-xs text-neutral-text-muted">
-            <span>Parola di attivazione</span>
-            <input
-              value={wakeWordPhrase}
-              onChange={(event) =>
-                onWakeWordChange({ wakeWordPhrase: event.target.value })
-              }
-              className="field-input w-full"
-              maxLength={80}
-              disabled={!wakeWordEnabled}
-            />
-          </label>
-        </div>
-
-        {wakeWordEnabled &&
-          (wakeWordStatus?.state === "fallback" ||
-            wakeWordStatus?.state === "unavailable") && (
-          <p
-            role="status"
-            className="border-l-2 border-warning px-3 py-2 text-[11px] leading-relaxed text-neutral-text-muted"
-          >
-            Il modello wake word non è incluso in questa build. Jarvis usa un
-            fallback VAD locale, senza inviare audio in standby e senza aprire
-            un secondo microfono.
-          </p>
-        )}
-      </div>
-
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5 text-xs text-neutral-text-muted">
           <span className="block">Microfono</span>
           <p className="flex min-h-9 items-center rounded-md border border-neutral-border bg-neutral-darkest px-3 text-neutral-text">
-            Microfono automatico
+            Microfono predefinito di Windows
           </p>
           <p className="text-[11px] leading-relaxed">
             Jarvis usa il microfono predefinito di Windows.
@@ -612,192 +517,13 @@ function VoiceOptions({
 
       <div className="mt-4 border-y border-neutral-border py-3">
         <div className="space-y-1.5 text-xs text-neutral-text-muted">
-          <span className="block font-medium text-neutral-text">Modalità acquisizione</span>
+          <span className="block font-medium text-neutral-text">Modalità manuale</span>
           <span className="block text-[11px] leading-relaxed">
-            Scegli se Jarvis deve chiudere la frase dopo il silenzio oppure aspettare
-            sempre uno stop esplicito.
+            Il logo centrale è l&apos;unico comando: premi per iniziare ad ascoltare,
+            parla senza interruzioni e premi di nuovo per fermare, trascrivere e inviare.
+            Le pause non chiudono la registrazione e Jarvis non interrompe la risposta che sta parlando.
           </span>
         </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {([
-            ["vad", "Hands-free · VAD", "Jarvis resta pronto e invia dopo una pausa naturale."],
-            ["hold_to_talk", "Manuale · hold-to-talk", "La pausa non chiude la registrazione: rilascia o premi di nuovo la hotkey per fermare."],
-          ] as const).map(([mode, label, description]) => (
-            <label
-              key={mode}
-              className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2.5 text-xs transition-colors ${
-                normalizedInput.activationMode === mode
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-neutral-text"
-                  : "border-neutral-border text-neutral-text-muted hover:border-neutral-text-muted"
-              }`}
-            >
-              <input
-                type="radio"
-                name="jarvis-voice-activation-mode"
-                value={mode}
-                checked={normalizedInput.activationMode === mode}
-                onChange={() => {
-                  const activationMode = mode as VoiceActivationMode;
-                  onInputChange({
-                    ...normalizedInput,
-                    activationMode,
-                    vadEnabled: activationMode !== "hold_to_talk",
-                    endpointingEnabled: activationMode !== "hold_to_talk",
-                    globalShortcutEnabled:
-                      activationMode === "hold_to_talk"
-                        ? true
-                        : normalizedInput.globalShortcutEnabled,
-                    shortcutBehavior:
-                      activationMode === "hold_to_talk"
-                        ? "hold"
-                        : normalizedInput.shortcutBehavior,
-                  });
-                }}
-                className="mt-0.5 accent-[var(--color-accent)]"
-              />
-              <span className="min-w-0">
-                <span className="block font-medium">{label}</span>
-                <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-                  {description}
-                </span>
-              </span>
-            </label>
-          ))}
-        </div>
-
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <label className="space-y-1.5 text-xs text-neutral-text-muted">
-            <span className="flex items-center justify-between gap-3">
-              <span>Durata massima acquisizione</span>
-              <output className="font-mono tabular-nums text-neutral-text">
-                {Math.floor(normalizedInput.maxDurationSeconds / 60)}m {normalizedInput.maxDurationSeconds % 60}s
-              </output>
-            </span>
-            <input
-              type="range"
-              min={60}
-              max={600}
-              step={30}
-              value={normalizedInput.maxDurationSeconds}
-              onChange={(event) =>
-                onInputChange({
-                  ...normalizedInput,
-                  maxDurationSeconds: normalizeVoiceMaxDurationSeconds(Number(event.target.value)),
-                })
-              }
-              className="w-full accent-[var(--color-accent)]"
-              aria-label={`Durata massima acquisizione: ${normalizedInput.maxDurationSeconds} secondi`}
-            />
-            <span className="block text-[11px] leading-relaxed">
-              Fino a 10 minuti per una cattura manuale lunga; non è un timeout della trascrizione Groq.
-            </span>
-          </label>
-
-          <div className="space-y-2 text-xs text-neutral-text-muted">
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                checked={normalizedInput.globalShortcutEnabled}
-                disabled={normalizedInput.activationMode === "hold_to_talk"}
-                onChange={(event) =>
-                  onInputChange({
-                    ...normalizedInput,
-                    globalShortcutEnabled: event.target.checked,
-                  })
-                }
-                className="mt-0.5 accent-[var(--color-accent)]"
-              />
-              <span>
-                <span className="block font-medium text-neutral-text">Abilita hotkey globale</span>
-                <span className="mt-1 block text-[11px] leading-relaxed">
-                  Necessaria per avviare e fermare comodamente la modalità manuale anche fuori dalla finestra.
-                </span>
-              </span>
-            </label>
-            <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
-              <input
-                value={normalizedInput.globalShortcut}
-                onChange={(event) =>
-                  onInputChange({
-                    ...normalizedInput,
-                    globalShortcut: event.target.value,
-                  })
-                }
-                className="field-input"
-                aria-label="Hotkey globale di Jarvis"
-                placeholder="Ctrl+Alt+Space"
-              />
-              <select
-                value={normalizedInput.shortcutBehavior}
-                onChange={(event) =>
-                  onInputChange({
-                    ...normalizedInput,
-                    shortcutBehavior: event.target.value as VoiceInputSettings["shortcutBehavior"],
-                  })
-                }
-                className="field-input"
-                aria-label="Comportamento hotkey"
-              >
-                <option value="hold">Tieni premuto</option>
-                <option value="toggle">Premi per attivare</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 border-y border-neutral-border py-3">
-        <label className="flex items-start gap-2 text-xs text-neutral-text">
-          <input
-            type="checkbox"
-            checked={normalizedInput.endpointingEnabled}
-            disabled={normalizedInput.activationMode === "hold_to_talk"}
-            onChange={(event) =>
-              onInputChange({
-                ...normalizedInput,
-                endpointingEnabled: event.target.checked,
-              })
-            }
-            className="mt-0.5 accent-[var(--color-accent)]"
-          />
-          <span>
-            <span className="block font-medium">Invio automatico dopo pausa naturale</span>
-            <span className="mt-1 block text-[11px] leading-relaxed text-neutral-text-muted">
-              Respiri, pause e micro-interruzioni restano nella stessa frase. Il
-              draft viene chiuso solo dopo un silenzio finale stabile e il primo
-              attacco viene protetto da preroll e calibrazione.
-            </span>
-          </span>
-        </label>
-
-        {normalizedInput.endpointingEnabled && (
-          <label className="mt-3 block max-w-xl space-y-1.5 text-xs text-neutral-text-muted">
-            <span className="flex items-center justify-between gap-3">
-              <span>Silenzio finale prima dell&apos;invio</span>
-              <output className="font-mono tabular-nums text-neutral-text">
-                {normalizedInput.endpointGraceMs / 1000}s
-              </output>
-            </span>
-            <input
-              type="range"
-              min={VOICE_ENDPOINT_MIN_WAIT_MS}
-              max={VOICE_ENDPOINT_MAX_WAIT_MS}
-              step={500}
-              value={normalizedInput.endpointGraceMs}
-              onChange={(event) =>
-                onInputChange({
-                  ...normalizedInput,
-                  endpointGraceMs: Number(event.target.value),
-                })
-              }
-              className="w-full accent-[var(--color-accent)]"
-              aria-label={`Silenzio finale prima dell'invio: ${normalizedInput.endpointGraceMs / 1000} secondi`}
-            />
-            <span className="block text-[11px] leading-relaxed">
-              Predefinito {VOICE_ENDPOINT_WAIT_SECONDS}s · configurabile da {VOICE_ENDPOINT_MIN_WAIT_MS / 1000}s a {VOICE_ENDPOINT_MAX_WAIT_MS / 1000}s.
-            </span>
-          </label>
-        )}
       </div>
 
       {voiceSettingsError && (

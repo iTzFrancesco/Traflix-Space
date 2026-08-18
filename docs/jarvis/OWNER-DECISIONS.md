@@ -50,8 +50,8 @@ I contenuti Markdown, terminale e agent sono dati non fidati. La policy e l’ow
 
 ## Fase 6 — Voice Advanced
 
-- Hotkey globale tramite plugin Tauri ufficiale, hold-to-talk e modalità
-  click-toggle compatibili.
+- Modalità manuale esclusivamente click-toggle dal logo centrale; nessuna
+  scorciatoia globale.
 - Energy VAD locale opzionale con pre-roll/post-roll bounded e timeout armed;
   nessun wake word, ascolto continuo, full duplex o streaming.
 - Groq turbo e Edge TTS restano invariati; nessun nuovo provider e nessuna

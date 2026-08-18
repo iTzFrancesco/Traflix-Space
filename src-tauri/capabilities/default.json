@@ -30,7 +30,6 @@
     "fs:allow-download-write",
     "fs:allow-download-write-recursive",
     "dialog:default",
-    "global-shortcut:default",
     "store:default",
     "pty:default",
     "clipboard-manager:allow-read-text",

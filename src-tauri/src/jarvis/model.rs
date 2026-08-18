@@ -42,20 +42,6 @@ impl ModelMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelToolCall {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub function: ModelFunctionCall,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelFunctionCall {
-    pub name: String,
-    pub arguments: String,
-}
-
 /// C10: legacy HTTP tool-definition shapes, kept only for the chat.rs schema
 /// tests (the Codex path defines tools server-side).
 #[cfg(test)]

@@ -1,7 +1,6 @@
 import type { AppSettings, JarvisSettings, VoiceActivationMode } from "./types";
 
 const OWNER_MODE_MARKER = "owner-mode";
-const ALWAYS_READY_ARM_SECONDS = 120;
 export const VOICE_MAX_DURATION_SECONDS = 600;
 const LEGACY_VOICE_MAX_DURATION_SECONDS = 45;
 export const VOICE_ENDPOINT_WAIT_MS = 900;
@@ -55,18 +54,17 @@ export function normalizeVoiceVadPostSpeechMs(value: number | undefined): number
 
 /**
  * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
- * runs in owner mode: network consent, transcript submission and spoken
- * replies are always enabled. Hands-free local VAD is the default interaction;
- * hold-to-talk remains available as an explicit advanced choice. Manual mode
- * keeps a global shortcut enabled so it always has a start/stop boundary.
+ * runs in owner mode: network consent and spoken replies are always enabled.
+ * Voice capture is deliberately a private, explicit click-toggle session.
+ * Legacy VAD, wake-word and auto-submit fields stay in the persisted shape for
+ * backwards compatibility, but are normalized off at this boundary.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
-  const activationMode: VoiceActivationMode =
-    settings.voiceInput.activationMode === "hold_to_talk" ? "hold_to_talk" : "vad";
+  const activationMode: VoiceActivationMode = "click_toggle";
   const voiceInput = {
     ...settings.voiceInput,
     enabled: true,
-    autoSubmitTranscript: true,
+    autoSubmitTranscript: false,
     maxDurationSeconds: normalizeVoiceMaxDurationSeconds(
       settings.voiceInput.maxDurationSeconds,
     ),
@@ -76,15 +74,9 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
     ),
     endpointGraceMs: normalizeVoiceEndpointWaitMs(settings.voiceInput.endpointGraceMs),
     activationMode,
-    vadEnabled: activationMode !== "hold_to_talk",
-    globalShortcutEnabled:
-      activationMode === "hold_to_talk"
-        ? true
-        : settings.voiceInput.globalShortcutEnabled,
-    maxArmedSeconds:
-      activationMode === "vad"
-        ? Math.max(ALWAYS_READY_ARM_SECONDS, settings.voiceInput.maxArmedSeconds)
-        : settings.voiceInput.maxArmedSeconds,
+    vadEnabled: false,
+    endpointingEnabled: false,
+    maxArmedSeconds: settings.voiceInput.maxArmedSeconds,
     privacyConsent: true,
     privacyConsentAt: settings.voiceInput.privacyConsentAt || OWNER_MODE_MARKER,
   };
@@ -96,12 +88,13 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
       privacyConsent: true,
       privacyConsentAt: settings.textModel.privacyConsentAt || OWNER_MODE_MARKER,
     },
+    wakeWordEnabled: false,
     voiceInput,
     voiceOutput: {
       ...settings.voiceOutput,
       enabled: true,
       autoSpeak: true,
-      stopOnUserSpeech: true,
+      stopOnUserSpeech: false,
       privacyConsent: true,
       privacyConsentAt: settings.voiceOutput.privacyConsentAt || OWNER_MODE_MARKER,
     },
@@ -109,23 +102,19 @@ export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSetting
 }
 
 export function isJarvisOwnerModeReady(settings: JarvisSettings): boolean {
-  const expectedActivationMode =
-    settings.voiceInput.activationMode === "hold_to_talk" ? "hold_to_talk" : "vad";
-  const expectedVad = expectedActivationMode !== "hold_to_talk";
   return Boolean(
     settings.textModel.privacyConsent &&
       settings.textModel.privacyConsentAt &&
       settings.voiceInput.enabled &&
-      settings.voiceInput.autoSubmitTranscript &&
-      settings.voiceInput.activationMode === expectedActivationMode &&
-      settings.voiceInput.vadEnabled === expectedVad &&
-      (expectedActivationMode !== "vad" ||
-        settings.voiceInput.maxArmedSeconds >= ALWAYS_READY_ARM_SECONDS) &&
+      !settings.voiceInput.autoSubmitTranscript &&
+      settings.voiceInput.activationMode === "click_toggle" &&
+      !settings.voiceInput.vadEnabled &&
+      !settings.voiceInput.endpointingEnabled &&
       settings.voiceInput.privacyConsent &&
       settings.voiceInput.privacyConsentAt &&
       settings.voiceOutput.enabled &&
       settings.voiceOutput.autoSpeak &&
-      settings.voiceOutput.stopOnUserSpeech &&
+      !settings.voiceOutput.stopOnUserSpeech &&
       settings.voiceOutput.privacyConsent &&
       settings.voiceOutput.privacyConsentAt,
   );
@@ -170,23 +159,20 @@ export function defaultJarvisSettings(): JarvisSettings {
       language: "it",
       maxDurationSeconds: VOICE_MAX_DURATION_SECONDS,
       selectedInputDeviceId: undefined,
-      autoSubmitTranscript: true,
-      privacyConsent: true,
-      privacyConsentAt: OWNER_MODE_MARKER,
-      activationMode: "vad",
-      globalShortcutEnabled: false,
-      globalShortcut: "Ctrl+Alt+Space",
-      shortcutBehavior: "toggle",
-      vadEnabled: true,
+      autoSubmitTranscript: false,
+    privacyConsent: true,
+    privacyConsentAt: OWNER_MODE_MARKER,
+    activationMode: "click_toggle",
+    vadEnabled: false,
       vadSpeechThreshold: 0.018,
       vadStartFrames: 5,
       vadSilenceFrames: 16,
       vadPreRollMs: 500,
       vadPostSpeechMs: VOICE_VAD_CANDIDATE_MS,
-      endpointingEnabled: true,
+      endpointingEnabled: false,
       endpointGraceMs: VOICE_ENDPOINT_WAIT_MS,
       minSpokenMs: 350,
-      maxArmedSeconds: ALWAYS_READY_ARM_SECONDS,
+      maxArmedSeconds: 120,
     },
     voiceOutput: {
       enabled: true,
@@ -199,7 +185,7 @@ export function defaultJarvisSettings(): JarvisSettings {
       maxSpokenChars: 800,
       privacyConsent: true,
       privacyConsentAt: OWNER_MODE_MARKER,
-      stopOnUserSpeech: true,
+      stopOnUserSpeech: false,
     },
   });
 }

@@ -11,6 +11,7 @@ const wakeSource = source("../src-tauri/src/jarvis/voice/wake.rs");
 const typesSource = source("../src-tauri/src/jarvis/voice/types.rs");
 const settingsSource = source("../src-tauri/src/settings/store.rs");
 const frontendTypesSource = source("../src/lib/jarvis/types.ts");
+const frontendSettingsSource = source("../src/lib/jarvis/settings.ts");
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
 const widgetSource = source("../src/components/jarvis/JarvisWidget.tsx");
 
@@ -83,15 +84,12 @@ test("standby audio goes to the detector before any transcript buffer append", (
   assert.equal((captureSource.match(/device\.build_input_stream\(/g) || []).length, 3);
 });
 
-test("wake fallback arms VAD instead of a non-triggering unavailable engine", () => {
+test("legacy wake fallback remains backend-compatible but is not part of the manual default", () => {
   assert.match(wakeSource, /state: WakeWordState::Fallback/);
   assert.match(wakeSource, /"vad-fallback"/);
-  assert.match(overlaySource, /state !== "unavailable"/);
-  assert.match(overlaySource, /const vadFallbackReady = !wakeWordReady/);
-  assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.activationMode === "vad"/);
-  assert.match(overlaySource, /if \(liveWakeWordReady\)/);
-  assert.match(overlaySource, /activationMode: "wake_word"/);
-  assert.match(widgetSource, /Wake word · fallback VAD locale/);
+  assert.match(frontendSettingsSource, /activationMode: "click_toggle"/);
+  assert.doesNotMatch(overlaySource, /AUTO_ARM_DELAY_MS|startBargeIn|bargeIn/);
+  assert.doesNotMatch(widgetSource, /Wake word · fallback VAD locale/);
 });
 
 test("wake status follows off → standby → listening transitions", () => {

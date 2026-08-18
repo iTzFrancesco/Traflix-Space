@@ -44,7 +44,7 @@ interne: input vocale, invio automatico, VAD, modello e output vocale vengono
 normalizzati in owner mode e non sono presentati come gate privacy nella UI.
 
 Le Settings espongono soltanto configurazione utile: OpenCode Zen, Groq,
-microfono, voce TTS, hotkey e tuning/diagnostica avanzata. Il tuning del turno
+microfono, voce TTS e tuning/diagnostica avanzata. Il tuning del turno
 espone la sensibilità VAD e `vadPostSpeechMs` (silenzio prima dell'invio), non il
 vecchio timeout di attesa del VAD armato. Le API key vengono salvate fuori da
 `settings.json`; il frontend riceve solo lo stato configurata/non configurata.

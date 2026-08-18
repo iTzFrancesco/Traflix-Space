@@ -8,6 +8,7 @@ const audioSource = source("../src-tauri/src/jarvis/voice/audio.rs");
 const captureSource = source("../src-tauri/src/jarvis/voice/capture.rs");
 const sttSource = source("../src-tauri/src/jarvis/voice/stt.rs");
 const ttsSource = source("../src-tauri/src/jarvis/voice/tts.rs");
+const ttsWorkerSource = source("../src-tauri/src/jarvis/voice/tts_worker.rs");
 const playbackSource = source("../src-tauri/src/jarvis/voice/playback.rs");
 const helperSource = source("./jarvis-edge-tts.py");
 const mainSource = source("../src-tauri/src/main.rs");
@@ -71,7 +72,7 @@ test("Rust TTS shares one warm worker and prewarms it at startup", () => {
   assert.match(ttsSource, /static WORKER: OnceLock<SharedWorker>/);
   assert.match(ttsSource, /pub fn prewarm_runtime/);
   assert.match(ttsSource, /pub async fn shutdown_runtime/);
-  assert.match(ttsSource, /mpsc::channel::<HelperRequest>/);
+  assert.match(ttsWorkerSource, /mpsc::channel::<HelperRequest>/);
   assert.match(mainSource, /jarvis::voice::tts::prewarm_runtime\(app\.handle\(\)\.clone\(\)\)/);
   assert.match(mainSource, /jarvis::voice::tts::shutdown_runtime\(\)\.await/);
 });
