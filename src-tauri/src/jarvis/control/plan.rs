@@ -192,6 +192,7 @@ pub struct PendingConversationalIntent {
 pub struct ConversationalControlState {
     pending: Mutex<HashMap<String, PendingConversationalIntent>>,
     last_assignments: Mutex<HashMap<String, AgentAssignmentBinding>>,
+    confirmation_bindings: Mutex<HashMap<String, Vec<AgentAssignmentBinding>>>,
 }
 
 impl ConversationalControlState {
@@ -200,6 +201,9 @@ impl ConversationalControlState {
         let value = pending.get(workspace_id).cloned()?;
         if value.expires_at < super::now() {
             pending.remove(workspace_id);
+            if let Ok(mut bindings) = self.confirmation_bindings.lock() {
+                bindings.remove(workspace_id);
+            }
             return None;
         }
         Some(value)
@@ -207,6 +211,9 @@ impl ConversationalControlState {
 
     pub fn put(&self, intent: PendingConversationalIntent) {
         if let Ok(mut pending) = self.pending.lock() {
+            if let Ok(mut bindings) = self.confirmation_bindings.lock() {
+                bindings.remove(&intent.workspace_id);
+            }
             pending.insert(intent.workspace_id.clone(), intent);
             while pending.len() > MAX_PENDING_CONVERSATIONS {
                 if let Some(key) = pending
@@ -226,6 +233,26 @@ impl ConversationalControlState {
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(workspace_id);
         }
+        if let Ok(mut bindings) = self.confirmation_bindings.lock() {
+            bindings.remove(workspace_id);
+        }
+    }
+
+    pub fn set_confirmation_bindings(
+        &self,
+        workspace_id: &str,
+        bindings: Vec<AgentAssignmentBinding>,
+    ) {
+        if let Ok(mut confirmation_bindings) = self.confirmation_bindings.lock() {
+            confirmation_bindings.insert(workspace_id.to_string(), bindings);
+        }
+    }
+
+    pub fn confirmation_bindings(&self, workspace_id: &str) -> Option<Vec<AgentAssignmentBinding>> {
+        self.confirmation_bindings
+            .lock()
+            .ok()
+            .and_then(|bindings| bindings.get(workspace_id).cloned())
     }
 
     pub fn replace_plan(&self, workspace_id: &str, operations: Vec<ConversationStep>) {

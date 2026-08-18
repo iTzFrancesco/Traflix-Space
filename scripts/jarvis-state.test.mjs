@@ -22,7 +22,6 @@ import {
   isVoiceEndpointPaused,
   mergeVoiceRequestStatus,
   shouldAutoSpeak,
-  shouldStopTtsBeforeRecording,
   voiceRequestForWorkspace,
 } from "../src/lib/jarvis/voiceState.ts";
 import {
@@ -45,15 +44,32 @@ import {
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const overlaySource = source("../src/components/jarvis/JarvisGlobalOverlay.tsx");
-const registrySource = source("../src-tauri/src/jarvis/agent_registry.rs");
+const registrySource = [
+  source("../src-tauri/src/jarvis/agent_registry.rs"),
+  source("../src-tauri/src/jarvis/agent_registry/activity.rs"),
+].join("\n");
 const chatSource = source("../src-tauri/src/jarvis/chat.rs");
-const controlSource = source("../src-tauri/src/jarvis/control.rs");
+const controlSource = [
+  source("../src-tauri/src/jarvis/control.rs"),
+  source("../src-tauri/src/jarvis/control/dispatch.rs"),
+  source("../src-tauri/src/jarvis/control/execution.rs"),
+  source("../src-tauri/src/jarvis/control/lifecycle.rs"),
+  source("../src-tauri/src/jarvis/control/reactivation.rs"),
+  source("../src-tauri/src/jarvis/control/routing.rs"),
+  source("../src-tauri/src/jarvis/control/support.rs"),
+].join("\n");
 const planSource = source("../src-tauri/src/jarvis/control/plan.rs");
 const commandsSource = source("../src-tauri/src/jarvis/commands.rs");
 const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const captureSource = source("../src-tauri/src/jarvis/voice/capture.rs");
 const storeSource = source("../src/stores/jarvisStore.ts");
-const workspaceViewSource = source("../src/components/workspace/WorkspaceView.tsx");
+const voiceSliceSource = source("../src/stores/jarvis/voiceSlice.ts");
+const eventBindingsSource = source("../src/components/jarvis/useJarvisEventBindings.ts");
+const workspaceViewSource = [
+  source("../src/components/workspace/WorkspaceView.tsx"),
+  source("../src/components/workspace/useTerminalPaneLifecycle.ts"),
+  source("../src/components/workspace/useWorkspaceTerminalActions.ts"),
+].join("\n");
 
 function session(id, terminalId, generation, result = null) {
   const now = "2026-08-07T10:00:00Z";
@@ -294,21 +310,20 @@ test("terminal voice state wins over a shorter WAV duration", () => {
 });
 
 
-test("owner mode defaults to hands-free VAD with automatic submit and speech", () => {
+test("owner mode defaults to explicit click-toggle capture", () => {
   const settings = defaultJarvisSettings();
   assert.equal(isJarvisOwnerModeReady(settings), true);
-  assert.equal(settings.voiceInput.activationMode, "vad");
-  assert.equal(settings.voiceInput.vadEnabled, true);
-  assert.ok(settings.voiceInput.maxArmedSeconds >= 120);
-  assert.equal(settings.voiceInput.autoSubmitTranscript, true);
+  assert.equal(settings.voiceInput.activationMode, "click_toggle");
+  assert.equal(settings.voiceInput.vadEnabled, false);
+  assert.equal(settings.voiceInput.endpointingEnabled, false);
+  assert.equal(settings.voiceInput.autoSubmitTranscript, false);
   assert.equal(settings.voiceOutput.enabled, true);
   assert.equal(settings.voiceOutput.autoSpeak, true);
-  assert.equal(settings.voiceOutput.stopOnUserSpeech, true);
+  assert.equal(settings.voiceOutput.stopOnUserSpeech, false);
   assert.equal(shouldAutoSpeak(settings.voiceOutput), true);
-  assert.equal(shouldStopTtsBeforeRecording("playing"), true);
 });
 
-test("owner mode upgrades old automatic modes without rewriting model choice or hold-to-talk", () => {
+test("owner mode migrates every legacy capture mode to the safe manual policy", () => {
   const old = defaultJarvisSettings();
   old.textModel.primaryModel = "custom-model";
   old.textModel.privacyConsent = false;
@@ -318,15 +333,16 @@ test("owner mode upgrades old automatic modes without rewriting model choice or 
   old.voiceOutput.autoSpeak = false;
   const upgraded = ownerModeJarvisSettings(old);
   assert.equal(upgraded.textModel.primaryModel, "custom-model");
-  assert.equal(upgraded.voiceInput.activationMode, "vad");
+  assert.equal(upgraded.voiceInput.activationMode, "click_toggle");
+  assert.equal(upgraded.voiceInput.autoSubmitTranscript, false);
+  assert.equal(upgraded.voiceInput.vadEnabled, false);
+  assert.equal(upgraded.voiceInput.endpointingEnabled, false);
   assert.equal(isJarvisOwnerModeReady(upgraded), true);
 
   const hold = defaultJarvisSettings();
   hold.voiceInput.activationMode = "hold_to_talk";
-  hold.voiceInput.globalShortcutEnabled = false;
   const holdSettings = ownerModeJarvisSettings(hold);
-  assert.equal(holdSettings.voiceInput.activationMode, "hold_to_talk");
-  assert.equal(holdSettings.voiceInput.globalShortcutEnabled, true);
+  assert.equal(holdSettings.voiceInput.activationMode, "click_toggle");
 });
 
 test("voice utility output is safe and bounded", () => {
@@ -506,15 +522,16 @@ test("activity timeline supersedes stale phases and stays workspace-scoped", () 
   assert.equal(stripActivities(merged, "workspace-b").length, 0);
 });
 
-test("VAD capture closes speech turns automatically and re-arms hands-free", () => {
-  assert.match(voiceCommandsSource, /signal\.should_stop/);
+test("manual capture never auto-arms, auto-submits or interrupts TTS", () => {
+  assert.match(voiceCommandsSource, /VoiceActivationMode::ClickToggle/);
   assert.match(voiceCommandsSource, /finish_voice_stop/);
   assert.match(captureSource, /options\.vad_enabled/);
   assert.match(captureSource, /EnergyVad/);
-  assert.match(captureSource, /should_auto_stop/);
-  assert.match(overlaySource, /AUTO_ARM_DELAY_MS/);
+  assert.doesNotMatch(overlaySource, /AUTO_ARM_DELAY_MS|startBargeIn|bargeIn/);
+  assert.doesNotMatch(overlaySource, /sendVoiceTranscript\(draft/);
   assert.match(overlaySource, /activeVoiceRequestId/);
-  assert.match(overlaySource, /store\.startVoice\(\)/);
+  assert.match(overlaySource, /onVoiceToggle/);
+  assert.doesNotMatch(voiceCommandsSource, /stop_tts_on_speech/);
 });
 
 test("single watchdog publishes capture states and the latch self-heals", () => {
@@ -528,39 +545,32 @@ test("single watchdog publishes capture states and the latch self-heals", () => 
     (voiceCommandsSource.match(/tokio::spawn\(async move/g) ?? []).length,
     1,
   );
-  assert.match(overlaySource, /Reconcile a stale active request/);
+  assert.match(overlaySource, /Reconcile a terminal backend snapshot/);
   assert.match(
     overlaySource,
-    /\["idle", "transcript_ready", "cancelled", "failed"\]\.includes\(\s*latched\.status[,\s]*\)/s,
+    /\["transcript_ready", "cancelled", "failed", "idle"\]\.includes\(status\.status\)/,
   );
 });
 
-test("successful model replies are spoken and transcripts auto-submit", () => {
-  assert.match(
-    storeSource,
-    /voiceSettings\.enabled && voiceSettings\.autoSpeak/,
-  );
-  assert.match(storeSource, /ttsSpeak\(/);
-  assert.match(storeSource, /autoSubmittedVoiceRequests/);
-  assert.match(storeSource, /sendVoiceTranscript/);
-  assert.match(
-    storeSource,
-    /if \(!accepted\)[\s\S]*autoSubmittedVoiceRequests\.delete/,
-  );
+test("voice transcripts stay drafts until the explicit toggle handoff", () => {
+  assert.match(voiceSliceSource, /sendVoiceTranscript/);
+  assert.doesNotMatch(voiceSliceSource, /autoSubmittedVoiceRequests/);
+  assert.doesNotMatch(voiceSliceSource, /automatic: true/);
+  assert.match(overlaySource, /store\.sendVoiceTranscript\(stopped\.requestId, stopped\.transcript\)/);
 });
 
 test("voice failures are observable at every async boundary and rejected drafts can retry", () => {
-  assert.match(storeSource, /function voiceLog\(/);
-  assert.match(storeSource, /function voiceWarn\(/);
-  assert.match(storeSource, /voiceWarn\("start failed"/);
-  assert.match(storeSource, /voiceWarn\("stop failed"/);
-  assert.match(storeSource, /voiceLog\("transcript submission started"/);
-  assert.match(storeSource, /voiceWarn\("transcript submission rejected/);
-  assert.match(storeSource, /autoSubmittedVoiceRequests\.delete\(voiceRequest\.requestId\)/);
-  assert.match(storeSource, /acceptedVoiceRequestIds/);
-  assert.match(storeSource, /ACCEPTED_VOICE_REQUESTS_STORAGE_KEY/);
-  assert.match(storeSource, /accepted transcript draft found during reload/);
-  assert.match(overlaySource, /\[Jarvis voice\] frontend state event/);
+  assert.match(voiceSliceSource, /voiceLog/);
+  assert.match(voiceSliceSource, /voiceWarn/);
+  assert.match(voiceSliceSource, /voiceWarn\("start failed"/);
+  assert.match(voiceSliceSource, /voiceWarn\("stop failed"/);
+  assert.match(voiceSliceSource, /voiceLog\("transcript submission started"/);
+  assert.match(voiceSliceSource, /voiceWarn\("transcript submission rejected/);
+  assert.doesNotMatch(voiceSliceSource, /autoSubmittedVoiceRequests/);
+  assert.match(voiceSliceSource, /acceptedVoiceRequestIds/);
+  assert.match(voiceSliceSource, /ACCEPTED_VOICE_REQUESTS_STORAGE_KEY/);
+  assert.match(voiceSliceSource, /accepted transcript draft found during reload/);
+  assert.match(eventBindingsSource, /\[Jarvis voice\] frontend state event/);
   assert.match(voiceCommandsSource, /active_voice_stops/);
   assert.match(voiceCommandsSource, /Duplicate voice stop ignored by single-flight guard/);
   assert.match(voiceCommandsSource, /Voice stop pipeline entered/);
@@ -649,6 +659,13 @@ test("busy and destructive actions remain conversational and stale-safe", () => 
     controlSource,
     /generation: Some\(target\.terminal\.generation\)/,
   );
+});
+
+test("batch terminal closes ask once and preserve every exact target binding", () => {
+  assert.match(controlSource, /prepare_terminal_close_batch/);
+  assert.match(controlSource, /confirmation_bindings/);
+  assert.match(controlSource, /batch_confirmation_matches/);
+  assert.match(controlSource, /Li chiudo tutti comunque/);
 });
 
 test("agent.open creates the same visible Traflix PTY and waits for readiness", () => {
