@@ -54,41 +54,23 @@ test("voice widget contract no longer carries dead drawer state", () => {
   assert.match(overlaySource, /loadVoiceDraft/);
 });
 
-test("ready voice draft resumes only in its origin workspace, while enabled, and retries without duplicate sends", () => {
-  assert.match(
-    overlaySource,
-    /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled \|\| settingsOpen\) return/,
-  );
-  assert.match(
-    overlaySource,
-    /useWorkspaceStore\.getState\(\)\.activeWorkspaceId !== workspaceId/,
-  );
-  assert.match(overlaySource, /resumeVoiceDraftRef = useRef<Set<string>>/);
-  assert.match(overlaySource, /const chatBusy = Object\.values\(store\.requests\)\.some/);
-  assert.match(overlaySource, /request\.status === "running"/);
-  assert.match(overlaySource, /request\.status === "cancellation_requested"/);
-  assert.match(overlaySource, /!resumeVoiceDraftRef\.current\.has\(draft\.requestId\)/);
-  assert.match(overlaySource, /resumeVoiceDraftRef\.current\.add\(draft\.requestId\)/);
-  assert.match(overlaySource, /\.finally\(\(\) => resumeVoiceDraftRef\.current\.delete\(draft\.requestId\)\)/);
-  assert.match(overlaySource, /draft\?\.status === "transcript_ready"/);
-  assert.match(overlaySource, /store\.settings\.jarvis\.voiceInput\.autoSubmitTranscript/);
-  assert.match(overlaySource, /store\s*\.sendVoiceTranscript\(/);
+test("ready voice drafts are loaded without an automatic retry or send", () => {
+  assert.match(overlaySource, /if \(!activeWorkspaceId \|\| !settings\.jarvis\.enabled\) return/);
+  assert.match(overlaySource, /loadVoiceDraft\(activeWorkspaceId\)/);
+  assert.doesNotMatch(overlaySource, /resumeVoiceDraftRef|settingsRecoveryDraftRef|sendVoiceTranscript\(draft/);
 });
 
-test("hands-free Jarvis arms VAD automatically and mute is the primary microphone control", () => {
-  assert.match(jarvisSettingsSource, /activationMode:\s*"vad"/);
-  assert.match(jarvisSettingsSource, /ALWAYS_READY_ARM_SECONDS = 120/);
+test("Jarvis uses the orb as the only primary manual voice control", () => {
+  assert.match(jarvisSettingsSource, /activationMode:\s*"click_toggle"/);
+  assert.match(jarvisSettingsSource, /autoSubmitTranscript: false/);
+  assert.match(jarvisSettingsSource, /stopOnUserSpeech: false/);
   assert.match(voiceTypesSource, /max_armed_seconds: self\.max_armed_seconds\.clamp\(1, 120\)/);
-  assert.match(overlaySource, /const AUTO_ARM_DELAY_MS = 180/);
-  assert.match(overlaySource, /settings\.jarvis\.voiceInput\.activationMode !== "vad"/);
-  assert.match(overlaySource, /const startBargeIn = useCallback/);
-  assert.match(overlaySource, /void startBargeIn\(\)/);
-  assert.match(overlaySource, /toggleMicrophoneMuted/);
-  assert.match(overlaySource, /voiceError \|\|/);
-  assert.match(overlaySource, /store\.voiceError \|\|/);
+  assert.doesNotMatch(overlaySource, /AUTO_ARM_DELAY_MS|startBargeIn|toggleMicrophoneMuted|bargeIn/);
+  assert.match(overlaySource, /onVoiceToggle/);
+  assert.match(overlaySource, /const voiceError = useJarvisStore/);
   assert.match(settingsSource, /clearVoiceError\(\)/);
-  assert.match(widgetSource, /onToggleMuted/);
-  assert.match(widgetSource, /MicOff/);
+  assert.match(widgetSource, /onVoiceToggle/);
+  assert.doesNotMatch(widgetSource, /onToggleMuted|MicOff|SendHorizontal/);
   assert.match(widgetSource, /workspaceName: string \| null/);
   assert.match(widgetSource, /Jarvis · \$\{statusLabel\}/);
   assert.match(widgetSource, /collapsedJarvisStatus\(/);
@@ -105,20 +87,30 @@ test("hands-free Jarvis arms VAD automatically and mute is the primary microphon
   assert.doesNotMatch(widgetSource, /Premi il microfono per riattivarlo|Pronto ad ascoltare|Sempre pronto|In ascolto · il silenzio invia automaticamente/);
   assert.match(widgetSource, /voiceRequest\?\.status === "armed"/);
   assert.match(widgetSource, /voiceRequest\?\.status === "recording"/);
-  assert.match(widgetSource, /jarvis-control--muted/);
+  assert.match(widgetSource, /jarvis-control--orb/);
   assert.match(widgetSource, /className=\{`jarvis-pill[\s\S]*props\.muted \? "jarvis-pill--muted"/);
-  assert.match(widgetSource, /props\.muted \? <MicOff/);
+  assert.match(widgetSource, /aria-label=\{voiceToggleLabel\}/);
   assert.match(globalsSource, /\.jarvis-pill--muted\.jarvis-pill--listening/);
   assert.match(globalsSource, /\.jarvis-orb--muted\.jarvis-orb--speaking/);
   assert.match(activityStateSource, /if \(codexMessage && codexTurnActive\)/);
 });
 
-test("hands-free ambient capture follows workspace focus without stealing an active spoken turn", () => {
+test("Jarvis keeps the pressed orb state after pointer leave", () => {
+  assert.match(widgetSource, /const voiceEngaged = voiceArmed \|\| voiceListening/);
+  assert.match(widgetSource, /engaged=\{voiceEngaged\}/);
+  assert.match(widgetSource, /jarvis-control--engaged/);
+  assert.match(globalsSource, /\.jarvis-orb--engaged/);
+  assert.match(globalsSource, /\.jarvis-control--engaged/);
+  assert.doesNotMatch(
+    globalsSource,
+    /\.jarvis-orb--engaged[\s\S]*border-color: oklch\(0\.78 0\.13 157/,
+  );
+});
+
+test("manual capture has no workspace-change auto-arm path", () => {
   assert.match(overlaySource, /activeVoiceRequestId/);
-  assert.match(overlaySource, /activeRequest\?\.status !== "armed"/);
-  assert.match(overlaySource, /activeRequest\.workspaceId === activeWorkspaceId/);
-  assert.match(overlaySource, /\.cancelVoice\(\)/);
-  assert.match(overlaySource, /settings\.jarvis\.muted/);
+  assert.match(overlaySource, /const toggleVoice = useCallback/);
+  assert.doesNotMatch(overlaySource, /AUTO_ARM_DELAY_MS|store\.startVoice\(\)/);
 });
 
 test("Jarvis widget drag mirrors native release semantics instead of sticky pointer capture", () => {
@@ -251,23 +243,25 @@ test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });
 
-test("normal Jarvis settings stay compact, localized and keep automatic voice controls", () => {
+test("normal Jarvis settings stay compact and present the manual voice contract", () => {
   assert.match(settingsSource, /La voce è l'interfaccia principale/);
   assert.match(settingsSource, /title="Voce"/);
   assert.match(settingsSource, /description="Microfono e voce di Jarvis\."/);
   assert.match(settingsSource, /<span className="block">Microfono<\/span>/);
-  assert.match(settingsSource, /Microfono automatico/);
+  assert.match(settingsSource, /Microfono predefinito di Windows/);
   assert.match(settingsSource, />Voce di Jarvis<\/span>/);
   assert.match(settingsSource, /italianVoices\(await ttsListVoices\(\)\)/);
-  assert.match(settingsSource, /Invio automatico dopo pausa naturale/);
-  assert.match(settingsSource, /Standby wake word locale/);
-  assert.match(settingsSource, /Parola di attivazione/);
+  assert.match(settingsSource, /Modalità manuale/);
+  assert.match(settingsSource, /logo centrale/);
+  assert.doesNotMatch(settingsSource, /Invio automatico dopo pausa naturale/);
+  assert.doesNotMatch(settingsSource, /Standby wake word locale/);
+  assert.doesNotMatch(settingsSource, /Parola di attivazione/);
   assert.doesNotMatch(settingsSource, /inputDeviceOptions\(devices\)|Aggiorna microfoni/);
   assert.doesNotMatch(settingsSource, /Sensibilità/);
   assert.doesNotMatch(settingsSource, /Silenzio di fine frase|Grace period|Parlato minimo/);
   assert.doesNotMatch(settingsSource, /selectedInputDeviceId/);
   assert.doesNotMatch(settingsSource, /Modalità di interazione|Comportamento scorciatoia/);
-  assert.doesNotMatch(settingsSource, /value: "click_toggle"/);
+  assert.doesNotMatch(settingsSource, /Hands-free|VAD|wake word|Silenzio finale/);
   assert.doesNotMatch(
     settingsSource,
     /Consenso audio|Consenso testo|Consenso contesto|Privacy consent|Text fallback/,
@@ -278,18 +272,15 @@ test("voice settings force the microphone back to automatic mode when saved", ()
   assert.match(jarvisSettingsSource, /selectedInputDeviceId:\s*null/);
 });
 
-test("owner mode is enforced without deleting hold-to-talk", () => {
+test("owner mode is enforced with manual click-toggle capture", () => {
   assert.match(jarvisSettingsSource, /privacyConsent: true/);
-  assert.match(jarvisSettingsSource, /autoSubmitTranscript: true/);
-  assert.match(jarvisSettingsSource, /\? "hold_to_talk" : "vad"/);
-  assert.match(jarvisSettingsSource, /activationMode:\s*"vad"/);
+  assert.match(jarvisSettingsSource, /autoSubmitTranscript: false/);
+  assert.match(jarvisSettingsSource, /activationMode:\s*"click_toggle"/);
+  assert.match(jarvisSettingsSource, /endpointingEnabled: false/);
   assert.match(rustSettingsSource, /fn enforce_owner_mode/);
   assert.match(rustSettingsSource, /privacy_consent = true/);
-  assert.match(rustSettingsSource, /auto_submit_transcript = true/);
-  assert.match(
-    rustSettingsSource,
-    /activation_mode != VoiceActivationMode::HoldToTalk/,
-  );
+  assert.match(rustSettingsSource, /auto_submit_transcript = false/);
+  assert.match(rustSettingsSource, /activation_mode = VoiceActivationMode::ClickToggle/);
 });
 
 test("skill rows retain stable accent colors without reverting the compact layout", () => {

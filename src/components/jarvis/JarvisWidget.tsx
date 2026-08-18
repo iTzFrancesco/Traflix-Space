@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Mic, MicOff, SendHorizontal, Settings, X } from "lucide-react";
+import { Settings, X } from "lucide-react";
 import { JarvisOrb } from "./JarvisOrb";
 import { JarvisActivityLoader } from "./JarvisActivityLoader";
 import { clampWidgetPosition, positionFromRect } from "../../lib/jarvis/position";
@@ -11,7 +11,6 @@ import {
 } from "../../lib/jarvis/activityState";
 import {
   isVoiceCaptureBusy,
-  shouldShowVoiceSendControl,
   voiceUiLabel,
   voiceUiPhase,
 } from "../../lib/jarvis/voiceState";
@@ -29,10 +28,8 @@ import type {
   JarvisRequestState,
   PendingAction,
   TtsStatusView,
-  VoiceActivationMode,
   VoiceRequestStatusView,
   VoiceSubmitState,
-  WakeWordStatusView,
   WidgetPosition,
 } from "../../lib/jarvis/types";
 
@@ -44,17 +41,11 @@ interface JarvisWidgetProps {
   chatError: string | null;
   voiceError: string | null;
   muted: boolean;
-  wakeWordStatus: WakeWordStatusView | null;
   onOpenSettings: () => void;
   onHide: () => void;
-  onToggleMuted: () => Promise<void> | void;
   voiceRequest: VoiceRequestStatusView | null;
   voiceSubmitState?: VoiceSubmitState;
-  bargeIn: boolean;
-  activationMode: VoiceActivationMode;
-  onVoiceStart: () => Promise<void> | void;
-  onVoiceStop: () => void;
-  onVoiceSend: () => void;
+  onVoiceToggle: () => Promise<void> | void;
   ttsStatus: TtsStatusView;
   activities: ActivityCheckpoint[];
 }
@@ -89,8 +80,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const previousVoiceStatusRef = useRef<
     VoiceRequestStatusView["status"] | null
   >(null);
-  const onVoiceStopRef = useRef(props.onVoiceStop);
-  onVoiceStopRef.current = props.onVoiceStop;
 
   const ownerModeReady = isJarvisOwnerModeReady(jarvisSettings);
 
@@ -299,6 +288,10 @@ export function JarvisWidget(props: JarvisWidgetProps) {
   const voiceArmed = props.voiceRequest?.status === "armed" && !props.muted;
   const voiceListening = props.voiceRequest?.status === "recording" && !props.muted;
   const voiceBusy = isVoiceCaptureBusy(props.voiceRequest, props.muted);
+  // The click-toggle contract is a persistent UI state: both the initial
+  // armed phase and active recording must survive pointer leave.
+  const voiceEngaged = voiceArmed || voiceListening;
+  const voiceProcessing = voiceBusy && !voiceEngaged;
   const voiceDraftReady = voicePhase === "draft";
   const voiceStatusLabel = props.muted
     ? null
@@ -308,9 +301,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         ? "Invio a Jarvis…"
         : voiceUiLabel(props.voiceRequest, props.muted);
 
-  // TTS barge-in stays hands-free: the send control appears only after a
-  // normal recording starts, never while Jarvis is still speaking.
-  const voiceBargeIn = props.bargeIn || (voiceListening && speaking);
   // The backend already exposes a calibrated 0..1 RMS meter. Do not amplify
   // it again: that made ordinary speech and room noise look clipped.
   const level = Math.max(0, Math.min(1, props.voiceRequest?.normalizedLevel ?? 0));
@@ -341,52 +331,19 @@ export function JarvisWidget(props: JarvisWidgetProps) {
     codexMessage,
   });
 
-  // Manual submission remains a dedicated action. The mute button never
-  // doubles as stop/send, start capture, or hold-to-talk.
-  const handleSendNow = () => {
-    const submitState = props.voiceRequest?.requestId
-      ? props.voiceSubmitState
-      : undefined;
-    if (
-      submitState === "queued" ||
-      submitState === "submitting" ||
-      submitState === "sent" ||
-      submitState === "failed"
-    ) {
-      return;
-    }
-    console.info("[Jarvis voice] manual stop/send", {
-      requestId: props.voiceRequest?.requestId,
-      workspaceId: props.workspaceId,
-    });
-    if (
-      props.voiceRequest?.status === "transcript_ready" &&
-      props.activationMode === "hold_to_talk" &&
-      Boolean(props.voiceRequest.transcript?.trim())
-    ) {
-      props.onVoiceSend();
-    } else if (props.voiceRequest?.status === "recording") {
-      onVoiceStopRef.current();
-    }
-  };
-
-  const microphoneTitle = props.muted
-    ? "Riattiva il microfono di Jarvis"
-    : "Disattiva il microfono di Jarvis";
+  const voiceToggleLabel = voiceListening || voiceArmed
+    ? "Termina ascolto e invia a Jarvis"
+    : voiceBusy
+      ? "Jarvis sta elaborando la voce"
+      : "Avvia ascolto manuale di Jarvis";
 
   const active =
     !props.muted &&
-    (activeRequests > 0 || speaking || jarvisActive || voiceListening || voiceBusy);
+    (activeRequests > 0 || speaking || jarvisActive || voiceEngaged || voiceBusy);
   const statusLabel = props.voiceError
     ? props.voiceError
     : props.muted
       ? "Microfono disattivato"
-      : props.wakeWordStatus?.state === "fallback" && props.wakeWordStatus.enabled
-        ? "Wake word · fallback VAD locale"
-      : props.wakeWordStatus?.state === "unavailable" && props.wakeWordStatus.enabled
-        ? `Wake word non disponibile · ${
-            props.activationMode === "vad" ? "VAD attivo" : "attivazione manuale"
-          }`
       : voiceStatusLabel ?? collapsedJarvisStatus({
         workspaceId: props.workspaceId,
         workspaceName: props.workspaceName,
@@ -420,7 +377,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
       }}
     >
       <div
-        className={`jarvis-pill cursor-grab ${props.muted ? "jarvis-pill--muted" : ""} ${voiceListening ? "jarvis-pill--listening" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
+        className={`jarvis-pill cursor-grab ${props.muted ? "jarvis-pill--muted" : ""} ${voiceEngaged ? "jarvis-pill--listening" : ""} ${voiceProcessing ? "jarvis-pill--processing" : ""} ${speaking ? "jarvis-pill--speaking" : ""}`}
         style={{ "--jarvis-level": level } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         title="Premi e trascina per spostare Jarvis"
@@ -428,12 +385,24 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         role="status"
         aria-live={props.voiceError ? "assertive" : "polite"}
       >
-        <JarvisOrb
-          active={active}
-          listening={voiceListening}
-          speaking={speaking}
-          muted={props.muted}
-        />
+        <button
+          type="button"
+          data-jarvis-control
+          onClick={() => void props.onVoiceToggle()}
+          className={`jarvis-control jarvis-control--orb ${voiceEngaged ? "jarvis-control--engaged" : ""} ${voiceListening ? "jarvis-control--listening" : ""} ${voiceProcessing ? "jarvis-control--processing" : ""}`}
+          title={voiceToggleLabel}
+          aria-label={voiceToggleLabel}
+          aria-pressed={voiceEngaged}
+        >
+          <JarvisOrb
+            active={active}
+            engaged={voiceEngaged}
+            listening={voiceListening}
+            processing={voiceProcessing}
+            speaking={speaking}
+            muted={props.muted}
+          />
+        </button>
 
         <div className="min-w-0 flex-1">
           {showActivityLoader ? (
@@ -455,37 +424,6 @@ export function JarvisWidget(props: JarvisWidgetProps) {
               listening={voiceListening}
             />
           )}
-          {shouldShowVoiceSendControl({
-            voiceListening,
-            transcriptReady: voiceDraftReady,
-            bargeIn: voiceBargeIn,
-            activationMode: props.activationMode,
-            submitState: props.voiceSubmitState,
-            hasTranscript: Boolean(props.voiceRequest?.transcript?.trim()),
-          }) && (
-            <button
-              type="button"
-              data-jarvis-control
-              onClick={handleSendNow}
-              className="jarvis-control jarvis-control--send jarvis-control--listening"
-              title={voiceListening ? "Termina ascolto e invia ora" : "Invia ora"}
-              aria-label={voiceListening ? "Termina ascolto e invia ora" : "Invia ora"}
-            >
-              <SendHorizontal size={15} />
-              <span>{voiceListening ? "Termina e invia" : "Invia ora"}</span>
-            </button>
-          )}
-          <button
-            type="button"
-            data-jarvis-control
-            onClick={() => void props.onToggleMuted()}
-            className={`jarvis-control ${props.muted ? "jarvis-control--muted" : ""}`}
-            title={microphoneTitle}
-            aria-label={microphoneTitle}
-            aria-pressed={props.muted}
-          >
-            {props.muted ? <MicOff size={15} /> : <Mic size={15} />}
-          </button>
           <button
             type="button"
             data-jarvis-control
