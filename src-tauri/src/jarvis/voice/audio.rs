@@ -10,11 +10,11 @@ use super::types::{
 // edge silence from an already captured turn; it must not eat quiet speech.
 const CLOUD_SILENCE_THRESHOLD: f32 = 0.003;
 const CLOUD_SILENCE_PADDING_MS: u64 = 160;
-// A meter floor around -48 dBFS keeps room noise near the bottom while still
-// making normal speech visible. The meter is presentation-only; VAD keeps its
-// own linear thresholds and never consumes this value.
-const LEVEL_FLOOR_DB: f32 = -48.0;
-const LEVEL_CEILING_DB: f32 = 0.0;
+// Keep the presentation calibration aligned with the working Traflix Voice
+// pipeline. The meter is presentation-only; VAD keeps its own linear
+// thresholds and never consumes this value.
+const LEVEL_FLOOR_DB: f32 = -58.0;
+const LEVEL_CEILING_DB: f32 = -12.0;
 
 /// Converts a linear microphone block into a perceptual 0..1 level.
 ///
@@ -27,7 +27,13 @@ pub fn perceptual_level(samples: &[f32]) -> f32 {
     }
     let rms =
         (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
-    let effective = rms.max(0.000001);
+    let peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0_f32, f32::max);
+    // RMS carries sustained speech; the small peak contribution keeps
+    // consonants and word onsets visible without making room clicks dominate.
+    let effective = rms.max(peak * 0.08).max(0.000001);
     let db = 20.0 * effective.log10();
     ((db - LEVEL_FLOOR_DB) / (LEVEL_CEILING_DB - LEVEL_FLOOR_DB)).clamp(0.0, 1.0)
 }
@@ -225,6 +231,29 @@ mod tests {
         let loud = perceptual_level(&[0.25; 128]);
         assert!(quiet > 0.0);
         assert!(loud > quiet);
+    }
+
+    #[test]
+    fn perceptual_level_matches_voice_calibration_and_keeps_peaks_visible() {
+        let normal_speech = perceptual_level(&[0.02; 512]);
+        assert!(
+            (normal_speech - 0.522).abs() < 0.01,
+            "level={normal_speech}"
+        );
+
+        let mut speech_onset = vec![0.0; 512];
+        speech_onset[0] = 0.8;
+        let rms_only = {
+            let rms = (speech_onset
+                .iter()
+                .map(|sample| sample * sample)
+                .sum::<f32>()
+                / speech_onset.len() as f32)
+                .sqrt();
+            let db = 20.0 * rms.max(0.000001).log10();
+            ((db + 58.0) / 46.0).clamp(0.0, 1.0)
+        };
+        assert!(perceptual_level(&speech_onset) > rms_only + 0.05);
     }
 
     #[test]

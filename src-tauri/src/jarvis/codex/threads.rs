@@ -257,6 +257,10 @@ impl ThreadRegistry {
         request_id: &str,
         tx: oneshot::Sender<TurnOutcome>,
     ) {
+        // A waiter is the ownership boundary for one Codex turn. Any text
+        // left by an interrupted/expired turn must not be eligible as the
+        // final answer of the next request on the same thread.
+        self.last_message_text.lock().await.remove(thread_id);
         self.chat_waiters.lock().await.insert(
             thread_id.to_string(),
             ChatWaiter {
@@ -266,8 +270,22 @@ impl ThreadRegistry {
         );
     }
 
-    pub async fn dismiss_chat_waiter(&self, thread_id: &str) {
-        self.chat_waiters.lock().await.remove(thread_id);
+    pub async fn dismiss_chat_waiter(&self, thread_id: &str, request_id: &str) -> bool {
+        let dismissed = {
+            let mut waiters = self.chat_waiters.lock().await;
+            if waiters
+                .get(thread_id)
+                .is_some_and(|waiter| waiter.request_id == request_id)
+            {
+                waiters.remove(thread_id).is_some()
+            } else {
+                false
+            }
+        };
+        if dismissed {
+            self.last_message_text.lock().await.remove(thread_id);
+        }
+        dismissed
     }
 
     pub async fn set_last_message_text(&self, thread_id: &str, text: String) {
@@ -275,6 +293,14 @@ impl ThreadRegistry {
             .lock()
             .await
             .insert(thread_id.to_string(), text);
+    }
+
+    /// A terminal payload is only a fallback. If an item/completed event has
+    /// already supplied text for this turn, keep that event-owned value and
+    /// do not let a stale/incomplete turn snapshot replace it.
+    pub async fn set_last_message_text_if_absent(&self, thread_id: &str, text: String) {
+        let mut messages = self.last_message_text.lock().await;
+        store_message_if_absent(&mut messages, thread_id, text);
     }
 
     pub async fn complete_chat_waiter(&self, thread_id: &str) {
@@ -648,6 +674,10 @@ fn terminal_turn_matches_record(
     reported_turn_id.is_some_and(|reported| record.active_turn_id.as_deref() == Some(reported))
 }
 
+fn store_message_if_absent(messages: &mut HashMap<String, String>, thread_id: &str, text: String) {
+    messages.entry(thread_id.to_owned()).or_insert(text);
+}
+
 #[cfg(test)]
 fn apply_notification_to_record(
     record: &mut JarvisCodexThread,
@@ -890,6 +920,17 @@ mod tests {
         assert!(terminal_turn_matches_record(&record, Some("turn-new")));
         assert!(!terminal_turn_matches_record(&record, Some("turn-old")));
         assert!(!terminal_turn_matches_record(&record, None));
+    }
+
+    #[test]
+    fn terminal_fallback_does_not_replace_text_captured_from_current_turn() {
+        let mut messages = HashMap::new();
+        store_message_if_absent(&mut messages, "t1", "Risposta corrente".into());
+        store_message_if_absent(&mut messages, "t1", "Risposta precedente".into());
+        assert_eq!(
+            messages.get("t1").map(String::as_str),
+            Some("Risposta corrente")
+        );
     }
 
     #[test]

@@ -91,3 +91,43 @@ test("terminal-before-item ordering still marks and speaks the final item", () =
   assert.equal(item.final, true);
   assert.equal(completedCodexSpeechItem(turns, finalEvent)?.text, "Risposta finale.");
 });
+
+test("a late final item clears an earlier final marker in the same turn", () => {
+  let turns = {};
+  for (const incoming of [
+    event("turn_started"),
+    event("message_completed", {
+      itemId: "commentary-1",
+      text: "Controllo gli agenti.",
+    }),
+    event("turn_completed"),
+    event("message_completed", {
+      itemId: "final-1",
+      text: "Ecco la risposta.",
+    }),
+  ]) {
+    turns = applyCodexChatStream(turns, incoming);
+  }
+
+  const items = turns["workspace-1"][0].items;
+  assert.equal(items.find((item) => item.itemId === "commentary-1").final, false);
+  assert.equal(items.find((item) => item.itemId === "final-1").final, true);
+});
+
+test("a new turn never displays the previous turn message before its first token", () => {
+  let turns = {};
+  for (const incoming of [
+    event("turn_started", { turnId: "turn-1" }),
+    event("message_completed", {
+      turnId: "turn-1",
+      itemId: "final-1",
+      text: "Risposta precedente.",
+    }),
+    event("turn_completed", { turnId: "turn-1" }),
+    event("turn_started", { turnId: "turn-2", timestamp: "2026-08-14T20:00:01.000Z" }),
+  ]) {
+    turns = applyCodexChatStream(turns, incoming);
+  }
+
+  assert.equal(latestCodexMessage(turns, "workspace-1"), null);
+});

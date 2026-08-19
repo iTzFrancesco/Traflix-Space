@@ -39,7 +39,6 @@ pub struct ProjectFilePreview {
     content_base64: Option<String>,
     binary: bool,
     truncated: bool,
-    redacted: bool,
     size: u64,
 }
 
@@ -246,8 +245,8 @@ fn read_file_preview(
     let mut file = std::fs::File::open(&file_path)
         .map_err(|error| format!("Impossibile leggere il file: {error}"))?;
     // Environment files are never eligible for image/Base64 previews. A
-    // file such as ".env.png" must remain redacted even when its bytes match
-    // a valid image signature.
+    // file such as ".env.png" stays on the binary/text path even when its
+    // bytes match a valid image signature.
     let environment_file = is_environment_file(&relative_path);
     let image_extension = (!environment_file)
         .then(|| image_extension(&file_path))
@@ -278,24 +277,16 @@ fn read_file_preview(
                 content_base64: (!truncated).then(|| encode_base64(&bytes)),
                 binary: true,
                 truncated,
-                redacted: false,
                 size,
             });
         }
     }
 
     let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
-    let mut redacted = environment_file;
     let content = if binary {
         String::new()
     } else {
-        let text = String::from_utf8(bytes).unwrap_or_default();
-        if environment_file {
-            redacted = true;
-            redact_environment_preview(&text)
-        } else {
-            text
-        }
+        String::from_utf8(bytes).unwrap_or_default()
     };
 
     Ok(ProjectFilePreview {
@@ -311,7 +302,6 @@ fn read_file_preview(
         content_base64: None,
         binary,
         truncated,
-        redacted,
         size,
     })
 }
@@ -320,23 +310,6 @@ fn is_environment_file(relative_path: &str) -> bool {
     relative_path
         .split('/')
         .any(|part| part == ".env" || part.starts_with(".env."))
-}
-
-fn redact_environment_preview(content: &str) -> String {
-    content
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() || (trimmed.starts_with('#') && !line.contains('=')) {
-                return line.to_string();
-            }
-            line.find('=').map_or_else(
-                || "<REDACTED>".to_string(),
-                |separator| format!("{}<REDACTED>", &line[..=separator]),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn image_extension(path: &Path) -> Option<String> {
@@ -495,12 +468,11 @@ mod tests {
         assert!(preview.content_base64.is_none());
         assert!(!preview.binary);
         assert!(!preview.truncated);
-        assert!(!preview.redacted);
         let _ = std::fs::remove_file(file_path);
     }
 
     #[test]
-    fn environment_preview_keeps_structure_but_redacts_values() {
+    fn environment_preview_shows_raw_values() {
         let file_name = format!(".env.preview-{}", std::process::id());
         let file_path = std::env::temp_dir().join(&file_name);
         let _ = std::fs::remove_file(&file_path);
@@ -517,13 +489,11 @@ mod tests {
         )
         .expect("read environment preview fixture");
 
-        assert!(preview.redacted);
+        assert!(!preview.binary);
         assert!(preview.content.contains("# local settings"));
-        assert!(preview.content.contains("# GROQ_API_KEY=<REDACTED>"));
-        assert!(preview.content.contains("GROQ_API_KEY=<REDACTED>"));
-        assert!(preview.content.contains("EMPTY=<REDACTED>"));
-        assert!(!preview.content.contains("comment-secret"));
-        assert!(!preview.content.contains("synthetic-secret"));
+        assert!(preview.content.contains("# GROQ_API_KEY=comment-secret"));
+        assert!(preview.content.contains("GROQ_API_KEY=synthetic-secret"));
+        assert!(preview.content.contains("EMPTY="));
         let _ = std::fs::remove_file(file_path);
     }
 
@@ -542,7 +512,6 @@ mod tests {
         )
         .expect("read environment image preview fixture");
 
-        assert!(preview.redacted);
         assert!(preview.content_base64.is_none());
         assert!(preview.binary);
         assert_eq!(preview.kind, "binary");

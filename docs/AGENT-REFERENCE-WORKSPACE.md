@@ -25,11 +25,10 @@ modifiche recenti della workspace destra.
 
 ## File `.env`
 
-I file `.env` e `.env.*` restano visibili nell'esplora-file della workspace.
-L'anteprima è consentita per facilitare l'ispezione della struttura, ma i
-valori dopo `=` vengono sostituiti con `<REDACTED>` prima di arrivare al
-frontend. Commenti e nomi delle variabili restano visibili; i segreti non
-vengono mostrati nell'interfaccia.
+I file `.env` e `.env.*` restano visibili nell'esplora-file della workspace e
+l'anteprima mostra il contenuto integrale, inclusi i valori delle variabili.
+L'unica eccezione è l'anteprima immagine/Base64: i file di ambiente non
+vengono mai aperti come immagini.
 
 Il file `.env` resta escluso da Git e non va incluso in commit, log o report.
 

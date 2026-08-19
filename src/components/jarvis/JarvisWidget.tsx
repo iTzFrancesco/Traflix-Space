@@ -23,6 +23,10 @@ import {
   isJarvisOwnerModeReady,
   ownerModeJarvisSettings,
 } from "../../lib/jarvis/settings";
+import {
+  VOICE_METER_BAR_COUNT,
+  voiceMeterBarScale,
+} from "../../lib/jarvis/voiceMeter";
 import { useJarvisStore } from "../../stores/jarvisStore";
 import type {
   JarvisRequestState,
@@ -301,8 +305,8 @@ export function JarvisWidget(props: JarvisWidgetProps) {
         ? "Invio a Jarvis…"
         : voiceUiLabel(props.voiceRequest, props.muted);
 
-  // The backend already exposes a calibrated 0..1 RMS meter. Do not amplify
-  // it again: that made ordinary speech and room noise look clipped.
+  // The backend exposes a calibrated perceptual 0..1 meter. The VoiceMeter
+  // applies only the presentation curve and animation used by Traflix Voice.
   const level = Math.max(0, Math.min(1, props.voiceRequest?.normalizedLevel ?? 0));
 
   const codexStreamingTurns = useJarvisStore(
@@ -421,7 +425,7 @@ export function JarvisWidget(props: JarvisWidgetProps) {
           {(voiceArmed || voiceListening) && (
             <VoiceMeter
               level={level}
-              listening={voiceListening}
+              active={voiceEngaged}
             />
           )}
           <button
@@ -457,25 +461,51 @@ export function JarvisWidget(props: JarvisWidgetProps) {
 
 function VoiceMeter({
   level,
-  listening,
+  active,
 }: {
   level: number;
-  listening: boolean;
+  active: boolean;
 }) {
-  const visibleLevel = Math.max(0, Math.min(1, level));
-  const factors = [0.42, 0.72, 1, 0.72, 0.42];
+  const barRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const targetLevelRef = useRef(level);
+  targetLevelRef.current = level;
+
+  useEffect(() => {
+    if (!active) return;
+
+    let animationFrame = 0;
+    let currentLevel = 0;
+    let phase = 0;
+    const barScales = new Array(VOICE_METER_BAR_COUNT).fill(0.12);
+
+    const animate = () => {
+      currentLevel += (targetLevelRef.current - currentLevel) * 0.2;
+      for (let index = 0; index < VOICE_METER_BAR_COUNT; index += 1) {
+        const targetScale = voiceMeterBarScale(currentLevel, index, phase);
+        barScales[index] += (targetScale - barScales[index]) * 0.25;
+        const bar = barRefs.current[index];
+        if (bar) bar.style.transform = `scaleY(${barScales[index]})`;
+      }
+      phase += 0.14;
+      animationFrame = requestAnimationFrame(animate);
+    };
+
+    animationFrame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [active]);
+
   return (
     <span
-      className={`jarvis-level-meter ${listening ? "jarvis-level-meter--active" : ""}`}
-      aria-label={`Livello microfono ${Math.round(visibleLevel * 100)}%`}
+      className={`jarvis-level-meter ${active ? "jarvis-level-meter--active" : ""}`}
+      aria-label={`Livello microfono ${Math.round(level * 100)}%`}
       role="img"
     >
-      {factors.map((factor, index) => (
+      {Array.from({ length: VOICE_METER_BAR_COUNT }, (_, index) => (
         <span
-          key={factor}
-          style={{
-            transform: `scaleY(${Math.max(0.14, visibleLevel * factor)})`,
-            transitionDelay: `${index * 12}ms`,
+          key={index}
+          style={{ transform: "scaleY(0.12)" }}
+          ref={(element) => {
+            barRefs.current[index] = element;
           }}
         />
       ))}

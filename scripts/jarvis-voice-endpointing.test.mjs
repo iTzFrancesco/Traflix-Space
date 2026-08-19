@@ -70,6 +70,13 @@ test("a failed transcript submission is claimed and never re-auto-submits", () =
   assert.match(voiceSliceSource, /submitState === "sent" \|\| submitState === "submitting"/);
 });
 
+test("a transcript queued behind Codex is retried when the workspace becomes free", () => {
+  assert.match(chatSliceSource, /retryQueuedVoiceTranscript/);
+  assert.match(chatSliceSource, /state\.voiceSubmitStates\[request\.requestId\] === "queued"/);
+  assert.match(chatSliceSource, /sendVoiceTranscript\(queued\.requestId, queued\.transcript, \{ automatic: true \}\)/);
+  assert.match(chatSliceSource, /retryQueuedVoiceTranscript\(workspaceId\);/);
+});
+
 test("voice UI exposes one accessible start/stop toggle", () => {
   assert.match(voiceSliceSource, /voiceSubmitStates/);
   assert.match(voiceSliceSource, /voiceSubmissionInFlight/);
@@ -244,4 +251,14 @@ test("manual capture keeps long pauses and hides legacy endpointing controls", (
 test("the backend never cancels TTS because the user starts speaking", () => {
   assert.doesNotMatch(voiceSliceSource, /shouldInterruptTts|stop_tts_on_speech/);
   assert.doesNotMatch(commandsSource, /stop_tts_on_speech|request_stop_tts_if_current/);
+});
+
+test("a new voice handoff drops only pending commentary, never interrupts active TTS", () => {
+  assert.match(voiceSliceSource, /get\(\)\.clearCodexSpeech\(\)/);
+  assert.match(voiceSliceSource, /A new explicit voice handoff supersedes commentary/);
+  const sendVoiceStart = voiceSliceSource.indexOf("  sendVoiceTranscript:");
+  const sendVoiceEnd = voiceSliceSource.indexOf("  loadVoiceDraft:", sendVoiceStart);
+  assert.ok(sendVoiceStart >= 0 && sendVoiceEnd > sendVoiceStart);
+  const sendVoiceBlock = voiceSliceSource.slice(sendVoiceStart, sendVoiceEnd);
+  assert.doesNotMatch(sendVoiceBlock, /stopTts|ttsStop/);
 });

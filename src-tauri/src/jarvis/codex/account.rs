@@ -192,7 +192,9 @@ async fn capture_turn_final_fallback(threads: &ThreadRegistry, params: &Value) {
         return;
     };
     if let Some(text) = turn_final_message_text(params) {
-        threads.set_last_message_text(thread_id, text).await;
+        threads
+            .set_last_message_text_if_absent(thread_id, text)
+            .await;
     }
 }
 

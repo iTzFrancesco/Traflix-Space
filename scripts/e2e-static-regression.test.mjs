@@ -207,13 +207,13 @@ test("dotenv credentials are refreshed without exposing secret values to the fro
   assert.match(settingsCommands, /secrets::refresh_dotenv_environment\(&app\)/);
 });
 
-test("workspace .env files stay visible with a redacted preview", () => {
+test("workspace .env files show raw values in preview", () => {
   assert.doesNotMatch(projectCommands, /L’anteprima dei file di ambiente è disabilitata/);
+  assert.doesNotMatch(projectCommands, /fn redact_environment_preview\(/);
+  assert.doesNotMatch(projectCommands, /redacted/);
+  assert.doesNotMatch(projectTypes, /redacted/);
+  assert.doesNotMatch(projectPreview, /Anteprima protetta/);
   assert.match(projectCommands, /fn is_environment_file\(/);
-  assert.match(projectCommands, /fn redact_environment_preview\(/);
-  assert.match(projectCommands, /redacted,/);
-  assert.match(projectTypes, /redacted: boolean;/);
-  assert.match(projectPreview, /Anteprima protetta: i valori sensibili sono oscurati/);
 });
 
 test("workspace restore waits for one authoritative backend snapshot", () => {
@@ -249,7 +249,9 @@ test("voice runtime avoids callback data loss, survives Windows Python aliases, 
   assert.match(voiceStt, /language\.chars\(\)\.any\(\|ch\| ch\.is_control\(\)\)/);
   assert.match(voiceCapture, /perceptual_level/);
   assert.match(voiceCapture, /smooth_perceptual_level/);
-  assert.match(voiceAudio, /LEVEL_FLOOR_DB: f32 = -48\.0/);
+  assert.match(voiceAudio, /LEVEL_FLOOR_DB: f32 = -58\.0/);
+  assert.match(voiceAudio, /LEVEL_CEILING_DB: f32 = -12\.0/);
+  assert.match(voiceAudio, /peak \* 0\.08/);
   assert.match(voiceStt, /bearer_auth/);
   assert.match(voiceTtsModules, /child\.try_wait\(\)/);
 });
@@ -296,6 +298,8 @@ test("Codex turn cleanup is bounded and late terminal events cannot clear a newe
   assert.doesNotMatch(jarvisThreads, /legacy clear behavior/);
   assert.match(jarvisAccount, /terminal_turn_matches/);
   assert.match(jarvisAccount, /emit_chat_stream[\s\S]*capture_turn_final_fallback[\s\S]*fail_chat_waiter/);
+  assert.match(jarvisThreads, /pub async fn set_last_message_text_if_absent/);
+  assert.match(jarvisAccount, /set_last_message_text_if_absent/);
   assert.match(jarvisChat, /chat timeout: best-effort turn\/interrupt failed/);
   assert.match(jarvisChat, /interrupt_turn_for_request/);
   assert.match(jarvisChat, /"request",[\s\S]*JarvisActivityStatus::Failed/);

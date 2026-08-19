@@ -29,7 +29,24 @@ import {
 import type { InvocationBinding, JarvisConversationMessage } from "../../lib/jarvis/types";
 import type { JarvisSlice } from "./types";
 
-export const createChatSlice: JarvisSlice = (set, get) => ({
+export const createChatSlice: JarvisSlice = (set, get) => {
+  const retryQueuedVoiceTranscript = (workspaceId: string) => {
+    const state = get();
+    const queued = Object.values(state.voiceRequests).find(
+      (request) => request.workspaceId === workspaceId
+        && request.status === "transcript_ready"
+        && state.voiceSubmitStates[request.requestId] === "queued"
+        && Boolean(request.transcript?.trim()),
+    );
+    if (!queued?.transcript?.trim()) return;
+    void state.sendVoiceTranscript(queued.requestId, queued.transcript, { automatic: true })
+      .catch((error) => voiceWarn("queued transcript retry failed", {
+        requestId: queued.requestId,
+        error: errorMessage(error),
+      }));
+  };
+
+  return {
   loadConversation: async (workspaceId) => {
     try {
       const history = await conversationHistory(workspaceId);
@@ -117,6 +134,7 @@ export const createChatSlice: JarvisSlice = (set, get) => ({
           }),
         }),
       }));
+      retryQueuedVoiceTranscript(workspaceId);
 
       const voiceSettings = get().settings.jarvis.voiceOutput;
       voiceLog("chat response accepted", {
@@ -205,6 +223,7 @@ export const createChatSlice: JarvisSlice = (set, get) => ({
         }),
         chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) },
       }));
+      retryQueuedVoiceTranscript(workspaceId);
       return false;
     }
   },
@@ -259,4 +278,5 @@ export const createChatSlice: JarvisSlice = (set, get) => ({
       throw error;
     }
   },
-});
+  };
+};

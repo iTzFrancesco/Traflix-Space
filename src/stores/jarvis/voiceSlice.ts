@@ -261,6 +261,10 @@ export const createVoiceSlice: JarvisSlice = (set, get) => ({
       voiceSubmitStates: { ...state.voiceSubmitStates, [requestId]: "submitting" },
       activeVoiceRequestId: state.activeVoiceRequestId === requestId ? null : state.activeVoiceRequestId,
     }));
+    // A new explicit voice handoff supersedes commentary still waiting in the
+    // FIFO. If an item is already playing, ttsSpeak is not interrupted; its
+    // completion callback remains harmless when the queue item is gone.
+    if (get().codexSpeechQueue.length > 0) get().clearCodexSpeech();
     voiceLog("transcript submission started", {
       requestId,
       workspaceId: origin.workspaceId,

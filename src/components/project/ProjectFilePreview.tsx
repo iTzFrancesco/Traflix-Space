@@ -94,12 +94,6 @@ export function ProjectFilePreview({
         </pre>
       )}
 
-      {!error && preview?.redacted && (
-        <p className="shrink-0 border-t border-warning/20 px-2.5 py-1.5 text-[9px] text-warning">
-          Anteprima protetta: i valori sensibili sono oscurati.
-        </p>
-      )}
-
       {!error && preview?.truncated && (
         <p className="shrink-0 border-t border-warning/20 px-2.5 py-1.5 text-[9px] text-warning">
           Preview truncated to keep the panel responsive.

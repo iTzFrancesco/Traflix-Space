@@ -238,7 +238,7 @@ test("frontend agent launch is deduplicated and rolls back after bounded write f
 test("compact Jarvis microphone meter has real geometry", () => {
   assert.match(widgetSource, /VoiceMeter/);
   assert.match(widgetSource, /voiceArmed \|\| voiceListening/);
-  assert.match(globalsSource, /\.jarvis-level-meter > span[\s\S]*height: 17px/);
+  assert.match(globalsSource, /\.jarvis-level-meter > span[\s\S]*height: 24px/);
   assert.match(globalsSource, /transform-origin: center/);
   assert.match(globalsSource, /\[data-jarvis-dragging="true"\] \.jarvis-pill/);
 });

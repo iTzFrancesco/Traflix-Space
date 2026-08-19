@@ -246,9 +246,12 @@ function markLastCompletedMessageFinal(items: CodexStreamItem[]): CodexStreamIte
     if (item.kind === "message" && item.status === "completed") lastIndex = i;
   }
   if (lastIndex < 0) return items;
-  return items.map((item, i) =>
-    i === lastIndex ? { ...item, final: true } : item,
-  );
+  return items.map((item, i) => ({
+    ...item,
+    // Multiple completed agent messages are valid in one turn. Exactly the
+    // last one is final, including when terminal/item notifications reorder.
+    final: i === lastIndex,
+  }));
 }
 
 interface CodexStreamItemInput {
@@ -333,11 +336,15 @@ export function latestCodexMessage(
   workspaceId: string | null,
 ): string | null {
   if (!workspaceId) return null;
-  for (const turn of turns[workspaceId] ?? []) {
-    for (let index = turn.items.length - 1; index >= 0; index -= 1) {
-      const item = turn.items[index];
-      if (item.kind === "message" && item.text.trim()) return item.text.trim();
-    }
+  // The list is newest-first. Once a new turn exists, an empty current turn
+  // must stay empty until its own first message token arrives; falling back to
+  // an older turn makes the widget look as if Jarvis answered the previous
+  // prompt again.
+  const newestTurn = turns[workspaceId]?.[0];
+  if (!newestTurn) return null;
+  for (let index = newestTurn.items.length - 1; index >= 0; index -= 1) {
+    const item = newestTurn.items[index];
+    if (item.kind === "message" && item.text.trim()) return item.text.trim();
   }
   return null;
 }

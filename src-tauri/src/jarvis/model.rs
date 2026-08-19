@@ -264,12 +264,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     ModelError::Server
                 })?;
             let (tx, rx) = oneshot::channel();
+            let request_id = request.request_id.as_deref().unwrap_or_default();
             threads
-                .register_chat_waiter(
-                    &thread.thread_id,
-                    request.request_id.as_deref().unwrap_or_default(),
-                    tx,
-                )
+                .register_chat_waiter(&thread.thread_id, request_id, tx)
                 .await;
             let turn_id = match threads
                 .start_turn(&request.workspace_id, &text, request.request_id.as_deref())
@@ -277,7 +274,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
             {
                 Ok(turn_id) => turn_id,
                 Err(err) => {
-                    threads.dismiss_chat_waiter(&thread.thread_id).await;
+                    threads
+                        .dismiss_chat_waiter(&thread.thread_id, request_id)
+                        .await;
                     warn!(
                         workspace_id = %request.workspace_id,
                         error = %err,
@@ -307,7 +306,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
                             debug!(error = %err, "cancel: best-effort turn/interrupt failed");
                         }
                     }
-                    threads.dismiss_chat_waiter(&thread.thread_id).await;
+                    threads
+                        .dismiss_chat_waiter(&thread.thread_id, request_id)
+                        .await;
                     return Err(ModelError::Cancelled);
                 }
                 result = rx => match result {
@@ -318,6 +319,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
                     // UI can keep displaying an in-progress turn after the
                     // App Server has already stopped sending anything.
                     Err(_) => {
+                        threads
+                            .dismiss_chat_waiter(&thread.thread_id, request_id)
+                            .await;
                         threads.clear_active_turn(&request.workspace_id, Some(&turn_id)).await;
                         return Err(ModelError::Server);
                     }
@@ -336,7 +340,9 @@ impl JarvisModelProvider for CodexAppServerProvider {
                             debug!(error = %err, "timeout: best-effort turn/interrupt failed");
                         }
                     }
-                    threads.dismiss_chat_waiter(&thread.thread_id).await;
+                    threads
+                        .dismiss_chat_waiter(&thread.thread_id, request_id)
+                        .await;
                     return Err(ModelError::Timeout);
                 }
             };
