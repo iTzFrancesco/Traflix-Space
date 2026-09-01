@@ -188,10 +188,26 @@ pub(super) fn build_agent_report(context: &crate::jarvis::types::ModelContextVie
 }
 
 pub(super) fn provider_display_name(provider: &str) -> String {
-    let mut chars = provider.trim().chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => "agente".to_string(),
+    let value = provider.trim();
+    match value.to_ascii_lowercase().as_str() {
+        "anti-gravity" | "agy" => "Anti-Gravity".to_string(),
+        "claude" | "cloud" => "Claude".to_string(),
+        "claudex" | "cloudx" => "Claudex".to_string(),
+        "codex" => "Codex".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "pi" | "p" => "PI".to_string(),
+        "cmdc" | "command code" => "Command Code".to_string(),
+        "cline" => "Cline".to_string(),
+        "freebuff" => "Freebuff".to_string(),
+        "grok" => "Grok".to_string(),
+        _ if value.is_empty() => "agente".to_string(),
+        _ => {
+            let mut chars = value.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_else(|| "agente".to_string())
+        }
     }
 }
 

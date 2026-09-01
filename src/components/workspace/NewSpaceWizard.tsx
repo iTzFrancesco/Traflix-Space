@@ -41,6 +41,7 @@ const agentIcons: Record<string, typeof Bot> = {
   cline: Bot,
   freebuff: Bot,
   pi: Bot,
+  grok: Bot,
 };
 
 export function NewSpaceWizard({ open, onClose }: NewSpaceWizardProps) {

@@ -31,14 +31,26 @@ pub struct ProcessTreeScan {
     pub roots_with_candidate_descendants: HashSet<u32>,
 }
 
-const SUPPORTED_PROVIDERS: [&str; 6] = ["codex", "opencode", "claude", "claudex", "pi", "freebuff"];
+const SUPPORTED_PROVIDERS: [&str; 10] = [
+    "anti-gravity",
+    "claude",
+    "claudex",
+    "codex",
+    "opencode",
+    "pi",
+    "cmdc",
+    "cline",
+    "freebuff",
+    "grok",
+];
 
 pub fn normalize_provider(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     let canonical = match normalized.as_str() {
-        // Voice/transcription aliases used for Claude and Claudex.
+        "agy" | "anti gravity" => "anti-gravity",
         "cloud" => "claude",
         "cloudx" => "claudex",
+        "command code" => "cmdc",
         other => other,
     };
     SUPPORTED_PROVIDERS
@@ -47,17 +59,8 @@ pub fn normalize_provider(value: &str) -> Option<String> {
         .map(|provider| (*provider).to_string())
 }
 
-fn manual_provider_from_executable(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "agy" => Some("anti-gravity".to_string()),
-        "cmdc" => Some("cmdc".to_string()),
-        "cline" => Some("cline".to_string()),
-        _ => None,
-    }
-}
-
 fn provider_from_executable(value: &str) -> Option<String> {
-    normalize_provider(value).or_else(|| manual_provider_from_executable(value))
+    normalize_provider(value)
 }
 
 /// Detect only the executable token of a complete shell command.
@@ -65,9 +68,8 @@ fn provider_from_executable(value: &str) -> Option<String> {
 /// The PTY input path feeds this function only after its command buffer has
 /// observed Enter. Keeping the parser here line-oriented also prevents words
 /// in prompts, arguments, or arbitrary output from becoming agent identity.
-/// Manual-only agents are recognized here so their launch command is never
-/// misclassified as a task; `normalize_provider` deliberately does not promote
-/// them to readiness-verified Jarvis providers.
+/// Every known provider is recognized here so its launch command is never
+/// misclassified as ordinary shell text.
 pub fn detect_from_command(input: &str) -> Option<AgentDetection> {
     let normalized_input = input.replace("\u{1b}[200~", "").replace("\u{1b}[201~", "");
     let line = normalized_input
@@ -312,6 +314,7 @@ mod tests {
             ("cmdc\r\n", "cmdc"),
             ("cline\r\n", "cline"),
             ("uvx freebuff\r\n", "freebuff"),
+            ("grok\r\n", "grok"),
             ("deno run codex\r\n", "codex"),
             ("deno run npm:codex\r\n", "codex"),
         ];
@@ -346,15 +349,20 @@ mod tests {
     }
 
     #[test]
-    fn provider_normalization_is_bounded_to_readiness_verified_runtime_agents() {
+    fn provider_normalization_covers_every_jarvis_runtime_agent() {
+        assert_eq!(normalize_provider("AGY").as_deref(), Some("anti-gravity"));
+        assert_eq!(
+            normalize_provider("anti gravity").as_deref(),
+            Some("anti-gravity")
+        );
         assert_eq!(normalize_provider("Pi").as_deref(), Some("pi"));
         assert_eq!(normalize_provider("freebuff").as_deref(), Some("freebuff"));
+        assert_eq!(normalize_provider("Grok").as_deref(), Some("grok"));
+        assert_eq!(normalize_provider("command code").as_deref(), Some("cmdc"));
+        assert_eq!(normalize_provider("Cline").as_deref(), Some("cline"));
         assert_eq!(normalize_provider("CLAUDEX").as_deref(), Some("claudex"));
         assert_eq!(normalize_provider("Cloud").as_deref(), Some("claude"));
         assert_eq!(normalize_provider("CloudX").as_deref(), Some("claudex"));
-        for manual_only in ["agy", "anti-gravity", "cmdc", "command code", "cline"] {
-            assert!(normalize_provider(manual_only).is_none(), "{manual_only}");
-        }
         assert!(normalize_provider("powershell").is_none());
     }
 }

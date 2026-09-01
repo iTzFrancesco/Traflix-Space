@@ -40,7 +40,7 @@ pub(crate) fn conversational_plan_schema() -> serde_json::Value {
                     "type":"object",
                     "properties": {
                         "operation": {"type":"string","enum":["respond","clarify","agent_report","agent_send","agent_open","agent_handoff","agent_abort","terminal_close","terminal_restart","draft_prompt"]},
-                        "provider": {"type":"string","enum":["codex","opencode","pi","freebuff","claude","claudex"]},
+                        "provider": {"type":"string","enum":["anti-gravity","claude","claudex","codex","opencode","pi","cmdc","cline","freebuff","grok"]},
                         "target": {"type":"string","maxLength":4096},
                         "source": {"type":"string","maxLength":4096},
                         "destination": {"type":"string","maxLength":4096},

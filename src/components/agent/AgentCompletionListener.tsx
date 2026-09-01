@@ -18,6 +18,7 @@ import type { AgentTurnCompleted } from "../terminal/types";
 
 const PROVIDER_NAMES: Record<string, string> = {
   "anti-gravity": "Anti-Gravity",
+  agy: "Anti-Gravity",
   claude: "Claude",
   cloud: "Claude",
   claudex: "Claudex",
@@ -25,6 +26,8 @@ const PROVIDER_NAMES: Record<string, string> = {
   cline: "Cline",
   codex: "Codex",
   freebuff: "Freebuff",
+  grok: "Grok",
+  cmdc: "Command Code",
   opencode: "OpenCode",
   pi: "Pi",
 };

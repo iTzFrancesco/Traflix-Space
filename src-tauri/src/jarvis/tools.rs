@@ -585,11 +585,12 @@ fn agent_display_name(agent_id: &str) -> String {
         "opencode" => "OpenCode".to_string(),
         "claude" | "cloud" => "Claude".to_string(),
         "claudex" | "cloudx" => "Claudex".to_string(),
-        "pi" => "PI".to_string(),
+        "pi" | "p" => "PI".to_string(),
         "freebuff" => "Freebuff".to_string(),
+        "grok" => "Grok".to_string(),
         "anti-gravity" | "agy" => "Anti-Gravity".to_string(),
         "cline" => "Cline".to_string(),
-        "cmdc" => "Command Code".to_string(),
+        "cmdc" | "command code" => "Command Code".to_string(),
         value => value.to_string(),
     }
 }

@@ -101,7 +101,7 @@ test("manual PTY reopen relaunches its configured agent without duplicating Jarv
   );
 });
 
-test("manual agent catalog is complete while Jarvis advertises only readiness-verified providers", () => {
+test("manual agent catalog and Jarvis provider registry stay aligned", () => {
   const manualAgents = [
     "anti-gravity",
     "claude",
@@ -112,25 +112,31 @@ test("manual agent catalog is complete while Jarvis advertises only readiness-ve
     "cmdc",
     "cline",
     "freebuff",
+    "grok",
   ];
   for (const provider of manualAgents) {
     assert.match(agents, new RegExp(`id: "${provider}"`));
   }
 
-  const jarvisProviders = ["claude", "claudex", "codex", "opencode", "pi", "freebuff"];
+  const jarvisProviders = [
+    "anti-gravity",
+    "claude",
+    "claudex",
+    "codex",
+    "opencode",
+    "pi",
+    "cmdc",
+    "cline",
+    "freebuff",
+    "grok",
+  ];
   for (const provider of jarvisProviders) {
     assert.match(agentRegistry, new RegExp(`id: "${provider}"\\.into\\(\\)`));
     assert.match(runtimeDetector, new RegExp(`"${provider}"`));
   }
 
-  for (const manualOnly of ["anti-gravity", "cmdc", "cline"]) {
-    assert.doesNotMatch(agentRegistry, new RegExp(`id: "${manualOnly}"\\.into\\(\\)`));
-  }
-  assert.match(runtimeDetector, /manual_provider_from_executable/);
-  assert.match(runtimeDetector, /"agy" => Some\("anti-gravity"\.to_string\(\)\)/);
-  assert.match(runtimeDetector, /"cmdc" => Some\("cmdc"\.to_string\(\)\)/);
-  assert.match(runtimeDetector, /"cline" => Some\("cline"\.to_string\(\)\)/);
-  assert.match(runtimeDetector, /for manual_only in \["agy", "anti-gravity", "cmdc", "command code", "cline"\]/);
+  assert.match(runtimeDetector, /"agy" \| "anti gravity" => "anti-gravity"/);
+  assert.match(runtimeDetector, /"command code" => "cmdc"/);
   assert.match(agents, /id: "cmdc"[\s\S]*command: "cmdc"/);
   assert.match(agents, /id: "cline"[\s\S]*command: "cline"/);
   assert.match(agents, /id: "anti-gravity"[\s\S]*command: "agy"/);

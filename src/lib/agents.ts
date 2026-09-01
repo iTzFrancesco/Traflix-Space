@@ -95,4 +95,13 @@ export const AGENTS: AgentDefinition[] = [
     icon: "Bot",
     color: "#f72585",
   },
+  {
+    id: "grok",
+    name: "Grok",
+    description: "Agente AI Grok di xAI",
+    command: "grok",
+    args: [],
+    icon: "Bot",
+    color: "#111827",
+  },
 ];
