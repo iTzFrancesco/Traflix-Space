@@ -1,72 +1,63 @@
-# Codex App Server — integrazione Jarvis (architettura)
+# Codex App Server Architecture
 
-Stato: **implementata (C1–C10)**. Jarvis parla con **Codex App Server** (`codex.exe app-server`,
-auth ChatGPT, modello `gpt-5.6-luna`, reasoning `low`) come unico LLM. Il gateway HTTP legacy
-OpenCode Zen è stato **rimosso** (C10): nessuna API key, nessun endpoint HTTP.
+Jarvis uses the official Codex App Server as its text-model runtime when the
+integration is enabled. The HTTP provider previously used by Jarvis is not part
+of the current implementation. OpenCode remains available as a terminal agent
+where configured by the user.
 
-## Flusso end-to-end
+## End-to-end flow
 
-```
-Utente (voce/testo)
-  → jarvis_chat (chat.rs run_chat)
-    → CodexAppServerProvider::complete (model.rs, C10)
-      → ThreadRegistry.ensure_thread(workspace)      (C4: thread effimero per workspace)
-      → register_chat_waiter(thread_id)              (oneshot, C10)
-      → turn/start (input: [{type:"text",text}], effort: low)
-        → il modello ragiona; chiama i dynamic tools:
-            workspace.* / terminal.* / agent.* / markdown.* / ui.*  (C5, read-only)
-            conversational.plan                          (C6, unico side-effect per turno)
-        → il bridge (account.rs) risponde alle server request con i receipt
-      → turn/completed → il bridge completa il waiter col testo dell'ultimo
-        AgentMessageThreadItem → ModelCompletion (risposta finale)
+```text
+User text or voice input
+  → jarvis_chat
+  → CodexAppServerProvider
+  → workspace-bound ephemeral thread
+  → turn/start
+  → read-only dynamic tools or one validated conversational plan
+  → turn/completed
+  → Jarvis response and UI stream
 ```
 
-Il bridge (C7) inoltra `item/*`, `AgentMessageDelta`, `turn/*` alla UI come
-`jarvis://chat-stream` (commentary progressivi, tool lifecycle, final). Il TTS
-progressivo (C8) parla i commentary completati. `turn/steer` e `turn/interrupt`
-(C9) indirizzano/cancellano il turno attivo; l'interrupt cancella anche il plan
-in esecuzione al checkpoint successivo. **`jarvis_cancel_chat` inoltra a sua
-volta `turn/interrupt`** (spec §18): il token locale e il turno server vengono
-fermati insieme (best-effort, idempotente).
+The provider owns one live Codex runtime for the application session. The
+thread registry binds ephemeral Codex threads to workspaces and correlates
+server requests with the originating turn.
 
-## Niente loop in `run_chat` (spec §27)
+## Components
 
-Il vecchio `for round in 0..MAX_TOOL_ROUNDS` è stato **rimosso**: il provider
-Codex esegue `turn/start` una volta e il server tiene vivo il turno (i tool
-arrivano come server request `item/tool/call` e vengono risposti dal bridge).
-`run_chat` ora è: validate → context → checkpoint → `complete()` → response.
-Le regole permanenti di Jarvis vivono in `codex-home/AGENTS.md` (spec §10,
-scritto all'avvio del runtime), non più nel `system_prompt()` per-turno.
+| Component | Responsibility |
+| --- | --- |
+| `codex/runtime.rs` | Process lifecycle, handshake, crash detection, and bounded restart |
+| `codex/rpc.rs` | JSON-RPC request, response, and notification transport |
+| `codex/account.rs` | Token-free account view, login forwarding, and event routing |
+| `codex/models.rs` | Model catalog, usage, and rate-limit snapshots |
+| `codex/threads.rs` | Workspace/thread binding, turn correlation, interruption, and steering |
+| `codex/tools.rs` | Dynamic tool host, budgets, plan guard, and cancellation |
+| `codex/events.rs` | Stream-event normalization for the frontend |
+| `jarvis/model.rs` | `JarvisModelProvider` implementation backed by Codex App Server |
 
-## Sicurezza (spec §5, §13, §25)
+## Safety boundaries
 
-- Thread con `cwd` isolato (`<app-data>/codex-home`), `sandbox: read-only`,
-  `approvalPolicy: never`, `ephemeral: true` (correzione #4).
-- La repo reale non è mai una root leggibile: ogni fatto arriva via dynamic
-  tools, ogni mutazione via `conversational.plan` (max 1 per turno, guard
-  TurnSafetyState).
-- `reasoning` non viene mai inoltrato alla UI; i payload streaming non
-  contengono credenziali; `conversational.plan` risponde con il receipt nello
-  stesso turno.
-- Steer limitato a 240 char; testo di steer non fidato (mai autorizzazioni).
+- Codex runs with a dedicated runtime directory and a read-only sandbox.
+- The selected project directory is not exposed as an unrestricted Codex root.
+- Dynamic tools are allow-listed, workspace-scoped, and size-bounded.
+- Operational effects require a typed plan validated by Rust.
+- Only one side-effect plan is accepted per turn.
+- Workspace IDs, terminal IDs, agent-session IDs, and PTY generations are
+  checked before an operation is applied.
+- Raw reasoning and secret material are excluded from UI events and speech.
 
-## Moduli
+## Voice path
 
-| Modulo | Chunk | Ruolo |
-|---|---|---|
-| `codex/runtime.rs` | C1 | process lifecycle, handshake JSON-RPC, restart |
-| `codex/rpc.rs` | C1 | client JSON-RPC (request/respond/notify) |
-| `codex/account.rs` | C2 | bridge account + approvals + hub eventi |
-| `codex/models.rs` | C3 | catalogo modelli + rate limits |
-| `codex/threads.rs` | C4/C7/C9/C10 | thread per workspace, request ids, chat waiter, steer/interrupt |
-| `codex/tools.rs` | C5/C6/C9 | dynamic tool host, budget, plan guard, cancel plan |
-| `codex/events.rs` | C7 | normalizzazione chat-stream |
-| `model.rs` | C10 | `CodexAppServerProvider` (trait `JarvisModelProvider`) |
+Voice capture is handled locally until an optional Groq Speech-to-Text request
+is made. Jarvis sends the resulting text through the same Codex turn path as
+typed input. Edge TTS runs through a bounded helper process and can be
+cancelled. The helper is built from source for Windows packaging and is not
+stored as a repository binary.
 
-## Test
+## Testing
 
-- Unit/portable: `cargo test` (200 test — nessun codicex.exe richiesto).
-- Reale (solo Windows, `#[ignore]`): `spawns_real_app_server_and_handshakes`
-  in `codex/runtime.rs` — handshake, account, modelli, thread effimero, turno
-  con `agent.list`, turno con `conversational.plan`, turno con streaming
-  events; gira con `cargo test -- --ignored spawns_real`.
+Portable Rust and frontend tests cover protocol normalization, workspace
+binding, plan validation, state transitions, and stream ordering. An ignored
+Windows test can exercise a real Codex App Server handshake when the Codex CLI
+is installed and authenticated. See [Windows validation](WINDOWS-VALIDATION.md)
+for the test commands and limitations.

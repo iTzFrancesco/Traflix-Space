@@ -15,8 +15,8 @@ $python = if (Get-Command py -ErrorAction SilentlyContinue) {
 }
 
 # Rebuild before every Windows bundle so the embedded helper always matches
-# scripts/jarvis-edge-tts.py. The resulting tracked-binary diff must still be
-# reviewed explicitly before committing a release update.
+# scripts/jarvis-edge-tts.py. The resulting executable is generated under an
+# ignored directory and is never committed to the source repository.
 Write-Host "Building Jarvis Edge TTS sidecar with $python..."
 & $sidecarScript -Python $python
 if ($LASTEXITCODE -ne 0) {

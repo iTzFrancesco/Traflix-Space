@@ -1,70 +1,44 @@
-# Traflix Jarvis — ascolto, VAD ed endpointing
+# Voice Endpointing
 
-## Comportamento
+Voice endpointing determines when a captured utterance is ready for
+transcription. The implementation keeps the capture contract explicit and
+retains bounded settings for compatibility with previously persisted
+configuration.
 
-Jarvis mantiene una singola cattura mentre l'utente parla, respira o fa una
-pausa. Il VAD locale non invia audio né trascrizioni durante una pausa: la
-ripresa cancella la finestra di endpointing e conserva il preroll e il draft
-nella stessa richiesta. La trascrizione viene consegnata a STT soltanto quando
-il watchdog conferma la fine reale del turno.
+## Current interaction
 
-Il backend conserva le fasi diagnostiche:
+The default flow is click-to-toggle:
 
-- `standby`: microfono armato, calibrazione/rumore filtrato, nessun parlato;
-- `speaking`: parlato confermato;
-- `pause`: pausa naturale; l'ascolto continua;
-- `breath`: energia bassa ma sopra il rumore stimato, trattata come respiro;
-- `micro_interruption`: possibile ripresa o impulso isolato, sottoposto a
-  debounce;
-- `finalizing`: VAD ha confermato silenzio stabile, ma la finestra finale è
-  ancora aperta e l'utente può riprendere senza perdere la frase.
+1. The user starts capture deliberately.
+2. Audio remains local to the active capture session until the user stops it.
+3. The resulting recording is sent to the configured transcription provider.
+4. The transcript is presented for review and is not submitted automatically.
 
-La pillola compatta non cambia testo a ogni micro-fase: durante l'ascolto mostra
-`Ti ascolto`; i dettagli restano disponibili nello stato diagnostico e nel
-meter.
+Wake-word activation, automatic VAD submission, and automatic transcript
+submission are disabled by default. This makes the network boundary visible to
+the user and avoids accidental turns.
 
-## Parametri
+## Bounded timing values
 
-| Parametro | Default | Limiti | Scopo |
-| --- | ---: | ---: | --- |
-| `endpointGraceMs` / `endpoint_grace_ms` | 900 ms | 500–5.000 ms | Silenzio finale dall'inizio della pausa prima dello stop automatico |
-| `vadPostSpeechMs` / `vad_post_speech_ms` | 650 ms | 100–5.000 ms | Candidato VAD di silenzio stabile; non è più il timer finale di invio |
-| `vadStartFrames` | 5 | 4–60 | Debounce per confermare l'attacco vocale |
-| `vadSilenceFrames` | 16 | 1–120 | Debounce della transizione verso silenzio |
-| `vadPreRollMs` | 500 ms | 0–1.000 ms | Protezione della prima sillaba |
-| ripresa dopo pausa | 3 blocchi | fisso | Isteresi/debounce contro click e impulsi singoli |
+The settings layer normalizes persisted values before use:
 
-I vecchi default `endpointGraceMs = 1.200` e `6.500` vengono migrati a
-900 ms; il vecchio `vadPostSpeechMs = 3.000` viene migrato a 650 ms. I valori
-personalizzati diversi restano configurabili e vengono limitati ai rispettivi
-range sicuri.
+| Setting | Default | Allowed behavior |
+| --- | ---: | --- |
+| Maximum recording duration | 600 s | Clamped to a positive value up to 600 s |
+| VAD candidate window | 650 ms | Never less than 650 ms |
+| Post-speech VAD window | up to 5,000 ms | Clamped to the supported range |
+| Endpoint grace period | 900 ms | Clamped between 500 ms and 5,000 ms |
 
-Il rumore di fondo viene stimato nei primi 300 ms e seguito lentamente anche
-quando il microfono è armato. Il gate usa `1.1 × noiseFloor`, attenua i campioni
-sotto soglia senza tagliare quelli sopra soglia, mentre il livello UI usa RMS
-smussato con attacco `0.45` e rilascio `0.20`. Il VAD mantiene soglia adattiva,
-isteresi sul rilascio (`25%` del picco) e debounce separato dall'indicatore.
+Legacy values are migrated at the settings boundary so they cannot silently
+restore an excessively long or unexpectedly short interaction. The values above
+describe the normalization contract, not a guarantee of equal recognition
+quality across microphones or providers.
 
-## Verifica
+## Implementation notes
 
-Test automatici aggiunti/aggiornati:
+Endpointing state belongs to the voice session. Start, stop, cancel, and discard
+must be idempotent from the user's perspective, and a late provider response
+must not create a new turn after cancellation. UI indicators should reflect the
+backend state rather than infer completion from a timer alone.
 
-- parlato continuo e attacco confermato;
-- pausa naturale, respiro e micro-interruzione con ripresa;
-- silenzio lungo e stop soltanto dopo la finestra finale;
-- rumore fisso sopra la soglia assoluta, rumore introdotto dopo la calibrazione
-  e gate del payload STT;
-- caption `standby/speaking/pause/breath/micro_interruption/finalizing` e
-  indicatore volume;
-- invio finale, coda quando chat è occupata, conservazione del draft e guardia
-  anti-doppio invio.
-
-Comandi:
-
-```text
-node --test scripts/jarvis-voice-endpointing.test.mjs
-npx tsc --noEmit
-cargo test --manifest-path src-tauri/Cargo.toml --lib jarvis::voice
-```
-
-La build di produzione non fa parte della verifica automatica del fix.
+For protocol details, see the [Codex App Server protocol](codex/PROTOCOL.md).

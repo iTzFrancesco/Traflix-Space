@@ -1,67 +1,99 @@
-# Codex App Server — protocollo e comportamento (fatti verificati)
+# Codex App Server Protocol
 
-Raccolta dei fatti di protocollo verificati durante C1–C10 (fonte: codice +
-test reali su Windows con `codex.exe app-server`).
+This document records the protocol contract implemented by the current Jarvis
+adapter. The adapter parses defensively because some payload details vary
+between Codex CLI releases.
 
-## Handshake e runtime
+## Runtime handshake
 
-- `initialize`/`initialized` all'avvio; la versione CLI viene raccolta solo per
-  diagnostica. Non esiste un pin semver: la compatibilità viene verificata dal
-  live handshake e dagli RPC realmente disponibili.
-- Errori di runtime mappati in `RuntimeError.code()`: `codex_not_installed`,
-  `codex_runtime_start_failed`, `codex_runtime_crashed`,
-  `codex_rpc_failed`, `codex_environment_error`.
+The process starts `codex app-server` over standard input and output. The
+backend sends `initialize`, waits for the response, and then sends
+`initialized`. Runtime failures are mapped to stable application error classes:
 
-## Thread e turni
+- executable not found;
+- process start or handshake failure;
+- runtime crash or unavailable state;
+- JSON-RPC failure;
+- runtime environment failure.
 
-- `thread/start` con `cwd` isolato, `sandbox: "read-only"`,
-  `approvalPolicy: "never"`, `ephemeral: true`. Un thread per workspace,
-  creato lazy al primo turno.
-- `turn/start`: `input` è **un array** di UserInput `[{type:"text",text}]`;
-  una stringa → `-32600` invalid params. `params` sempre obbligatorio (anche
-  `{}`); `effort: "low"` passato sempre esplicitamente.
-- `turn/steer`: gated — errore se nessun turno attivo; testo limitato (240 char).
-- `turn/interrupt`: idempotente (interrompere un turno già finito è no-op).
-- Thread effimeri: `thread/delete` su un thread `ephemeral` è rifiutato dal
-  server (V1: la pulizia avviene su Clear Conversation / shutdown pulito).
+The executable version is diagnostic metadata. Compatibility is established by
+the live handshake and the RPC methods that are actually available.
 
-## Eventi (notifiche)
+## Threads and turns
 
-- `turn/started` → reset budget tool (C5) + guard plan (C6) + reset request id.
-- `item/started|completed` con `type`: `dynamicToolCall`, `agentMessage`,
-  `reasoning`. `AgentMessageDelta` (delta testo, `content[0].text` o
-  `{type:"text_delta"}`) e `AgentMessageThreadItem` (item completo).
-- **`AgentMessageDelta` NON ha un campo `phase`** (correzione #4): il final è
-  l'ultimo message completato prima di `turn/completed`.
-- `reasoning` è sempre ignorato (spec §15): mai inoltrato, mai parlato.
-- `turn/completed|failed|interrupted` chiudono il turno; `failed` porta
-  `error`; `interrupted` segue `turn/interrupt`.
+- `thread/start` uses a workspace-isolated working directory, a read-only
+  sandbox, no automatic approval, and an ephemeral thread.
+- One thread is created lazily for each workspace and application session.
+- `turn/start` receives an array such as:
 
-## Server request (tool dinamici)
+  ```json
+  {"input":[{"type":"text","text":"Inspect the current workspace"}]}
+  ```
 
-- Richieste `{callId, namespace, tool, arguments, threadId, turnId}`:
-  `namespace` e `tool` separati. Risposta:
-  `{"content":[{"type":"inputText","text":"…"}]}`.
-- Richieste non gestite → **sempre** risposta `-32601` method not found (mai
-  lasciare il server in attesa).
-- Tool read-only: `workspace.overview`, `terminal.list`, `agent.list`,
-  `agent.status`, `agent.last_result`, `agent.activity`, `agent.tail`,
-  `markdown.read`, `ui.open_terminal`.
-- `conversational.plan`: schema condiviso con il path legacy
-  (`conversational_plan_schema()` in control.rs), operazioni allowlist:
-  respond, clarify, agent_report, agent_send, agent_open, agent_handoff,
-  agent_abort, terminal_close, terminal_restart, draft_prompt; campi camelCase
-  (`allowBusy`), operazioni snake_case.
-  - max 1 plan per turno: secondo plan → `-32003 side_effect_plan_already_executed`;
-  - decode fallito → `-32602`; validazione fallita → `-32004 conversational_plan_rejected`;
-  - il receipt (`{response, warnings}`) è risposto nello stesso turno;
-  - lo slot è consumato anche da tentativi invalidi (scelta conservativa).
+- Turn parameters are always sent in the request, including the configured
+  reasoning effort.
+- `turn/steer` is accepted only while the referenced turn is active and its
+  text is bounded.
+- `turn/interrupt` is idempotent; interrupting an already completed turn is a
+  no-op.
 
-## Forma esatta dei payload
+## Notifications
 
-La spec ufficiale non documenta ogni forma: i normalizer (`codex/events.rs` e
-`codex/rpc.rs`)
-fa **parse difensivo multi-alias** (`item.id`/`itemId`, `item.type`/`itemType`,
-testo da `content[]`/`text`/delta). I payload grezzi dei turni reali vengono
-stampati dal test `spawns_real_app_server_and_handshakes` per verifica su
-Windows.
+The adapter handles runtime, item, message-delta, and turn notifications. Item
+types include dynamic tool calls, agent messages, and reasoning. The UI receives
+completed agent messages and normalized lifecycle events; reasoning is always
+discarded and is never spoken.
+
+The final response is the last completed agent message before
+`turn/completed`. The protocol does not rely on a `phase` field in a message
+delta.
+
+## Dynamic tool requests
+
+Server requests carry separate namespace and tool fields. A representative
+request is:
+
+```json
+{
+  "callId": "call-1",
+  "namespace": "terminal",
+  "tool": "list",
+  "arguments": {},
+  "threadId": "thread-1",
+  "turnId": "turn-1"
+}
+```
+
+The response uses the App Server input-text content shape:
+
+```json
+{"content":[{"type":"inputText","text":"..."}]}
+```
+
+Unknown tools are answered with JSON-RPC `-32601` rather than leaving the
+server waiting. Decode failures use `-32602`. Host validation errors use a
+stable application error code and include no secret material.
+
+Read-only tools are:
+
+- `workspace.overview`;
+- `terminal.list`;
+- `agent.list`;
+- `agent.status`;
+- `agent.last_result`;
+- `agent.activity`;
+- `agent.tail`;
+- `markdown.read`;
+- `ui.open_terminal`.
+
+`conversational.plan` is separately validated. It supports only the operations
+defined by the host schema, is limited to one accepted plan per turn, and
+returns a receipt in the same turn.
+
+## Stream normalization
+
+The backend converts raw notifications to `jarvis://chat-stream` events for
+the React client. The normalized stream distinguishes commentary, tool start,
+tool completion, final text, turn completion, failure, and interruption. Event
+payloads are bounded and do not include OAuth tokens, API keys, or raw model
+reasoning.

@@ -1,22 +1,33 @@
-# Jarvis × Codex App Server — documentazione
+# Jarvis and Codex App Server
 
-La spec master è [APP-SERVER-INTEGRATION.md](APP-SERVER-INTEGRATION.md):
-obiettivo, architettura, protocollo e fasi C1–C10 con lo stato di avanzamento
-(§30). Questa cartella contiene il dettaglio operativo.
+This directory documents the public integration between Traflix Space and the
+Codex App Server. The documents describe the current implementation and the
+contracts that must remain stable when the desktop application evolves.
 
-## Indice
+## Documentation map
 
-| Doc | Contenuto |
-|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Architettura finale: flusso chat → turno Codex, moduli, sicurezza, test |
-| [PROTOCOL.md](PROTOCOL.md) | Fatti di protocollo verificati: handshake, thread/turni, eventi, server request, forme esatte dei payload |
-| [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md) | Collaudo su Windows: suite portabile, test reale `#[ignore]`, checklist manuale |
+- [Architecture](ARCHITECTURE.md) — component boundaries and runtime ownership.
+- [App Server integration](APP-SERVER-INTEGRATION.md) — implementation lifecycle
+  and integration responsibilities.
+- [Protocol](PROTOCOL.md) — handshake, turns, notifications, tools, and
+  streaming messages.
+- [Windows validation](WINDOWS-VALIDATION.md) — portable and live validation
+  procedures for the Windows runtime.
+- [Context broker](../CONTEXT-BROKER.md) — bounded workspace context assembly.
+- [Voice endpointing](../VOICE-ENDPOINTING.md) — capture and submission timing.
+- [Voice latency](../VOICE-LATENCY.md) — latency boundaries and measurement.
+- [Voice troubleshooting](VOICE-TROUBLESHOOTING.md) — provider and local audio
+  diagnostics.
+- [Wake-word MVP](../WAKE-WORD-MVP.md) — current activation behavior and future
+  extension points.
 
-## Mappa spec → docs
+## Scope
 
-- §4–§5 Runtime + isolamento → `ARCHITECTURE.md` (moduli), `PROTOCOL.md` (handshake)
-- §6–§7 Auth + modelli → `WINDOWS-VALIDATION.md` (checklist login, modelli)
-- §9–§13 Thread, tool dinamici, plan → `PROTOCOL.md`
-- §14–§18 Streaming, TTS, steer/cancel → `ARCHITECTURE.md` (flusso), `WINDOWS-VALIDATION.md` (checklist)
-- §22 Usage/rate limits → `WINDOWS-VALIDATION.md`
-- §31 Test plan → `WINDOWS-VALIDATION.md` (suite + test reale)
+Jarvis uses the Codex App Server as its text-agent runtime. A workspace owns the
+conversation thread, while the Rust backend owns process lifecycle, protocol
+translation, context boundaries, and Tauri events. The frontend renders the
+resulting state and does not receive provider credentials.
+
+The repository intentionally excludes historical planning notes, local
+validation logs, generated sidecars, machine-specific paths, and private
+research. Use the current source and the documents above as the public contract.

@@ -1,50 +1,55 @@
-# Jarvis voice troubleshooting
+# Voice Troubleshooting
 
-## Groq STT: HTTP 401
+Traflix Space uses a browser microphone for capture, a configurable speech-to-
+text provider, and an Edge TTS-compatible local sidecar for speech output. The
+application can operate without a configured transcription key, but provider-
+backed transcription requires a valid Groq credential.
 
-Il backend usa l'endpoint Groq ufficiale per le trascrizioni e invia la
-credenziale con `Authorization: Bearer <chiave>`. Un `401 Unauthorized` significa
-che Groq ha rifiutato la credenziale: la chiave può essere scaduta, revocata,
-errata oppure incollata con un prefisso aggiuntivo.
+## Before testing
 
-In Impostazioni → Connessioni → Groq va inserita la chiave grezza `gsk_…`, senza
-`Bearer ` e senza `GROQ_API_KEY=`. Il backend ora rimuove automaticamente un
-eventuale prefisso `Bearer ` incollato per errore, senza mai esporre la chiave
-nei log o nell'interfaccia.
+1. Confirm that Windows grants microphone access to the application.
+2. Select the intended input device in Windows and close applications that may
+   exclusively hold it.
+3. Start a click-to-toggle voice session and stop it explicitly after speaking.
+4. Check the in-app status and error message before changing settings.
 
-Se il 401 continua, la chiave deve essere sostituita con una nuova chiave Groq;
-non è un problema del microfono, del VAD o del formato WAV.
+## Groq transcription errors
 
-## Meter e rilevamento della voce
+The expected key format is a Groq Speech-to-Text key beginning with `gsk_`.
+xAI/Grok keys are not interchangeable with Groq keys. Configure the credential
+through the application settings or a local `.env` file; never place a real
+credential in `.env.example`, documentation, logs, or source control.
 
-- Il meter usa RMS in dBFS, senza amplificazione artificiale dei picchi.
-- Il livello viene filtrato con attacco rapido e rilascio più lento per evitare
-  lo spasmo visivo tra i blocchi CPAL.
-- Il VAD apprende il rumore ambientale, richiede almeno quattro blocchi
-  consecutivi per iniziare e conserva il preroll per non tagliare la prima
-  sillaba.
-- La soglia di rilascio è più vicina al pavimento configurato: il rumore di
-  fondo non deve mantenere aperta la registrazione dopo una frase.
-- L'endpointing resta separato dal VAD: la pausa deve essere stabile prima
-  dell'invio automatico.
+- `401` or authentication errors usually indicate an invalid, expired, or
+  provider-mismatched key.
+- Empty or very short transcripts can result from microphone permission,
+  selected-device, input-level, or clipping problems.
+- A request that does not finish should be cancelled from the UI before starting
+  another capture session.
 
-Questa è una riduzione del falso positivo basata sull'energia. Un rumore
-continuo con ampiezza simile alla voce non è distinguibile perfettamente da un
-VAD RMS puro; per ambienti estremamente rumorosi servirebbe una soppressione
-del rumore dedicata.
+## Capture timing
 
-## Verifica locale
+The default interaction is explicit click-to-toggle capture. Automatic VAD,
+wake-word activation, and automatic transcript submission are disabled by
+default so that audio is not submitted without a deliberate user action. See
+[Voice endpointing](../VOICE-ENDPOINTING.md) for the bounded legacy settings
+retained for compatibility.
 
-- `npm run test:jarvis`: regressioni frontend e statiche.
-- `npx tsc --noEmit`: typecheck TypeScript.
-- `cargo fmt --manifest-path src-tauri\\Cargo.toml -- --check`.
-- `cargo test --manifest-path src-tauri\\Cargo.toml --no-run`: compilazione dei
-  test Rust.
-- `npm run test:strict`: suite completa; imposta automaticamente
-  `TRAFLIX_RUST_TEST_MANIFEST=1`, necessario per incorporare il manifest
-  common-controls nei test Windows.
+## Text-to-speech diagnostics
 
-Un `cargo test` lanciato senza `TRAFLIX_RUST_TEST_MANIFEST=1` può terminare con
-`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND` prima dell'harness. Non è un errore
-delle asserzioni: usare `npm run test:strict` oppure impostare la variabile
-prima del comando Cargo.
+The TTS runtime is prepared by the Rust backend. If output is unavailable,
+verify that the generated sidecar is available through the documented build
+workflow and that Windows audio output is not muted. Generated binaries belong
+in `src-tauri/binaries/` only as build output and must not be committed.
+
+## Useful checks
+
+Run the static Jarvis regression suite from the repository root:
+
+```powershell
+npm run test:jarvis
+```
+
+Do not include provider keys, transcripts, microphone recordings, or personal
+paths in bug reports. Replace them with a short description and the relevant
+sanitized status message.

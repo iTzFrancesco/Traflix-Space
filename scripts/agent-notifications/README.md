@@ -7,13 +7,13 @@ Traflix Space listens on the Windows named pipe configured in
 - `TRAFLIX_AGENT_EVENT_PIPE`
 - `TRAFLIX_AGENT_EVENT_PROTOCOL=1`
 - `TRAFLIX_AGENT_EVENT_BRIDGE` (absolute path to the bridge)
-- `TRAFLIX_WORKSPACE_ID` (owning workspace, since the workspace_id fix)
+- `TRAFLIX_WORKSPACE_ID` (the owning workspace)
 
 The bridge is [`traflix-agent-event.ps1`](./traflix-agent-event.ps1). It is
 best-effort: if Traflix is closed or a pipe is unavailable, it exits without
 blocking or changing the agent result. A real Traflix terminal event is always
-routed to the pipe that owns the terminal. This is required when DEV and the
-installed release run at the same time: the notification and its “Continua”
+routed to the pipe that owns the terminal. This is required when the development
+build and the installed release run at the same time: the notification and its follow-up
 action must stay with the instance that owns the real PTY.
 
 ## Notification logs

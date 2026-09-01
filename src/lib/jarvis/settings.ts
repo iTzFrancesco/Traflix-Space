@@ -53,11 +53,10 @@ export function normalizeVoiceVadPostSpeechMs(value: number | undefined): number
 }
 
 /**
- * Traflix Space is a private, owner-operated desktop app. Jarvis therefore
- * runs in owner mode: network consent and spoken replies are always enabled.
- * Voice capture is deliberately a private, explicit click-toggle session.
- * Legacy VAD, wake-word and auto-submit fields stay in the persisted shape for
- * backwards compatibility, but are normalized off at this boundary.
+ * Keep the current Jarvis defaults explicit and bounded. Voice capture remains
+ * a deliberate click-toggle session, while legacy VAD, wake-word, and
+ * auto-submit fields stay in the persisted shape for backwards compatibility
+ * and are normalized at this boundary.
  */
 export function ownerModeJarvisSettings(settings: JarvisSettings): JarvisSettings {
   const activationMode: VoiceActivationMode = "click_toggle";

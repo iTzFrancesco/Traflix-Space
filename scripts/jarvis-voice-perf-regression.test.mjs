@@ -14,6 +14,7 @@ const helperSource = source("./jarvis-edge-tts.py");
 const mainSource = source("../src-tauri/src/main.rs");
 const beforeBuildSource = source("./tauri-before-build.ps1");
 const sidecarBuildSource = source("./build-jarvis-edge-tts-sidecar.ps1");
+const gitignoreSource = source("../.gitignore");
 const secretsSource = source("../src-tauri/src/settings/secrets.rs");
 const runtimeDetectorSource = source("../src-tauri/src/jarvis/runtime_detector.rs");
 
@@ -88,7 +89,7 @@ test("Windows playback keeps healthy output warm and can replace failed workers 
   assert.match(playbackSource, /Duration::from_millis\(8\)/);
 });
 
-test("Windows config merge retains MSI settings and binds a verified x86_64 TTS sidecar", () => {
+test("Windows config merge retains MSI settings and regenerates the x86_64 TTS sidecar", () => {
   const base = JSON.parse(source("../src-tauri/tauri.conf.json"));
   const windows = JSON.parse(source("../src-tauri/tauri.windows.conf.json"));
   const merged = {
@@ -106,18 +107,10 @@ test("Windows config merge retains MSI settings and binds a verified x86_64 TTS 
   assert.deepEqual(merged.bundle.externalBin, ["binaries/jarvis-edge-tts"]);
   assert.ok(merged.bundle.resources["../scripts/agent-notifications/*"]);
 
-  const artifact = readFileSync(
-    new URL(
-      "../src-tauri/binaries/jarvis-edge-tts-x86_64-pc-windows-msvc.exe",
-      import.meta.url,
-    ),
-  );
-  assert.ok(artifact.length > 1024 * 1024);
-  assert.equal(artifact.subarray(0, 2).toString("ascii"), "MZ");
-  const peOffset = artifact.readUInt32LE(0x3c);
-  assert.equal(artifact.subarray(peOffset, peOffset + 4).toString("binary"), "PE\u0000\u0000");
-  assert.equal(artifact.readUInt16LE(peOffset + 4), 0x8664);
-
+  assert.match(sidecarBuildSource, /New-Item -ItemType Directory -Force -Path \$binaries/);
+  assert.match(sidecarBuildSource, /PyInstaller/);
+  assert.match(sidecarBuildSource, /Copy-Item[\s\S]*\$TargetTriple/);
+  assert.match(gitignoreSource, /src-tauri\/binaries\//);
   assert.match(beforeBuildSource, /& \$sidecarScript -Python \$python/);
   assert.match(beforeBuildSource, /embedded helper always matches/);
   assert.match(beforeBuildSource, /ReadAllBytes\(\$sidecar\)/);

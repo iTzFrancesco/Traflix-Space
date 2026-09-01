@@ -1,56 +1,49 @@
-# Codex App Server — collaudo su Windows
+# Windows Validation
 
-Questa app è Windows-only; i test `#[ignore]` richiedono `codex.exe` con
-sessione ChatGPT attiva. Su VPS/Linux girano solo i test unit portabili.
+Traflix Space is a Windows desktop application. Portable checks can validate
+Rust logic and protocol handling, but they do not prove ConPTY, native dialogs,
+system-tray behavior, WebView2, named pipes, audio devices, sidecar startup, or
+MSI packaging.
 
-## Suite portabile (qualsiasi macchina)
+## Portable checks
 
-```bash
-cd src-tauri
-cargo test          # 200 test, 1 ignored (il reale)
-cargo check         # 0 warning nei moduli jarvis (Linux mostra solo dead-code
-                    # di feature Windows-gated: TTS/VAD/playback)
+From the repository root:
+
+```powershell
+npm run test:jarvis
+npm run test:terminal
+npm run test:strict
 ```
 
-Nota: su Linux serve `CARGO_TARGET_DIR` (il `.cargo/config.toml` committato
-punta a `D:/rust/target` per la macchina Windows):
-`export CARGO_TARGET_DIR=<repo>/src-tauri/target`
+The Rust test suite can also be run from `src-tauri` with the Windows test
+manifest environment enabled by the strict test runner.
 
-## Test reale (Windows, con codex installato e loggato)
+## Live Codex App Server check
 
-```bash
-cd src-tauri
+When the Codex CLI is installed and authenticated, run the ignored handshake
+test from `src-tauri`:
+
+```powershell
 cargo test -- --ignored spawns_real_app_server_and_handshakes --nocapture
 ```
 
-Cosa verifica (in ordine):
+The check covers executable resolution, the `initialize` handshake, account and
+model reads, ephemeral workspace-thread creation, dynamic-tool requests,
+conversational-plan receipts, stream normalization, and turn completion.
 
-1. `resolve_codex_executable()` + handshake `initialize`.
-2. `account/read` (profilo ChatGPT) e `model/list` (gpt-5.6-luna presente).
-3. `account/rateLimits/read` + `usage/read`; `login/start` + cancel.
-4. Thread effimero C4: `thread/start` con sandbox read-only + turno `agent.list`
-   (verifica `Item/*` con `dynamicToolCall`).
-5. Turno C6: `conversational.plan` forzato dal modello con operazione
-   `respond` — args tipizzati, receipt risposto nello stesso turno,
-   `turn/completed`.
-6. Turni C7: collezione di tutte le notifiche `item/*` / `AgentMessageDelta`
-   / `turn/*` → passate al normalizer di produzione
-   (`stream_events_from_notification`): ordine `tool_started` presente,
-   `tool_completed <= tool_starts`, ultimo turno termina con `TurnCompleted`.
-   I payload grezzi sono stampati con `println!` per l'ispezione.
+## Manual application checks
 
-## Checklist manuale (app avviata, runtime Codex running)
+Verify the following on a Windows machine with the application running:
 
-- [ ] Chat vocale: la richiesta parte come `turn/start` sul thread della
-      workspace attiva (log `codex chat provider: turn started`).
-- [ ] Commentary visibili in Streaming Codex (Impostazioni → Avanzate) mentre
-      il turno è attivo; il final è evidenziato dopo `turn/completed`.
-- [ ] "Parla commentary" (C8): i message completati vengono parlati in coda
-      senza sovrapporre la risposta finale; il barge-in (voce utente) svuota
-      la coda.
-- [ ] ⏹ Interrompi (C9): ferma il turno; se un plan è in esecuzione si ferma
-      al checkpoint successivo (nessuna mutazione dopo lo stop).
-- [ ] Steer (C9): visibile solo con turno attivo; errore su thread idle.
-- [ ] Settings migrati: `modelProvider` salvato come `open_code_zen` si
-      rilegge come `codex`; il modello mostrato è `gpt-5.6-luna`.
-- [ ] Nessuna richiesta di API key Zen nell'UI (Connessioni: solo Groq).
+1. Jarvis starts one workspace-bound turn from typed input and from voice input.
+2. Commentary and tool lifecycle events appear in the advanced Jarvis view;
+   the final text is identified after turn completion.
+3. Optional commentary speech is queued without overlapping the final response,
+   and cancellation clears pending speech.
+4. Cancel stops the Codex turn and prevents a pending plan from applying after
+   the next host checkpoint.
+5. Steering is available only for an active turn and rejects an idle thread.
+6. The Codex account view exposes status without exposing OAuth token material.
+7. Groq is the only optional voice credential exposed by the application.
+8. No project file, secret, or terminal child process receives the Codex OAuth
+   token through Traflix IPC.
