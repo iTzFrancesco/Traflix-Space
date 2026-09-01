@@ -1,89 +1,144 @@
-# Traflix Space
+<h1 align="center">Traflix Space</h1>
 
-Traflix Space is a Windows desktop workspace for running multiple software
-projects and coding-agent sessions in one organized interface. Each workspace
-binds a local project directory to one or more persistent terminal panes, so
-users can switch projects without unnecessarily terminating their processes.
+<p align="center">
+  <strong>The Windows workspace for projects, terminals, and coding agents.</strong><br/>
+  Run local agent CLIs side-by-side, keep their terminal sessions organized,
+  and work across projects without losing your place.
+</p>
 
-The application is designed for command-line tools such as OpenAI Codex, Claude
-Code, Gemini, OpenCode, and other locally installed agents. It provides a
-multi-pane terminal, workspace management, local state, file drag-and-drop,
-clipboard integration, and optional Jarvis voice interaction.
+<p align="center">
+  <a href="https://github.com/iTzFrancesco/Traflix-Space/actions/workflows/ci.yml"><img src="https://github.com/iTzFrancesco/Traflix-Space/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform: Windows" />
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 19" />
+  <img src="https://img.shields.io/badge/license-MIT-4493F8?style=flat-square" alt="License: MIT" />
+</p>
+
+<p align="center">
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="LICENSE">MIT License</a>
+</p>
+
+## What it is
+
+Traflix Space is a Windows desktop environment for developers who use local
+terminal-based tools and coding agents. Each workspace is connected to a local
+project directory and can host up to eight persistent terminal panes.
+
+The interface is designed to keep the context around an agent session visible:
+the project, terminal output, agent activity, file operations, and optional
+voice interaction stay in one place.
 
 ## Features
 
-- Multiple workspaces backed by local project directories.
-- Up to eight terminal sessions per workspace, with resizable layouts and
-  kept-alive PTY processes during workspace changes.
-- Configurable agent launchers and provider-specific completion notifications.
-- Scrollback restoration, bounded output handling, and explicit terminal
-  lifecycle controls.
-- Text, image, and file-path paste support through the Windows clipboard.
-- Native Windows system-tray integration in release builds.
-- Jarvis integration through Codex App Server, with workspace-scoped context,
-  read-only dynamic tools, explicit conversational plans, streaming events, and
-  optional voice input/output.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-## Technology
+### Workspace-first workflow
 
-Traflix Space is built with:
+Switch between local projects while preserving their terminal processes,
+selection state, layout, and scrollback.
 
-- React 19 and TypeScript for the user interface;
-- Tauri 2 and Rust for the native desktop runtime and IPC commands;
-- xterm.js and Windows ConPTY for terminal sessions;
-- Zustand for local application state;
-- Tailwind CSS for styling;
-- CPAL, Groq Speech-to-Text, and Edge TTS for the optional voice pipeline.
+</td>
+<td width="50%" valign="top">
 
-Rust owns process supervision, filesystem boundaries, terminal lifecycle,
-workspace persistence, and security-sensitive policy. React is a presentation
-and IPC client layer.
+### Multi-pane terminals
 
-## Requirements
+Run several Windows ConPTY sessions in resizable layouts with bounded output,
+scrollback restoration, and explicit lifecycle controls.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Agent-ready by default
+
+Launch supported coding agents in visible terminal sessions, track completion
+events, and keep notifications bound to the correct workspace and PTY.
+
+</td>
+<td width="50%" valign="top">
+
+### Jarvis and Codex App Server
+
+Use workspace-scoped context, read-only dynamic tools, conversational plans,
+streaming responses, and optional voice input/output through the Rust backend.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Project and Git workflows
+
+Browse project files, preview supported content, inspect Git changes, and keep
+file operations bounded to the selected workspace.
+
+</td>
+<td width="50%" valign="top">
+
+### Native Windows integration
+
+Use clipboard and drag-and-drop support, a system tray in release builds, and
+Windows-native process handling from a single desktop application.
+
+</td>
+</tr>
+</table>
+
+## Supported agents
+
+Traflix Space includes launch definitions for:
+
+**Anti-Gravity · Claude · Claudex · Codex · Command Code · Cline · Freebuff ·
+Grok · OpenCode · Pi**
+
+Any other command-line tool that runs in a Windows terminal can also be used
+through a regular terminal pane.
+
+## Install from source
+
+Traflix Space is currently distributed as a source-built Windows application.
+
+### Requirements
 
 - Windows 10 or Windows 11;
 - Node.js 24 and npm;
 - a stable Rust toolchain with Cargo;
 - Microsoft Edge WebView2 Runtime;
-- Python 3.12 when developing or packaging the optional Edge TTS helper;
+- Python 3.12 when building the optional Edge TTS helper;
 - an installed and authenticated Codex CLI when using Jarvis through Codex App
   Server.
 
-## Installation and development
-
-Clone the repository and install the JavaScript dependencies:
+### Development
 
 ```powershell
 git clone https://github.com/iTzFrancesco/Traflix-Space.git
 cd Traflix-Space
 npm ci
-```
-
-Start the Tauri development application with:
-
-```powershell
 npm run tauri dev
 ```
 
-The optional Groq voice provider can be configured from the application
-settings. For local development, `.env.example` documents the supported
-placeholder without containing a credential. Do not commit `.env` or any
-populated environment file.
+The optional Groq voice provider can be configured in the application settings.
+For local development, copy `.env.example` to `.env` and add your own
+credential. Never commit `.env` or place a real key in documentation, tests, or
+source control.
 
-## Build and test
-
-The frontend typecheck and production bundle can be generated with
-`npm run build`. A Windows MSI build is produced by:
+### Build and test
 
 ```powershell
+npm run build
 npm run tauri build
 ```
 
-The Windows build hook creates the Edge TTS sidecar from
-`scripts/jarvis-edge-tts.py`; the generated executable is intentionally not
-stored in source control.
+The Windows build hook creates and validates the Edge TTS sidecar at build
+time. The generated executable is intentionally ignored and is not part of the
+source distribution.
 
-Useful verification commands include:
+Run the main regression suites with:
 
 ```powershell
 npm run test:strict
@@ -92,65 +147,37 @@ npm run test:terminal
 npm run test:agent-notifications
 ```
 
-The Codex App Server integration has a portable test suite and an optional
-Windows-only live handshake test. See the [Jarvis documentation](docs/README.md)
-for the current scope and validation notes.
-
-## Architecture
-
-```text
-User
-  │
-  ├── React + TypeScript UI
-  │       │ typed Tauri IPC/events
-  │       ▼
-  └── Rust/Tauri runtime
-          ├── workspace registry and policy
-          ├── ConPTY terminal manager
-          ├── agent notification bridge
-          ├── Jarvis context, tools, and Codex App Server adapter
-          └── optional voice capture, Groq STT, and Edge TTS
-```
-
-The application stores workspace metadata and UI settings in the operating
-system's application-data area rather than in the selected project directory.
-Project files are accessed only as a result of an explicit user action or an
-allow-listed Jarvis operation. Terminal processes run with the current user's
-Windows permissions.
-
 ## Privacy and credentials
 
-Local transcription and voice features are optional. When Groq Speech-to-Text
-is enabled, recorded audio is sent to Groq and the provider's terms and privacy
-policy apply. The Groq key is handled by the Rust backend and is not exposed to
-the React state or written to the repository; provider credentials are removed
-from ordinary terminal child-process environments.
+Traflix Space is a local desktop application. Workspace metadata and UI state
+are stored in the operating system's application-data area, while project
+files are accessed only through explicit user actions or bounded host
+operations.
 
-Jarvis uses Codex App Server for its text model when enabled. Traflix Space does
-not read, copy, or persist Codex OAuth tokens; the official Codex runtime owns
-its authentication. Jarvis uses a dedicated runtime directory and exposes only
-the tools and operations implemented by the host application.
+Voice features are optional. When Groq Speech-to-Text is enabled, audio is sent
+to Groq and its provider terms apply. Credentials are handled by the Rust
+backend and are not exposed to React state or ordinary terminal child
+processes. Jarvis does not copy or persist Codex OAuth tokens; authentication
+remains owned by the official Codex runtime.
 
-Treat terminal output, project files, agent messages, and remote web content as
-untrusted input. Do not paste credentials into prompts, commit secrets, or use
-the application with a project whose contents you do not trust.
+Treat project files, terminal output, agent messages, and remote web content as
+untrusted input. Review the [security policy](SECURITY.md) before sharing logs,
+opening issues, or publishing a previously private repository.
 
-## Repository documentation
+## Documentation and development
 
-- [`AGENTS.md`](AGENTS.md) — public contributor and agent-development guidance;
-- [`docs/README.md`](docs/README.md) — maintained technical documentation;
-- [`scripts/agent-notifications/README.md`](scripts/agent-notifications/README.md)
-  — provider notification adapters.
+- [Documentation index](docs/README.md)
+- [Contributor and agent guide](AGENTS.md)
+- [Agent notification adapters](scripts/agent-notifications/README.md)
+- [Security policy](SECURITY.md)
 
-## Related projects
-
-- [Traflix](https://traflix.it);
-- [Traflix Voice](https://github.com/iTzFrancesco/Traflix-Voice), a Windows
-  voice-dictation application with local-first Whisper support.
+Bug reports and pull requests are welcome. Please remove credentials, personal
+filesystem paths, transcripts, and private project content before submitting
+diagnostic material.
 
 ## License
 
-Traflix Space is distributed under the [MIT License](LICENSE). The license
-covers this project's original code and documentation. Third-party libraries,
-models, services, trademarks, and bundled or generated dependencies remain
+Traflix Space is free and open source under the [MIT License](LICENSE). This
+license covers the project's original code and documentation. Third-party
+libraries, models, services, trademarks, and generated dependencies remain
 subject to their own licenses and terms.
