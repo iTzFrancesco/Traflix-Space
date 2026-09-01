@@ -7,7 +7,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iTzFrancesco/Traflix-Space/actions/workflows/ci.yml"><img src="https://github.com/iTzFrancesco/Traflix-Space/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
   <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Platform: Windows" />
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 19" />
@@ -18,6 +17,10 @@
   <a href="docs/README.md">Documentation</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="LICENSE">MIT License</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme/traflix-space-desktop.png" alt="Traflix Space desktop workspace with multiple terminal and agent panes" width="960" />
 </p>
 
 ## What it is
