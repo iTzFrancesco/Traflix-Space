@@ -252,11 +252,10 @@ impl JsonRpcClient {
     /// Sends a JSON-RPC response to a server request (e.g. the result of a
     /// dynamic tool call). `id` must match the request id.
     pub async fn respond(&self, id: u64, result: Value) -> Result<(), RpcError> {
-        // Codex App Server 0.147.0 DynamicToolCallResponse requires
-        // `{ contentItems: [...], success: bool }`. Early Jarvis integration
-        // code emitted `{ content: [...] }`; normalize that legacy internal
-        // shape here so every read tool and conversational.plan uses the
-        // canonical wire contract without duplicating protocol logic.
+        // DynamicToolCallResponse changed names across App Server releases.
+        // Normalize the internal legacy shape and emit both aliases so older
+        // servers can consume `content` while newer servers consume the
+        // canonical `contentItems` field.
         let result = normalize_server_response(result);
         let payload = json!({
             "jsonrpc": JSONRPC_VERSION,
@@ -306,16 +305,28 @@ impl JsonRpcClient {
 }
 
 fn normalize_server_response(result: Value) -> Value {
-    if result.get("contentItems").is_some() {
+    let Some(object) = result.as_object() else {
         return result;
+    };
+
+    let content_items = object
+        .get("contentItems")
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| object.get("content").and_then(Value::as_array).cloned());
+    let Some(content_items) = content_items else {
+        return result;
+    };
+
+    let mut normalized = result;
+    if let Some(object) = normalized.as_object_mut() {
+        object.insert("contentItems".to_owned(), Value::Array(content_items.clone()));
+        object
+            .entry("success".to_owned())
+            .or_insert_with(|| Value::Bool(true));
+        object.insert("content".to_owned(), Value::Array(content_items));
     }
-    match result.get("content").cloned() {
-        Some(Value::Array(content_items)) => json!({
-            "contentItems": content_items,
-            "success": true,
-        }),
-        _ => result,
-    }
+    normalized
 }
 
 #[cfg(test)]
@@ -370,7 +381,7 @@ mod tests {
         assert_eq!(normalized["success"], true);
         assert_eq!(normalized["contentItems"][0]["type"], "inputText");
         assert_eq!(normalized["contentItems"][0]["text"], "[]");
-        assert!(normalized.get("content").is_none());
+        assert_eq!(normalized["content"][0]["type"], "inputText");
     }
 
     #[test]

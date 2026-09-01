@@ -97,8 +97,7 @@ fn find_npm_codex_exe() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Runs `codex --version` once; returns the raw first line (e.g.
-/// `codex-cli 0.147.0`).
+/// Runs `codex --version` once; returns the raw first line for diagnostics.
 pub(super) async fn probe_version(executable: &Path) -> Option<String> {
     let mut command = Command::new(executable);
     configure_hidden_process(&mut command);

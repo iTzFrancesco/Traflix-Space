@@ -138,7 +138,8 @@ async fn emit_chat_stream(
 
 /// Extracts a completed agent message. Current App Server uses
 /// `{ type: "agentMessage", text: "..." }`; content blocks are kept as a
-/// compatibility fallback for the pinned 0.147.x runtime.
+/// compatibility fallback for App Server generations that expose content
+/// blocks instead of a flat text field.
 fn agent_message_text(item: &Value) -> Option<String> {
     if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
         return None;

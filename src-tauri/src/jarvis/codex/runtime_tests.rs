@@ -64,14 +64,6 @@ fn error_codes_are_stable() {
         "codex_not_installed"
     );
     assert_eq!(
-        RuntimeError::VersionTooOld {
-            found: "0.1.0".into(),
-            minimum: (0, 147, 0)
-        }
-        .code(),
-        "codex_version_mismatch"
-    );
-    assert_eq!(
         RuntimeError::Spawn("boom".into()).code(),
         "codex_runtime_start_failed"
     );
@@ -85,21 +77,16 @@ fn error_codes_are_stable() {
 }
 
 /// Real end-to-end smoke test against the installed `codex app-server`.
-/// Requires codex >= 0.147.0 on PATH (or npm global layout). Run with
-/// `cargo test -- --ignored`.
+/// Requires a working `codex app-server` on PATH (or npm global layout). The
+/// test intentionally does not pin a CLI version: the runtime must exercise
+/// the live handshake and protocol surface of the installed release.
 #[tokio::test]
 #[ignore = "requires real codex app-server binary"]
 async fn spawns_real_app_server_and_handshakes() {
     let executable = resolve_codex_executable().expect("codex executable resolved");
-    let version = probe_version(&executable)
+    let _version = probe_version(&executable)
         .await
         .expect("codex --version produces output");
-    let parsed = CodexVersion::parse_cli(&version).expect("version parses");
-    assert!(
-        parsed.is_supported(),
-        "installed codex {version} is below minimum supported"
-    );
-
     let mut child = Command::new(&executable)
         .arg("app-server")
         .stdin(std::process::Stdio::piped())
@@ -134,8 +121,9 @@ async fn spawns_real_app_server_and_handshakes() {
             .expect("initialize response"),
     )
     .expect("initialize result shape");
-    assert_eq!(init.platform_family, "windows");
-    assert!(init.codex_home.contains("codex"));
+    assert_eq!(init.platform_family.as_deref(), Some("windows"));
+    let codex_home = init.codex_home.clone().unwrap_or_default();
+    assert!(codex_home.contains("codex"));
 
     client
         .notify("initialized", json!({}))
@@ -230,7 +218,7 @@ async fn spawns_real_app_server_and_handshakes() {
             "thread/start",
             json!({
                 "ephemeral": true,
-                "cwd": init.codex_home,
+                "cwd": codex_home,
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
                 "model": "gpt-5.6-luna",

@@ -66,7 +66,7 @@ risolte tranne #11 (repo hygiene):
 | 7 | rimozione Instradamento modelli + `TextModelSettings` legacy | ✅ | `8227f05` + `3971cb5` |
 | 8 | shape rate limits ufficiale `usedPercent`/`resetsAt` | ✅ | `3971cb5` |
 | 9 | account/modello/usage in settings normali; diagnostica avanzata | ✅ | `3971cb5` |
-| 10 | version pin fail-closed 0.147.x (anche output non parseabile) | ✅ | `77640ca` |
+| 10 | compatibilità Codex verificata tramite handshake live, senza pin semver | ✅ | `77640ca` |
 | 11 | untrack `D:/rust/target` artefatti + .gitignore | ⏳ coda | — |
 | 12 | `request_id` propagato a `start_turn` | ✅ | `77640ca` |
 

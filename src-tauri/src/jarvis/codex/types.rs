@@ -32,11 +32,17 @@ pub struct InitializeParams {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
-    pub user_agent: String,
-    pub codex_home: String,
-    #[allow(dead_code)]
-    pub platform_family: String,
-    pub platform_os: String,
+    /// Optional across App Server generations; used only for diagnostics.
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// The runtime falls back to its requested home when this metadata is
+    /// absent, which keeps the handshake useful across protocol revisions.
+    #[serde(default)]
+    pub codex_home: Option<String>,
+    #[serde(default)]
+    pub platform_family: Option<String>,
+    #[serde(default)]
+    pub platform_os: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,150 +78,25 @@ pub struct CodexRuntimeStatus {
     pub restart_count: u32,
 }
 
-/// Supported App Server version. The protocol surface (especially dynamic
-/// tools) is experimental: Jarvis is verified against the **0.147.x** wire
-/// contract (dynamic-tool server requests are answered with
-/// `{content: [...]}`). The official protocol has since moved to
-/// `{contentItems, success}` — outside the verified minor we fail closed
-/// instead of guessing at unknown payload shapes.
-pub const SUPPORTED_CODEX_VERSION: (u32, u32, u32) = (0, 147, 0);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-}
-
-impl CodexVersion {
-    /// Parses `codex-cli 0.147.0` style output. Returns `None` for anything
-    /// that does not look like a numeric semver triple.
-    pub fn parse_cli(output: &str) -> Option<Self> {
-        let token = output
-            .split_whitespace()
-            .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
-        let mut parts = token.trim().split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next()?.parse().ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
-        Some(Self {
-            major,
-            minor,
-            patch,
-        })
-    }
-
-    /// Review: exact minor pin. Only `0.147.x` is supported — the official
-    /// dynamicTools response moved to `{contentItems, success}`, so any
-    /// other minor would be parsed with the wrong contract.
-    pub fn is_supported(&self) -> bool {
-        let (major, minor, _) = SUPPORTED_CODEX_VERSION;
-        self.major == major && self.minor == minor
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CodexVersion, SUPPORTED_CODEX_VERSION};
+    use super::InitializeResult;
+    use serde_json::json;
 
     #[test]
-    fn parses_cli_version_output() {
-        assert_eq!(
-            CodexVersion::parse_cli("codex-cli 0.147.0"),
-            Some(CodexVersion {
-                major: 0,
-                minor: 147,
-                patch: 0
-            })
-        );
-        assert_eq!(
-            CodexVersion::parse_cli("codex 1.2.3 (abc123)"),
-            Some(CodexVersion {
-                major: 1,
-                minor: 2,
-                patch: 3
-            })
-        );
-        assert_eq!(CodexVersion::parse_cli(""), None);
-        assert_eq!(CodexVersion::parse_cli("codex-cli"), None);
-        assert_eq!(CodexVersion::parse_cli("codex-cli 0.147"), None);
-        assert_eq!(CodexVersion::parse_cli("abc 0.x.y"), None);
-    }
+    fn initialize_result_accepts_full_and_minimal_metadata() {
+        let full: InitializeResult = serde_json::from_value(json!({
+            "userAgent": "codex-cli 0.152.0",
+            "codexHome": "C:/codex-home",
+            "platformFamily": "windows",
+            "platformOs": "windows"
+        }))
+        .unwrap();
+        assert_eq!(full.user_agent.as_deref(), Some("codex-cli 0.152.0"));
+        assert_eq!(full.codex_home.as_deref(), Some("C:/codex-home"));
 
-    #[test]
-    fn supported_version_is_pinned_to_the_verified_minor() {
-        // 0.147.x is the verified contract (dynamic tools `{content: [...]}`).
-        assert!(CodexVersion {
-            major: 0,
-            minor: 147,
-            patch: 0
-        }
-        .is_supported());
-        assert!(CodexVersion {
-            major: 0,
-            minor: 147,
-            patch: 9
-        }
-        .is_supported());
-        // Older minors and any other minor/major fail closed: the official
-        // protocol moved to `{contentItems, success}` for dynamic tools.
-        assert!(!CodexVersion {
-            major: 0,
-            minor: 146,
-            patch: 0
-        }
-        .is_supported());
-        assert!(!CodexVersion {
-            major: 0,
-            minor: 148,
-            patch: 0
-        }
-        .is_supported());
-        assert!(!CodexVersion {
-            major: 1,
-            minor: 147,
-            patch: 0
-        }
-        .is_supported());
-    }
-
-    #[test]
-    fn supported_version_boundary() {
-        let (maj, min, _pat) = SUPPORTED_CODEX_VERSION;
-        // Any patch of the pinned minor is fine.
-        assert!(CodexVersion {
-            major: maj,
-            minor: min,
-            patch: 0
-        }
-        .is_supported());
-        assert!(CodexVersion {
-            major: maj,
-            minor: min,
-            patch: 999
-        }
-        .is_supported());
-        // One minor below/above fails closed.
-        assert!(!CodexVersion {
-            major: maj,
-            minor: min.saturating_sub(1),
-            patch: 999
-        }
-        .is_supported());
-        assert!(!CodexVersion {
-            major: maj,
-            minor: min + 1,
-            patch: 0
-        }
-        .is_supported());
-        assert!(!CodexVersion {
-            major: maj + 1,
-            minor: min,
-            patch: 0
-        }
-        .is_supported());
+        let minimal: InitializeResult = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(minimal.user_agent, None);
+        assert_eq!(minimal.codex_home, None);
     }
 }

@@ -51,8 +51,6 @@ export function codexErrorMessage(message: string): string {
   switch (code) {
     case "codex_not_installed":
       return "Codex CLI non installato: installa il pacchetto npm `@openai/codex` e riavvia.";
-    case "codex_version_mismatch":
-      return "Versione Codex troppo vecchia: serve >= 0.147.0.";
     case "codex_runtime_start_failed":
       return "Impossibile avviare il runtime Codex (handshake fallito).";
     case "codex_runtime_crashed":

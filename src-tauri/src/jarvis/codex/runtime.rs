@@ -17,8 +17,8 @@ use self::runtime_transport::{
     configure_hidden_process, kill_pid, probe_version, resolve_codex_executable,
 };
 use super::types::{
-    ClientInfo, CodexRuntimeState, CodexRuntimeStatus, CodexVersion, InitializeCapabilities,
-    InitializeParams, InitializeResult, SUPPORTED_CODEX_VERSION,
+    ClientInfo, CodexRuntimeState, CodexRuntimeStatus, InitializeCapabilities, InitializeParams,
+    InitializeResult,
 };
 
 /// Global Tauri event carrying runtime status snapshots to the UI.
@@ -36,14 +36,6 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum RuntimeError {
     #[error("codex executable not found: {0}")]
     NotFound(String),
-    #[error(
-        "codex version too old: found {found}, minimum supported {minimum}",
-        minimum = display_version(*.minimum)
-    )]
-    VersionTooOld {
-        found: String,
-        minimum: (u32, u32, u32),
-    },
     #[error("failed to spawn codex app-server: {0}")]
     Spawn(String),
     #[error("codex app-server handshake failed: {0}")]
@@ -56,16 +48,11 @@ pub enum RuntimeError {
     Environment(String),
 }
 
-fn display_version(version: (u32, u32, u32)) -> String {
-    format!("{}.{}.{}", version.0, version.1, version.2)
-}
-
 impl RuntimeError {
     /// Stable error code for the Jarvis error model (spec §24).
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotFound(_) => "codex_not_installed",
-            Self::VersionTooOld { .. } => "codex_version_mismatch",
             Self::Spawn(_) | Self::Handshake(_) => "codex_runtime_start_failed",
             Self::NotRunning { .. } => "codex_runtime_crashed",
             Self::Rpc(_) => "codex_rpc_failed",
@@ -198,25 +185,14 @@ impl CodexRuntimeManager {
         };
         info!(executable = %executable.display(), "resolved codex executable");
 
-        // Version gate (spec §25 + review: fail closed, also on unparseable
-        // output — outside the pinned 0.147.x contract we refuse to guess).
+        // Version is diagnostic metadata only. App Server has no stable
+        // cross-release semver contract, so compatibility is established by
+        // the live initialize handshake and subsequent RPCs.
         if let Some(version) = probe_version(&executable).await {
-            let supported = match CodexVersion::parse_cli(&version) {
-                Some(parsed) => parsed.is_supported(),
-                None => {
-                    warn!(version, "unparseable codex version; failing closed");
-                    false
-                }
-            };
-            if !supported {
-                let err = RuntimeError::VersionTooOld {
-                    found: version,
-                    minimum: SUPPORTED_CODEX_VERSION,
-                };
-                self.set_failed(&err).await;
-                return Err(err);
-            }
+            info!(version = %version, "detected codex executable version");
             self.inner.lock().await.version = Some(version);
+        } else {
+            warn!("could not read codex version; attempting App Server handshake");
         }
 
         // Spec §5: the App Server must use a dedicated CODEX_HOME so the
@@ -235,7 +211,7 @@ impl CodexRuntimeManager {
             .arg("app-server")
             // Spec §5: dedicated CODEX_HOME so the personal ~/.codex profile
             // can never leak into Jarvis.
-            .env("CODEX_HOME", codex_home_str)
+            .env("CODEX_HOME", &codex_home_str)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -324,8 +300,17 @@ impl CodexRuntimeManager {
                 {
                     let mut inner = self.inner.lock().await;
                     inner.state = CodexRuntimeState::Running;
-                    inner.codex_home = Some(init.codex_home.clone());
-                    inner.platform = Some(init.platform_os.clone());
+                    inner.codex_home = Some(
+                        init.codex_home
+                            .clone()
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or_else(|| codex_home_str.clone()),
+                    );
+                    inner.platform = init
+                        .platform_os
+                        .clone()
+                        .or_else(|| init.platform_family.clone())
+                        .filter(|value| !value.trim().is_empty());
                     inner.consecutive_crashes = 0;
                     // Review: a new process is up — bump the generation so
                     // ephemeral threads/state of a previous process die.
@@ -359,7 +344,10 @@ impl CodexRuntimeManager {
                         self.inner.lock().await.account_type = account_type;
                     }
                 }
-                info!(user_agent = %init.user_agent, "codex app-server runtime ready");
+                info!(
+                    user_agent = init.user_agent.as_deref().unwrap_or("unknown"),
+                    "codex app-server runtime ready"
+                );
                 // Hand the server-notification channel to the account bridge
                 // (C2) and the rate-limit merger (C3); later chunks attach
                 // their own consumers to it.

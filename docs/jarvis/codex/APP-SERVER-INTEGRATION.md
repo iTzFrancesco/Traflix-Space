@@ -1402,7 +1402,6 @@ codex_tool_invalid
 codex_tool_timeout
 
 codex_protocol_error
-codex_version_mismatch
 ```
 
 UI example:
@@ -1428,22 +1427,21 @@ Non attivare automaticamente DeepSeek come fallback.
 
 # 25. Protocol versioning
 
-Il client Rust non dovrebbe implementare tipi JSON a memoria e sperare che rimangano invariati.
-
-Durante sviluppo/build usare gli strumenti di schema forniti da App Server per generare tipi/schema corrispondenti alla versione Codex installata/supportata.
-
-Il protocollo App Server è ampio e alcune parti, tra cui Dynamic Tools, sono sperimentali; dobbiamo quindi definire una **minimum supported Codex version** e fare runtime capability/version checks.
+Il client Rust non deve bloccare l'avvio su una versione semver: il protocollo
+App Server evolve e il binario installato è l'autorità per il wire contract.
+Traflix Space raccoglie la versione per diagnostica, completa il live handshake,
+usa payload JSON tolleranti e normalizza gli alias noti dei dynamic tool.
 
 Se Dynamic Tools cambiano in una release:
 
 ```text
-fail closed
+segnala l'errore RPC specifico dopo aver tentato il runtime
 ```
 
 non:
 
 ```text
-prova a interpretare payload sconosciuti
+non inventa un payload quando il server lo rifiuta
 ```
 
 ---

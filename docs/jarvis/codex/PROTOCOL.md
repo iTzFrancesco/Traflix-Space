@@ -5,10 +5,11 @@ test reali su Windows con `codex.exe app-server`).
 
 ## Handshake e runtime
 
-- `initialize`/`initialized` all'avvio; versione minima vincolata
-  (`MIN_SUPPORTED_CODEX_VERSION`).
+- `initialize`/`initialized` all'avvio; la versione CLI viene raccolta solo per
+  diagnostica. Non esiste un pin semver: la compatibilità viene verificata dal
+  live handshake e dagli RPC realmente disponibili.
 - Errori di runtime mappati in `RuntimeError.code()`: `codex_not_installed`,
-  `codex_version_mismatch`, `codex_runtime_start_failed`, `codex_runtime_crashed`,
+  `codex_runtime_start_failed`, `codex_runtime_crashed`,
   `codex_rpc_failed`, `codex_environment_error`.
 
 ## Thread e turni
@@ -58,7 +59,8 @@ test reali su Windows con `codex.exe app-server`).
 
 ## Forma esatta dei payload
 
-La spec ufficiale non documenta ogni forma: il normalizer (`codex/events.rs`)
+La spec ufficiale non documenta ogni forma: i normalizer (`codex/events.rs` e
+`codex/rpc.rs`)
 fa **parse difensivo multi-alias** (`item.id`/`itemId`, `item.type`/`itemType`,
 testo da `content[]`/`text`/delta). I payload grezzi dei turni reali vengono
 stampati dal test `spawns_real_app_server_and_handshakes` per verifica su
