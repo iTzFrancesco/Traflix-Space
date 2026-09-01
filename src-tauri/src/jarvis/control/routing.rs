@@ -248,6 +248,9 @@ pub(super) async fn resolve_target(
     } else {
         normalize_plan_provider(query_text)
     };
+    let query_provider_hint = query_provider
+        .clone()
+        .or_else(|| provider_hint_from_query(query_text));
     // The internal alias is the only exact semantic identity. A matching
     // alias bypasses title/task scoring, while duplicate/corrupt aliases are
     // surfaced as ambiguous instead of selecting by iteration order.
@@ -287,7 +290,7 @@ pub(super) async fn resolve_target(
     // that provider first. With multiple sessions of the same provider this
     // remains ambiguous; availability alone is not enough to guess which pane
     // the user meant.
-    let provider_filter = explicit_provider.clone().or(query_provider.clone());
+    let provider_filter = explicit_provider.clone().or(query_provider_hint);
     let mut candidates = context
         .agent_sessions
         .iter()
@@ -385,6 +388,32 @@ pub(super) async fn resolve_target(
         terminal: candidates[0].2.clone(),
         session: candidates[0].1.clone(),
     })
+}
+
+/// Extract one canonical provider from a human-facing label such as
+/// `subagent 2 - grok`. The rest of the label remains semantic context, but
+/// the provider hint constrains routing so fuzzy title/tail scoring cannot send
+/// the prompt to an unrelated agent.
+pub(super) fn provider_hint_from_query(query: &str) -> Option<String> {
+    let normalized = query
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_'], " ");
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+    let mut hints = HashSet::new();
+
+    for token in &tokens {
+        if let Some(provider) = normalize_plan_provider(token) {
+            hints.insert(provider);
+        }
+    }
+    for pair in tokens.windows(2) {
+        if let Some(provider) = normalize_plan_provider(&format!("{} {}", pair[0], pair[1])) {
+            hints.insert(provider);
+        }
+    }
+
+    (hints.len() == 1).then(|| hints.into_iter().next().unwrap())
 }
 
 pub(super) fn score_candidate(

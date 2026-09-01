@@ -3,7 +3,7 @@ import {
   applyCodexChatStream,
   completedCodexSpeechItem,
 } from "../../lib/jarvis/chatState";
-import { shouldSpeakCommentary, enqueueSpeech } from "../../lib/jarvis/ttsState";
+import { shouldSpeakCommentary, enqueueSpeech, speechItemKey } from "../../lib/jarvis/ttsState";
 import { codexErrorMessage, setCodexChatStreamAvailable, setCodexChatStreamBindingReady } from "./runtime";
 import type {
   CodexAccountEvent,
@@ -108,7 +108,7 @@ export function bindCodexEventsForStore(store: JarvisStoreAccess): () => void {
     const current = store.getState();
     if (
       completedSpeech
-      && !current.codexSpokenItemIds.includes(completedSpeech.itemId)
+      && !current.codexSpokenItemIds.includes(speechItemKey(completedSpeech))
       && current.settings.jarvis.codex.speakCommentary
       && current.settings.jarvis.voiceOutput.enabled
       && current.settings.jarvis.voiceOutput.autoSpeak

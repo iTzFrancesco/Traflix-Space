@@ -254,6 +254,7 @@ pub async fn jarvis_agent_activity(
         &observed_at,
     )
     .await?;
+    reconcile_live_registry(&app, &observed_at).await;
     let limit = limit
         .map(|value| value as usize)
         .unwrap_or(DEFAULT_ACTIVITY_LIMIT)

@@ -48,6 +48,21 @@ test("delta-only completion remains visible and is spoken with accumulated text"
   assert.equal(latestCodexMessage(turns, "workspace-1"), "Controllo il terminale.");
 });
 
+test("an empty completion event cannot erase accumulated deltas", () => {
+  let turns = {};
+  for (const incoming of [
+    event("turn_started"),
+    event("message_started", { itemId: "commentary-1" }),
+    event("message_delta", { itemId: "commentary-1", text: "Testo già " }),
+    event("message_delta", { itemId: "commentary-1", text: "ricevuto." }),
+    event("message_completed", { itemId: "commentary-1", text: "" }),
+  ]) {
+    turns = applyCodexChatStream(turns, incoming);
+  }
+
+  assert.equal(turns["workspace-1"][0].items[0].text, "Testo già ricevuto.");
+});
+
 test("intermediate messages and the final answer remain distinct in FIFO order", () => {
   let turns = {};
   const completed = [];

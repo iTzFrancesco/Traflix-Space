@@ -6,9 +6,10 @@ use tracing::{info, warn};
 
 use crate::jarvis::agent_registry::{
     fallback_result_from_terminal_with_truncation, CompletionObservation,
-    MAX_TERMINAL_FALLBACK_BYTES,
+    TerminalAgentSnapshot, MAX_TERMINAL_FALLBACK_BYTES,
 };
 use crate::jarvis::JarvisState;
+use crate::jarvis::runtime_detector::normalize_provider;
 use crate::terminal_engine::TerminalManager;
 
 pub const AGENT_EVENT_PROTOCOL: u8 = 1;
@@ -119,6 +120,28 @@ fn matches_terminal_generation(event_generation: Option<u64>, current_generation
     // process/workspace identity when those fields are present. Reject only
     // an explicitly different generation here.
     event_generation.is_none_or(|generation| generation == current_generation)
+}
+
+fn completion_provider_matches_snapshot(
+    event_provider: &str,
+    snapshot: &TerminalAgentSnapshot,
+) -> bool {
+    let Some(event_provider) = normalize_provider(event_provider) else {
+        // Unknown providers are retained for unconfigured terminals for
+        // backwards compatibility, but cannot override a known identity.
+        return snapshot.agent_id.is_none() && snapshot.observed_provider.is_none();
+    };
+    let expected_provider = snapshot
+        .agent_id
+        .as_deref()
+        .and_then(normalize_provider)
+        .or_else(|| {
+            snapshot
+                .observed_provider
+                .as_deref()
+                .and_then(normalize_provider)
+        });
+    expected_provider.is_none_or(|expected| expected == event_provider)
 }
 
 pub fn start_listener(app: AppHandle) {
@@ -308,6 +331,19 @@ async fn handle_payload(app: &AppHandle, registry: &AgentEventRegistry, payload:
         None
     };
 
+    if let Some(snapshot) = local_snapshot.as_ref() {
+        if !completion_provider_matches_snapshot(&event.provider, snapshot) {
+            warn!(
+                terminal_id = %event.terminal_id,
+                event_provider = %event.provider,
+                configured_provider = ?snapshot.agent_id,
+                observed_provider = ?snapshot.observed_provider,
+                "Agent completion ignored: provider mismatch"
+            );
+            return;
+        }
+    }
+
     // Deduplicate only after local identity validation. An invalid stale event
     // must not reserve the event key and suppress the legitimate current event.
     if let Some(key) = event.dedupe_key() {
@@ -476,5 +512,51 @@ mod tests {
         // Codex adapters may omit generation. The live terminal/process
         // checks in handle_payload provide the remaining stale-event guard.
         assert!(matches_terminal_generation(None, 7));
+    }
+
+    #[test]
+    fn completion_provider_must_match_the_configured_terminal_identity() {
+        let snapshot = TerminalAgentSnapshot {
+            terminal_id: "terminal-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            is_agent_terminal: true,
+            agent_id: Some("grok".to_string()),
+            agent_alias: Some("grok".to_string()),
+            observed_provider: None,
+            detection_source: "backend-launch".to_string(),
+            detection_confidence: 1.0,
+            identity_warnings: Vec::new(),
+            generation: 1,
+            process_id: Some(100),
+            process_alive: true,
+            agent_process_alive: Some(true),
+        };
+
+        assert!(completion_provider_matches_snapshot("grok", &snapshot));
+        assert!(!completion_provider_matches_snapshot("claude", &snapshot));
+    }
+
+    #[test]
+    fn completion_provider_aliases_are_normalized_before_matching() {
+        let mut snapshot = TerminalAgentSnapshot {
+            terminal_id: "terminal-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            is_agent_terminal: true,
+            agent_id: Some("agy".to_string()),
+            agent_alias: Some("anti-gravity".to_string()),
+            observed_provider: None,
+            detection_source: "backend-launch".to_string(),
+            detection_confidence: 1.0,
+            identity_warnings: Vec::new(),
+            generation: 1,
+            process_id: Some(100),
+            process_alive: true,
+            agent_process_alive: Some(true),
+        };
+
+        assert!(completion_provider_matches_snapshot("anti-gravity", &snapshot));
+        snapshot.agent_id = None;
+        snapshot.observed_provider = Some("grok".to_string());
+        assert!(!completion_provider_matches_snapshot("claude", &snapshot));
     }
 }

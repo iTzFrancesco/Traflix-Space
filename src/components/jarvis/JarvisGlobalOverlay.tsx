@@ -14,6 +14,8 @@ import {
   sanitizedVoiceError,
   sanitizedVoiceErrorView,
 } from "../../lib/jarvis/voiceSettings";
+import { hasPendingVoiceHandoff } from "../../lib/jarvis/voiceState";
+import { speechItemKey } from "../../lib/jarvis/ttsState";
 import { JarvisWidget } from "./JarvisWidget";
 import { useJarvisEventBindings } from "./useJarvisEventBindings";
 
@@ -37,6 +39,7 @@ export function JarvisGlobalOverlay() {
   const chatErrors = useJarvisStore((state) => state.chatErrors);
   const voiceRequests = useJarvisStore((state) => state.voiceRequests);
   const voiceSubmitStates = useJarvisStore((state) => state.voiceSubmitStates);
+  const voiceHandoffPending = hasPendingVoiceHandoff(voiceRequests, voiceSubmitStates);
   const activeVoiceRequestId = useJarvisStore(
     (state) => state.activeVoiceRequestId,
   );
@@ -179,6 +182,9 @@ export function JarvisGlobalOverlay() {
     if (speechWorkerBusyRef.current) return;
     const item = codexSpeechQueue[0];
     if (!item) return;
+    // The active request id is cleared at transcript_ready, but the draft or
+    // submission still owns the audio channel until the handoff is accepted.
+    if (voiceHandoffPending) return;
     const voiceTurnActive = activeVoiceRequest
       && ["armed", "recording", "stopping", "transcribing", "transcript_ready"].includes(
         activeVoiceRequest.status,
@@ -201,7 +207,8 @@ export function JarvisGlobalOverlay() {
     }
     speechWorkerBusyRef.current = true;
     const settings = store.settings.jarvis.voiceOutput;
-    const requestId = `tts-codex-${item.itemId}`;
+    const speechKey = speechItemKey(item);
+    const requestId = `tts-codex-${speechKey}`;
     console.info("[Jarvis TTS] commentary speaking", {
       itemId: item.itemId,
       turnId: item.turnId,
@@ -223,14 +230,14 @@ export function JarvisGlobalOverlay() {
           turnId: item.turnId,
           requestId,
         });
-        speechRetryCountsRef.current.delete(item.itemId);
+        speechRetryCountsRef.current.delete(speechKey);
         useJarvisStore.getState().setTtsStatus(status);
-        useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
+        useJarvisStore.getState().dequeueCodexSpeech(item);
       })
       .catch((error) => {
         const errorView = sanitizedVoiceErrorView(error, "tts_ipc_failed");
-        const attempts = (speechRetryCountsRef.current.get(item.itemId) ?? 0) + 1;
-        speechRetryCountsRef.current.set(item.itemId, attempts);
+        const attempts = (speechRetryCountsRef.current.get(speechKey) ?? 0) + 1;
+        speechRetryCountsRef.current.set(speechKey, attempts);
         console.warn("[Jarvis TTS] commentary failed", {
           itemId: item.itemId,
           turnId: item.turnId,
@@ -242,8 +249,8 @@ export function JarvisGlobalOverlay() {
           // The helper already retries internally. After three client-level
           // attempts, release this item so one broken provider cannot block
           // every later step forever; successful items are dequeued above.
-          speechRetryCountsRef.current.delete(item.itemId);
-          useJarvisStore.getState().dequeueCodexSpeech(item.itemId);
+          speechRetryCountsRef.current.delete(speechKey);
+          useJarvisStore.getState().dequeueCodexSpeech(item);
           return;
         }
         // Keep the failed item at the head of the FIFO. A fresh array reference
@@ -252,7 +259,7 @@ export function JarvisGlobalOverlay() {
         const retryDelayMs = Math.min(2_000, 250 * 2 ** (attempts - 1));
         window.setTimeout(() => {
           const currentQueue = useJarvisStore.getState().codexSpeechQueue;
-          if (currentQueue[0]?.itemId !== item.itemId) return;
+          if (!currentQueue[0] || speechItemKey(currentQueue[0]) !== speechKey) return;
           useJarvisStore.setState({ codexSpeechQueue: [...currentQueue] });
         }, retryDelayMs);
       })
@@ -264,6 +271,7 @@ export function JarvisGlobalOverlay() {
     activeVoiceRequest?.status,
     codexSpeechQueue,
     dequeueCodexSpeech,
+    voiceHandoffPending,
     ttsStatus.status,
   ]);
 

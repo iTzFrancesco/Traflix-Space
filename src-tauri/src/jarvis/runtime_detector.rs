@@ -47,7 +47,7 @@ const SUPPORTED_PROVIDERS: [&str; 10] = [
 pub fn normalize_provider(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     let canonical = match normalized.as_str() {
-        "agy" | "anti gravity" => "anti-gravity",
+        "agy" | "anti gravity" | "anti-gravity" | "antigravity" => "anti-gravity",
         "cloud" => "claude",
         "cloudx" => "claudex",
         "command code" => "cmdc",

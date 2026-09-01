@@ -10,6 +10,7 @@ const agents = source("../src/lib/agents.ts");
 const agentRegistry = source("../src-tauri/src/agent/registry.rs");
 const agentLauncher = source("../src/lib/agentLauncher.ts");
 const runtimeDetector = source("../src-tauri/src/jarvis/runtime_detector.rs");
+const agentEvents = source("../src-tauri/src/agent_events.rs");
 const workspaceGrid = source("../src/components/workspace/WorkspaceGrid.tsx");
 const workspaceWizard = source("../src/components/workspace/NewSpaceWizard.tsx");
 const projectWorkspaceSync = source("../src/components/project/ProjectWorkspaceSync.tsx");
@@ -135,8 +136,10 @@ test("manual agent catalog and Jarvis provider registry stay aligned", () => {
     assert.match(runtimeDetector, new RegExp(`"${provider}"`));
   }
 
-  assert.match(runtimeDetector, /"agy" \| "anti gravity" => "anti-gravity"/);
+  assert.match(runtimeDetector, /"agy" \| "anti gravity"[\s\S]*"anti-gravity"/);
   assert.match(runtimeDetector, /"command code" => "cmdc"/);
+  assert.match(agentEvents, /completion_provider_matches_snapshot/);
+  assert.match(agentEvents, /Agent completion ignored: provider mismatch/);
   assert.match(agents, /id: "cmdc"[\s\S]*command: "cmdc"/);
   assert.match(agents, /id: "cline"[\s\S]*command: "cline"/);
   assert.match(agents, /id: "anti-gravity"[\s\S]*command: "agy"/);

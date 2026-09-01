@@ -186,7 +186,8 @@ mod tests {
     use super::plan::{normalize_plan_provider, validate_plan_text};
     use super::routing::{
         automatic_follow_up_requested, batch_confirmation_matches, binding_matches_target,
-        bound_target_from_pending, merge_step_with_pending, score_candidate, target_from_binding,
+        bound_target_from_pending, merge_step_with_pending, provider_hint_from_query,
+        score_candidate, target_from_binding,
     };
     use super::support::{synthetic_session, terminal_summary_for_config};
     use super::*;
@@ -220,6 +221,19 @@ mod tests {
             Some("claudex".to_string())
         );
         assert_eq!(normalize_plan_provider("openai"), None);
+    }
+
+    #[test]
+    fn provider_hint_extracts_the_stable_provider_from_display_labels() {
+        assert_eq!(
+            provider_hint_from_query("subagent 1 - antigravity"),
+            Some("anti-gravity".to_string())
+        );
+        assert_eq!(
+            provider_hint_from_query("subagent 2 - grok"),
+            Some("grok".to_string())
+        );
+        assert_eq!(provider_hint_from_query("subagent 3"), None);
     }
 
     #[test]

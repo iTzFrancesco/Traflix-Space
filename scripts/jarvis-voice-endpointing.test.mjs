@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   decideVoiceSubmit,
+  hasPendingVoiceHandoff,
   voiceEndpointCaption,
   voiceUiPhase,
 } from "../src/lib/jarvis/voiceState.ts";
@@ -13,6 +14,7 @@ import {
 } from "../src/lib/jarvis/settings.ts";
 import {
   enqueueSpeech,
+  speechItemKey,
   shouldSpeakCommentary,
 } from "../src/lib/jarvis/ttsState.ts";
 
@@ -153,6 +155,38 @@ test("progressive TTS retains every completed step until the worker consumes it"
     { length: 10 },
     (_, index) => `item-${index}`,
   ));
+});
+
+test("progressive TTS waits for a transcript handoff even after the active id is cleared", () => {
+  assert.equal(hasPendingVoiceHandoff({
+    "workspace-1": {
+      requestId: "voice-1",
+      workspaceId: "workspace-1",
+      status: "transcript_ready",
+      createdAt: "2026-08-14T20:00:00.000Z",
+      normalizedLevel: 0,
+      activationMode: "click_toggle",
+      vadState: "silence",
+    },
+  }, {}), true);
+  assert.equal(hasPendingVoiceHandoff({}, { "voice-1": "submitting" }), true);
+  assert.equal(hasPendingVoiceHandoff({}, { "voice-1": "sent" }), false);
+});
+
+test("progressive speech deduplicates by turn and item, not item id alone", () => {
+  const first = {
+    itemId: "message-1",
+    turnId: "turn-1",
+    workspaceId: "workspace-1",
+    text: "Prima risposta.",
+  };
+  const second = { ...first, turnId: "turn-2", text: "Seconda risposta." };
+  let queue = enqueueSpeech([], first);
+  queue = enqueueSpeech(queue, second);
+  assert.deepEqual(queue.map(speechItemKey), [
+    "turn-1::message-1",
+    "turn-2::message-1",
+  ]);
 });
 
 test("Codex commentary remains queued while a manual voice turn is active", () => {

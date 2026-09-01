@@ -122,10 +122,10 @@ export const createCodexSlice: JarvisSlice = (set, get) => {
     refreshCodex: async () => {
       await get().bootstrapCodex();
     },
-    dequeueCodexSpeech: (itemId) => {
+    dequeueCodexSpeech: (item) => {
       set((state) => ({
-        codexSpeechQueue: dequeueSpeech(state.codexSpeechQueue, itemId),
-        codexSpokenItemIds: rememberSpoken(state.codexSpokenItemIds, itemId),
+        codexSpeechQueue: dequeueSpeech(state.codexSpeechQueue, item),
+        codexSpokenItemIds: rememberSpoken(state.codexSpokenItemIds, item),
       }));
     },
     clearCodexSpeech: () => {

@@ -2,6 +2,7 @@ import type {
   VadState,
   VoiceEndpointState,
   VoiceRequestStatusView,
+  VoiceSubmitState,
 } from "./types";
 
 export type VoiceUiPhase = "idle" | "listening" | "processing" | "draft" | "error";
@@ -160,6 +161,19 @@ export function voiceDraftsForWorkspaces(requests: Record<string, VoiceRequestSt
 
 export function canSendTranscript(request: VoiceRequestStatusView | null, workspaceId: string | null, text: string): boolean {
   return Boolean(request && request.status === "transcript_ready" && request.workspaceId === workspaceId && text.trim());
+}
+
+/**
+ * The transcript handoff owns the audio channel even after the active request
+ * id is cleared. This closes the race where progressive TTS could start an
+ * older queued response between `transcript_ready` and chat submission.
+ */
+export function hasPendingVoiceHandoff(
+  requests: Record<string, VoiceRequestStatusView>,
+  submitStates: Record<string, VoiceSubmitState>,
+): boolean {
+  return Object.values(requests).some((request) => request.status === "transcript_ready")
+    || Object.values(submitStates).some((state) => state === "queued" || state === "submitting");
 }
 
 /** Endpoint detail stays in diagnostics; the compact UI uses one listening caption. */

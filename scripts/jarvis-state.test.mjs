@@ -661,6 +661,13 @@ test("busy and destructive actions remain conversational and stale-safe", () => 
   );
 });
 
+test("direct agent activity reads reconcile live sessions before querying history", () => {
+  const start = commandsSource.indexOf("pub async fn jarvis_agent_activity");
+  const end = commandsSource.indexOf("pub async fn jarvis_agent_tail", start);
+  assert.ok(start >= 0 && end > start);
+  assert.match(commandsSource.slice(start, end), /reconcile_live_registry\(&app, &observed_at\)\.await/);
+});
+
 test("batch terminal closes ask once and preserve every exact target binding", () => {
   assert.match(controlSource, /prepare_terminal_close_batch/);
   assert.match(controlSource, /confirmation_bindings/);

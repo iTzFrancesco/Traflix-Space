@@ -1,7 +1,7 @@
 import type { CodexSpeechItem, TtsStatusView } from "./types";
 
 // C8 — progressive commentary speech queue (spec §17).
-// Rules: speak every completed commentary/final item, dedupe by itemId, FIFO
+// Rules: speak every completed commentary/final item, dedupe by turn and item, FIFO
 // order, clear on barge-in. Filtering of empty/technical content belongs to
 // the backend speech normalizer; a short natural plan step is still useful.
 
@@ -13,12 +13,19 @@ export function shouldSpeakCommentary(text: string): boolean {
   return text.trim().length > 0;
 }
 
-/** Appends an item to the queue, deduping by itemId, without dropping steps. */
+/** Stable identity for a message item across the retained streaming turns. */
+export function speechItemKey(
+  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
+): string {
+  return `${item.turnId}::${item.itemId}`;
+}
+
+/** Appends an item to the queue, deduping by turn and item, without dropping steps. */
 export function enqueueSpeech(
   queue: CodexSpeechItem[],
   item: CodexSpeechItem,
 ): CodexSpeechItem[] {
-  if (queue.some((candidate) => candidate.itemId === item.itemId)) {
+  if (queue.some((candidate) => speechItemKey(candidate) === speechItemKey(item))) {
     return queue;
   }
   return [...queue, item];
@@ -27,9 +34,10 @@ export function enqueueSpeech(
 /** Removes the first item (called after synthesis is accepted/failed). */
 export function dequeueSpeech(
   queue: CodexSpeechItem[],
-  itemId: string,
+  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
 ): CodexSpeechItem[] {
-  return queue.filter((item) => item.itemId !== itemId);
+  const key = speechItemKey(item);
+  return queue.filter((candidate) => speechItemKey(candidate) !== key);
 }
 
 /** Barge-in / mute: drop everything still pending. */
@@ -40,10 +48,11 @@ export function clearSpeechQueue(_queue: CodexSpeechItem[]): CodexSpeechItem[] {
 /** Records a spoken item id for dedupe (bounded). */
 export function rememberSpoken(
   spoken: string[],
-  itemId: string,
+  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
 ): string[] {
-  if (spoken.includes(itemId)) return spoken;
-  return [...spoken, itemId].slice(-MAX_SPOKEN_ITEM_IDS);
+  const key = speechItemKey(item);
+  if (spoken.includes(key)) return spoken;
+  return [...spoken, key].slice(-MAX_SPOKEN_ITEM_IDS);
 }
 
 export interface TtsClientState {

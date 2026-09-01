@@ -73,7 +73,7 @@ export interface JarvisStore {
   codexSpeechQueue: CodexSpeechItem[];
   codexSpokenItemIds: string[];
   codexStreamFinal: Record<string, string | undefined>;
-  dequeueCodexSpeech: (itemId: string) => void;
+  dequeueCodexSpeech: (item: Pick<CodexSpeechItem, "turnId" | "itemId">) => void;
   clearCodexSpeech: () => void;
   loadCodexThreads: () => Promise<void>;
   ensureCodexThread: (workspaceId: string) => Promise<void>;

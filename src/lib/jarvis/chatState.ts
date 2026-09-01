@@ -153,17 +153,18 @@ function reduceTurn(turn: CodexStreamingTurn, event: CodexChatStreamEvent): Code
       }, (existing) => existing.text + (event.text ?? ""));
     }
     case "message_completed": {
+      const completedText = event.text?.trim() ? event.text : null;
       const nextTurn = upsertItem(turn, {
         itemId: event.itemId ?? lastMessageItemId(turn) ?? `msg-${event.turnId}-${turn.items.length}`,
         kind: "message",
         status: "completed",
         // A completed item may carry the full text; otherwise keep the
         // accumulated delta text.
-        text: event.text ?? "",
+        text: completedText ?? "",
         toolName: null,
         final: false,
         updatedAt: event.timestamp,
-      }, (existing) => event.text ?? existing.text);
+      }, (existing) => completedText ?? existing.text);
       // Be tolerant of terminal notifications that arrive just before the
       // final item completion on the WebView event queue.
       return turn.status === "completed"
