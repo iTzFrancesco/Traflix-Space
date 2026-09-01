@@ -21,6 +21,7 @@ const projectCommands = source("../src-tauri/src/project/commands.rs");
 const projectPreview = source("../src/components/project/ProjectFilePreview.tsx");
 const projectTypes = source("../src/project/types.ts");
 const terminalManager = source("../src-tauri/src/terminal_engine/mod.rs");
+const terminalProcess = source("../src-tauri/src/terminal_engine/session_process.rs");
 const sidebar = source("../src/components/layout/Sidebar.tsx");
 const jarvisStore = source("../src/stores/jarvisStore.ts");
 const jarvisStoreModules = [
@@ -70,6 +71,11 @@ test("exited PTY generations remain recoverable until the user chooses an action
   assert.match(workspaceGrid, /onClose=\{hasExited \? undefined : onCloseTerminal\}/);
   assert.match(workspaceGrid, /Rimuovi il terminale chiuso/);
   assert.match(workspaceGrid, />\s*Rimuovi\s*<\/button>/);
+});
+
+test("PTY sessions remain color-capable when Traflix inherits a no-color launcher", () => {
+  assert.match(terminalProcess, /cmd\.env_remove\("NO_COLOR"\)/);
+  assert.match(terminalProcess, /cmd\.env\("TERM", "xterm-256color"\)/);
 });
 
 test("manual PTY reopen relaunches its configured agent without duplicating Jarvis-owned restarts", () => {

@@ -52,6 +52,10 @@ impl TerminalSession {
             .map(|cwd| cwd.clone())
             .map_err(|_| "Terminal CWD lock poisoned".to_string())?;
         cmd.cwd(&launch_cwd);
+        // The host process may be launched by Codex with NO_COLOR=1. The PTY
+        // is an ANSI-capable xterm surface, so do not let that launcher hint
+        // disable colors for Codex or other interactive terminal programs.
+        cmd.env_remove("NO_COLOR");
         cmd.env("TERM", "xterm-256color");
         cmd.env("TRAFLIX_TERMINAL_ID", &self.id);
         cmd.env("TRAFLIX_AGENT_EVENT_PIPE", agent_event_pipe_name());
