@@ -146,3 +146,67 @@ test("a new turn never displays the previous turn message before its first token
 
   assert.equal(latestCodexMessage(turns, "workspace-1"), null);
 });
+
+test("speech keys are workspace-scoped so a new workspace never drops its first answer", async () => {
+  const { enqueueSpeech, speechItemKey } = await import("../src/lib/jarvis/ttsState.ts");
+  const prev = { itemId: "message-1", turnId: "turn-1", workspaceId: "workspace-A", text: "Risposta precedente." };
+  const curr = { itemId: "message-1", turnId: "turn-1", workspaceId: "workspace-B", text: "Risposta corrente." };
+  assert.notEqual(speechItemKey(prev), speechItemKey(curr));
+  let queue = enqueueSpeech([], prev);
+  queue = enqueueSpeech(queue, curr);
+  assert.equal(queue.length, 2);
+  assert.equal(queue[1].text, "Risposta corrente.");
+});
+
+test("a new turn preempts pending speech so the current question never hears the previous answer", async () => {
+  const { enqueueSpeech, dropStaleSpeechForTurn } = await import("../src/lib/jarvis/ttsState.ts");
+  let queue = enqueueSpeech([], {
+    itemId: "m-1", turnId: "turn-1", workspaceId: "ws-1", text: "Risposta precedente.",
+  });
+  // New question in the same workspace: pending items from the old turn are stale.
+  queue = dropStaleSpeechForTurn(queue, "ws-1", "turn-2");
+  assert.deepEqual(queue, []);
+  queue = enqueueSpeech(queue, {
+    itemId: "m-1", turnId: "turn-2", workspaceId: "ws-1", text: "Risposta corrente.",
+  });
+  assert.equal(queue[0]?.text, "Risposta corrente.");
+});
+
+test("a new turn in another workspace preempts pending speech from the previous workspace", async () => {
+  const { enqueueSpeech, dropStaleSpeechForTurn } = await import("../src/lib/jarvis/ttsState.ts");
+  let queue = enqueueSpeech([], {
+    itemId: "m-1", turnId: "turn-1", workspaceId: "workspace-A", text: "Risposta precedente.",
+  });
+  queue = dropStaleSpeechForTurn(queue, "workspace-B", "turn-9");
+  assert.deepEqual(queue, []);
+});
+
+test("a reordered turn_started keeps items already belonging to the new turn", async () => {
+  const { dropStaleSpeechForTurn } = await import("../src/lib/jarvis/ttsState.ts");
+  const queue = dropStaleSpeechForTurn([{
+    itemId: "m-1", turnId: "turn-2", workspaceId: "ws-1", text: "Risposta corrente.",
+  }], "ws-1", "turn-2");
+  assert.equal(queue.length, 1);
+});
+
+test("a new conversation drops only its own pending speech", async () => {
+  const { enqueueSpeech, dropSpeechForWorkspace } = await import("../src/lib/jarvis/ttsState.ts");
+  let queue = enqueueSpeech([], {
+    itemId: "m-1", turnId: "turn-1", workspaceId: "ws-A", text: "Vecchia conversazione.",
+  });
+  queue = enqueueSpeech(queue, {
+    itemId: "m-2", turnId: "turn-7", workspaceId: "ws-B", text: "Altro workspace.",
+  });
+  queue = dropSpeechForWorkspace(queue, "ws-A");
+  assert.deepEqual(queue.map((item) => item.workspaceId), ["ws-B"]);
+});
+
+test("turn_started owns the audio channel and a cleared conversation leaves no pending speech", async () => {
+  const { readFileSync } = await import("node:fs");
+  const eventBindingSource = readFileSync(new URL("../src/stores/jarvis/eventBinding.ts", import.meta.url), "utf8");
+  const codexSliceSource = readFileSync(new URL("../src/stores/jarvis/codexSlice.ts", import.meta.url), "utf8");
+  assert.match(eventBindingSource, /dropStaleSpeechForTurn/);
+  assert.match(eventBindingSource, /payload\.kind === "turn_started"/);
+  assert.match(codexSliceSource, /dropSpeechForWorkspace\(state\.codexSpeechQueue, workspaceId\)/);
+  assert.match(codexSliceSource, /delete codexStreamingTurns\[workspaceId\]/);
+});

@@ -184,8 +184,8 @@ test("progressive speech deduplicates by turn and item, not item id alone", () =
   let queue = enqueueSpeech([], first);
   queue = enqueueSpeech(queue, second);
   assert.deepEqual(queue.map(speechItemKey), [
-    "turn-1::message-1",
-    "turn-2::message-1",
+    "workspace-1::turn-1::message-1",
+    "workspace-1::turn-2::message-1",
   ]);
 });
 

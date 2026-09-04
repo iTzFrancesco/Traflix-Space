@@ -15,9 +15,9 @@ export function shouldSpeakCommentary(text: string): boolean {
 
 /** Stable identity for a message item across the retained streaming turns. */
 export function speechItemKey(
-  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
+  item: Pick<CodexSpeechItem, "workspaceId" | "turnId" | "itemId">,
 ): string {
-  return `${item.turnId}::${item.itemId}`;
+  return `${item.workspaceId}::${item.turnId}::${item.itemId}`;
 }
 
 /** Appends an item to the queue, deduping by turn and item, without dropping steps. */
@@ -34,7 +34,7 @@ export function enqueueSpeech(
 /** Removes the first item (called after synthesis is accepted/failed). */
 export function dequeueSpeech(
   queue: CodexSpeechItem[],
-  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
+  item: Pick<CodexSpeechItem, "workspaceId" | "turnId" | "itemId">,
 ): CodexSpeechItem[] {
   const key = speechItemKey(item);
   return queue.filter((candidate) => speechItemKey(candidate) !== key);
@@ -45,10 +45,41 @@ export function clearSpeechQueue(_queue: CodexSpeechItem[]): CodexSpeechItem[] {
   return [];
 }
 
+/**
+ * Drops every still-pending item of one workspace (new conversation).
+ * Items from other workspaces keep their FIFO position.
+ */
+export function dropSpeechForWorkspace(
+  queue: CodexSpeechItem[],
+  workspaceId: string,
+): CodexSpeechItem[] {
+  return queue.filter((candidate) => candidate.workspaceId !== workspaceId);
+}
+
+/**
+ * A new Codex turn owns the single audio channel. Drop every still-pending
+ * commentary item: same-workspace items from an older turn are stale, and
+ * items from another workspace would make the new question speak the
+ * previous workspace/conversation answer first (FIFO lag). Items already
+ * belonging to the new turn are kept so a reordered turn_started cannot
+ * discard the current answer. Active playback is left to finish per the
+ * established no-interrupt policy; only pending speech is preempted.
+ */
+export function dropStaleSpeechForTurn(
+  queue: CodexSpeechItem[],
+  workspaceId: string,
+  turnId: string,
+): CodexSpeechItem[] {
+  return queue.filter(
+    (candidate) =>
+      candidate.workspaceId === workspaceId && candidate.turnId === turnId,
+  );
+}
+
 /** Records a spoken item id for dedupe (bounded). */
 export function rememberSpoken(
   spoken: string[],
-  item: Pick<CodexSpeechItem, "turnId" | "itemId">,
+  item: Pick<CodexSpeechItem, "workspaceId" | "turnId" | "itemId">,
 ): string[] {
   const key = speechItemKey(item);
   if (spoken.includes(key)) return spoken;

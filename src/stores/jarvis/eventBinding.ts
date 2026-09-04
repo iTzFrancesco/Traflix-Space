@@ -3,7 +3,7 @@ import {
   applyCodexChatStream,
   completedCodexSpeechItem,
 } from "../../lib/jarvis/chatState";
-import { shouldSpeakCommentary, enqueueSpeech, speechItemKey } from "../../lib/jarvis/ttsState";
+import { shouldSpeakCommentary, dropStaleSpeechForTurn, enqueueSpeech, speechItemKey } from "../../lib/jarvis/ttsState";
 import { codexErrorMessage, setCodexChatStreamAvailable, setCodexChatStreamBindingReady } from "./runtime";
 import type {
   CodexAccountEvent,
@@ -93,9 +93,19 @@ export function bindCodexEventsForStore(store: JarvisStoreAccess): () => void {
 
     const nextStreamingTurns = applyCodexChatStream(store.getState().codexStreamingTurns, payload);
     const workspaceId = payload.workspaceId ?? "unknown";
+    const turnId = payload.turnId ?? "unknown";
     const nextStreamFinal = { ...store.getState().codexStreamFinal };
     if (payload.kind === "turn_started") {
       nextStreamFinal[workspaceId] = undefined;
+      // A new turn owns the single audio channel. Drop still-pending
+      // commentary so the new question cannot speak the previous
+      // workspace/conversation answer first (FIFO lag). Active playback
+      // finishes per the no-interrupt policy; only pending speech moves.
+      if (workspaceId !== "unknown" && turnId !== "unknown") {
+        store.setState((state) => ({
+          codexSpeechQueue: dropStaleSpeechForTurn(state.codexSpeechQueue, workspaceId, turnId),
+        }));
+      }
     } else if (payload.kind === "turn_completed" || payload.kind === "message_completed") {
       const completedTurn = nextStreamingTurns[workspaceId]?.find((turn) => turn.turnId === (payload.turnId ?? "unknown"));
       if (payload.kind === "turn_completed" || completedTurn?.status === "completed") {

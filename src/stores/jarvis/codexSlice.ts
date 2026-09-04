@@ -19,7 +19,7 @@ import {
   providerStatus,
 } from "../../lib/jarvis/client";
 import { bootstrapCodexData, createCodexBootstrapQueue } from "../../lib/jarvis/codexBootstrap";
-import { clearSpeechQueue, dequeueSpeech, rememberSpoken } from "../../lib/jarvis/ttsState";
+import { clearSpeechQueue, dequeueSpeech, dropSpeechForWorkspace, rememberSpoken } from "../../lib/jarvis/ttsState";
 import { errorMessage, codexErrorMessage, openCodexAuthUrl, waitForCodexChatStreamBinding } from "./runtime";
 import type { JarvisSlice } from "./types";
 
@@ -224,11 +224,22 @@ export const createCodexSlice: JarvisSlice = (set, get) => {
       set((state) => {
         const codexThreads = { ...state.codexThreads };
         delete codexThreads[workspaceId];
+        // A new conversation must not speak the previous one: drop pending
+        // commentary and the retained streaming turns/final for this
+        // workspace. Spoken ids stay bounded; the workspace-scoped speech key
+        // prevents cross-conversation dedupe collisions for reused ids.
+        const codexStreamingTurns = { ...state.codexStreamingTurns };
+        delete codexStreamingTurns[workspaceId];
+        const codexStreamFinal = { ...state.codexStreamFinal };
+        delete codexStreamFinal[workspaceId];
         return {
           conversation: state.conversation.filter((message) => message.workspaceId !== workspaceId),
           uiIntents: state.uiIntents.filter((intent) => intent.workspaceId !== workspaceId),
           followUps: { ...state.followUps, [workspaceId]: [] },
           codexThreads,
+          codexStreamingTurns,
+          codexStreamFinal,
+          codexSpeechQueue: dropSpeechForWorkspace(state.codexSpeechQueue, workspaceId),
         };
       });
     },
