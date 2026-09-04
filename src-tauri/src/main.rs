@@ -29,6 +29,23 @@ use tracing_subscriber::EnvFilter;
 
 use crate::terminal_engine::TerminalManager;
 
+/// Porta la finestra principale in primo piano senza passare per le
+/// capability ACL del frontend. Usato dal widget di notifica agenti:
+/// la main puo' essere nascosta in tray, minimizzata o su un altro
+/// workspace, quindi serve show + unminimize + focus in quest'ordine.
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("main window is missing".to_string());
+    };
+    // Best-effort in ordine: hidden-in-tray -> show, minimizzata ->
+    // unminimize, poi focus. Ogni passo e' indipendente: se uno fallisce
+    // gli altri devono comunque essere tentati.
+    let _ = window.show();
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| e.to_string())
+}
+
 fn release_log_directory() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -371,6 +388,7 @@ fn main() {
             terminal_engine::commands::get_git_branch,
             terminal_engine::commands::terminal_get_context,
             terminal_engine::commands::terminal_sync_cwd,
+            show_main_window,
         ])
         .build(tauri::generate_context!());
     let application = match application {

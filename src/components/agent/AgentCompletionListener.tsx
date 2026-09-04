@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { subscribeAgentTurnCompleted } from "../../lib/terminalEvents";
 import {
@@ -264,17 +265,41 @@ export function AgentCompletionListener() {
         }
         useTerminalStore.getState().setActiveTerminal(terminalId);
         useTerminalStore.getState().clearAgentAttention(terminalId);
+        // Navigazione gia' applicata sopra: il focus deve riuscire anche se
+        // la main era nascosta in tray o minimizzata. Ogni passo e'
+        // best-effort e indipendente, con fallback al comando Rust che non
+        // dipende dalle capability ACL.
         const mainWindow = getCurrentWebviewWindow();
+        let focused = false;
+        try {
+          await mainWindow.show();
+          focused = true;
+        } catch (error) {
+          console.warn("[agent-notification] main window show failed:", error);
+        }
         try {
           await mainWindow.unminimize();
-          await mainWindow.show();
+          focused = true;
+        } catch (error) {
+          console.warn("[agent-notification] main window unminimize failed:", error);
+        }
+        try {
           await mainWindow.setFocus();
+          focused = true;
+        } catch (error) {
+          console.warn("[agent-notification] main window focus failed:", error);
+        }
+        try {
+          await invoke("show_main_window");
+          focused = true;
+        } catch (error) {
+          console.warn("[agent-notification] show_main_window command failed:", error);
+        }
+        if (focused) {
           console.info("[agent-notification] main window opened", {
             terminalId,
             workspaceId: workspaceId ?? null,
           });
-        } catch (error) {
-          console.warn("[agent-notification] main window focus failed:", error);
         }
       },
     ).then((cleanup) => {
