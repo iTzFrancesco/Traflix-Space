@@ -13,6 +13,7 @@ import {
   mergeConversationMessages,
   mergeJarvisRequestState,
   pruneRequestHistory,
+  resolveChatWorkspace,
 } from "../../lib/jarvis/chatState";
 import { beginLocalTtsRequest } from "../../lib/jarvis/ttsState";
 import { reportFrontendDiagnosticCode } from "../../lib/crashDiagnostics";
@@ -63,7 +64,10 @@ export const createChatSlice: JarvisSlice = (set, get) => {
 
   sendMessage: async (message, options = {}) => {
     const trimmed = message.trim();
-    const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+    const workspaceId = resolveChatWorkspace(
+      useWorkspaceStore.getState().activeWorkspaceId,
+      options.workspaceId,
+    );
     if (!trimmed || !workspaceId) {
       if (!workspaceId) {
         set({ chatErrors: { ...get().chatErrors, [workspaceId ?? "none"]: "Nessuna workspace attiva" } });

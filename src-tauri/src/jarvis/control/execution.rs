@@ -649,17 +649,29 @@ pub(super) async fn execute_step(
             let pending_target =
                 match bound_target_from_pending(context, pending, step, incoming_step) {
                     Ok(target) => target,
-                    Err(error)
-                        if error == "agent_binding_stale_or_mismatch" && no_explicit_target =>
+                    Err(_error)
+                        if _error == "agent_binding_stale_or_mismatch" && no_explicit_target =>
                     {
+                        // An unrecoverable stale binding (rotated session,
+                        // drifted alias, other workspace, transient presence
+                        // miss) must not dead-end the follow-up: fall through
+                        // to the last-assignment/semantic resolution below so
+                        // the turn ends in a clarification with live agents.
                         let binding = pending.and_then(|intent| intent.binding.as_ref());
-                        let Some(binding) = binding else {
-                            return Err(error);
-                        };
-                        let target =
-                            reactivate_bound_agent(app, workspace, invocation, binding).await?;
-                        target_was_reactivated = true;
-                        Some(target)
+                        match binding {
+                            Some(binding) => {
+                                match reactivate_bound_agent(app, workspace, invocation, binding)
+                                    .await
+                                {
+                                    Ok(target) => {
+                                        target_was_reactivated = true;
+                                        Some(target)
+                                    }
+                                    Err(_) => None,
+                                }
+                            }
+                            None => None,
+                        }
                     }
                     Err(error) => return Err(error),
                 };
@@ -685,10 +697,24 @@ pub(super) async fn execute_step(
                 match target_from_binding(context, &binding) {
                     Ok(target) => TargetResolution::Selected(target),
                     Err(error) if error == "agent_binding_stale_or_mismatch" => {
-                        let target =
-                            reactivate_bound_agent(app, workspace, invocation, &binding).await?;
-                        target_was_reactivated = true;
-                        TargetResolution::Selected(target)
+                        match reactivate_bound_agent(app, workspace, invocation, &binding).await {
+                            Ok(target) => {
+                                target_was_reactivated = true;
+                                TargetResolution::Selected(target)
+                            }
+                            // Same recovery as above: never surface the opaque
+                            // stale error when semantic resolution can offer
+                            // the live agents as a clarification instead.
+                            Err(_) => {
+                                resolve_target(
+                                    app,
+                                    context,
+                                    step.target.as_deref(),
+                                    step.provider.as_deref(),
+                                )
+                                .await
+                            }
+                        }
                     }
                     Err(error) => return Err(error),
                 }

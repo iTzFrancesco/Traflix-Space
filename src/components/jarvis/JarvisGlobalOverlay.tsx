@@ -43,17 +43,17 @@ export function JarvisGlobalOverlay() {
   const activeVoiceRequestId = useJarvisStore(
     (state) => state.activeVoiceRequestId,
   );
-  const voiceRequest = activeWorkspaceId
-    ? voiceRequests[activeWorkspaceId] ?? null
-    : null;
-  // Audio ownership is global even when the user changes workspace during a
-  // recording/transcription. The visible request remains workspace-scoped,
-  // but commentary TTS must not speak over a voice turn in another workspace.
   const activeVoiceRequest = activeVoiceRequestId
     ? Object.values(voiceRequests).find(
         (request) => request.requestId === activeVoiceRequestId,
       ) ?? null
     : null;
+  // Capture/STT ownership is global; after a workspace switch keep the live
+  // request visible so the user can stop it, while its immutable workspaceId
+  // continues to determine where the transcript is handed off.
+  const voiceRequest = activeVoiceRequest ?? (activeWorkspaceId
+    ? voiceRequests[activeWorkspaceId] ?? null
+    : null);
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
   const voiceError = useJarvisStore((state) => state.voiceError);

@@ -18,6 +18,13 @@ export function mergeConversationMessages(current: JarvisConversationMessage[], 
   return [...byId.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+export function resolveChatWorkspace(
+  activeWorkspaceId: string | null,
+  requestedWorkspaceId?: string,
+): string | null {
+  return requestedWorkspaceId ?? activeWorkspaceId;
+}
+
 export function requestsForWorkspace(requests: Record<string, JarvisRequestState>, workspaceId: string | null): JarvisRequestState[] {
   return Object.values(requests).filter((request) => request.workspaceId === workspaceId);
 }

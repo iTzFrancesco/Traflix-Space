@@ -90,7 +90,7 @@ test("voice UI exposes one accessible start/stop toggle", () => {
   assert.match(widgetSource, /Avvia ascolto manuale/);
   assert.match(widgetSource, /Termina ascolto e invia/);
   assert.doesNotMatch(widgetSource, /onToggleMuted|MicOff|SendHorizontal/);
-  assert.match(voiceSliceSource, /sendMessage\(text, \{ voiceRequestId: requestId \}\)/);
+  assert.match(voiceSliceSource, /sendMessage\(text, \{[\s\S]*voiceRequestId: requestId,[\s\S]*workspaceId: origin\.workspaceId,[\s\S]*\}\)/);
   assert.match(voiceSliceSource, /stale terminal voice event ignored during handoff/);
   assert.match(voiceSliceSource, /cancel skipped: voice handoff owns the request/);
   assert.match(chatSliceSource, /chat response won a late local cancellation race/);

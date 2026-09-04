@@ -770,6 +770,32 @@ mod tests {
     }
 
     #[test]
+    fn voice_request_remains_visible_only_in_its_origin_workspace_after_switch() {
+        let state = VoiceState::new(
+            Arc::new(FakeCaptureSource {
+                audio: CapturedAudio {
+                    samples: vec![0.2; 8_000],
+                    channels: 1,
+                    sample_rate: 16_000,
+                },
+            }),
+            Arc::new(FakePlayback),
+        );
+        state
+            .start("switch-request".into(), "workspace-a".into(), None, test_options())
+            .unwrap();
+
+        // Changing the frontend selection must not mutate the backend owner.
+        assert_eq!(
+            state.snapshot_workspace("workspace-a").unwrap().workspace_id,
+            "workspace-a"
+        );
+        assert_eq!(
+            state.snapshot_workspace("workspace-b").unwrap_err(),
+            VoiceErrorCode::NotFound
+        );
+    }
+    #[test]
     fn wake_word_is_armed_separately_and_transitions_only_after_detection() {
         let received_engine = Arc::new(Mutex::new(false));
         let state = VoiceState::new(
@@ -798,6 +824,7 @@ mod tests {
         assert!(signal.status_changed);
         assert_eq!(signal.status.status, VoiceRequestStatus::Recording);
     }
+
 
     #[tokio::test]
     async fn cancelled_tts_a_cannot_overwrite_new_tts_b() {

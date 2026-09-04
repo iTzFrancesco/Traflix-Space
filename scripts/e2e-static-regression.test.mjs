@@ -304,6 +304,26 @@ test("inactive and stale agent sessions are rebound to a fresh PTY generation be
   assert.match(jarvisControlModules, /agent_process_alive: Option<bool>/);
 });
 
+test("unrecoverable stale follow-up bindings fall back to semantic resolution, never an opaque dead-end", () => {
+  // Both AgentSend stale arms must recover via match instead of propagating
+  // the raw reactivation error with `?`: a rotated session, drifted alias,
+  // other workspace or transient presence miss ends in a clarification
+  // with live agents rather than blocking the follow-up.
+  assert.doesNotMatch(
+    jarvisControlModules,
+    /reactivate_bound_agent\(app, workspace, invocation, binding\)\.await\?/,
+  );
+  assert.doesNotMatch(
+    jarvisControlModules,
+    /reactivate_bound_agent\(app, workspace, invocation, &binding\)\.await\?/,
+  );
+  assert.match(jarvisControlModules, /match reactivate_bound_agent\(/);
+  assert.match(
+    jarvisControlModules,
+    /must not dead-end the follow-up[\s\S]{0,400}clarification with live agents/,
+  );
+});
+
 test("Codex turn cleanup is bounded and late terminal events cannot clear a newer turn", () => {
   assert.match(jarvisThreads, /pub async fn clear_active_turn/);
   assert.match(jarvisThreads, /self\.clear_active_turn\(workspace_id, Some\(&turn_id\)\)/);

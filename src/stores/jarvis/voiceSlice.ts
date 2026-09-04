@@ -237,7 +237,7 @@ export const createVoiceSlice: JarvisSlice = (set, get) => ({
     if (submitState === "sent" || submitState === "submitting") return true;
     const origin = Object.values(get().voiceRequests).find((request) => request.requestId === requestId);
     const activeWorkspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-    if (!origin || origin.status !== "transcript_ready" || origin.workspaceId !== activeWorkspaceId || !text.trim()) {
+    if (!origin || origin.status !== "transcript_ready" || !text.trim()) {
       voiceWarn("transcript submission skipped", {
         requestId,
         hasOrigin: Boolean(origin),
@@ -274,7 +274,10 @@ export const createVoiceSlice: JarvisSlice = (set, get) => ({
 
     let accepted: boolean;
     try {
-      accepted = await get().sendMessage(text, { voiceRequestId: requestId });
+      accepted = await get().sendMessage(text, {
+        voiceRequestId: requestId,
+        workspaceId: origin.workspaceId,
+      });
     } catch (error) {
       voiceSubmissionInFlight.delete(requestId);
       set((state) => ({

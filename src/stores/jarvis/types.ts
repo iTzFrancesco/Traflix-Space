@@ -120,7 +120,7 @@ export interface JarvisStore {
   setOtherWorkspaceAgentCount: (count: number) => void;
   loadLastResult: (workspaceId: string, sessionId: string) => Promise<void>;
   loadConversation: (workspaceId: string) => Promise<void>;
-  sendMessage: (message: string, options?: { voiceRequestId?: string }) => Promise<boolean>;
+  sendMessage: (message: string, options?: { voiceRequestId?: string; workspaceId?: string }) => Promise<boolean>;
   cancelChatRequest: (requestId: string) => Promise<void>;
   isChatLoading: (workspaceId: string | null) => boolean;
   refreshPendingActions: () => Promise<void>;

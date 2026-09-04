@@ -8,6 +8,7 @@ import {
   mergeConversationMessages,
   mergeJarvisRequestState,
   pendingActionsForWorkspace,
+  resolveChatWorkspace,
 } from "../src/lib/jarvis/chatState.ts";
 import {
   collapsedJarvisStatus,
@@ -64,6 +65,7 @@ const voiceCommandsSource = source("../src-tauri/src/jarvis/voice/commands.rs");
 const captureSource = source("../src-tauri/src/jarvis/voice/capture.rs");
 const storeSource = source("../src/stores/jarvisStore.ts");
 const voiceSliceSource = source("../src/stores/jarvis/voiceSlice.ts");
+const chatSliceSource = source("../src/stores/jarvis/chatSlice.ts");
 const eventBindingsSource = source("../src/components/jarvis/useJarvisEventBindings.ts");
 const workspaceViewSource = [
   source("../src/components/workspace/WorkspaceView.tsx"),
@@ -142,6 +144,19 @@ test("registry refresh preserves canonical live selection and result", () => {
   );
   assert.equal(state.selectedSessionId, "codex-1");
   assert.equal(state.currentResult.content, "done");
+});
+
+test("voice handoff keeps its origin workspace after the UI switches workspace", () => {
+  assert.equal(
+    resolveChatWorkspace("workspace-b", "workspace-a"),
+    "workspace-a",
+  );
+  assert.equal(resolveChatWorkspace("workspace-b"), "workspace-b");
+});
+test("voice handoff passes the immutable origin workspace into chat", () => {
+  assert.match(voiceSliceSource, /workspaceId: origin\.workspaceId/);
+  assert.match(chatSliceSource, /options\.workspaceId/);
+  assert.match(chatSliceSource, /resolveChatWorkspace/);
 });
 
 test("conversation and legacy pending state stay workspace-scoped", () => {
