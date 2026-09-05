@@ -28,12 +28,22 @@ export interface ReconciledScrollSample {
   repairFollow: boolean;
 }
 
+/**
+ * A viewport a couple of rows above the live bottom is layout noise, not a
+ * reading position: fit reflow, async xterm writes, and remount races all
+ * land "un pelino sopra" without any user gesture. Snapping that band to
+ * follow keeps workspace switches and resizes pinned to the bottom for every
+ * agent, while a deliberate scroll further up still locks history review.
+ * Kept below the offset used by history-preservation regressions (4).
+ */
+export const NEAR_BOTTOM_THRESHOLD_LINES = 3;
+
 export function positionFromViewport(
   baseY: number,
   viewportY: number,
 ): TerminalScrollPosition {
   const offsetFromBottom = Math.max(0, baseY - viewportY);
-  if (offsetFromBottom === 0) {
+  if (offsetFromBottom <= NEAR_BOTTOM_THRESHOLD_LINES) {
     return { followsOutput: true, offsetFromBottom: 0 };
   }
   return { followsOutput: false, offsetFromBottom, baseYAtCapture: baseY };
@@ -54,6 +64,11 @@ export function positionAfterHiddenOutput(
   baseYAfterWrite: number,
 ): TerminalScrollPosition {
   if (previous.followsOutput) return previous;
+  // Left while essentially at the bottom: return to the live bottom instead
+  // of preserving a noise offset that streaming output would then grow.
+  if (previous.offsetFromBottom <= NEAR_BOTTOM_THRESHOLD_LINES) {
+    return { followsOutput: true, offsetFromBottom: 0 };
+  }
   const addedRows = Math.max(0, baseYAfterWrite - baseYBeforeWrite);
   if (addedRows === 0) return previous;
   return {
@@ -72,6 +87,11 @@ export function positionAfterUnmountedOutput(
   currentBaseY: number,
 ): TerminalScrollPosition {
   if (previous.followsOutput) return previous;
+  // Same workspace-switch contract as hidden output: a "pelino sopra"
+  // offset from before the switch heals to follow on return.
+  if (previous.offsetFromBottom <= NEAR_BOTTOM_THRESHOLD_LINES) {
+    return { followsOutput: true, offsetFromBottom: 0 };
+  }
   const addedRows = previous.baseYAtCapture === undefined
     ? 0
     : Math.max(0, currentBaseY - previous.baseYAtCapture);

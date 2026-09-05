@@ -96,9 +96,11 @@ export const TerminalPane = memo(function TerminalPane({
   const followBottomRepairRef = useRef<{
     raf: number | null;
     remainingFrames: number;
+    deferredFrames: number;
   }>({
     raf: null,
     remainingFrames: 0,
+    deferredFrames: 0,
   });
   const ptyResizeStateRef = useRef<PtyResizeState>({
     pending: null,
@@ -122,6 +124,7 @@ export const TerminalPane = memo(function TerminalPane({
   const cancelFollowBottomRepair = useCallback(() => {
     const repair = followBottomRepairRef.current;
     repair.remainingFrames = 0;
+    repair.deferredFrames = 0;
     if (repair.raf !== null) {
       cancelAnimationFrame(repair.raf);
       repair.raf = null;
@@ -134,6 +137,10 @@ export const TerminalPane = memo(function TerminalPane({
       repair.remainingFrames,
       Math.max(1, Math.min(4, framePasses)),
     );
+    // Workspace switch remounts xterm and replays the backend snapshot over
+    // several frames. Waiting here is still frame-bounded: deferred frames
+    // only cover rehydrate/unusable layout, never user history review.
+    repair.deferredFrames = Math.max(repair.deferredFrames, 60);
     if (repair.raf !== null) return;
 
     const run = () => {
@@ -146,27 +153,37 @@ export const TerminalPane = memo(function TerminalPane({
         userScrollIntentRef.current
       ) {
         repair.remainingFrames = 0;
+        repair.deferredFrames = 0;
         return;
       }
-      repair.remainingFrames -= 1;
-
       if (
-        !rehydratingRef.current &&
-        isTerminalScrollLayoutUsable(
+        rehydratingRef.current ||
+        !isTerminalScrollLayoutUsable(
           term,
           paneVisibilityRef,
           windowFocusedRef,
         )
       ) {
-        restoreScrollPosition(
-          term,
-          autoScrollRef,
-          scrollPositionRef,
-          programmaticScrollGuardRef,
-        );
+        if (repair.deferredFrames > 0) {
+          repair.deferredFrames -= 1;
+          repair.raf = requestAnimationFrame(run);
+        } else {
+          repair.remainingFrames = 0;
+        }
+        return;
       }
+      repair.remainingFrames -= 1;
+
+      restoreScrollPosition(
+        term,
+        autoScrollRef,
+        scrollPositionRef,
+        programmaticScrollGuardRef,
+      );
       if (repair.remainingFrames > 0) {
         repair.raf = requestAnimationFrame(run);
+      } else {
+        repair.deferredFrames = 0;
       }
     };
 

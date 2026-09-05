@@ -36,6 +36,55 @@ function cleanWindowsPath(p: string): string {
   return p
 }
 
+const ROOT_PID_ENV = "TRAFLIX_PI_ROOT_PID"
+const DEPTH_ENV = "TRAFLIX_PI_DEPTH"
+
+function currentPid(): string {
+  return String(process.pid ?? "")
+}
+
+/**
+ * Only the outermost Pi attached to a Traflix terminal may notify.
+ * Pi subagents/workflows spawn nested `pi --mode json -p --no-session`
+ * processes that inherit TRAFLIX_* env, so without a guard every subagent
+ * completion would toast while the root task is still running.
+ * The root claims ROOT_PID once; nested processes keep it and stay silent.
+ * PID comparison (not a boolean) survives `/reload` in the same process.
+ */
+function claimPiRoot(): boolean {
+  const inherited = (process.env[ROOT_PID_ENV] ?? "").trim()
+  const pid = currentPid()
+  if (!inherited) {
+    if (pid) process.env[ROOT_PID_ENV] = pid
+    if (process.env[DEPTH_ENV] === undefined) process.env[DEPTH_ENV] = "0"
+    return true
+  }
+  if (pid && inherited === pid) return true
+  const depth = Number.parseInt(process.env[DEPTH_ENV] ?? "0", 10)
+  process.env[DEPTH_ENV] = String(Number.isFinite(depth) ? depth + 1 : 1)
+  return false
+}
+
+function looksLikeSubagentArgv(): boolean {
+  const argv = process.argv.slice(2).map((arg) => arg.toLowerCase())
+  return (
+    argv.includes("--mode") &&
+    argv.includes("json") &&
+    (argv.includes("-p") || argv.includes("--print")) &&
+    argv.includes("--no-session")
+  )
+}
+
+function isNestedPiProcess(): boolean {
+  const marker = (process.env[ROOT_PID_ENV] ?? "").trim()
+  if (marker && marker !== currentPid()) return true
+  // Migration cover: parent started before this guard existed and never
+  // claimed ROOT_PID. The subagent spawn signature is specific enough that
+  // a manual `pi -p` from the shell is unaffected.
+  if (!marker && looksLikeSubagentArgv()) return true
+  return false
+}
+
 function createEventId(terminalId: string | undefined): string {
   const terminal = terminalId ?? "unknown-terminal"
   return `pi/${terminal}/${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -121,8 +170,17 @@ function forward(provider: string): void {
 }
 
 export default function traFlixPiExtension(pi: ExtensionAPI): void {
-  log("extension loaded; registering agent_settled")
+  const isRoot = claimPiRoot()
+  log(
+    `extension loaded; registering agent_settled root=${isRoot ? "yes" : "NO"} pid=${currentPid()} depth=${process.env[DEPTH_ENV] ?? "?"}`,
+  )
   pi.on("agent_settled", () => {
+    if (!isRoot || isNestedPiProcess()) {
+      log(
+        `notification suppressed reason=nested-subagent pid=${currentPid()} depth=${process.env[DEPTH_ENV] ?? "?"} terminal=${process.env.TRAFLIX_TERMINAL_ID ? "yes" : "NO"}`,
+      )
+      return
+    }
     log("agent_settled fired")
     forward("pi")
   })
