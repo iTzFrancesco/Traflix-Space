@@ -17,6 +17,18 @@ function Resolve-AdapterSource {
     return (Join-Path $sourceRoot "scripts\agent-notifications\$Name")
 }
 
+function Get-OpenCodeMajorVersion {
+    try {
+        $versionText = (& opencode --version 2>$null | Out-String).Trim()
+        if ($versionText -match '(?<!\d)(?<major>\d+)\.\d+') {
+            return [int]$Matches.major
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
 function Resolve-BridgePath {
     param([string]$ExplicitPath)
 
@@ -158,7 +170,14 @@ Write-Host "Traflix notification adapters: bridge=$bridge"
 
 Install-CodexAdapter $bridge
 Install-ClaudeAdapter $bridge
-Install-AdapterFile (Resolve-AdapterSource "opencode-traflix-plugin.ts") (Join-Path $env:USERPROFILE ".config\opencode\plugin\opencode-traflix-plugin.ts") "OpenCode"
+$openCodeMajor = Get-OpenCodeMajorVersion
+if ($null -ne $openCodeMajor -and $openCodeMajor -ge 2) {
+    $openCodeV2Target = Join-Path $env:USERPROFILE ".config\opencode\plugins\traflix-notify\index.ts"
+    Install-AdapterFile (Resolve-AdapterSource "opencode-v2-traflix-plugin.ts") $openCodeV2Target "OpenCode V2"
+} else {
+    $openCodeV1Target = Join-Path $env:USERPROFILE ".config\opencode\plugin\opencode-traflix-plugin.ts"
+    Install-AdapterFile (Resolve-AdapterSource "opencode-traflix-plugin.ts") $openCodeV1Target "OpenCode V1"
+}
 Install-AdapterFile (Resolve-AdapterSource "pi-traflix-extension.ts") (Join-Path $env:USERPROFILE ".pi\agent\extensions\traflix-notify.ts") "Pi"
 Install-AdapterFile (Resolve-AdapterSource "cline-traflix-hook.ps1") (Join-Path $env:USERPROFILE ".cline\hooks\TaskComplete.ps1") "Cline"
 

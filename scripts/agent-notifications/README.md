@@ -50,7 +50,8 @@ repo checkout, and:
 | Agent | Install target | Notes |
 |-------|----------------|-------|
 | Codex | `~/.codex/config.toml` → `notify` | Replaces the single `notify` command (Codex allows one). A backup is saved to `config.toml.traflix.bak`. |
-| OpenCode | `~/.config/opencode/plugin/opencode-traflix-plugin.ts` | Auto-loaded from the plugin dir. If your OpenCode version does not pick it up, add the path to the `plugin`/`plugins` array in `opencode.json` / `opencode.v2.json`. |
+| OpenCode V2 | `~/.config/opencode/plugins/traflix-notify/index.ts` | Uses the V2 `Plugin.define` API and subscribes to `session.idle` plus busy/retry status transitions. |
+| OpenCode V1 | `~/.config/opencode/plugin/opencode-traflix-plugin.ts` | Uses the V1 plugin API. The installer selects the adapter from `opencode --version`. |
 | Cline | `~/.cline/hooks/TaskComplete.ps1` | Cline’s native `TaskComplete` file hook. It returns an empty hook result and forwards only task/workspace IDs. |
 | Anti-Gravity | `.agents/hooks.json` + `anti-gravity-traflix-hook.ps1` | AGY’s native `Stop` lifecycle hook. It ignores cancellation/error stops and forwards idle completions. |
 | Pi | `~/.pi/agent/extensions/traflix-notify.ts` | Pi auto-discovers `extensions/*.ts`. |
@@ -116,10 +117,16 @@ the external `notify` command.
 
 ## OpenCode
 
-Install [`opencode-traflix-plugin.ts`](./opencode-traflix-plugin.ts) in an
-OpenCode plugin directory. It forwards only a real `busy/retry -> idle`
-transition (the initial idle state is ignored). The short-lived PowerShell
-bridge stays attached long enough to connect to the Windows named pipe.
+The installer reads `opencode --version`. OpenCode V2 uses
+[`opencode-v2-traflix-plugin.ts`](./opencode-v2-traflix-plugin.ts), installed
+under the global `plugins/traflix-notify/index.ts` directory. It uses the V2
+`Plugin.define` API and listens to the public event stream; a `session.idle`
+event completes the session, while `session.status` accepts only a busy/retry
+to idle transition. It looks up the session and ignores child sessions, and
+collapses duplicate idle signals. OpenCode V1 keeps
+using [`opencode-traflix-plugin.ts`](./opencode-traflix-plugin.ts). Both
+adapters keep the short-lived PowerShell bridge attached until it connects to
+the Windows named pipe.
 
 ## Pi
 

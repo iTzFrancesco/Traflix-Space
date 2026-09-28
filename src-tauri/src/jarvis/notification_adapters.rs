@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
@@ -72,6 +75,26 @@ fn adapter_health(app: &AppHandle, restart_required: bool) -> NotificationAdapte
     let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_default();
+    let open_code_v2_path = profile
+        .join(".config")
+        .join("opencode")
+        .join("plugins")
+        .join("traflix-notify")
+        .join("index.ts");
+    let open_code_v1_path = profile
+        .join(".config")
+        .join("opencode")
+        .join("plugin")
+        .join("opencode-traflix-plugin.ts");
+    let open_code_v2 = opencode_major_version()
+        .map(|major| major >= 2)
+        .unwrap_or_else(|| open_code_v2_path.is_file());
+    let open_code_path = if open_code_v2 {
+        open_code_v2_path
+    } else {
+        open_code_v1_path
+    };
+    let open_code_detail = if open_code_v2 { "V2 plugin" } else { "plugin" };
     let specs = [
         (
             "codex",
@@ -93,13 +116,9 @@ fn adapter_health(app: &AppHandle, restart_required: bool) -> NotificationAdapte
         ),
         (
             "opencode",
-            profile
-                .join(".config")
-                .join("opencode")
-                .join("plugin")
-                .join("opencode-traflix-plugin.ts"),
+            open_code_path,
             "TRAFLIX_AGENT_EVENT_BRIDGE",
-            "plugin",
+            open_code_detail,
         ),
         (
             "pi",
@@ -148,6 +167,20 @@ fn adapter_health(app: &AppHandle, restart_required: bool) -> NotificationAdapte
             "Uno o più adapter non sono collegati: senza hook Jarvis mantiene lo stato unknown/working anziché inventare un completamento.".to_string()
         },
     }
+}
+
+fn opencode_major_version() -> Option<u64> {
+    let mut command = Command::new("opencode");
+    command.arg("--version");
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split(|character: char| !character.is_ascii_digit())
+        .find_map(|part| part.parse::<u64>().ok())
 }
 
 fn resolve_adapter_directory(app: &AppHandle) -> Option<PathBuf> {

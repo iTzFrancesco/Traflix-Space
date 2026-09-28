@@ -7,7 +7,9 @@ const root = join(__dirname, "..");
 
 const files = {
   package: join(root, "package.json"),
+  packageLock: join(root, "package-lock.json"),
   cargo: join(root, "src-tauri", "Cargo.toml"),
+  cargoLock: join(root, "src-tauri", "Cargo.lock"),
   tauri: join(root, "src-tauri", "tauri.conf.json"),
 };
 
@@ -57,11 +59,30 @@ pkg.version = newVersion;
 write(files.package, JSON.stringify(pkg, null, 2) + "\n");
 console.log(`[package.json] → ${newVersion}`);
 
+// Keep npm ci's root package metadata in sync with package.json.
+const packageLock = JSON.parse(read(files.packageLock));
+packageLock.version = newVersion;
+if (packageLock.packages?.[""]) {
+  packageLock.packages[""].version = newVersion;
+}
+write(files.packageLock, JSON.stringify(packageLock, null, 2) + "\n");
+console.log(`[package-lock.json] → ${newVersion}`);
+
 // Update Cargo.toml
 let cargo = read(files.cargo);
 cargo = cargo.replace(/^version = ".*"/m, `version = "${newVersion}"`);
 write(files.cargo, cargo);
 console.log(`[Cargo.toml]  → ${newVersion}`);
+
+// The release workflow validates the application package in Cargo.lock too.
+let cargoLock = read(files.cargoLock);
+const cargoPackagePattern = /(\[\[package\]\]\r?\nname = "traflix-space"\r?\nversion = ")[^"]+(\")/;
+if (!cargoPackagePattern.test(cargoLock)) {
+  throw new Error("Package traflix-space not found in src-tauri/Cargo.lock");
+}
+cargoLock = cargoLock.replace(cargoPackagePattern, `$1${newVersion}$2`);
+write(files.cargoLock, cargoLock);
+console.log(`[Cargo.lock]  → ${newVersion}`);
 
 // Update tauri.conf.json
 let tauri = read(files.tauri);
