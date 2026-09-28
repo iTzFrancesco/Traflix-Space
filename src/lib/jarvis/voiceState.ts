@@ -163,17 +163,20 @@ export function canSendTranscript(request: VoiceRequestStatusView | null, worksp
   return Boolean(request && request.status === "transcript_ready" && request.workspaceId === workspaceId && text.trim());
 }
 
-/**
- * The transcript handoff owns the audio channel even after the active request
- * id is cleared. This closes the race where progressive TTS could start an
- * older queued response between `transcript_ready` and chat submission.
- */
+/** Active capture or an accepted/deferred transcript handoff owns the output channel. */
 export function hasPendingVoiceHandoff(
   requests: Record<string, VoiceRequestStatusView>,
   submitStates: Record<string, VoiceSubmitState>,
 ): boolean {
-  return Object.values(requests).some((request) => request.status === "transcript_ready")
-    || Object.values(submitStates).some((state) => state === "queued" || state === "submitting");
+  // A transcript_ready request may be an idle draft awaiting user review. It
+  // no longer captures audio, so it must not hold progressive TTS indefinitely.
+  const captureOwnsAudio = Object.values(requests).some((request) =>
+    ["armed", "recording", "stopping", "transcribing"].includes(request.status),
+  );
+  const handoffOwnsAudio = Object.values(submitStates).some(
+    (state) => state === "queued" || state === "submitting",
+  );
+  return captureOwnsAudio || handoffOwnsAudio;
 }
 
 /** Endpoint detail stays in diagnostics; the compact UI uses one listening caption. */

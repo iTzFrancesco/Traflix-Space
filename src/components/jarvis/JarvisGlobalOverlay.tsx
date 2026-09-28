@@ -175,23 +175,16 @@ export function JarvisGlobalOverlay() {
     }
   }, [setContext, setContextStatus]);
 
-  // C8: progressive commentary speech worker. Speaks the completed
-  // commentary/final items in FIFO order while Codex keeps working; never
-  // speaks over the final reply and waits while a manual voice turn owns audio.
+  // C8: progressive commentary speech worker. Speaks completed items in FIFO
+  // order while Codex keeps working, pausing only when voice capture or a
+  // transcript handoff is actively using the output channel.
   useEffect(() => {
     if (speechWorkerBusyRef.current) return;
     const item = codexSpeechQueue[0];
     if (!item) return;
-    // The active request id is cleared at transcript_ready, but the draft or
-    // submission still owns the audio channel until the handoff is accepted.
+    // A reviewed transcript draft no longer owns audio; active capture and an
+    // accepted/deferred handoff are represented by voiceHandoffPending.
     if (voiceHandoffPending) return;
-    const voiceTurnActive = activeVoiceRequest
-      && ["armed", "recording", "stopping", "transcribing", "transcript_ready"].includes(
-        activeVoiceRequest.status,
-      );
-    // Voice capture owns the audio channel. Keep Codex commentary queued and
-    // resume it after the voice turn instead of dropping messages mid-speech.
-    if (voiceTurnActive) return;
     const busy =
       ttsStatus.status === "synthesizing" ||
       ttsStatus.status === "playing";
