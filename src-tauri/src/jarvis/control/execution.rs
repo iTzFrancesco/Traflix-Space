@@ -675,6 +675,20 @@ pub(super) async fn execute_step(
                     }
                     Err(error) => return Err(error),
                 };
+            let pending_target = match pending_target {
+                Some(target) => Some(target),
+                None if !no_explicit_target => {
+                    explicit_pending_agent_send_target(
+                        app,
+                        context,
+                        pending,
+                        step,
+                        incoming_step,
+                    )
+                    .await?
+                }
+                None => None,
+            };
             let resolution = if let Some(target) = pending_target {
                 TargetResolution::Selected(target)
             } else if no_explicit_target {

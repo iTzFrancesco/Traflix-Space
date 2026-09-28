@@ -655,7 +655,11 @@ export function JarvisAdvancedSettings({
                     : session.ref.terminalTitle ?? session.ref.resolvedProvider}
                 </span>
                 <span className="font-mono text-neutral-text-muted">
-                  {session.state} · g{session.ref.generation}
+                  {session.state} · {session.ref.agentProcessAlive === true
+                    ? "CLI attivo"
+                    : session.ref.agentProcessAlive === false
+                      ? "CLI fermo"
+                      : "CLI ?"} · g{session.ref.generation}
                 </span>
               </div>
               <p className="mt-0.5 truncate font-mono text-[9px] text-neutral-text-muted">

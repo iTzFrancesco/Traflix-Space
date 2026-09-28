@@ -50,6 +50,15 @@ pub(crate) fn notify_agent_exit(app: &AppHandle, snapshot: &TerminalAgentSnapsho
     emit_agent_registry_changed(app, snapshot, "exited");
 }
 
+pub(crate) fn notify_agent_process_stopped(app: &AppHandle, snapshot: &TerminalAgentSnapshot) {
+    if let Some(state) = app.try_state::<crate::jarvis::JarvisState>() {
+        state
+            .registry
+            .observe_agent_process_stopped(snapshot, &chrono::Utc::now().to_rfc3339());
+    }
+    emit_agent_registry_changed(app, snapshot, "agent_process_stopped");
+}
+
 fn emit_agent_registry_changed(app: &AppHandle, snapshot: &TerminalAgentSnapshot, reason: &str) {
     let _ = app.emit(
         "jarvis://agent-registry-changed",

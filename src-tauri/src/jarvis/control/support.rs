@@ -107,6 +107,7 @@ pub(super) fn synthetic_session(config: &TerminalConfig, generation: u64) -> Age
             agent_alias: config.agent_alias.clone(),
             terminal_title: Some(config.title.clone()),
             generation,
+            agent_process_alive: None,
             provider_session_id: None,
             provider_turn_id: None,
             created_at: now(),

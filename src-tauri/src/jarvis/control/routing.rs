@@ -171,6 +171,63 @@ pub(super) fn bound_target_from_pending(
     target_from_binding(context, binding).map(Some)
 }
 
+/// Resolve a model-restated target against the exact binding from a pending
+/// busy-agent clarification. This only resumes the previous send when the
+/// model selected the same stable agent and kept the same task text.
+pub(super) async fn explicit_pending_agent_send_target(
+    app: &AppHandle,
+    context: &crate::jarvis::types::ModelContextViewV1,
+    pending: Option<&PendingConversationalIntent>,
+    step: &ConversationStep,
+    incoming_step: &ConversationStep,
+) -> Result<Option<ResolvedAgentTarget>, String> {
+    if step.operation != PlanOperation::AgentSend {
+        return Ok(None);
+    }
+    let Some(intent) = pending.filter(|intent| {
+        intent.kind == PendingConversationKind::Clarification
+            && intent.operation == PlanOperation::AgentSend
+    }) else {
+        return Ok(None);
+    };
+    let Some(binding) = intent.binding.as_ref() else {
+        return Ok(None);
+    };
+    let Some(previous) = intent.plan.operations.first() else {
+        return Ok(None);
+    };
+    if !same_agent_task(step.prompt.as_deref(), previous.prompt.as_deref()) {
+        return Ok(None);
+    }
+
+    let resolution = resolve_target(
+        app,
+        context,
+        incoming_step.target.as_deref(),
+        incoming_step.provider.as_deref(),
+    )
+    .await;
+    match resolution {
+        TargetResolution::Selected(target) if binding_matches_target(binding, &target) => {
+            Ok(Some(target))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn same_agent_task(left: Option<&str>, right: Option<&str>) -> bool {
+    let normalize = |value: &str| {
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    left.zip(right)
+        .filter(|(left, right)| !left.trim().is_empty() && !right.trim().is_empty())
+        .is_some_and(|(left, right)| normalize(left) == normalize(right))
+}
+
 pub(super) fn automatic_follow_up_requested(
     pending: Option<&PendingConversationalIntent>,
     step: &ConversationStep,
@@ -636,15 +693,24 @@ pub(super) fn busy_override_matches(
     step: &ConversationStep,
     target: &ResolvedAgentTarget,
 ) -> bool {
-    step.allow_busy
-        && pending.is_some_and(|intent| {
-            intent.kind == PendingConversationKind::Clarification
-                && intent.operation == step.operation
-                && intent
-                    .binding
-                    .as_ref()
-                    .is_some_and(|binding| binding_matches_target(binding, target))
-        })
+    pending.is_some_and(|intent| {
+        intent.kind == PendingConversationKind::Clarification
+            && intent.operation == step.operation
+            && intent
+                .binding
+                .as_ref()
+                .is_some_and(|binding| binding_matches_target(binding, target))
+            && (step.allow_busy
+                || (step.operation == PlanOperation::AgentSend
+                    && intent.operation == PlanOperation::AgentSend
+                    && intent
+                        .plan
+                        .operations
+                        .first()
+                        .is_some_and(|previous| {
+                            same_agent_task(step.prompt.as_deref(), previous.prompt.as_deref())
+                        })))
+    })
 }
 
 pub(super) fn binding_matches_target(

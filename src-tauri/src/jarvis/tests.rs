@@ -106,6 +106,7 @@ fn fake_session(
             agent_alias: Some(session_id.to_string()),
             terminal_title: None,
             generation: 1,
+            agent_process_alive: None,
             provider_session_id: Some(format!("provider-{session_id}")),
             provider_turn_id: None,
             created_at: "2026-08-06T00:00:00Z".to_string(),

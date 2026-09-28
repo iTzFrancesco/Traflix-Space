@@ -65,6 +65,7 @@ impl AgentSessionRegistry {
                     agent_alias: terminal.agent_alias.clone(),
                     terminal_title: None,
                     generation: terminal.generation,
+                    agent_process_alive: terminal.agent_process_alive,
                     provider_session_id: None,
                     provider_turn_id: None,
                     created_at: observed_at.to_string(),
@@ -86,6 +87,7 @@ impl AgentSessionRegistry {
             }
         });
         update_identity_from_snapshot(record, terminal, &identity);
+        record.reference.agent_process_alive = terminal.agent_process_alive;
         if let Some(provider) = identity.observed_provider.as_deref() {
             if self
                 .identity_decision(&terminal.terminal_id, terminal.generation, provider)
@@ -229,6 +231,32 @@ impl AgentSessionRegistry {
             }
         }
         self.prune_sessions_locked(&mut sessions);
+    }
+
+    /// A provider CLI can exit while its shell and PTY remain open. Record
+    /// that process transition without ending the agent session or claiming
+    /// that its current task completed.
+    pub fn observe_agent_process_stopped(
+        &self,
+        terminal: &TerminalAgentSnapshot,
+        observed_at: &str,
+    ) -> Option<AgentSessionRef> {
+        let session_id = self.current_session_id(terminal);
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return None;
+        };
+        let record = sessions.get_mut(&session_id)?;
+        if record.reference.terminal_id.as_deref() != Some(terminal.terminal_id.as_str())
+            || record.reference.generation != terminal.generation
+        {
+            return None;
+        }
+        record.reference.agent_process_alive = Some(false);
+        record.reference.updated_at = observed_at.to_string();
+        if matches!(record.state, AgentState::Starting | AgentState::Working) {
+            record.state = AgentState::Waiting;
+        }
+        Some(record.reference.clone())
     }
 
     pub fn reconcile(&self, terminals: &[TerminalAgentSnapshot], observed_at: &str) {

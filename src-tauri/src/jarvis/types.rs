@@ -209,6 +209,9 @@ pub struct AgentSessionRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_title: Option<String>,
     pub generation: u64,
+    /// Liveness of the provider CLI below the persistent PTY shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_process_alive: Option<bool>,
     pub provider_session_id: Option<String>,
     pub provider_turn_id: Option<String>,
     pub created_at: String,

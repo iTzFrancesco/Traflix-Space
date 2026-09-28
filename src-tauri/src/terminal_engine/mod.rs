@@ -45,7 +45,8 @@ pub(crate) use manager_identity::{
     snapshot_from_session,
 };
 pub(crate) use manager_notifications::{
-    notify_agent_abort, notify_agent_exit, notify_agent_started, notify_agent_user_input,
+    notify_agent_abort, notify_agent_exit, notify_agent_process_stopped, notify_agent_started,
+    notify_agent_user_input,
 };
 pub(crate) use manager_vt::convert_vt_cell;
 

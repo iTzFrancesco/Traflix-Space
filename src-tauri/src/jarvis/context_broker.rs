@@ -467,6 +467,7 @@ mod compact_tests {
                 agent_alias: Some(id.to_string()),
                 terminal_title: Some(id.to_string()),
                 generation: 1,
+                agent_process_alive: None,
                 provider_session_id: None,
                 provider_turn_id: None,
                 created_at: created_at.to_string(),

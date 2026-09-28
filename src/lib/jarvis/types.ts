@@ -463,6 +463,7 @@ export interface AgentSessionRef {
   agentAlias?: string;
   terminalTitle?: string;
   generation: number;
+  agentProcessAlive?: boolean;
   providerSessionId?: string;
   providerTurnId?: string;
   createdAt: string;

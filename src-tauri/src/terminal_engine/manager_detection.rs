@@ -140,14 +140,13 @@ impl TerminalManager {
                 } else if session.agent_runtime_presence.missed()
                     == AgentPresenceTransition::BecameInactive
                 {
-                    session.is_agent_terminal = false;
-                    session.observed_provider = None;
-                    session.backend_agent_launch_state = None;
-                    session.detection_source = "agent-process-exited".to_string();
-                    session.detection_confidence = 0.9;
+                    // The provider CLI may exit while the shell/PTY remains
+                    // available. Keep the terminal's provider identity so a
+                    // later reconciliation does not mark the agent session
+                    // Exited or lose the stable target binding.
                     let snapshot = snapshot_from_session(&session);
                     drop(session);
-                    notify_agent_exit(app, &snapshot);
+                    notify_agent_process_stopped(app, &snapshot);
                 }
             }
         }
