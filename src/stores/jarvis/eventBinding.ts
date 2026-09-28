@@ -3,7 +3,13 @@ import {
   applyCodexChatStream,
   completedCodexSpeechItem,
 } from "../../lib/jarvis/chatState";
-import { shouldSpeakCommentary, dropStaleSpeechForTurn, enqueueSpeech, speechItemKey } from "../../lib/jarvis/ttsState";
+import {
+  shouldSpeakCommentary,
+  dropStaleSpeechForTurn,
+  enqueueSpeech,
+  settleSpeechForTurn,
+  speechItemKey,
+} from "../../lib/jarvis/ttsState";
 import { codexErrorMessage, setCodexChatStreamAvailable, setCodexChatStreamBindingReady } from "./runtime";
 import type {
   CodexAccountEvent,
@@ -112,7 +118,30 @@ export function bindCodexEventsForStore(store: JarvisStoreAccess): () => void {
         nextStreamFinal[workspaceId] = completedTurn?.items.find((item) => item.final)?.text;
       }
     }
-    store.setState({ codexStreamingTurns: nextStreamingTurns, codexStreamFinal: nextStreamFinal });
+    const turnSettled =
+      payload.kind === "turn_completed" ||
+      payload.kind === "turn_failed" ||
+      payload.kind === "turn_interrupted";
+    const settledTurn = turnSettled
+      ? nextStreamingTurns[workspaceId]?.find((turn) => turn.turnId === turnId)
+      : undefined;
+    const finalSpeechItemId = payload.kind === "turn_completed"
+      ? settledTurn?.items.find((item) => item.kind === "message" && item.final)?.itemId ?? null
+      : null;
+    store.setState((state) => ({
+      codexStreamingTurns: nextStreamingTurns,
+      codexStreamFinal: nextStreamFinal,
+      ...(turnSettled
+        ? {
+            codexSpeechQueue: settleSpeechForTurn(
+              state.codexSpeechQueue,
+              workspaceId,
+              turnId,
+              finalSpeechItemId,
+            ),
+          }
+        : {}),
+    }));
 
     const completedSpeech = completedCodexSpeechItem(nextStreamingTurns, payload);
     const current = store.getState();

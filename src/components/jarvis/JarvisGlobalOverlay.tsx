@@ -14,6 +14,7 @@ import {
   sanitizedVoiceError,
   sanitizedVoiceErrorView,
 } from "../../lib/jarvis/voiceSettings";
+import type { CodexSpeechItem } from "../../lib/jarvis/types";
 import { hasPendingVoiceHandoff } from "../../lib/jarvis/voiceState";
 import { speechItemKey } from "../../lib/jarvis/ttsState";
 import { JarvisWidget } from "./JarvisWidget";
@@ -56,10 +57,14 @@ export function JarvisGlobalOverlay() {
     : null);
   const activities = useJarvisStore((state) => state.activities);
   const ttsStatus = useJarvisStore((state) => state.ttsStatus);
+  const codexStreamingTurns = useJarvisStore((state) => state.codexStreamingTurns);
   const voiceError = useJarvisStore((state) => state.voiceError);
   const codexSpeechQueue = useJarvisStore((state) => state.codexSpeechQueue);
   const dequeueCodexSpeech = useJarvisStore((state) => state.dequeueCodexSpeech);
+  const stopTts = useJarvisStore((state) => state.stopTts);
   const speechWorkerBusyRef = useRef(false);
+  const activeCodexSpeechRef = useRef<CodexSpeechItem | null>(null);
+  const stoppedCodexSpeechKeyRef = useRef<string | null>(null);
   const speechRetryCountsRef = useRef<Map<string, number>>(new Map());
   const loadSettings = useJarvisStore((state) => state.loadSettings);
   const bootstrapCodex = useJarvisStore((state) => state.bootstrapCodex);
@@ -199,6 +204,8 @@ export function JarvisGlobalOverlay() {
       return;
     }
     speechWorkerBusyRef.current = true;
+    activeCodexSpeechRef.current = item;
+    stoppedCodexSpeechKeyRef.current = null;
     const settings = store.settings.jarvis.voiceOutput;
     const speechKey = speechItemKey(item);
     const requestId = `tts-codex-${speechKey}`;
@@ -258,6 +265,16 @@ export function JarvisGlobalOverlay() {
       })
       .finally(() => {
         speechWorkerBusyRef.current = false;
+        if (activeCodexSpeechRef.current && speechItemKey(activeCodexSpeechRef.current) === speechKey) {
+          activeCodexSpeechRef.current = null;
+        }
+        // Queue updates can render while the worker is still marked busy.
+        // Wake it once the active item has settled so a retained final answer
+        // can start immediately after stale progress is cancelled.
+        const queue = useJarvisStore.getState().codexSpeechQueue;
+        if (queue.length > 0 && speechItemKey(queue[0]) !== speechKey) {
+          useJarvisStore.setState({ codexSpeechQueue: [...queue] });
+        }
       });
   }, [
     activeVoiceRequest?.requestId,
@@ -267,6 +284,29 @@ export function JarvisGlobalOverlay() {
     voiceHandoffPending,
     ttsStatus.status,
   ]);
+
+  useEffect(() => {
+    const activeSpeech = activeCodexSpeechRef.current;
+    if (!activeSpeech) return;
+    const turn = codexStreamingTurns[activeSpeech.workspaceId]?.find(
+      (candidate) => candidate.turnId === activeSpeech.turnId,
+    );
+    if (!turn || turn.status === "active") return;
+
+    const item = turn.items.find((candidate) => candidate.itemId === activeSpeech.itemId);
+    const isFinalAnswer = turn.status === "completed" && item?.final === true;
+    if (isFinalAnswer) return;
+
+    const speechKey = speechItemKey(activeSpeech);
+    if (stoppedCodexSpeechKeyRef.current === speechKey) return;
+    stoppedCodexSpeechKeyRef.current = speechKey;
+    console.info("[Jarvis TTS] stopped stale progress after turn settled", {
+      itemId: activeSpeech.itemId,
+      turnId: activeSpeech.turnId,
+      workspaceId: activeSpeech.workspaceId,
+    });
+    void stopTts();
+  }, [codexStreamingTurns, stopTts]);
 
   useEffect(() => {
     void loadSettings();

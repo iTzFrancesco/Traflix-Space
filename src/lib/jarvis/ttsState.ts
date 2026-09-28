@@ -76,6 +76,25 @@ export function dropStaleSpeechForTurn(
   );
 }
 
+/**
+ * Once a turn settles, queued progress messages are stale. Keep only its final
+ * message if it is already waiting to be spoken. A final message that arrives
+ * after the terminal event is queued normally by the stream listener.
+ */
+export function settleSpeechForTurn(
+  queue: CodexSpeechItem[],
+  workspaceId: string,
+  turnId: string,
+  finalItemId: string | null,
+): CodexSpeechItem[] {
+  return queue.filter(
+    (item) =>
+      item.workspaceId !== workspaceId ||
+      item.turnId !== turnId ||
+      item.itemId === finalItemId,
+  );
+}
+
 /** Records a spoken item id for dedupe (bounded). */
 export function rememberSpoken(
   spoken: string[],
