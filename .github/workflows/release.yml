@@ -62,11 +62,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
-      # tauri.windows.conf.json runs scripts/tauri-before-build.ps1, which
-      # regenerates the current persistent Edge TTS sidecar and builds the UI.
-      - run: npm run tauri build
-      - uses: softprops/action-gh-release@v2
+      # Keep the release as a draft so the MSI, sidecar, and signatures can be
+      # reviewed before latest.json becomes available to installed apps.
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          files: ${{ github.workspace }}/.cargo-target/release/bundle/msi/*.msi
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          tagName: ${{ github.ref_name }}
+          releaseName: Traflix Space ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: false
+          tauriScript: npm run tauri

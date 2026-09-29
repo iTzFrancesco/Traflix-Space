@@ -13,6 +13,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { setupSkillsListener } from "./stores/skillStore";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { UpdateNotice } from "./components/update/UpdateNotice";
 
 function isAgentNotificationWindow(): boolean {
   try {
@@ -66,6 +67,7 @@ function App() {
       <ProjectWorkspaceSync />
       <AgentCompletionListener />
       <JarvisGlobalOverlay />
+      <UpdateNotice />
       <ToastContainer />
     </ErrorBoundary>
   );

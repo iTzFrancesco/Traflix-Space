@@ -38,6 +38,7 @@ portable-pty = "0.8"
 notify = { version = "7", features = [] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 futures-util = "0.3"
+tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 cpal = "0.15"
