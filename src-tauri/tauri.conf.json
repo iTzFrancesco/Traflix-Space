@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Traflix Space",
-  "version": "1.8.8",
+  "version": "1.8.9",
   "identifier": "com.traflix.space",
   "build": {
     "frontendDist": "../dist",
@@ -72,7 +72,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI0OEZFOEQ4QjA0NTkzRTMKUldUamswV3cyT2lQSk0raU5QSjkzd21ZcnZQdnNSMXNCTU1wMjJydHdFcWt0aTFvTTBhSEdqVW8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUxRDY1NTZGMTZGRDBFRTgKUldUb0R2MFdiMVhXVVlUcnBkRSs3Ym0xanVUNEFkMHJlVFY1cC9ISFlUeVVKU3Nram5vNHA5Mm4K",
       "endpoints": [
         "https://github.com/iTzFrancesco/Traflix-Space/releases/latest/download/latest.json"
       ],
