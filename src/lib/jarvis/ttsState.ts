@@ -77,9 +77,16 @@ export function dropStaleSpeechForTurn(
 }
 
 /**
- * Once a turn settles, queued progress messages are stale. Keep only its final
- * message if it is already waiting to be spoken. A final message that arrives
- * after the terminal event is queued normally by the stream listener.
+ * Settles the progressive speech queue when a turn terminates.
+ *
+ * - turn_completed (finalItemId != null): keep every still-pending item of the
+ *   turn in FIFO order so intermediate Jarvis messages are spoken too, followed
+ *   by the final answer. Dropping them here is exactly what muted the grey
+ *   intermediate rows in the diagnostics view.
+ * - turn_failed / turn_interrupted (finalItemId == null): the turn was
+ *   cancelled or errored, so drop its still-pending items to respect
+ *   stop/cancel. A final message that arrives after the terminal event is
+ *   queued normally by the stream listener.
  */
 export function settleSpeechForTurn(
   queue: CodexSpeechItem[],
@@ -87,11 +94,11 @@ export function settleSpeechForTurn(
   turnId: string,
   finalItemId: string | null,
 ): CodexSpeechItem[] {
+  if (finalItemId !== null) {
+    return queue;
+  }
   return queue.filter(
-    (item) =>
-      item.workspaceId !== workspaceId ||
-      item.turnId !== turnId ||
-      item.itemId === finalItemId,
+    (item) => item.workspaceId !== workspaceId || item.turnId !== turnId,
   );
 }
 

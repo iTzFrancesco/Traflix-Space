@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   applyCodexChatStream,
   completedCodexSpeechItem,
+  reconcileStreamingTurnsWithThreads,
 } from "../../lib/jarvis/chatState";
 import {
   shouldSpeakCommentary,
@@ -45,9 +46,31 @@ export function bindCodexEventsForStore(store: JarvisStoreAccess): () => void {
   }).then((unlisten) => unlisteners.push(unlisten));
 
   void listen<CodexThreadSnapshot>("jarvis://codex-thread", (event) => {
-    store.setState({
-      codexThreads: Object.fromEntries(event.payload.threads.map((thread) => [thread.workspaceId, thread])),
-    });
+    const threads = Object.fromEntries(event.payload.threads.map((thread) => [thread.workspaceId, thread]));
+    // The thread snapshot is the authority for which turn is still running.
+    // Retire local `active` markers the backend no longer owns so a missed
+    // terminal stream event cannot leave a perpetual working turn after a
+    // workspace switch. Newly interrupted turns settle their still-pending
+    // speech exactly like a turn_interrupted event; active playback is
+    // stopped by the overlay worker, preserving the no-interrupt policy for
+    // completed turns.
+    const reconciled = reconcileStreamingTurnsWithThreads(
+      store.getState().codexStreamingTurns,
+      threads,
+      new Date().toISOString(),
+    );
+    store.setState((state) => ({
+      codexThreads: threads,
+      codexStreamingTurns: reconciled.turns,
+      ...(reconciled.interrupted.length > 0
+        ? {
+            codexSpeechQueue: reconciled.interrupted.reduce(
+              (queue, key) => settleSpeechForTurn(queue, key.workspaceId, key.turnId, null),
+              state.codexSpeechQueue,
+            ),
+          }
+        : {}),
+    }));
   }).then((unlisten) => unlisteners.push(unlisten));
 
   const chatStreamRegistration = listen<CodexChatStreamEvent>("jarvis://chat-stream", (event) => {
@@ -118,26 +141,23 @@ export function bindCodexEventsForStore(store: JarvisStoreAccess): () => void {
         nextStreamFinal[workspaceId] = completedTurn?.items.find((item) => item.final)?.text;
       }
     }
-    const turnSettled =
-      payload.kind === "turn_completed" ||
+    const turnCancelled =
       payload.kind === "turn_failed" ||
       payload.kind === "turn_interrupted";
-    const settledTurn = turnSettled
-      ? nextStreamingTurns[workspaceId]?.find((turn) => turn.turnId === turnId)
-      : undefined;
-    const finalSpeechItemId = payload.kind === "turn_completed"
-      ? settledTurn?.items.find((item) => item.kind === "message" && item.final)?.itemId ?? null
-      : null;
     store.setState((state) => ({
       codexStreamingTurns: nextStreamingTurns,
       codexStreamFinal: nextStreamFinal,
-      ...(turnSettled
+      // A completed turn keeps every queued intermediate in FIFO order so all
+      // Jarvis messages are spoken (grey rows + white final). Only a
+      // failed/interrupted turn drops its still-pending items to respect
+      // stop/cancel; active playback is stopped by the overlay worker.
+      ...(turnCancelled
         ? {
             codexSpeechQueue: settleSpeechForTurn(
               state.codexSpeechQueue,
               workspaceId,
               turnId,
-              finalSpeechItemId,
+              null,
             ),
           }
         : {}),

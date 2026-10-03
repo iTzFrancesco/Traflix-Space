@@ -3,6 +3,7 @@ import type {
   CodexSpeechItem,
   CodexStreamItem,
   CodexStreamingTurn,
+  JarvisCodexThread,
   JarvisConversationMessage,
   JarvisRequestState,
   PendingAction,
@@ -121,6 +122,23 @@ function applyToTurnList(
   const updated = index >= 0
     ? turns.map((item, i) => (i === index ? nextTurn : item))
     : [nextTurn, ...turns];
+  if (event.kind === "turn_started") {
+    // The backend owns at most one active turn per workspace thread. A new
+    // turn therefore supersedes every other still-active local turn: without
+    // this the UI keeps showing the previous turn as working (with its
+    // Interrompi button) when its terminal event was dropped or reordered.
+    // Late terminal events for a superseded turn are already filtered
+    // server-side and never reach the frontend, so this cannot kill a turn
+    // that is still alive.
+    const startedTurnId = event.turnId ?? "unknown";
+    return updated
+      .map((item) =>
+        item.turnId === startedTurnId || item.status !== "active"
+          ? item
+          : markTurnInterrupted(item, event.timestamp),
+      )
+      .slice(0, MAX_STREAMING_TURNS_PER_WORKSPACE);
+  }
   return updated.slice(0, MAX_STREAMING_TURNS_PER_WORKSPACE);
 }
 
@@ -308,6 +326,94 @@ export function isCodexTurnActive(
   if (!workspaceId) return false;
   const newest = turns[workspaceId]?.[0];
   return newest?.status === "active";
+}
+
+export interface ReconciledStreamingTurns {
+  turns: Record<string, CodexStreamingTurn[]>;
+  interrupted: Array<{ workspaceId: string; turnId: string }>;
+}
+
+/** Marks one turn interrupted, mirroring the terminal-event reducer. */
+function markTurnInterrupted(turn: CodexStreamingTurn, endedAt: string): CodexStreamingTurn {
+  if (turn.status !== "active") return turn;
+  return {
+    ...turn,
+    status: "interrupted",
+    items: markLastCompletedMessageFinal(turn.items),
+    endedAt,
+  };
+}
+
+/**
+ * Marks the active local turns owned by one chat request as interrupted.
+ * The backend already interrupted the server-side turn when `cancelChat`
+ * succeeds; this only reconciles display state (and lets callers settle the
+ * pending speech queue) when the terminal stream event is still in flight.
+ * Turns owned by other requests are never touched, so a late cancel cannot
+ * kill a newer turn on the same workspace. Repeat-safe.
+ */
+export function interruptStreamingTurnsForRequest(
+  turns: Record<string, CodexStreamingTurn[]>,
+  workspaceId: string,
+  requestId: string,
+  endedAt: string,
+): ReconciledStreamingTurns {
+  const list = turns[workspaceId];
+  if (!list) return { turns, interrupted: [] };
+  const interrupted: Array<{ workspaceId: string; turnId: string }> = [];
+  let changed = false;
+  const next = list.map((turn) => {
+    if (turn.status !== "active" || turn.requestId !== requestId) return turn;
+    changed = true;
+    interrupted.push({ workspaceId, turnId: turn.turnId });
+    return markTurnInterrupted(turn, endedAt);
+  });
+  if (!changed) return { turns, interrupted };
+  return { turns: { ...turns, [workspaceId]: next }, interrupted };
+}
+
+/**
+ * Reconciles local streaming turns against the backend thread snapshot
+ * (the authority for which turn, if any, is still running).
+ *
+ * A local `active` turn becomes `interrupted` when the backend thread for
+ * its workspace advertises no turn (idle) or a different turn id. This
+ * closes the cross-workspace staleness window: switching back to a workspace
+ * whose turn finished while it was in the background no longer shows a
+ * perpetual "working" turn with a dead Interrompi button.
+ *
+ * Workspaces without a thread record are left untouched: the snapshot may
+ * simply not have arrived yet for a brand-new turn. No turn is ever created
+ * or completed here — only stale `active` markers are retired. Repeat-safe.
+ */
+export function reconcileStreamingTurnsWithThreads(
+  turns: Record<string, CodexStreamingTurn[]>,
+  threads: Record<string, JarvisCodexThread>,
+  endedAt: string,
+): ReconciledStreamingTurns {
+  const interrupted: Array<{ workspaceId: string; turnId: string }> = [];
+  let changed = false;
+  const next: Record<string, CodexStreamingTurn[]> = { ...turns };
+  for (const [workspaceId, list] of Object.entries(turns)) {
+    const thread = threads[workspaceId];
+    if (!thread) continue;
+    const activeTurnId = thread.activeTurnId ?? null;
+    const owned = thread.status === "in_progress" && activeTurnId !== null;
+    let dirty = false;
+    const mapped = list.map((turn) => {
+      if (turn.status !== "active") return turn;
+      if (owned && turn.turnId === activeTurnId) return turn;
+      dirty = true;
+      interrupted.push({ workspaceId, turnId: turn.turnId });
+      return markTurnInterrupted(turn, endedAt);
+    });
+    if (dirty) {
+      changed = true;
+      next[workspaceId] = mapped;
+    }
+  }
+  if (!changed) return { turns, interrupted };
+  return { turns: next, interrupted };
 }
 
 /**

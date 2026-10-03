@@ -10,12 +10,13 @@ import {
 } from "../../lib/jarvis/client";
 import {
   isWorkspaceChatLoading,
+  interruptStreamingTurnsForRequest,
   mergeConversationMessages,
   mergeJarvisRequestState,
   pruneRequestHistory,
   resolveChatWorkspace,
 } from "../../lib/jarvis/chatState";
-import { beginLocalTtsRequest } from "../../lib/jarvis/ttsState";
+import { beginLocalTtsRequest, settleSpeechForTurn } from "../../lib/jarvis/ttsState";
 import { reportFrontendDiagnosticCode } from "../../lib/crashDiagnostics";
 import { useWorkspaceStore } from "../workspaceStore";
 import { sanitizedVoiceErrorView } from "../../lib/jarvis/voiceSettings";
@@ -139,6 +140,9 @@ export const createChatSlice: JarvisSlice = (set, get) => {
         }),
       }));
       retryQueuedVoiceTranscript(workspaceId);
+      // Tools may have created pending confirmations during the turn; reload
+      // the authoritative list so follow-up confirmations reflect real state.
+      void get().refreshPendingActions();
 
       const voiceSettings = get().settings.jarvis.voiceOutput;
       voiceLog("chat response accepted", {
@@ -228,6 +232,9 @@ export const createChatSlice: JarvisSlice = (set, get) => {
         chatErrors: { ...state.chatErrors, [workspaceId]: errorMessage(error) },
       }));
       retryQueuedVoiceTranscript(workspaceId);
+      // A cancelled/failed turn leaves no confirmable actions behind; reload
+      // so orphaned confirmations cannot be approved after the stop.
+      void get().refreshPendingActions();
       return false;
     }
   },
@@ -243,6 +250,31 @@ export const createChatSlice: JarvisSlice = (set, get) => {
     }));
     try {
       await cancelChat(requestId);
+      // The backend discarded this request's pending actions and interrupted
+      // its Codex turn (spec §18). Reconcile display state promptly instead
+      // of waiting for stream events: retire the local active turns owned by
+      // this request (repeat-safe, newer turns untouched), settle their
+      // still-pending speech, and reload the authoritative confirmations and
+      // threads so follow-up confirmations reflect the real state.
+      const endedAt = new Date().toISOString();
+      set((state) => {
+        const reconciled = interruptStreamingTurnsForRequest(
+          state.codexStreamingTurns,
+          request.workspaceId,
+          requestId,
+          endedAt,
+        );
+        if (reconciled.interrupted.length === 0) return state;
+        return {
+          codexStreamingTurns: reconciled.turns,
+          codexSpeechQueue: reconciled.interrupted.reduce(
+            (queue, key) => settleSpeechForTurn(queue, key.workspaceId, key.turnId, null),
+            state.codexSpeechQueue,
+          ),
+        };
+      });
+      void get().refreshPendingActions();
+      void get().loadCodexThreads();
     } catch (error) {
       set((state) => ({ chatErrors: { ...state.chatErrors, [request.workspaceId]: errorMessage(error) } }));
     }

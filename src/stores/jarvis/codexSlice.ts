@@ -19,7 +19,8 @@ import {
   providerStatus,
 } from "../../lib/jarvis/client";
 import { bootstrapCodexData, createCodexBootstrapQueue } from "../../lib/jarvis/codexBootstrap";
-import { clearSpeechQueue, dequeueSpeech, dropSpeechForWorkspace, rememberSpoken } from "../../lib/jarvis/ttsState";
+import { reconcileStreamingTurnsWithThreads } from "../../lib/jarvis/chatState";
+import { clearSpeechQueue, dequeueSpeech, dropSpeechForWorkspace, rememberSpoken, settleSpeechForTurn } from "../../lib/jarvis/ttsState";
 import { errorMessage, codexErrorMessage, openCodexAuthUrl, waitForCodexChatStreamBinding } from "./runtime";
 import type { JarvisSlice } from "./types";
 
@@ -134,7 +135,27 @@ export const createCodexSlice: JarvisSlice = (set, get) => {
     loadCodexThreads: async () => {
       try {
         const snapshot = await codexThreads();
-        set({ codexThreads: Object.fromEntries(snapshot.threads.map((thread) => [thread.workspaceId, thread])) });
+        const threads = Object.fromEntries(snapshot.threads.map((thread) => [thread.workspaceId, thread]));
+        // Same reconciliation as the thread-event listener: a threads read
+        // (workspace switch, post-interrupt) must also retire stale local
+        // `active` markers the backend no longer owns.
+        const reconciled = reconcileStreamingTurnsWithThreads(
+          get().codexStreamingTurns,
+          threads,
+          new Date().toISOString(),
+        );
+        set((state) => ({
+          codexThreads: threads,
+          codexStreamingTurns: reconciled.turns,
+          ...(reconciled.interrupted.length > 0
+            ? {
+                codexSpeechQueue: reconciled.interrupted.reduce(
+                  (queue, key) => settleSpeechForTurn(queue, key.workspaceId, key.turnId, null),
+                  state.codexSpeechQueue,
+                ),
+              }
+            : {}),
+        }));
       } catch {
         // Keep the last threads.
       }
@@ -172,6 +193,11 @@ export const createCodexSlice: JarvisSlice = (set, get) => {
         await codexTurnInterrupt(workspaceId);
       } catch {
         // The turn may already be done.
+      } finally {
+        // The terminal stream event may already have been missed; reload the
+        // authoritative threads so a repeated stop converges instead of
+        // leaving a stale active row. Idempotent and repeat-safe.
+        await get().loadCodexThreads();
       }
     },
     steerCodexTurn: async (workspaceId, steerText) => {

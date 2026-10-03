@@ -78,14 +78,12 @@ export function JarvisGlobalOverlay() {
   const refreshPendingActions = useJarvisStore(
     (state) => state.refreshPendingActions,
   );
+  const loadCodexThreads = useJarvisStore((state) => state.loadCodexThreads);
   const loadProviderStatus = useJarvisStore((state) => state.loadProviderStatus);
   const setSettingsOpen = useJarvisStore((state) => state.setSettingsOpen);
   const loadVoiceDraft = useJarvisStore((state) => state.loadVoiceDraft);
   const setVoiceRequest = useJarvisStore((state) => state.setVoiceRequest);
   const applyActivityEvents = useJarvisStore((state) => state.applyActivityEvents);
-  const clearWorkspaceActivities = useJarvisStore(
-    (state) => state.clearWorkspaceActivities,
-  );
   const setVoiceLevel = useJarvisStore((state) => state.setVoiceLevel);
   const setWakeWordStatus = useJarvisStore((state) => state.setWakeWordStatus);
   const clearVoiceError = useJarvisStore((state) => state.clearVoiceError);
@@ -292,18 +290,20 @@ export function JarvisGlobalOverlay() {
       (candidate) => candidate.turnId === activeSpeech.turnId,
     );
     if (!turn || turn.status === "active") return;
-
-    const item = turn.items.find((candidate) => candidate.itemId === activeSpeech.itemId);
-    const isFinalAnswer = turn.status === "completed" && item?.final === true;
-    if (isFinalAnswer) return;
+    // A completed turn keeps speaking: intermediate Jarvis messages must finish
+    // in FIFO order before the final answer. Only a failed/interrupted turn
+    // (user stop/cancel or backend error) preempts the active utterance so
+    // stop/cancel remains immediate.
+    if (turn.status === "completed") return;
 
     const speechKey = speechItemKey(activeSpeech);
     if (stoppedCodexSpeechKeyRef.current === speechKey) return;
     stoppedCodexSpeechKeyRef.current = speechKey;
-    console.info("[Jarvis TTS] stopped stale progress after turn settled", {
+    console.info("[Jarvis TTS] stopped stale progress after turn cancelled", {
       itemId: activeSpeech.itemId,
       turnId: activeSpeech.turnId,
       workspaceId: activeSpeech.workspaceId,
+      status: turn.status,
     });
     void stopTts();
   }, [codexStreamingTurns, stopTts]);
@@ -428,16 +428,20 @@ export function JarvisGlobalOverlay() {
     settings.jarvis.enabled,
   ]);
 
+  // Activity checkpoints are ephemeral and already filtered per workspace at
+  // render time (stripActivities/hasOpenActivity/currentActivityLabel) and
+  // bounded by MAX_ACTIVITY_EVENTS. They must survive a workspace switch so
+  // returning shows what was happening; only an explicit Clear Conversation
+  // may drop a workspace's state.
   useEffect(() => {
-    if (activeWorkspaceId) void refreshPendingActions();
-  }, [activeWorkspaceId, refreshPendingActions]);
-
-  useEffect(() => {
-    const workspaceId = activeWorkspaceId;
-    return () => {
-      if (workspaceId) clearWorkspaceActivities(workspaceId);
-    };
-  }, [activeWorkspaceId, clearWorkspaceActivities]);
+    if (activeWorkspaceId) {
+      void refreshPendingActions();
+      // Reconcile the Codex turn status on every workspace switch/return:
+      // the authoritative thread snapshot retires local `active` markers for
+      // turns that finished while another workspace was in the foreground.
+      void loadCodexThreads();
+    }
+  }, [activeWorkspaceId, loadCodexThreads, refreshPendingActions]);
 
   useEffect(() => {
     if (settingsOpen || settings.jarvis.enabled) {
