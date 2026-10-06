@@ -43,11 +43,22 @@ jobs:
         with:
           node-version: "24"
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm install
         working-directory: .
       - run: npm run build
         working-directory: .
       - run: cargo fmt --all --check
+      # The Tauri build script merges tauri.windows.conf.json, whose
+      # externalBin sidecar must exist before any cargo invocation.
+      - name: Build Edge TTS sidecar
+        working-directory: .
+        shell: pwsh
+        run: |
+          $py = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { "python" }
+          ./scripts/build-jarvis-edge-tts-sidecar.ps1 -Python $py
       - run: cargo clippy --all-targets --all-features
 
   test-rust:
@@ -72,12 +83,23 @@ jobs:
         with:
           node-version: "24"
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm install
         working-directory: .
       - run: npm run build
         working-directory: .
       - run: npm run test:jarvis
         working-directory: .
+      # The Tauri build script merges tauri.windows.conf.json, whose
+      # externalBin sidecar must exist before any cargo invocation.
+      - name: Build Edge TTS sidecar
+        working-directory: .
+        shell: pwsh
+        run: |
+          $py = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { "python" }
+          ./scripts/build-jarvis-edge-tts-sidecar.ps1 -Python $py
       - name: Run Rust library tests with Windows manifest
         env:
           TRAFLIX_RUST_TEST_MANIFEST: "1"
