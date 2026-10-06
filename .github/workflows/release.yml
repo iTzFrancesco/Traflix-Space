@@ -138,12 +138,18 @@ jobs:
           npm run tauri -- build --config src-tauri/tauri.windows.conf.json
       - name: Generate Windows update manifest
         run: node scripts/generate-updater-manifest.mjs
+      # Fully automatic publish: no manual draft review. The check-rust and
+      # check-frontend jobs above are the safety gate (they must pass before
+      # this job runs). Publishing makes latest.json live immediately, so
+      # installed apps pick up the new version via the updater endpoint.
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             .cargo-target/release/bundle/msi/*.msi
             .cargo-target/release/bundle/msi/*.msi.sig
             .cargo-target/release/bundle/msi/latest.json
+          draft: false
+          prerelease: false
           make_latest: true
           generate_release_notes: true
           fail_on_unmatched_files: true
