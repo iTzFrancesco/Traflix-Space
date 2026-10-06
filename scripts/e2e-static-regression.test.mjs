@@ -252,7 +252,7 @@ test("manual click-toggle is authoritative and legacy voice modes migrate safely
   assert.match(rustSettings, /settings\.voice_input\.endpointing_enabled = false/);
   assert.match(rustSettings, /settings\.voice_output\.stop_on_user_speech = false/);
   assert.match(rustSettings, /fn default_max_armed_seconds\(\) -> u32 \{\s*120\s*\}/);
-  assert.match(rustSettings, /owner_mode_migrates_click_toggle_but_preserves_hold_to_talk/);
+  assert.match(rustSettings, /owner_mode_enforces_click_toggle_and_manual_submit/);
 });
 
 test("voice runtime avoids callback data loss, survives Windows Python aliases, and bounds STT language input", () => {
