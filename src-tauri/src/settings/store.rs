@@ -660,11 +660,13 @@ mod tests {
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
         assert_eq!(settings.jarvis.voice_input.model, "whisper-large-v3-turbo");
-        assert!(settings.jarvis.voice_input.auto_submit_transcript);
-        assert!(settings.jarvis.voice_input.vad_enabled);
+        // Owner mode is enforced on every load: manual capture, no
+        // auto-submit, no VAD-gated arming.
+        assert!(!settings.jarvis.voice_input.auto_submit_transcript);
+        assert!(!settings.jarvis.voice_input.vad_enabled);
         assert_eq!(
             settings.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::Vad
+            VoiceActivationMode::ClickToggle
         );
         assert_eq!(settings.jarvis.voice_input.max_armed_seconds, 120);
         assert_eq!(settings.jarvis.voice_output.provider, "edge_tts");
@@ -737,17 +739,19 @@ mod tests {
         assert!(settings.jarvis.text_model.privacy_consent);
         assert!(settings.jarvis.text_model.privacy_consent_at.is_some());
         assert!(settings.jarvis.voice_input.enabled);
-        assert!(settings.jarvis.voice_input.auto_submit_transcript);
-        assert!(settings.jarvis.voice_input.vad_enabled);
+        // Owner-mode defaults: manual click-toggle capture, transcripts stay
+        // drafts until explicitly sent, TTS never yields to user speech.
+        assert!(!settings.jarvis.voice_input.auto_submit_transcript);
+        assert!(!settings.jarvis.voice_input.vad_enabled);
         assert!(settings.jarvis.voice_input.privacy_consent);
         assert_eq!(
             settings.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::Vad
+            VoiceActivationMode::ClickToggle
         );
         assert_eq!(settings.jarvis.voice_input.max_armed_seconds, 120);
         assert!(settings.jarvis.voice_output.enabled);
         assert!(settings.jarvis.voice_output.auto_speak);
-        assert!(settings.jarvis.voice_output.stop_on_user_speech);
+        assert!(!settings.jarvis.voice_output.stop_on_user_speech);
         assert!(settings.jarvis.voice_output.privacy_consent);
         assert!(!settings.jarvis.advanced_view_enabled);
     }
@@ -756,7 +760,9 @@ mod tests {
     fn voice_endpointing_defaults_finish_promptly() {
         let settings = AppSettings::default();
         let input = &settings.jarvis.voice_input;
-        assert!(input.endpointing_enabled);
+        // Endpointing stays off for manual capture; the timing defaults below
+        // still keep short turns prompt.
+        assert!(!input.endpointing_enabled);
         assert_eq!(input.vad_pre_roll_ms, 500);
         assert_eq!(input.vad_post_speech_ms, 650);
         assert_eq!(input.endpoint_grace_ms, 900);
@@ -792,14 +798,14 @@ mod tests {
     }
 
     #[test]
-    fn owner_mode_migrates_click_toggle_but_preserves_hold_to_talk() {
+    fn owner_mode_enforces_click_toggle_and_manual_submit() {
         let mut click_settings = AppSettings::default();
         click_settings.jarvis.voice_input.activation_mode = VoiceActivationMode::ClickToggle;
         let click_reloaded: AppSettings =
             serde_json::from_str(&serde_json::to_string(&click_settings).unwrap()).unwrap();
         assert_eq!(
             click_reloaded.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::Vad
+            VoiceActivationMode::ClickToggle
         );
 
         let mut settings = AppSettings::default();
@@ -814,14 +820,16 @@ mod tests {
         settings.jarvis.voice_output.privacy_consent_at = None;
         let reloaded: AppSettings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        // Owner mode always enforces click-toggle capture and manual
+        // transcripts; only the deliberately tuned VAD threshold survives.
         assert_eq!(
             reloaded.jarvis.voice_input.activation_mode,
-            VoiceActivationMode::HoldToTalk
+            VoiceActivationMode::ClickToggle
         );
-        assert!(reloaded.jarvis.voice_input.auto_submit_transcript);
+        assert!(!reloaded.jarvis.voice_input.auto_submit_transcript);
         assert!(!reloaded.jarvis.voice_input.vad_enabled);
         assert!(reloaded.jarvis.voice_input.privacy_consent);
-        assert!(reloaded.jarvis.voice_output.stop_on_user_speech);
+        assert!(!reloaded.jarvis.voice_output.stop_on_user_speech);
         assert!(reloaded.jarvis.voice_output.privacy_consent);
         assert_eq!(reloaded.jarvis.voice_input.vad_speech_threshold, 0.031);
     }

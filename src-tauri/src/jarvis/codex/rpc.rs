@@ -389,11 +389,15 @@ mod tests {
 
     #[test]
     fn preserves_canonical_dynamic_tool_response_shape() {
-        let canonical = json!({
+        let normalized = normalize_server_response(json!({
             "contentItems": [{ "type": "inputText", "text": "ok" }],
             "success": false
-        });
-        assert_eq!(normalize_server_response(canonical.clone()), canonical);
+        }));
+        // Canonical items and the success flag pass through untouched; the
+        // legacy "content" mirror is always populated for downstream consumers.
+        assert_eq!(normalized["contentItems"][0]["text"], "ok");
+        assert_eq!(normalized["success"], false);
+        assert_eq!(normalized["content"][0]["text"], "ok");
     }
 
     #[test]
