@@ -320,7 +320,10 @@ fn normalize_server_response(result: Value) -> Value {
 
     let mut normalized = result;
     if let Some(object) = normalized.as_object_mut() {
-        object.insert("contentItems".to_owned(), Value::Array(content_items.clone()));
+        object.insert(
+            "contentItems".to_owned(),
+            Value::Array(content_items.clone()),
+        );
         object
             .entry("success".to_owned())
             .or_insert_with(|| Value::Bool(true));

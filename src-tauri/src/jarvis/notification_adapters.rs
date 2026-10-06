@@ -1,9 +1,9 @@
 use serde::Serialize;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]

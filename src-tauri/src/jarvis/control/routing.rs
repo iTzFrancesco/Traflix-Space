@@ -452,10 +452,7 @@ pub(super) async fn resolve_target(
 /// the provider hint constrains routing so fuzzy title/tail scoring cannot send
 /// the prompt to an unrelated agent.
 pub(super) fn provider_hint_from_query(query: &str) -> Option<String> {
-    let normalized = query
-        .trim()
-        .to_ascii_lowercase()
-        .replace(['-', '_'], " ");
+    let normalized = query.trim().to_ascii_lowercase().replace(['-', '_'], " ");
     let tokens = normalized.split_whitespace().collect::<Vec<_>>();
     let mut hints = HashSet::new();
 
@@ -703,13 +700,9 @@ pub(super) fn busy_override_matches(
             && (step.allow_busy
                 || (step.operation == PlanOperation::AgentSend
                     && intent.operation == PlanOperation::AgentSend
-                    && intent
-                        .plan
-                        .operations
-                        .first()
-                        .is_some_and(|previous| {
-                            same_agent_task(step.prompt.as_deref(), previous.prompt.as_deref())
-                        })))
+                    && intent.plan.operations.first().is_some_and(|previous| {
+                        same_agent_task(step.prompt.as_deref(), previous.prompt.as_deref())
+                    })))
     })
 }
 

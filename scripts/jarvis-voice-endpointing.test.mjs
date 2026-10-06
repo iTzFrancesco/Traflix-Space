@@ -157,7 +157,20 @@ test("progressive TTS retains every completed step until the worker consumes it"
   ));
 });
 
-test("progressive TTS waits for a transcript handoff even after the active id is cleared", () => {
+test("progressive TTS yields to active capture but not to idle reviewed drafts", () => {
+  assert.equal(hasPendingVoiceHandoff({
+    "workspace-1": {
+      requestId: "voice-1",
+      workspaceId: "workspace-1",
+      status: "recording",
+      createdAt: "2026-08-14T20:00:00.000Z",
+      normalizedLevel: 0,
+      activationMode: "click_toggle",
+      vadState: "silence",
+    },
+  }, {}), true);
+  // A transcript_ready request is an idle draft awaiting user review. It no
+  // longer captures audio, so it must not hold progressive TTS indefinitely.
   assert.equal(hasPendingVoiceHandoff({
     "workspace-1": {
       requestId: "voice-1",
@@ -168,7 +181,7 @@ test("progressive TTS waits for a transcript handoff even after the active id is
       activationMode: "click_toggle",
       vadState: "silence",
     },
-  }, {}), true);
+  }, {}), false);
   assert.equal(hasPendingVoiceHandoff({}, { "voice-1": "submitting" }), true);
   assert.equal(hasPendingVoiceHandoff({}, { "voice-1": "sent" }), false);
 });
@@ -191,7 +204,8 @@ test("progressive speech deduplicates by turn and item, not item id alone", () =
 
 test("Codex commentary remains queued while a manual voice turn is active", () => {
   assert.match(overlaySource, /const activeVoiceRequest = activeVoiceRequestId/);
-  assert.match(overlaySource, /const voiceTurnActive = activeVoiceRequest/);
+  assert.match(overlaySource, /const voiceHandoffPending = hasPendingVoiceHandoff/);
+  assert.match(overlaySource, /if \(voiceHandoffPending\) return;/);
   assert.doesNotMatch(overlaySource, /previousVoiceCaptureRef|startBargeIn|barge-in/);
 });
 

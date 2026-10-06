@@ -5,11 +5,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
 use crate::jarvis::agent_registry::{
-    fallback_result_from_terminal_with_truncation, CompletionObservation,
-    TerminalAgentSnapshot, MAX_TERMINAL_FALLBACK_BYTES,
+    fallback_result_from_terminal_with_truncation, CompletionObservation, TerminalAgentSnapshot,
+    MAX_TERMINAL_FALLBACK_BYTES,
 };
-use crate::jarvis::JarvisState;
 use crate::jarvis::runtime_detector::normalize_provider;
+use crate::jarvis::JarvisState;
 use crate::terminal_engine::TerminalManager;
 
 pub const AGENT_EVENT_PROTOCOL: u8 = 1;
@@ -554,7 +554,10 @@ mod tests {
             agent_process_alive: Some(true),
         };
 
-        assert!(completion_provider_matches_snapshot("anti-gravity", &snapshot));
+        assert!(completion_provider_matches_snapshot(
+            "anti-gravity",
+            &snapshot
+        ));
         snapshot.agent_id = None;
         snapshot.observed_provider = Some("grok".to_string());
         assert!(!completion_provider_matches_snapshot("claude", &snapshot));
