@@ -155,7 +155,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: npm run tauri -- build --config src-tauri/tauri.windows.conf.json
+      # The merged config carries the updater public key, so the post-bundle
+      # signature step needs the same signing secrets as the release workflow.
+      # The MSI stays an internal CI artifact; nothing is published.
+      - name: Build Windows MSI
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --config src-tauri/tauri.windows.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: traflix-space-windows
