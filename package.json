@@ -12,6 +12,7 @@
     "test:strict": "node scripts/run-strict-tests.mjs",
     "test:agent-notifications": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\agent-notifications\\test-adapters.ps1",
     "tauri": "tauri",
+    "bump": "node scripts/bump-version.js set",
     "build:clean": "tauri build && cargo sweep --stale",
     "version:patch": "node scripts/bump-version.js patch",
     "version:minor": "node scripts/bump-version.js minor",
