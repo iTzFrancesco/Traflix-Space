@@ -26,6 +26,8 @@ pub struct AppSettings {
     pub sidebar: SidebarSettings,
     pub theme: ThemeSettings,
     #[serde(default)]
+    pub terminal: TerminalSettings,
+    #[serde(default)]
     pub jarvis: JarvisSettings,
 }
 
@@ -41,6 +43,13 @@ pub struct SidebarSettings {
 #[serde(rename_all = "camelCase")]
 pub struct ThemeSettings {
     pub accent_color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSettings {
+    #[serde(default)]
+    pub history_suggestions: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -453,6 +462,7 @@ impl Default for AppSettings {
             theme: ThemeSettings {
                 accent_color: "#e85d04".into(),
             },
+            terminal: TerminalSettings::default(),
             jarvis: JarvisSettings::default(),
         }
     }
@@ -654,6 +664,7 @@ mod tests {
             "jarvis": { "modelProvider": "long_cat", "model": "legacy-model", "fallbackToDeepseek": true, "privacyConsent": true, "privacyConsentAt": "2026-08-07T00:00:00Z" }
         }"##;
         let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(!settings.terminal.history_suggestions);
         // Review #7: the legacy text-provider fields are dropped on load;
         // the model lives only in jarvis.codex (default on first migration).
         assert_eq!(settings.jarvis.codex.model, "gpt-5.6-luna");
@@ -714,6 +725,17 @@ mod tests {
         let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(reloaded.jarvis.codex.model, "gpt-5.6-luna");
+    }
+
+    #[test]
+    fn terminal_history_suggestions_setting_round_trips() {
+        let mut settings = AppSettings::default();
+        settings.terminal.history_suggestions = true;
+
+        let serialized = serde_json::to_string(&settings).unwrap();
+        let reloaded: AppSettings = serde_json::from_str(&serialized).unwrap();
+
+        assert!(reloaded.terminal.history_suggestions);
     }
 
     #[test]

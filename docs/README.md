@@ -30,6 +30,12 @@ temporary patches, and private validation artifacts are intentionally excluded.
 - [Wake-word MVP](jarvis/WAKE-WORD-MVP.md) — current local fallback and future
   model boundary.
 
+## Terminal UX
+
+- [Inline command-history suggestions](research/terminal-inline-history-suggestions.md)
+  — how T3 Code's terminal hint maps to PowerShell PSReadLine and how to enable
+  the opt-in setting in Traflix Space.
+
 ## Scope
 
 The documentation describes the current source tree and its supported local

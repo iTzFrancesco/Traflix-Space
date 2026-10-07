@@ -242,6 +242,9 @@ export interface AppSettings {
   theme: {
     accentColor: string;
   };
+  terminal: {
+    historySuggestions: boolean;
+  };
   jarvis: JarvisSettings;
 }
 

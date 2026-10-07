@@ -555,7 +555,7 @@ impl ThreadRegistry {
     pub async fn list(&self) -> ThreadSnapshot {
         let threads = self.threads.lock().await;
         let mut all: Vec<JarvisCodexThread> = threads.values().cloned().collect();
-        all.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        all.sort_by_key(|thread| thread.created_at);
         ThreadSnapshot { threads: all }
     }
 

@@ -1,5 +1,6 @@
 use super::TerminalSession;
 use crate::agent_events::{agent_event_pipe_name, AGENT_EVENT_PROTOCOL};
+use crate::settings::store::SettingsManager;
 use crate::terminal_engine::frame::{TerminalExited, TerminalOutput};
 use crate::terminal_engine::grid::GridBuffer;
 use crate::terminal_engine::parser::AnsiParser;
@@ -15,6 +16,51 @@ use tracing::{error, info, warn};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+const PSREADLINE_HISTORY_SUGGESTION_SCRIPT: &str = "try { Import-Module PSReadLine -ErrorAction Stop; Set-PSReadLineOption -PredictionSource History -PredictionViewStyle InlineView -ErrorAction Stop } catch { Write-Warning 'Traflix Space: i suggerimenti richiedono PSReadLine 2.2 o successivo.' }";
+
+fn powershell_history_suggestion_args(shell: &str, enabled: bool) -> Option<[&'static str; 3]> {
+    if !enabled {
+        return None;
+    }
+
+    let executable = shell
+        .rsplit(|character| character == '\\' || character == '/')
+        .next()?
+        .to_ascii_lowercase();
+    if !matches!(
+        executable.as_str(),
+        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    ) {
+        return None;
+    }
+
+    Some(["-NoExit", "-Command", PSREADLINE_HISTORY_SUGGESTION_SCRIPT])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::powershell_history_suggestion_args;
+
+    #[test]
+    fn history_suggestion_startup_only_targets_enabled_powershell_shells() {
+        assert!(powershell_history_suggestion_args("powershell.exe", false).is_none());
+        assert!(powershell_history_suggestion_args("cmd.exe", true).is_none());
+        assert!(powershell_history_suggestion_args("C:\\Tools\\pwsh.exe", true).is_some());
+        assert!(powershell_history_suggestion_args("C:/Tools/PoWeRsHeLl.ExE", true).is_some());
+    }
+
+    #[test]
+    fn history_suggestion_startup_keeps_powershell_interactive() {
+        let args = powershell_history_suggestion_args("powershell.exe", true).unwrap();
+
+        assert_eq!(args[0], "-NoExit");
+        assert_eq!(args[1], "-Command");
+        assert!(args[2].contains("Set-PSReadLineOption"));
+        assert!(args[2].contains("PredictionSource History"));
+        assert!(args[2].contains("PredictionViewStyle InlineView"));
+    }
+}
 
 impl TerminalSession {
     pub async fn spawn(&mut self, app: AppHandle) -> Result<(), String> {
@@ -44,6 +90,17 @@ impl TerminalSession {
             })?;
 
         let mut cmd = CommandBuilder::new(&self.shell);
+        let history_suggestions_enabled = match app.try_state::<SettingsManager>() {
+            Some(settings) => settings.get().await.terminal.history_suggestions,
+            None => false,
+        };
+        if let Some(args) =
+            powershell_history_suggestion_args(&self.shell, history_suggestions_enabled)
+        {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        }
         cmd.env_remove(crate::settings::secrets::OPENCODE_ZEN_API_KEY_ENV);
         cmd.env_remove(crate::settings::secrets::GROQ_API_KEY_ENV);
         let launch_cwd = self

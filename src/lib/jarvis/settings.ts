@@ -197,6 +197,7 @@ export function defaultAppSettings(): AppSettings {
       activeWorkspaceId: null,
     },
     theme: { accentColor: "#e98a2d" },
+    terminal: { historySuggestions: false },
     jarvis: defaultJarvisSettings(),
   };
 }

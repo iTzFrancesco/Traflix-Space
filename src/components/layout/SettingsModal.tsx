@@ -180,6 +180,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
   const handleReset = () => {
     setDraft((current) => ({
       ...current,
+      terminal: { historySuggestions: false },
       jarvis: ownerModeJarvisSettings(defaultJarvisSettings()),
     }));
     setSaved(false);
@@ -191,7 +192,7 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Impostazioni Jarvis"
+      title="Impostazioni"
       width="max-w-[920px]"
     >
       <div className="space-y-9">
@@ -203,6 +204,36 @@ export function SettingsModal({ open, onClose, advanced }: SettingsModalProps) {
             Jarvis usa il microfono solo dopo il click sul logo centrale e risponde a voce.
           </p>
         </header>
+
+        <SettingsSection
+          title="Terminale"
+          description="Usa la cronologia locale di PowerShell per suggerire il prossimo comando. Si applica ai nuovi terminali e richiede PSReadLine 2.2 o successivo."
+        >
+          <label className="flex items-start gap-3 text-sm text-neutral-text">
+            <input
+              type="checkbox"
+              checked={draft.terminal.historySuggestions}
+              onChange={(event) => {
+                const historySuggestions = event.currentTarget.checked;
+                setDraft((current) => ({
+                  ...current,
+                  terminal: {
+                    ...current.terminal,
+                    historySuggestions,
+                  },
+                }));
+                setSaved(false);
+              }}
+              className="mt-0.5 size-3.5 accent-[var(--color-primary)]"
+            />
+            <span>
+              <span className="block font-medium">Suggerimenti dalla cronologia</span>
+              <span className="mt-1 block text-xs leading-relaxed text-neutral-text-muted">
+                Mostra in linea i comandi già usati mentre scrivi; premi Freccia destra per accettare.
+              </span>
+            </span>
+          </label>
+        </SettingsSection>
 
         <SettingsSection
           title="Connessioni"
