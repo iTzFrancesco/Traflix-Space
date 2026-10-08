@@ -1,6 +1,6 @@
 [package]
 name = "traflix-space"
-version = "1.9.2"
+version = "1.9.3"
 edition = "2021"
 description = "Windows desktop workspace for local projects and coding-agent sessions"
 license = "MIT"
