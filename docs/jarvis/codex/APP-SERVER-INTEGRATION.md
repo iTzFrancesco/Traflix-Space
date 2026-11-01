@@ -78,7 +78,7 @@ general Codex-readable root. Mutating actions must pass through the typed
 The following tools are exposed as separate namespace and tool names:
 
 - `workspace.overview`;
-- `terminal.list`;
+- `terminals.list`;
 - `agent.list`;
 - `agent.status`;
 - `agent.last_result`;

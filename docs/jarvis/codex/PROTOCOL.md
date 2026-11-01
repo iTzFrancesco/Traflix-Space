@@ -56,7 +56,7 @@ request is:
 ```json
 {
   "callId": "call-1",
-  "namespace": "terminal",
+  "namespace": "terminals",
   "tool": "list",
   "arguments": {},
   "threadId": "thread-1",
@@ -77,7 +77,7 @@ stable application error code and include no secret material.
 Read-only tools are:
 
 - `workspace.overview`;
-- `terminal.list`;
+- `terminals.list`;
 - `agent.list`;
 - `agent.status`;
 - `agent.last_result`;
