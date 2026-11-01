@@ -49,16 +49,21 @@ repo checkout, and:
 
 | Agent | Install target | Notes |
 |-------|----------------|-------|
-| Codex | `~/.codex/config.toml` → `notify` | Replaces the single `notify` command (Codex allows one). A backup is saved to `config.toml.traflix.bak`. |
+| Codex | `~/.codex/config.toml` → `notify` | Creates the file with a Traflix `notify` command only when `config.toml` is absent. If the file exists, it is left unchanged for manual merging; no Codex backup is created. |
+| Claude | `~/.claude/settings.json` → `hooks.Notification` | Adds an `idle_prompt` hook while preserving other settings; backs up an existing settings file before writing. |
 | OpenCode V2 | `~/.config/opencode/plugins/traflix-notify/index.ts` | Uses the V2 `Plugin.define` API and subscribes to `session.idle` plus busy/retry status transitions. |
 | OpenCode V1 | `~/.config/opencode/plugin/opencode-traflix-plugin.ts` | Uses the V1 plugin API. The installer selects the adapter from `opencode --version`. |
 | Cline | `~/.cline/hooks/TaskComplete.ps1` | Cline’s native `TaskComplete` file hook. It returns an empty hook result and forwards only task/workspace IDs. |
-| Anti-Gravity | `.agents/hooks.json` + `anti-gravity-traflix-hook.ps1` | AGY’s native `Stop` lifecycle hook. It ignores cancellation/error stops and forwards idle completions. |
 | Pi | `~/.pi/agent/extensions/traflix-notify.ts` | Pi auto-discovers `extensions/*.ts`. |
 
-Run it again after every reinstall/update of Traflix (the bridge path can move).
-It preserves an existing Codex `notify` command and adds the Cline hook while
-installing/updating the OpenCode and Pi adapter files.
+Anti-Gravity is not installed by this script. The hook script is included, but
+its project-local `.agents/hooks.json` configuration must be supplied
+separately; this checkout does not include that file.
+
+Rerun the installer after reinstalling Traflix to refresh the files it manages.
+It leaves existing Codex and Claude hook entries unchanged, so update their
+absolute bridge paths manually if those paths move. Each run overwrites the
+Traflix-managed OpenCode/Pi adapter files and the Cline hook.
 
 After changing the bridge itself, restart/reinstall Traflix so the packaged
 copy under `C:\Program Files\Traflix Space\agent-notifications\` is updated.
@@ -89,10 +94,15 @@ Run the Windows contract/integration suite from the repository root:
 npm run test:agent-notifications
 ```
 
-It checks the Codex, Claude, OpenCode, Pi, Cline, and Anti-Gravity lifecycle adapters, then sends
-synthetic completion payloads through a real named pipe for every configured
-agent (`anti-gravity`, `claude`, `claudex`, `codex`, `opencode`, `pi`, `cmdc`, and
-`freebuff`). It never reads `.env` and never starts an agent process.
+It checks adapter contracts for Codex, Claude, OpenCode, Pi, Cline, and
+Anti-Gravity, then sends synthetic completion payloads through a real named pipe
+for these eight provider IDs: `anti-gravity`, `claude`, `claudex`, `codex`,
+`opencode`, `pi`, `cmdc`, and `freebuff`. The pipe loop does not include `cline`
+or `grok`. The suite never reads `.env` and never starts an agent process.
+
+The contract test also asserts a project-local `.agents/hooks.json` Anti-Gravity
+entry. This checkout does not include that file, so supply the hook configuration
+separately before running the suite.
 
 Attention-required completions use Traflix's own always-on-top overlay window;
 they remain visible when the main window is unfocused or the desktop is in
@@ -105,8 +115,9 @@ configuration so the overlay window is created.
 1. Copy the bridge to a stable absolute path.
 2. Set `TRAFLIX_AGENT_EVENT_BRIDGE` to that path in the environment inherited
    by the relevant agent, or replace the path in the provider configuration.
-3. Add only the provider adapter you want; existing user configuration is not
-   overwritten automatically.
+3. For manual setup, configure only the providers you use. The installer does
+   not offer per-provider selection: it manages Codex, Claude, OpenCode, Pi, and
+   Cline adapters, with the behavior described above.
 4. Start Traflix before running an agent from a Traflix terminal.
 
 ## Codex
