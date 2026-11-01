@@ -18,8 +18,6 @@ temporary patches, and private validation artifacts are intentionally excluded.
   troubleshooting for the optional Groq voice path;
 - [Context broker](jarvis/CONTEXT-BROKER.md) — workspace-scoped context and
   bounded retrieval behavior.
-- [OpenAI DevDay 2026 analysis](jarvis/OPENAI-DEV-DAY-2026.md) — Decisions API
-  fit for Jarvis and the current integration limits.
 
 ## Voice pipeline
 
