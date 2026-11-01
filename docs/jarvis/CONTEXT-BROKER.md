@@ -6,17 +6,31 @@ unrelated workspaces, or local credentials.
 
 ## Context sources
 
-The public context surface is intentionally small:
+The context package contains:
 
-- the selected workspace root and its display name;
-- shallow Markdown and documentation files within that workspace;
-- bounded metadata needed to explain the current workspace state;
-- the active conversation's sanitized task and relevant tool results.
+- the selected workspace ID and canonical root path;
+- root-level Markdown and Markdown under `docs/`;
+- bounded terminal summaries and agent state/results for that workspace.
 
-File collection is deterministic and size-limited. Hidden directories,
-dependency trees, build output, generated files, environment files, credential
-stores, and unrelated parent directories are excluded. A file that cannot be
-read safely is skipped rather than elevated into a broader search.
+The read-only `workspace.overview` tool additionally returns the workspace display
+name and terminal/agent counts.
+
+The chat layer separately adds the current request and up to eight recent
+workspace messages to each model input. It checks the current request for
+non-empty content and a 16 KiB size limit, then passes its text without content
+sanitization. Recent messages are bounded before inclusion. These conversation
+inputs are separate from project-document collection.
+
+Collection is deterministic and limited by document count, per-file size, total
+size, directory depth, and time. It includes Markdown files at the workspace
+root and under `docs/`; other root directories are ignored. Under `docs/`, a
+fixed list of known tooling and build directory names is skipped, while other
+nested directories, including non-excluded dot-prefixed directories, are
+traversed. Markdown filenames matching sensitive-name filters (such as `.env`,
+`.env.*`, names containing `credential`, `secret`, `password`, or `token`, and
+files ending in `.pem` or `.key`) are excluded. Canonical-path checks reject
+files that escape the workspace root. A read failure skips that file and does
+not broaden the search.
 
 ## Safety boundaries
 
@@ -38,10 +52,13 @@ new path.
 
 ## Caching and invalidation
 
-Snapshots may be cached for the active workspace to avoid repeated disk scans.
-The cache is bounded and invalidated when the workspace changes, when a new
-turn requires fresher context, or when the relevant file watcher reports a
-change. A cache hit must never bypass path validation or secret filtering.
+Each build rediscovers the allowed paths and compares their metadata with cached
+entries. It reuses a document's contents when its canonical path, size, and
+modification time still match. New files are read, removed files are dropped,
+and changed metadata triggers a reread; changing the workspace root resets that
+workspace's cache. There is no file-watcher invalidation, and edits that leave
+the tracked metadata unchanged may remain cached. Path and sensitive-name
+filters run during every discovery, including cache hits.
 
 ## Operational guidance
 
